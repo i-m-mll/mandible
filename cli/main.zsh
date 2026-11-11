@@ -7,7 +7,6 @@
 #   wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
 #   task <description>               Set session task status
 #   reminder <subcommand>            Create, show, list, and cancel reminders
-#   inbox [check|ack|watch|add]      Manage session inbox
 #   issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
 #   changes --project <ref>          Read the bounded ledger change feed
 #   umbrella status <id>             Print coordinator fact packet
@@ -59,11 +58,14 @@ case "${1:-}" in
         shift
         source "$MANDIBLE_CLI_DIR/command-syntax.sh"
         exec "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module cli/session-execution)" "$@" ;;
+      notices)
+        shift
+        source "$MANDIBLE_CLI_DIR/command-syntax.sh"
+        exec "$(mandible_bun_runtime)" --no-install "$(mandible_cli_module cli/hook-notices)" "$@" ;;
       session-start|session-end|subagent-start|subagent-stop) hook=$1; shift; exec "$MANDIBLE_CLI_DIR/../hooks/$hook.sh" "$@" ;;
       pre-tool-use|ingest-nudge|notification|statusline) hook=$1; shift; exec "$MANDIBLE_CLI_DIR/hooks/mandible-claude-$hook.sh" "$@" ;;
-      *) echo "Usage: mandible hook <pre-tool-use|ingest-nudge|notification|statusline|session-execution|session-start|session-end|subagent-start|subagent-stop>" >&2; exit 2 ;;
+      *) echo "Usage: mandible hook <pre-tool-use|ingest-nudge|notification|statusline|session-execution|notices|session-start|session-end|subagent-start|subagent-stop>" >&2; exit 2 ;;
     esac ;;
-  channel) shift; exec "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" --no-install "$MANDIBLE_CLI_DIR/../dist/channel-server/index.js" "$@" ;;
   git-guard) shift; exec "$MANDIBLE_CLI_DIR/../hooks/git/reference-transaction" "$@" ;;
 esac
 source "$MANDIBLE_CLI_DIR/canonical-origin.sh"
@@ -101,7 +103,6 @@ case "${1:-}" in
   wrap)    shift; exec "$MANDIBLE_CLI_DIR/wrap.sh" "$@" ;;
   task)    shift; exec "$MANDIBLE_CLI_DIR/task.sh" "$@" ;;
   reminder) shift; exec "$MANDIBLE_CLI_DIR/reminder.sh" "$@" ;;
-  inbox)   shift; exec "$MANDIBLE_CLI_DIR/inbox.sh" "$@" ;;
   issue)   shift; exec "$MANDIBLE_CLI_DIR/issue.sh" "$@" ;;
   changes) shift; exec "$MANDIBLE_CLI_DIR/changes.sh" "$@" ;;
   umbrella) shift; exec "$MANDIBLE_CLI_DIR/umbrella.sh" "$@" ;;

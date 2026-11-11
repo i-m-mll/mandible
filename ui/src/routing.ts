@@ -44,10 +44,14 @@ export const SHORT_ROUTE_ID_LENGTH = 8;
 const FULL_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const TYPED_LONG_HEX_REF_RE = /^[a-z][a-z0-9-]*:[0-9a-f]{12,64}$/i;
 const FULL_PROJECT_ID_RE = /^prj_[a-z0-9_]{12,}$/i;
+/** `<kind>_<ULID>`, shortened as the CLI prints it: the time part and seven random characters. */
+const KIND_ULID_RE = /^[a-z]+_[0-9A-HJKMNP-TV-Z]{26}$/;
+const KIND_ULID_SHORT_LENGTH = 17;
 
 export function shortRouteId(id: string): string {
   if (FULL_UUID_RE.test(id)) return id.slice(0, SHORT_ROUTE_ID_LENGTH);
   if (FULL_PROJECT_ID_RE.test(id)) return id.slice(0, SHORT_ROUTE_ID_LENGTH);
+  if (KIND_ULID_RE.test(id)) return id.slice(0, id.indexOf('_') + 1 + KIND_ULID_SHORT_LENGTH);
   return TYPED_LONG_HEX_REF_RE.test(id) ? compactLongIdSegments(id) : id;
 }
 

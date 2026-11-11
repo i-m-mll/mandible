@@ -16,8 +16,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import { QueryClientProvider } from '@tanstack/preact-query';
 
 import {
-  acknowledgeInboxItem,
-  ackAllInbox,
   approveAuthRequest,
   startProviderChat,
   getAuthHistory,
@@ -28,14 +26,12 @@ import {
   isDesktopShell,
   observeNativeFrame,
   setDesktopWindowTheme,
-  getInboxGlobal,
   getIssueRepos,
   getRepoBranches,
   getSettings,
   getUserAppRailOrderSetting,
   getUserAppearanceSetting,
   getWorkRepos,
-  invalidateApiGetCache,
   invalidateDashboardCaches,
   normalizeInstanceInfo,
   sameInstanceInfo,
@@ -242,7 +238,7 @@ const RENDERABLE_TABS: RenderableTab[] = [
   'work',
   'issues',
   'settings',
-  'inbox',
+  'notifications',
   'console',
   'logs',
   'graph',
@@ -256,8 +252,8 @@ const loadAuthQueueView = () =>
   import('./views/auth').then((module) => ({ default: module.AuthQueueView }));
 const loadArtifactsView = () =>
   import('./views/artifacts').then((module) => ({ default: module.ArtifactsView }));
-const loadInboxView = () =>
-  import('./views/inbox').then((module) => ({ default: module.InboxView }));
+const loadNotificationsView = () =>
+  import('./views/notifications').then((module) => ({ default: module.NotificationsView }));
 const loadIssuesView = () =>
   import('./views/issues').then((module) => ({ default: module.IssuesView }));
 const loadConversationsView = () =>
@@ -283,7 +279,7 @@ const loadTasksView = () =>
 
 const LazyAuthQueueView = lazy(loadAuthQueueView);
 const LazyArtifactsView = lazy(loadArtifactsView);
-const LazyInboxView = lazy(loadInboxView);
+const LazyNotificationsView = lazy(loadNotificationsView);
 const LazyIssuesView = lazy(loadIssuesView);
 const LazyConversationsView = lazy(loadConversationsView);
 const LazySettingsView = lazy(loadSettingsView);
@@ -299,7 +295,7 @@ const LazyTasksView = lazy(loadTasksView);
 const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>> = {
   auth: loadAuthQueueView,
   artifacts: loadArtifactsView,
-  inbox: loadInboxView,
+  notifications: loadNotificationsView,
   issues: loadIssuesView,
   console: loadConversationsView,
   settings: loadSettingsView,
@@ -318,6 +314,7 @@ const ROUTE_INITIAL_DATA_WARMERS: Partial<Record<RenderableTab, RouteInitialData
   graph: async (params, context) => warmRouteModule(await import('./views/graph'), params, context),
   briefing: async (params, context) => warmRouteModule(await import('./views/briefing'), params, context),
   logs: async (params, context) => warmRouteModule(await import('./views/logs'), params, context),
+  notifications: async (params, context) => warmRouteModule(await import('./views/notifications'), params, context),
   overview: async (params, context) => warmRouteModule(await import('./views/session-overview'), params, context),
   tasks: async (params, context) => warmRouteModule(await import('./views/tasks'), params, context),
   spaces: async (params, context) => warmRouteModule(await import('./views/spaces/SpacesTab'), params, context),
@@ -465,8 +462,8 @@ const RESIZE_RAIL_TABS = new Set<ViewTab | null>([
   'briefing',
   'console',
   'graph',
-  'inbox',
   'issues',
+  'notifications',
   'spaces',
   'tasks',
   'timeline',
@@ -999,7 +996,7 @@ function App(): JSX.Element {
 
   // Keyboard shortcuts for top-level tabs (Ctrl+1–9).
   // Order matches the left app rail: chat(1), graph(2), auth(3), issues(4),
-  // inbox(5), projects(6), instruction artifacts(7), settings(9), logs(0).
+  // notifications(5), projects(6), instruction artifacts(7), settings(9), logs(0).
   // Settings UI for key bindings is deferred — Bug: 9082b2c
   useEffect(() => {
     const tabRoutes: Record<string, string> = {
@@ -1007,7 +1004,7 @@ function App(): JSX.Element {
       '2': viewHref('graph'),
       '3': viewHref('auth'),
       '4': viewHref('issues'),
-      '5': viewHref('inbox'),
+      '5': viewHref('notifications'),
       '6': viewHref('work'),
       '7': viewHref('artifacts', { role: 'instructions' }),
       '9': viewHref('settings'),
@@ -1099,10 +1096,6 @@ function App(): JSX.Element {
               if (repos.length > 0) dispatch({ type: 'setIssueRepos', repos });
             });
           return;
-        case 'inbox':
-          dispatch({ type: 'setInboxLoading', loading: true });
-          await getInboxGlobal().then((data) => dispatch({ type: 'setInboxData', data }));
-          return;
         case 'settings':
           // Startup already reads settings for the whole app.
           if (options.background) return;
@@ -1120,7 +1113,6 @@ function App(): JSX.Element {
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      if (tab === 'inbox') dispatch({ type: 'setInboxLoadError', error: message });
       if (tab === 'settings') dispatch({ type: 'setSettingsLoadError', error: message });
       if (options.background) throw error;
     }
@@ -1383,9 +1375,6 @@ function App(): JSX.Element {
       window.dispatchEvent(new CustomEvent('managed-reminder:sse', {
         detail: { type: payload.type },
       }));
-      if (routeTabRef.current === 'inbox') {
-        void loadVisibleRouteDataRef.current('inbox');
-      }
     };
     const taskCommandHandler = (payload: SSEPayload) => {
       handler(payload);
@@ -1592,7 +1581,6 @@ function App(): JSX.Element {
       client.on('console:session:started', handler),
       client.on('console:session:stopped', handler),
       client.on('console:session:deleted', handler),
-      client.on('console:inbox:badge', handler),
       client.on('console:stream_event', consoleStreamHandler),
       client.on('console:telemetry', consoleTelemetryHandler),
       client.on('console:permission:request', consolePermissionHandler),
@@ -1845,8 +1833,6 @@ function App(): JSX.Element {
     state.workRepos,
     state.workBranches,
     state.issueRepos,
-    state.inboxData,
-    state.selectedInboxItemId,
     state.consoleSessions,
     state.settings,
   ]);
@@ -1984,44 +1970,6 @@ function App(): JSX.Element {
     dispatch({ type: 'updateSetting', key, value });
   };
 
-  const handleAckContinuation = async (sessionId: string) => {
-    try {
-      await acknowledgeInboxItem('continuation', sessionId);
-      dispatch({ type: 'ackInboxContinuation', sessionId });
-    } catch {
-      return;
-    }
-  };
-
-  const handleAckAuthResult = async (requestId: string) => {
-    try {
-      await acknowledgeInboxItem('auth_result', requestId);
-      dispatch({ type: 'ackInboxAuthResult', requestId });
-    } catch {
-      return;
-    }
-  };
-
-  const handleAckManagedReminderOccurrence = async (occurrenceId: string) => {
-    try {
-      await acknowledgeInboxItem('managed_reminder_occurrence', occurrenceId);
-      dispatch({ type: 'ackInboxManagedReminderOccurrence', occurrenceId });
-    } catch {
-      return;
-    }
-  };
-
-  const handleInboxRefresh = () => {
-    dispatch({ type: 'setInboxLoading', loading: true });
-    invalidateApiGetCache('/api/inbox');
-    getInboxGlobal()
-      .then((data) => dispatch({ type: 'setInboxData', data }))
-      .catch((error: unknown) => dispatch({
-        type: 'setInboxLoadError',
-        error: error instanceof Error ? error.message : String(error),
-      }));
-  };
-
   // ── Console handlers ── Bug: b949700
   const handleConsoleSelectSession = (sessionId: string) => {
     dispatch({ type: 'setConsoleActiveSessionId', sessionId });
@@ -2039,19 +1987,6 @@ function App(): JSX.Element {
       const result = await startProviderChat(idempotency_key, provider, placement, { signal });
       if (!result.conversation_id) throw new Error('The server created a chat without a conversation ID.');
       return result;
-  };
-
-  const handleAckAll = async () => {
-    try {
-      await ackAllInbox();
-      dispatch({ type: 'ackAllInboxItems' });
-    } catch {
-      return;
-    }
-  };
-
-  const handleSelectInboxItem = (id: string | null) => {
-    dispatch({ type: 'setSelectedInboxItemId', id });
   };
 
   const handleGraphNavigate = useCallback((type: GraphNodeType, id: string, repoId?: string) => {
@@ -2138,11 +2073,11 @@ function App(): JSX.Element {
       icon: 'briefing',
     },
     {
-      tab: 'inbox',
-      label: 'Inbox',
-      title: 'Inbox',
-      badge: badges.inbox,
-      icon: 'inbox',
+      tab: 'notifications',
+      label: 'Notifications',
+      title: 'Notifications',
+      badge: badges.notifications,
+      icon: 'notifications',
     },
   ];
 
@@ -2790,25 +2725,7 @@ function App(): JSX.Element {
             />
           );
         })())}
-        {renderTabPanel('inbox', (() => {
-          const tabRoute = routeForTab('inbox', route, tabRouteSnapshots);
-          return (
-            <LazyInboxView
-              data={state.inboxData}
-              loading={state.inboxLoading}
-              error={state.inboxLoadError}
-              selectedItemId={state.selectedInboxItemId}
-              sidebarHidden={isViewSidebarHidden(tabRoute)}
-              onSelectItem={handleSelectInboxItem}
-              onAckContinuation={handleAckContinuation}
-              onAckAuthResult={handleAckAuthResult}
-              onAckManagedReminderOccurrence={handleAckManagedReminderOccurrence}
-              onAckAll={handleAckAll}
-              onRefresh={handleInboxRefresh}
-              instance={instanceInfo}
-            />
-          );
-        })())}
+        {renderTabPanel('notifications', <LazyNotificationsView instance={instanceInfo} unread={dashboardBadges?.notifications ?? 0} />)}
         {renderTabPanel('console', (() => {
           const tabRoute = routeForTab('console', route, tabRouteSnapshots);
           return (

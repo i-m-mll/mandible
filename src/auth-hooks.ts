@@ -38,6 +38,7 @@ import { observationPending, runtimeObservationAcceptance, runtimeHandoffDisposi
 import { extractSuccessfulMergeCommitSha } from "./auth-signature-verification.js";
 import { getDb } from "./db.js";
 import { getMandibleHome } from "./platform-paths.js";
+import { raiseUserNotification } from "./notices/user-notifications.js";
 import type { Db } from "./db.js";
 import type {
   AuthConvergence,
@@ -268,7 +269,7 @@ export function authHookCommandDigest(command: string): string {
  * request is not going to converge on its own, and saying "pending" would be
  * the same dishonesty this issue exists to remove.
  */
-export function convergenceStateFromRuns(runs: readonly AuthHookRun[]): AuthConvergenceState {
+export function convergenceStateFromRuns(runs: readonly Pick<AuthHookRun, "state" | "required">[]): AuthConvergenceState {
   if (runs.length === 0) return "none";
   if (runs.some((run) => run.required && (run.state === "failed" || run.state === "retired"))) return "failed";
   if (runs.some((run) => run.state === "pending" || run.state === "running")) return "pending";
@@ -1088,11 +1089,11 @@ export class AuthHookManager {
   // --- Deduplicated failure alerts ---------------------------------------------
 
   /**
-   * Record at most one alert per (request, hook). The UNIQUE constraint is the
-   * dedup: a second required-hook failure for the same pair updates the detail
-   * on the existing open alert instead of creating another inbox entry. No
-   * ledger issue is created — a transient host failure is not a repairable
-   * defect, and manufacturing an issue for each one is churn.
+   * Record at most one alert per (request, hook), and notify the user of it
+   * once. The UNIQUE constraint is the dedup: a second required-hook failure
+   * for the same pair updates the detail on the existing alert. No ledger
+   * issue is created — a transient host failure is not a repairable defect,
+   * and manufacturing an issue for each one is churn.
    */
   recordFailureAlert(request: AuthRequest, run: AuthHookRun, detail: string): AuthHookAlert | null {
     if (!this.hasDurableTables()) return null;
@@ -1113,13 +1114,15 @@ export class AuthHookManager {
         request.id,
         run.hook_id,
         run.hook_label,
-        request.target_session_id ?? request.session_id ?? null,
+        request.session_id ?? null,
         request.repo ?? null,
         detail,
         now,
         now,
       );
-    return this.getAlert(request.id, run.hook_id);
+    const alert = this.getAlert(request.id, run.hook_id);
+    if (alert) raiseUserNotification(this.db, { kind: "convergence_failure", id: alert.id }, detail, alert.created_at);
+    return alert;
   }
 
   getAlert(authRequestId: string, hookId: string): AuthHookAlert | null {
@@ -1128,29 +1131,6 @@ export class AuthHookManager {
       .prepare("SELECT * FROM auth_hook_alerts WHERE auth_request_id = ? AND hook_id = ?")
       .get(authRequestId, hookId) as Record<string, unknown> | undefined;
     return row ? mapAlertRow(row) : null;
-  }
-
-  listOpenAlerts(limit = 50): AuthHookAlert[] {
-    if (!this.hasDurableTables()) return [];
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM auth_hook_alerts
-         WHERE acknowledged_at IS NULL
-         ORDER BY created_at DESC
-         LIMIT ?`,
-      )
-      .all(limit) as Record<string, unknown>[];
-    return rows.map(mapAlertRow);
-  }
-
-  acknowledgeAlert(id: string, by: string): boolean {
-    if (!this.hasDurableTables()) return false;
-    const info = this.db
-      .prepare(
-        "UPDATE auth_hook_alerts SET acknowledged_at = ?, acknowledged_by = ?, updated_at = ? WHERE id = ? AND acknowledged_at IS NULL",
-      )
-      .run(Date.now(), by, Date.now(), id) as { changes?: number };
-    return (info.changes ?? 0) > 0;
   }
 
   /** Clear the open alert for a pair that has since converged. */

@@ -1,6 +1,6 @@
 # Approval Description
 
-Every new approval carries one authored Description explaining the action being approved. It must contain non-whitespace text. The queue validates it before Git observations or request writes; the API, CLI, channel tool and internal producers follow the same contract. Replacing a request requires a new valid Description. Editing Description follows the normal pending-request revision path and invalidates an earlier approval proof.
+Every new approval carries one authored Description explaining the action being approved. It must contain non-whitespace text. The queue validates it before Git observations or request writes; the API, CLI and internal producers follow the same contract. Replacing a request requires a new valid Description. Editing Description follows the normal pending-request revision path and invalidates an earlier approval proof.
 
 `mandible auth request` accepts `--message <text>` or `--message-file <file>` for every supported action. Non-merge actions use ordinary explanatory Markdown. `--verification`, protected-root policy, handoff and issue-closure options belong only to merge requests.
 

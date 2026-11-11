@@ -65,8 +65,6 @@ export type SessionRecord = {
   nav_metadata_last_error?: string;
   issues?: IssueLink[];
   projects?: ProjectLink[];
-  channel_connected_at?: number | null;
-  channel_last_tool_call?: number | null;
   identity_mismatch?: SessionIdentityMismatch | null;
   [key: string]: unknown;
 };

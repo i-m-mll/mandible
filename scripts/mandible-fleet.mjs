@@ -83,8 +83,6 @@ function scanDaemonProcesses() {
     if (!match) continue;
     const [, rawPid, command] = match;
     if (!DAEMON_ENTRY_PATTERN.test(command)) continue;
-    // The channel server also lives under dist/; it is not a daemon.
-    if (command.includes("dist/channel-server/")) continue;
     candidates.push({ pid: Number(rawPid), command });
   }
   return candidates;

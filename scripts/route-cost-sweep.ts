@@ -209,12 +209,10 @@ const READS: Record<string, RouteEntry> = {
   "GET /api/work-units": () => [req("/api/work-units"), req("/api/work-units?state=all")],
   "GET /api/work-units/custody-check": (fx) => [req(`/api/work-units/custody-check?repo=${enc(fx.workUnitRepo)}&branch=${enc(fx.workUnitBranch)}`)],
   "GET /api/work-units/:id": (fx) => [req(`/api/work-units/${fx.workUnit}`)],
-  "GET /api/inbox": (fx) => [req(`/api/inbox?branch=${enc(fx.workUnitBranch)}`)],
   "GET /api/console/run-options": () => [req("/api/console/run-options?backend_type=pty&command=claude")],
   "GET /api/console/sessions/:id/permissions": (fx) => fx.consoleSession ? [req(`/api/console/sessions/${fx.consoleSession}/permissions`)] : [],
   "GET /api/conversation-spawns/:id": (fx) => fx.spawn ? [req(`/api/conversation-spawns/${fx.spawn}`)] : [],
   "GET /api/hooks/session-execution": (fx) => [req(`/api/hooks/session-execution?provider=claude&session_id=${enc(fx.providerSession)}`)],
-  "GET /api/inbox/undelivered": (fx) => [req(`/api/inbox/undelivered?target_session_id=${enc(fx.providerSession)}`)],
   "GET /api/hooks/statusline": (fx) => [req(`/api/hooks/statusline?session_id=${enc(fx.providerSession)}&cwd=${enc(fx.checkoutRoot)}`)],
   "GET /api/spaces": (fx) => [req("/api/spaces"), req(`/api/spaces?project_id=${enc(fx.project)}`)],
   "GET /api/spaces/resolve": (fx) => [req(`/api/spaces/resolve?ref=${enc(`issue:${fx.issueShort}`)}`)],
@@ -347,18 +345,14 @@ const WRITES: Record<string, RouteEntry> = {
   "POST /api/work-units/release-issue": () => `${NOT_DRIVEN}takes the caller's snapshot of the issue's work-unit generations`,
   "POST /api/work-units/:id/custody/assume": () => `${NOT_DRIVEN}needs a work unit whose holder is dead, at its current custody generation`,
   "PATCH /api/work-units/:id": (fx) => [
-    post("continuation", `/api/work-units/${fx.workUnit}`, { continuation: `${SWEEP_TAG} handoff` }),
+    post("auth request", `/api/work-units/${fx.workUnit}`, { auth_request_id: null }),
   ],
 
-  "POST /api/inbox/delivered/:id": (fx) => {
-    const results = fixtureRows("undelivered auth results for all passes", fx.undeliveredAuthResults, passes);
-    return [post("auth result", (pass) => `/api/inbox/delivered/${results[pass - 1]}`, {})];
+  "POST /api/notifications/:id/read": (fx) => {
+    const unread = fixtureRows("unread user notifications for all passes", fx.unreadNotifications, passes);
+    return [post("unread", (pass) => `/api/notifications/${unread[pass - 1]}/read`, {})];
   },
-  "POST /api/inbox/:type/:id/ack": (fx) => {
-    const results = fixtureRows("unacknowledged auth results for all passes", fx.unacknowledgedAuthResults, passes);
-    return [post("auth result", (pass) => `/api/inbox/auth_result/${results[pass - 1]}/ack`, {})];
-  },
-  "POST /api/inbox/ack-all": () => [post("everything", "/api/inbox/ack-all", {})],
+  "POST /api/notifications/read": () => [post("all", "/api/notifications/read", {})],
 
   "PATCH /api/console/sessions/:id/options": () => LIVE_CONSOLE,
   "POST /api/console/sessions/:id/permission/:requestId": () => LIVE_CONSOLE,
@@ -698,11 +692,9 @@ export function readFixtures(dbPath: string) {
   });
   const webhookEvents = lazy((db) => (db.prepare("SELECT id FROM webhook_events WHERE status = 'pending' ORDER BY id LIMIT ?").all(passes) as { id: string }[])
       .map((row) => row.id));
-  const authResults = (db: SqliteDatabase, column: string) => (db.prepare(`
-      SELECT id FROM auth_requests WHERE ${column} IS NULL AND status IN ('approved', 'rejected', 'completed', 'failed')
-      ORDER BY updated_at DESC LIMIT ?`).all(passes) as { id: string }[]).map((row) => row.id);
-  const undeliveredAuthResults = lazy((db) => authResults(db, "delivered_at"));
-  const unacknowledgedAuthResults = lazy((db) => authResults(db, "acknowledged_by"));
+  const unreadNotifications = lazy((db) => (db.prepare(
+      "SELECT id FROM notifications WHERE recipient_kind = 'user' AND delivered_at IS NULL ORDER BY raised_at DESC, id DESC LIMIT ?",
+    ).all(passes) as { id: string }[]).map((row) => row.id));
   const soloIssue = lazy((db) => one<{ id: string }>(db, "issue in a single-checkout project", `
       SELECT i.id FROM ledger_issues i JOIN ledger_project_checkouts c ON c.project_id = i.project_id
       GROUP BY i.id HAVING count(*) = 1 ORDER BY max(i.updated_at) DESC LIMIT 1`));
@@ -769,8 +761,7 @@ export function readFixtures(dbPath: string) {
     get space() { return space()?.id ?? null; },
     get spaceItem() { return spaceItem()?.id ?? null; },
     get webhookEvents() { return webhookEvents(); },
-    get undeliveredAuthResults() { return undeliveredAuthResults(); },
-    get unacknowledgedAuthResults() { return unacknowledgedAuthResults(); },
+    get unreadNotifications() { return unreadNotifications(); },
     get soloIssue() { return soloIssue().id; },
     get documentSpace() { return documentSpace()?.id ?? null; },
     get routeKey() { return routeKey()?.route_key ?? null; },

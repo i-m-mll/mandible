@@ -8,7 +8,6 @@ import { DOMAIN_EVENTS } from "../contracts.js";
 import { randomUUID } from "node:crypto";
 import { getDb } from "../db.js";
 import { broadcast } from "../sse.js";
-import { getChannelRegistry } from "../channel-registry.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import type { SessionManager } from "../session-manager.js";
@@ -177,35 +176,6 @@ function tryRouteByBranch(
         }
       }
     }
-  }
-
-  // Bug: 0b454df — check channel-connected sessions on this branch.
-  // Channel sessions can receive webhooks via MCP notifications the next
-  // time they call mandible_check_inbox, so we queue the event but record
-  // the target session for targeted delivery.
-  const channelRegistry = getChannelRegistry();
-  const channelSessions = channelRegistry.getByBranch(branch);
-  if (channelSessions.length > 0) {
-    // Channel sessions receive webhook data through their next inbox check.
-    // We mark it as "queued" with the channel session as the intended target
-    // so the inbox endpoint can include it.
-    return null; // Will be queued and surfaced via inbox/check_inbox
-  }
-
-  // Then check tracked sessions (third-class: external agents)
-  const db = getDb();
-  const trackedSession = db
-    .prepare(
-      `SELECT id FROM sessions
-       WHERE branch = ? AND status = 'active'
-       ORDER BY updated_at DESC LIMIT 1`
-    )
-    .get(branch) as { id: string } | undefined;
-
-  if (trackedSession) {
-    // Found an active tracked session on the branch, but we can't send
-    // prompts to third-class sessions — queue as inbox item instead
-    return null;
   }
 
   return null;

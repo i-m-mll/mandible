@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
 import { Router } from "../src/server.js";
 import { registerSessionRoutes } from "../src/routes/sessions.js";
-import { getChannelRegistry } from "../src/channel-registry.js";
 import { SessionRegistry } from "../src/registry.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -31,8 +30,8 @@ let agentToken = "";
 let operatorId = "";
 let agentId = "";
 
-/** Register a session as the given bearer, exactly as the channel server does. */
-function register(credential: string | null, id = "channel-session") {
+/** Register a session as the given bearer. */
+function register(credential: string | null, id = "claude-session") {
   return router.invoke({
     method: "POST",
     url: "/api/sessions/register",
@@ -42,23 +41,7 @@ function register(credential: string | null, id = "channel-session") {
   });
 }
 
-function recordToolCall(credential: string | null, id = "channel-session") {
-  return router.invoke({
-    method: "POST",
-    url: `/api/sessions/${id}/channel-tool-call`,
-    body: { tool_name: "mandible_check_inbox" },
-    credential,
-    transport: "http",
-  });
-}
-
 beforeEach(() => {
-  // The channel registry is a process singleton; drop leftovers so each test
-  // starts with the same in-memory state against its own fresh database.
-  const channelRegistry = getChannelRegistry();
-  for (const session of channelRegistry.getAll()) {
-    channelRegistry.disconnect(session.session_id);
-  }
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-session-identity-"));
   db = migratedMemoryDb();
   setDb(db);
@@ -108,7 +91,7 @@ describe("session identity mismatch detection", () => {
       .toContain("refused while both identities resolve and disagree");
     expect(String(body.identity_warning?.message)).not.toContain("until the two agree");
 
-    const stored = readSessionIdentityMismatch(db, "channel-session");
+    const stored = readSessionIdentityMismatch(db, "claude-session");
     expect(stored).toMatchObject({
       client: { user_id: operatorId },
       binding: { user_id: agentId },
@@ -118,15 +101,15 @@ describe("session identity mismatch detection", () => {
 
   it("clears the flag when a later registration is consistent", async () => {
     await register(operatorToken);
-    expect(readSessionIdentityMismatch(db, "channel-session")).not.toBeNull();
+    expect(readSessionIdentityMismatch(db, "claude-session")).not.toBeNull();
 
     const response = await register(agentToken);
 
     expect((response.body as { identity_warning: unknown }).identity_warning).toBeNull();
-    expect(readSessionIdentityMismatch(db, "channel-session")).toBeNull();
+    expect(readSessionIdentityMismatch(db, "claude-session")).toBeNull();
     const row = db
       .prepare("SELECT identity_mismatch_at, identity_mismatch_json FROM sessions WHERE id = ?")
-      .get("channel-session");
+      .get("claude-session");
     expect(row).toEqual({ identity_mismatch_at: null, identity_mismatch_json: null });
   });
 
@@ -134,8 +117,8 @@ describe("session identity mismatch detection", () => {
     const response = await register(null);
 
     expect(response).toMatchObject({ status: 401, body: { error: "authentication_required" } });
-    expect(readSessionIdentityMismatch(db, "channel-session")).toBeNull();
-    expect(evaluateSessionIdentity(db, "channel-session", null)).toEqual({
+    expect(readSessionIdentityMismatch(db, "claude-session")).toBeNull();
+    expect(evaluateSessionIdentity(db, "claude-session", null)).toEqual({
       status: "indeterminate",
       reason: "no_client_identity",
     });
@@ -168,18 +151,6 @@ describe("session identity mismatch detection", () => {
   // wrong; the binding merely stopped resolving. Clearing here would be the
   // regression the transition rule must not cause.
 
-  it("catches a token swapped mid-session on the channel tool-call route", async () => {
-    await register(agentToken);
-    expect(readSessionIdentityMismatch(db, "channel-session")).toBeNull();
-
-    const response = await recordToolCall(operatorToken);
-
-    expect(response.status).toBe(200);
-    expect((response.body as { identity_warning: Record<string, unknown> | null }).identity_warning)
-      .toMatchObject({ binding: { user_id: agentId }, client: { user_id: operatorId } });
-    expect(readSessionIdentityMismatch(db, "channel-session")).not.toBeNull();
-  });
-
   it("checks identity when an authenticated client links a session to an issue", async () => {
     await register(agentToken);
     const project = addProject(db, { project_key: "mandible", display_name: "Mandible" });
@@ -187,7 +158,7 @@ describe("session identity mismatch detection", () => {
 
     const response = await router.invoke({
       method: "POST",
-      url: "/api/sessions/channel-session/issues",
+      url: "/api/sessions/claude-session/issues",
       body: { issue_id: issue.id, repo_id: "mandible" },
       credential: operatorToken,
       transport: "http",

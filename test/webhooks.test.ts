@@ -214,25 +214,6 @@ describe.sequential("webhook ingestion", () => {
     expect((listBody.events as Array<{ id: string }>).map((event) => event.id)).not.toContain(webhookId);
   });
 
-  it("includes pending webhooks in inbox", async () => {
-    await postJson(daemon!.port, "/api/webhooks/ingest", {
-      source: "ci",
-      event_type: "build_failed",
-      title: "Build #99 failed",
-      data: {},
-      target_branch: "feature/foo",
-    });
-
-    const { status, body } = await getJson(daemon!.port, "/api/inbox");
-    expect(status).toBe(200);
-    const webhooks = body.pending_webhooks as Array<Record<string, unknown>>;
-    expect(webhooks).toContainEqual(expect.objectContaining({
-      source: "ci",
-      event_type: "build_failed",
-      title: "Build #99 failed",
-    }));
-  });
-
   it("returns 422 when delivering to nonexistent session", async () => {
     const { body: ingestBody } = await postJson(
       daemon!.port,

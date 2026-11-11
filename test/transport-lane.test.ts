@@ -5,16 +5,16 @@ import type { ConsoleSessionInput } from "../src/types.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 // Managed provider control belongs to ConversationControlService. Console owns
-// plain terminals; retired SDK/ACP/Channel creation is deliberately rejected.
+// plain terminals; retired SDK/ACP creation is deliberately rejected.
 describe("Console transport boundary", () => {
   it("persists a plain terminal as PTY even when its command names a provider", () => {
     const db = migratedMemoryDb(); setDb(db);
     const manager = new SessionManager(db, () => undefined);
     try {
       const session = manager.create({ label: "Terminal", command: "codex" });
-      expect(session).toMatchObject({ backend_type: "pty", transport_lane: "pty", channel_enabled: false });
-      expect(db.prepare("SELECT backend_type, transport_lane, channel_enabled FROM console_sessions WHERE id = ?")
-        .get(session.id)).toEqual({ backend_type: "pty", transport_lane: "pty", channel_enabled: 0 });
+      expect(session).toMatchObject({ backend_type: "pty", transport_lane: "pty" });
+      expect(db.prepare("SELECT backend_type, transport_lane FROM console_sessions WHERE id = ?")
+        .get(session.id)).toEqual({ backend_type: "pty", transport_lane: "pty" });
     } finally { manager.close(); db.close(); }
   });
 
@@ -23,7 +23,6 @@ describe("Console transport boundary", () => {
     const manager = new SessionManager(db, () => undefined);
     const inputs: Partial<ConsoleSessionInput>[] = [
       { backend_type: "sdk" }, { backend_type: "acp" }, { backend_type: "spawn" },
-      { transport_lane: "channel" }, { channel_enabled: true },
       { provider_session_id: "provider-exact" }, { resume_at_message: "message-exact" },
       { runOptions: { model: "managed-model" } },
     ];

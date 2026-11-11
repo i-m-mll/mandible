@@ -19,11 +19,9 @@ function fixture() {
   write('package.json', '{"type":"module"}');
   const config = (rootDir, outDir, noEmit = false) => JSON.stringify({ compilerOptions: { target: 'ES2022', module: 'ESNext', types: [], strict: true, declaration: true, rootDir, outDir, noEmit }, include: [rootDir] });
   write('tsconfig.json', config('src', 'dist'));
-  write('channel-server/tsconfig.json', JSON.stringify({ ...JSON.parse(config('..', '../dist/channel-server')), include: ['index.ts'] }));
   write('ui/tsconfig.json', config('src', 'dist', true));
   write('src/index.ts', 'export const value: number = 1;');
   write('src/obsolete.ts', 'export const obsolete = true;');
-  write('channel-server/index.ts', "import {value} from '../src/index'; export const channel = true; console.log(value);");
   write('ui/src/index.ts', 'export const ui = true;');
   write('ui/esbuild.config.js', "import {build} from 'esbuild'; await build({entryPoints:['ui/src/index.ts'],outdir:'ui/dist'});");
   for (const args of [['init'], ['add', '.'], ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'fixture']]) {
@@ -40,18 +38,14 @@ test('analysis caches preserve fresh complete emitted outputs through edits and 
   await sourceBuild(root);
   expect(read('dist/index.js')).toContain('value = 1');
   expect(read('dist/index.d.ts')).toContain('value: number');
-  expect(read('dist/channel-server/index.js')).toContain('channel = true');
   expect(read('ui/dist/index.js')).toContain('ui = true');
   write('src/index.ts', 'export const value: number = 2;');
   fs.rmSync(path.join(root, 'src/obsolete.ts'));
   const removed = spawnSync('git', ['rm', '--cached', 'src/obsolete.ts'], { cwd: root, encoding: 'utf8', timeout: 10000 });
   if (removed.status !== 0) throw new Error(removed.stderr);
-  fs.rmSync(path.join(root, 'dist/channel-server/index.js'));
   await sourceBuild(root);
   expect(read('dist/index.js')).toContain('value = 2');
-  expect(read('dist/channel-server/index.js')).toContain('value = 2');
   expect(fs.existsSync(path.join(root, 'dist/obsolete.js'))).toBe(false);
-  expect(read('dist/channel-server/index.js')).toContain('channel = true');
   write('ui/src/index.ts', 'export const ui: number = "invalid";');
   await expect(sourceBuild(root)).rejects.toThrow('failed');
   expect(fs.existsSync(path.join(root, 'dist/build-revision.json'))).toBe(false);
@@ -68,7 +62,7 @@ test('a source stage deadline joins the compiler process before returning', asyn
     require('node:fs').writeFileSync('compiler.pid', String(process.pid));
     setInterval(() => require('node:fs').appendFileSync('output', 'emitting'), 10);
   `);
-  await expect(sourceBuild(root, 'channel', { timeout: 1_000 })).rejects.toThrow('SIGTERM');
+  await expect(sourceBuild(root, 'server', { timeout: 1_000 })).rejects.toThrow('SIGTERM');
   const pid = Number(fs.readFileSync(path.join(root, 'compiler.pid'), 'utf8'));
   let alive = true;
   try { process.kill(pid, 0); } catch (error) {

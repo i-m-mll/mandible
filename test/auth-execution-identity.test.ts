@@ -2,9 +2,7 @@
 import { expect, it } from 'vitest';
 import { AuthQueue } from '../src/auth-queue.js';
 import { setDb } from '../src/db.js';
-import { registerWorkUnitRoutes } from '../src/routes/work-units.js';
 import { addCredential, createUser, getOperator } from '../src/users/store.js';
-import { authenticatedTestRouter } from './helpers/authenticated-router.js';
 import {
   AUTH_MERGE_REVIEW, approveFixtureRequest, commitOnBranch, configureSigningCredential,
   createAuthCheckRepo, createLedgerIssue, createLedgerProject, createMigratedDb,
@@ -17,7 +15,7 @@ function barrier() {
   return { promise, resolve };
 }
 
-it.each(['continuation', 'owner', 'credential'] as const)('binds execution to authority while allowing continuation bookkeeping: %s', async scenario => {
+it.each(['unchanged', 'owner', 'credential'] as const)('binds execution to authority: %s', async scenario => {
   const repo = createAuthCheckRepo();
   const db = createMigratedDb();
   setDb(db);
@@ -45,15 +43,13 @@ it.each(['continuation', 'owner', 'credential'] as const)('binds execution to au
       enteredExecutor.resolve();
       await releaseExecutor.promise;
       options.onOutput?.({ request_id: options.request_id, stream: 'stdout', text: output, timestamp: Date.now() });
-      if (scenario === 'continuation') {
+      if (scenario === 'unchanged') {
         const published = await publishFixtureExecution(queue, options);
         return { ...published, stdout: output + published.stdout, output: output + published.output };
       }
       return { exit_code: 0, signal: null, stdout: output, stderr: '', output, started_at: Date.now(), finished_at: Date.now() };
     },
   });
-  const router = authenticatedTestRouter(operator, { credentialId: credential.id });
-  registerWorkUnitRoutes(router, {} as never);
   const authority = () => db.prepare(`SELECT id,owner_user_id,responsibility_session_id,custody_generation,
     auth_request_id,state,branch,repo_id,ledger_issue_id FROM work_units WHERE id = ?`).get(unitId);
   try {
@@ -68,12 +64,7 @@ it.each(['continuation', 'owner', 'credential'] as const)('binds execution to au
     await enteredExecutor.promise;
     expect(executions).toBe(1);
     const before = authority();
-    if (scenario === 'continuation') {
-      const continuation = 'Continue the existing reviewed work without transferring authority.';
-      const patched = await router.invoke({ method: 'PATCH', url: `/api/work-units/${unitId}`,
-        body: { expected_generation: 1, continuation, continuation_by: 'private-owner', continuation_at: Date.now() } });
-      expect(patched.status, JSON.stringify(patched.body)).toBe(200);
-      expect(db.prepare('SELECT continuation FROM work_units WHERE id = ?').get(unitId)).toEqual({ continuation });
+    if (scenario === 'unchanged') {
       expect(authority()).toEqual(before);
     } else if (scenario === 'owner') {
       const other = createUser(db, { slug: 'identity-other', kind: 'agent', display_name: 'Other private custodian' });
@@ -93,7 +84,7 @@ it.each(['continuation', 'owner', 'credential'] as const)('binds execution to au
 
     const completed = queue.getRequestExact(request.id)!;
     expect(executions).toBe(1);
-    if (scenario === 'continuation') {
+    if (scenario === 'unchanged') {
       expect(completed.output).toContain(output);
       expect(completed).toMatchObject({ status: 'completed', exit_code: 0, error: null });
       const evidence = executionEvidenceChain(db, completed.execution_evidence_id!);

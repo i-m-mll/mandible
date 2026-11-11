@@ -2994,7 +2994,7 @@ function LiveSessionDetail({
 }): JSX.Element {
   const queryClient = useQueryClient(appQueryClient);
   const providerSessionId = session.provider_session_id ?? '';
-  const historicalManaged = session.backend_type !== 'pty' || Boolean(session.channel_enabled);
+  const historicalManaged = session.backend_type !== 'pty';
   const sessionConversationQuery = useQuery({
     queryKey: conversationKeys.bySession(providerSessionId),
     queryFn: ({ signal }) => getConversations({ session_id: providerSessionId, limit: 2, signal }),

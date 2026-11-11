@@ -43,12 +43,6 @@ usage() {
   mandible_command_help auth merge
 }
 
-# Promotion proxy branches (promote/docs/<ts>) are deliberately disposable: a
-# proxy is cut from the long-lived docs-branch head purely to feed the auth
-# queue, so the post-merge worktree cleanup tears down only the proxy, never the
-# long-lived docs worktree. The proxy therefore takes the NORMAL cleanup path
-# (no preserve flag); the guards below exist to protect the docs worktree if a
-# docs branch is ever merged directly. See child issue 8921e84.
 
 strip_ansi() {
   printf "%s" "$1" | sed -E 's/\x1B\[[0-9;]*m//g'
@@ -840,244 +834,6 @@ restore_unsynced_target() {
   return 1
 }
 
-# Resolve the on-disk worktree path linked to a branch, if any.
-branch_worktree_path() {
-  local branch="$1"
-  local current_path="" found_path=""
-  while IFS= read -r line; do
-    if [[ "$line" == worktree\ * ]]; then
-      current_path="${line#worktree }"
-    elif [[ "$line" == branch\ refs/heads/* ]]; then
-      local b="${line#branch refs/heads/}"
-      [[ "$b" == "$branch" ]] && found_path="$current_path"
-    fi
-  done < <(git worktree list --porcelain 2>/dev/null)
-  printf "%s" "$found_path"
-}
-
-# The Spaces export backend provisions the long-lived docs worktree under
-# `<repoRoot>/.git/mandible-docs-worktrees/<branch>` (see src/spaces/export.ts).
-# That worktree (and its branch) must NEVER be destroyed by post-merge cleanup:
-# promotion is supposed to run through a disposable proxy branch. This is a
-# defensive guard so that even a misdirected direct docs-branch merge cannot
-# tear down the managed docs worktree.
-is_managed_docs_worktree_branch() {
-  local branch="$1"
-  local wt
-  wt="$(branch_worktree_path "$branch")"
-  [[ -n "$wt" ]] || return 1
-  case "$wt" in
-    */.git/mandible-docs-worktrees/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-is_app_managed_worktree_branch() {
-  local branch="$1"
-  local wt
-  wt="$(branch_worktree_path "$branch")"
-  [[ -n "$wt" ]] || return 1
-  case "$wt" in
-    */.codex/worktrees/*|*/.git/mandible-docs-worktrees/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-configured_protected_branches() {
-  if [[ -n "${MANDIBLE_AUTH_PROTECTED_BRANCHES:-}" ]]; then
-    printf '%s' "$MANDIBLE_AUTH_PROTECTED_BRANCHES"
-    return 0
-  fi
-  local response value
-  # Issue 70dffb8 — same contract as the previous `curl -sf --max-time 2`:
-  # a single quiet 2s attempt, non-2xx or unreachable daemon returns 1.
-  response=$(auth_merge_http_request GET "/api/settings/protected_branches" "" 2 2>/dev/null) || return 1
-  value=$(printf '%s' "$response" | jq -er '.value | select(type == "string" and length > 0)' 2>/dev/null) || return 1
-  printf '%s' "$value"
-}
-
-branch_cleanup_guard() {
-  local branch="$1"
-  local target="$2"
-  local current configured protected_name
-  current=$(git branch --show-current 2>/dev/null || true)
-  case "$branch" in
-    ""|main|develop|master|HEAD) printf '%s' "protected/default branch"; return 0 ;;
-  esac
-  if [[ "$branch" == "$target" || "$branch" == "$current" || "$branch" == "$(protected_branch)" ]]; then
-    printf '%s' "protected/default/current branch"
-    return 0
-  fi
-  if ! configured=$(configured_protected_branches); then
-    printf '%s' "protected branch configuration unavailable"
-    return 0
-  fi
-  while IFS= read -r protected_name; do
-    protected_name=$(printf '%s' "$protected_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    if [[ -n "$protected_name" && "$branch" == "$protected_name" ]]; then
-      printf '%s' "configured protected branch"
-      return 0
-    fi
-  done < <(printf '%s\n' "$configured" | tr ',' '\n')
-  if is_app_managed_worktree_branch "$branch"; then
-    printf '%s' "app-managed worktree"
-    return 0
-  fi
-  return 1
-}
-
-# Every post-merge branch removal goes through the trash service. It proves
-# the branch merged or tree-equivalent to the target, then removes it outright
-# when nothing unique remains, keeps reversible custody when tracked, untracked
-# or kept ignored bytes remain, and refuses (removing nothing) otherwise.
-# Work units are not touched here: the daemon's merge finalizer resolves them.
-remove_merged_branch() {
-  local branch="$1"
-  local target="$2"
-  local issue_ids="$3"
-  local root worktree_path
-  root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
-  worktree_path="$(branch_worktree_path "$branch")"
-  local -a args=(--project "$root" --checkout-root "$root" --branch "$branch" --reason merged
-    --actor auth-merge --merged-into "$target")
-  local issue_id
-  while IFS= read -r issue_id; do
-    [[ -n "$issue_id" ]] || continue
-    args+=(--issue "$issue_id")
-  done <<< "$issue_ids"
-
-  local response error_file status error_response reported_path
-  error_file=$(mktemp) || return 1
-  response=$(MANDIBLE_LEDGER_ERROR_BODY_FILE="$error_file" mandible_trash_create "${args[@]}" 2>/dev/null)
-  status=$?
-  if (( status != 0 )); then
-    error_response=$(cat "$error_file")
-    rm -f "$error_file"
-    reported_path=$(printf '%s' "$error_response" | jq -r '.detail.outcome.worktree_path // empty' 2>/dev/null)
-    if printf '%s' "$error_response" | jq -e '.detail.outcome.worktree_removed == true' >/dev/null 2>&1; then
-      err "${BOLD_YELLOW}Removal of ${branch} is incomplete, but worktree path ${reported_path:-${worktree_path:-for ${branch}}} is gone. No further work may happen there.${RESET}"
-    elif printf '%s' "$error_response" | jq -e '.detail.outcome.branch_removed == true' >/dev/null 2>&1; then
-      err "${BOLD_YELLOW}Removal of ${branch} is incomplete; the normal branch ref is gone, and repair is required before restore.${RESET}"
-    elif [[ -z "$error_response" ]]; then
-      err "${BOLD_YELLOW}preserved ${branch}: the Mandible trash service could not be reached.${RESET}"
-    else
-      err "${BOLD_YELLOW}preserved ${branch}: $(printf '%s' "$error_response" | jq -r '.error // "trash service refused removal"' 2>/dev/null).${RESET}"
-    fi
-    return "$status"
-  fi
-  rm -f "$error_file"
-
-  local result evidence kept
-  result=$(printf '%s' "$response" | jq -r '.result // empty' 2>/dev/null)
-  evidence=$(printf '%s' "$response" | jq -r '.outcome.merge_evidence // "merged"' 2>/dev/null)
-  kept=$(printf '%s' "$response" | jq -r '.outcome.ignored.kept // 0' 2>/dev/null)
-  reported_path=$(printf '%s' "$response" | jq -r 'select(.outcome.worktree_removed == true) | .outcome.worktree_path // empty' 2>/dev/null)
-  case "$result" in
-    removed)
-      err "${GREEN}reaped clean ${evidence} branch ${branch}${reported_path:+ and worktree ${reported_path}}.${RESET}"
-      ;;
-    *)
-      err "${GREEN}trashed merged branch ${branch} with unique local bytes (${kept} ignored files kept); reversible custody recorded.${RESET}"
-      ;;
-  esac
-  if printf '%s' "$response" | jq -e '.outcome.worktree_removed == true' >/dev/null 2>&1; then
-    err "${BOLD_YELLOW}Worktree path ${reported_path:-${worktree_path:-for ${branch}}} is gone. No further work may happen there.${RESET}"
-  fi
-}
-
-cleanup_branch_candidate() {
-  local branch="$1"
-  local target="$2"
-  local issue_ids="$3"
-  local guard
-
-  if ! git show-ref --verify --quiet "refs/heads/${branch}"; then
-    return 0
-  fi
-  guard=$(branch_cleanup_guard "$branch" "$target") && {
-    err "${DIM_WHITE}preserved ${branch}: ${guard}.${RESET}"
-    return 0
-  }
-  remove_merged_branch "$branch" "$target" "$issue_ids" || true
-}
-
-collect_work_unit_branches() {
-  local issue_ids="$1"
-  local repo_id="$2"
-  local issue_id response
-  while IFS= read -r issue_id; do
-    [[ -n "$issue_id" ]] || continue
-    if ! response=$(mandible_work_unit_find --repo "$repo_id" --issue "$issue_id" 2>/dev/null); then
-      err "${BOLD_YELLOW}Could not inspect work-unit branches for issue ${issue_id}; sibling cleanup skipped for that issue.${RESET}"
-      continue
-    fi
-    printf '%s' "$response" | jq -r '.work_units[]?.branch // empty' 2>/dev/null
-  done <<< "$issue_ids"
-}
-
-current_canonical_repo_id() {
-  local root response project_key
-  root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
-  response=$(api_get "/api/projects/$(urlencode "$root")" 2>/dev/null) || return 1
-  project_key=$(printf '%s' "$response" | jq -er \
-    '.project.project_key | select(type == "string" and length > 0)' 2>/dev/null) || return 1
-  printf '%s' "$project_key"
-}
-
-# $1 = merged source branch
-# $2 = preserve flag ("1" to skip tearing down the merged branch itself)
-# $3 = target branch used for authoritative merged/patch-equivalent evidence
-# $4 = newline-delimited closed/declared issue refs used to discover sibling work units
-cleanup_merged_worktrees() {
-  local branch="$1"
-  local preserve_head="${2:-0}"
-  local target="${3:-$(protected_branch)}"
-  local issue_ids="${4:-}"
-
-  # Never destroy a long-lived branch the caller asked to preserve, and never
-  # destroy the managed Spaces docs worktree even if a docs branch was merged
-  # directly. Promotion of the docs branch is supposed to go through a
-  # disposable promote/docs/<ts> proxy branch instead.
-  if [[ "$preserve_head" == "1" ]]; then
-    err "${DIM_WHITE}--preserve-head-branch: leaving ${branch} and its worktree in place.${RESET}"
-  elif is_managed_docs_worktree_branch "$branch"; then
-    err "${DIM_WHITE}Refusing to tear down managed docs worktree for ${branch}; promote via a proxy branch instead.${RESET}"
-  else
-    cleanup_branch_candidate "$branch" "$target" "$issue_ids"
-  fi
-
-  # Clean __-delimited child branches (these are always disposable feature
-  # sub-branches; the preserve guard only applies to the merged head branch).
-  local prefix="${branch}__"
-  local child
-  git for-each-ref --format='%(refname:short)' 'refs/heads/' | while IFS= read -r child; do
-    case "$child" in
-      "${prefix}"*)
-        cleanup_branch_candidate "$child" "$target" "$issue_ids"
-        ;;
-    esac
-  done
-
-  # Work-unit branches for the issue(s) declared closed by this merge may be
-  # siblings with unrelated names. The ledger only supplies candidates; each
-  # branch still needs authoritative ancestry or patch-equivalence evidence.
-  if [[ -n "$issue_ids" ]]; then
-    local sibling canonical_repo_id
-    if ! canonical_repo_id=$(current_canonical_repo_id); then
-      err "${BOLD_YELLOW}Preserved sibling work-unit branches: canonical project identity could not be resolved uniquely for this checkout; destructive candidate discovery was skipped.${RESET}"
-      return 0
-    fi
-    collect_work_unit_branches "$issue_ids" "$canonical_repo_id" | sort -u | while IFS= read -r sibling; do
-      [[ -n "$sibling" && "$sibling" != "$branch" && "$sibling" != "${prefix}"* ]] || continue
-      cleanup_branch_candidate "$sibling" "$target" "$issue_ids"
-    done
-  fi
-}
-
-urlencode() {
-  jq -rn --arg value "$1" '$value|@uri'
-}
-
 current_repo_id() {
   local root
   root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
@@ -1122,10 +878,6 @@ collect_declared_issues() {
   printf "%s" "$ids"
 }
 
-collect_cleanup_issue_ids() {
-  collect_declared_issues | sed '/^$/d' | sort -u
-}
-
 issue_ids_to_json() {
   local ids="$1"
   if [[ -z "$ids" ]]; then
@@ -1168,11 +920,10 @@ main() {
   fi
 
   local target=""
-  local preserve_head=0
   local -a sources=()
 
   local binding
-  binding=$(mandible_bind_arguments "auth.merge" '{"preserve_head":{"option":"preserve-head-branch","constant":"1"},"target":{"option":"into"},"sources":{"rest":0}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "auth.merge" '{"target":{"option":"into"},"sources":{"rest":0}}' "$@") || return $?
   eval "$binding"
 
   if [[ -z "$target" ]]; then
@@ -1292,17 +1043,16 @@ main() {
     cas_update_and_sync_target "$target" "$atomic_base" "$merge_sha"
     local cas_status=$?
     (( cas_status == 0 )) || exit "$cas_status"
-    auth_phase "protected worktree synchronized; running follow-up actions..."
+    auth_phase "protected worktree synchronized; recording the merge result..."
     record_auth_merge_result "$atomic_base"
-    cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$atomic_base")"
     exit 0
   fi
 
 
 }
 
-# Allow tests to source this script for unit-testing individual helpers
-# (e.g. cleanup_merged_worktrees) without running the full merge flow.
+# Allow tests and atomic recovery to source this script for individual
+# helpers without running the full merge flow.
 if [[ "${MANDIBLE_AUTH_MERGE_SOURCE_ONLY:-}" != "1" ]]; then
   main "$@"
 fi

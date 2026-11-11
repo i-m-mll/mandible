@@ -37,16 +37,13 @@ it("installs explicit integrations in an isolated installed profile while preser
   const settings = target("claude-hooks").destination;
   fs.mkdirSync(path.dirname(settings), { recursive: true });
   fs.writeFileSync(settings, JSON.stringify({ model: "user-choice", hooks: { Stop: [{ hooks: [{ type: "command", command: "say done" }] }] } }));
-  const mcp = target("claude-mcp").destination;
-  fs.writeFileSync(mcp, JSON.stringify({ theme: "user-choice", mcpServers: { other: { command: "other" } } }));
-  for (const id of ["cli", "claude-hooks", "claude-mcp", "claude-skill", "codex-skill"] as const) {
+  for (const id of ["cli", "claude-hooks", "claude-skill", "codex-skill"] as const) {
     const result = applyOptionalIntegration({ id, action: "install" });
     expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(target(id).status).toBe("installed");
   }
   expect(fs.readlinkSync(target("cli").destination)).toBe(path.join(fs.realpathSync(release), "bin/mandible"));
   expect(JSON.parse(fs.readFileSync(settings, "utf8"))).toMatchObject({ model: "user-choice", hooks: { Stop: expect.arrayContaining([expect.objectContaining({ hooks: [{ type: "command", command: "say done" }] })]) } });
-  expect(JSON.parse(fs.readFileSync(mcp, "utf8"))).toMatchObject({ theme: "user-choice", mcpServers: { other: { command: "other" } } });
   const customSkill = target("claude-skill").destination;
   fs.appendFileSync(customSkill, "\nMy own policy\n");
   expect(target("claude-skill").status).toBe("conflict");
@@ -59,10 +56,10 @@ it("installs explicit integrations in an isolated installed profile while preser
   expect(applyOptionalIntegration({ id: "claude-hooks", action: "remove" }).ok).toBe(true);
   expect(JSON.parse(fs.readFileSync(settings, "utf8"))).toMatchObject({ model: "user-choice", statusLine: { command: "my-new-statusline" } });
   fs.unlinkSync(settings);
-  fs.symlinkSync(mcp, settings);
+  const linked = path.join(home, "linked-settings.json");
+  fs.writeFileSync(linked, "{}");
+  fs.symlinkSync(linked, settings);
   expect(target("claude-hooks").status).toBe("conflict");
   expect(applyOptionalIntegration({ id: "claude-hooks", action: "install" }).ok).toBe(false);
   expect(fs.lstatSync(settings).isSymbolicLink()).toBe(true);
-  expect(applyOptionalIntegration({ id: "claude-mcp", action: "remove" }).ok).toBe(true);
-  expect(JSON.parse(fs.readFileSync(mcp, "utf8"))).toEqual({ theme: "user-choice", mcpServers: { other: { command: "other" } } });
 });

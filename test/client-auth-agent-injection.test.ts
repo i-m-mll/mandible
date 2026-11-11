@@ -38,7 +38,7 @@ describe("agent client-auth provisioning", () => {
     expect(fresh).toEqual({ MANDIBLE_MANAGED_APP: "codex", MANDIBLE_SESSION_ID: "child-local", CODEX_THREAD_ID: "child-native" });
   });
 
-  it.each(["start", "resume-provider-session"] as const)("keeps inherited credentials out of %s SDK and MCP child environments", async (kind) => {
+  it.each(["start", "resume-provider-session"] as const)("keeps inherited credentials out of %s SDK child environments", async (kind) => {
     vi.stubEnv("MANDIBLE_TOKEN", "inherited-secret");
     vi.stubEnv("CODEX_THREAD_ID", "daemon-parent");
     vi.stubEnv("CLAUDE_SESSION_ID", "daemon-parent-claude");
@@ -55,9 +55,6 @@ describe("agent client-auth provisioning", () => {
     const nativeId = kind === "start" ? options?.sessionId : "child-native";
     expect(nativeId).toBeTruthy();
     expect(options?.env).toMatchObject({ MANDIBLE_MANAGED_CLIENT: "1", MANDIBLE_MANAGED_APP: "claude", CLAUDE_CODE_SESSION_ID: nativeId });
-    const mcp = options?.mcpServers?.mandible;
-    expect(mcp).toMatchObject({ type: "stdio", env: { MANDIBLE_PROVIDER_SESSION_ID: nativeId, MANDIBLE_SESSION_ID: nativeId } });
-    expect(mcp && "env" in mcp ? mcp.env : {}).not.toHaveProperty("MANDIBLE_TOKEN");
   });
 
   it("resolves only one active app binding and never falls back to the operator", () => {

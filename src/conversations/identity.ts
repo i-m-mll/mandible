@@ -113,9 +113,9 @@ export function foldConversationIdentity(db: Db, fold: {
       db.prepare(`DELETE FROM ${table} WHERE conversation_id = ?`).run(keepAlias ? canonicalId : aliasId);
     }
     for (const ref of references) {
-      // Reviewed auth records and other documentary references retain their
-      // original identity bytes; the alias resolver keeps them usable.
-      if (ref.table === 'auth_requests' || ref.table === 'conversation_control_journal') continue;
+      // Documentary references retain their original identity bytes; the
+      // alias resolver keeps them usable.
+      if (ref.table === 'conversation_control_journal') continue;
       db.prepare(`UPDATE "${ref.table}" SET "${ref.column}" = ? WHERE "${ref.column}" = ?`).run(canonicalId, aliasId);
     }
     const maxRevision = (db.prepare('SELECT MAX(revision) AS revision FROM conversation_control_journal WHERE conversation_id IN (?, ?)')

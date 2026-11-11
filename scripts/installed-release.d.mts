@@ -4,14 +4,13 @@ export interface InstalledRelease {
   target: string;
   layout: { kind: 'macos-app'; roots: Record<string, string> };
   provenance: { commit: string; source_digest: string; summary: string; date: string; bun_revision: string };
-  entrypoints: Record<'daemon' | 'cli' | 'channel' | 'controller' | 'trustSetup' | 'service', string>;
+  entrypoints: Record<'daemon' | 'cli' | 'controller' | 'trustSetup' | 'service', string>;
   native: Record<'bun' | 'sqlite' | 'caddy' | 'claude' | 'trustHelper' | 'serviceHelper', string>;
   serviceExecutables?: Record<'backend' | 'gateway', 'bun' | 'caddy'>;
   serviceControlProtocol?: 2;
   resources?: Record<string, string>;
   signing: Record<string, string>;
   qualification?: { bun_sha256: string; sqlite_sha256: string; caddy_sha256: string };
-  channelRuntimePolicy?: { signingIdentifier: string; signer: string; hardenedRuntime: boolean; entitlements: string | null };
   files: Record<string, { sha256: string; size: number }>;
 }
 export const RELEASE_SCHEMA: string;

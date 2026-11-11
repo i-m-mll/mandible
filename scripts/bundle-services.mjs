@@ -9,7 +9,6 @@ import { readServiceConfiguration, publishServiceConfiguration } from './service
 import { readInstalledRelease, releaseFile } from './installed-release.mjs';
 import { reconcileBundleServiceStart, BUNDLE_SERVICE_START_TIMEOUT_MS } from './bundle-service-start.mjs';
 import { observationPending } from './runtime-observation.mjs';
-import { reconcileChannelInstallation, retireLegacyChannels } from './channel-installation.mjs';
 
 const ownerFile = context => path.join(context.runtimeDir, 'bundle-owner.json');
 const launchFile = context => path.join(context.runtimeDir, 'bundle-launch.json');
@@ -123,7 +122,7 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
     throw new Error('Isolated instances cannot inspect or register production bundle services.');
   }
   if (control === nativeServiceControl) assertBundleServiceIdentity(context);
-  if (!['status', 'reconcile-channel', 'start', 'stop', 'restart', 'install', 'repair', 'remove', 'configure-launch-mode', 'reload-gateway', 'background-settings'].includes(command)) throw new Error('Unsupported bundle lifecycle operation.');
+  if (!['status', 'start', 'stop', 'restart', 'install', 'repair', 'remove', 'configure-launch-mode', 'reload-gateway', 'background-settings'].includes(command)) throw new Error('Unsupported bundle lifecycle operation.');
   const mutating = command !== 'status';
   const processes = {};
   const startPendingStatus = async error => {
@@ -148,18 +147,6 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
     throw new Error('Registered services have no matching durable bundle owner; preserve them for explicit repair.');
   }
   if (command === 'background-settings') { control(context, 'settings', 'backend'); return (await inspect({ launchMode })).status; }
-  if (command === 'reconcile-channel') {
-    const resources = path.join(context.bundleRoot, 'Contents/Resources');
-    if (!admission.owner) {
-      await initialize(resources);
-      const installationId = fs.readFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'utf8').trim();
-      publish(ownerFile(context), { schema: 'mandible-bundle-owner@1', bundleRoot: context.bundleRoot, installationId,
-        generation: release.provenance.commit, sourceDigest: release.provenance.source_digest });
-    }
-    reconcileChannelInstallation({ home: context.home, resources, release });
-    retireLegacyChannels({ home: context.home, resources });
-    return (await inspect({ launchMode })).status;
-  }
   const previews = admission.owner ? previewCount(path.join(context.bundleRoot, 'Contents/Resources')) : 0;
   if ((command === 'remove' || relocating) && previews > 0) throw new Error('Registered previews still use the shared gateway; stop them before removing or relocating the app.');
   const restarting = command === 'restart' || relocating;
@@ -187,11 +174,6 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
     const installationId = fs.readFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'utf8').trim();
     publish(ownerFile(context), { ...admission.owner, schema: 'mandible-bundle-owner@1', bundleRoot: context.bundleRoot, installationId,
       generation: release.provenance.commit, sourceDigest: release.provenance.source_digest });
-    if (control === nativeServiceControl) {
-      const resources = path.join(context.bundleRoot, 'Contents/Resources');
-      reconcileChannelInstallation({ home: context.home, resources, release });
-      retireLegacyChannels({ home: context.home, resources });
-    }
     const prior = fs.existsSync(launchFile(context)) ? readBundleLaunch(context) : null;
     const currentSession = session();
     const enabled = ['start', 'restart'].includes(command) || relocating && !!beforeRestart?.backendJob.pid

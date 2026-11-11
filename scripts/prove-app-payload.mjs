@@ -72,27 +72,11 @@ try {
   assert.match(cli.stdout, /count/);
   const nativeSdk = sandbox(path.resolve(stage.resources, release.native.claude), ['--version']);
   assert.equal(nativeSdk.status, 0, nativeSdk.stderr);
-  const channel = spawn('/usr/bin/sandbox-exec', ['-p', profile, environment.MANDIBLE_RUNTIME, '--no-install', path.join(stage.resources, release.entrypoints.channel)],
-    { cwd: scratch, env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
-  try {
-    const initialized = new Promise((resolve, reject) => {
-      let output = '';
-      const deadline = setTimeout(() => reject(new Error('Packaged channel MCP initialization timed out')), 5000);
-      channel.stdout.on('data', bytes => {
-        output += bytes.toString();
-        if (output.includes('"name":"mandible"')) { clearTimeout(deadline); resolve(); }
-      });
-      channel.once('error', reject);
-      channel.once('exit', code => { clearTimeout(deadline); reject(new Error(`Packaged channel exited before initialization: ${code}`)); });
-    });
-    channel.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'installed-proof', version: '1' } } })}\n`);
-    await initialized;
-  } finally { channel.kill('SIGTERM'); }
   const packageLogs = fs.readFileSync(path.join(scratch, 'daemon.log'), 'utf8');
   assert.doesNotMatch(packageLogs, /startup_commit_failed|cowork_cli_cache_materialize_failed|"fatal"|unhandled_rejection/);
   process.stdout.write(`${JSON.stringify({ passed: true, scratch, target: release.target, commit: release.provenance.commit,
     evidence: ['sandbox denies checkout, developer dependencies and ambient runtimes', 'ready and warm health with shipped provenance',
-      'bundled UI response', 'ledger worker request', 'CLI SQLite query', 'native SDK execution', 'channel MCP initialization'], health }, null, 2)}\n`);
+      'bundled UI response', 'ledger worker request', 'CLI SQLite query', 'native SDK execution'], health }, null, 2)}\n`);
 } finally {
   child.kill('SIGTERM');
   await Promise.race([new Promise(resolve => child.once('exit', resolve)), new Promise(resolve => setTimeout(() => { child.kill('SIGKILL'); resolve(); }, 3000))]);

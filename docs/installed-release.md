@@ -12,7 +12,6 @@ The manifest contains version, target, source commit/digest, commit summary/date
 | --- | --- |
 | `daemon` | Built daemon with its worker module tree |
 | `cli` | Public command dispatcher |
-| `channel` | Built MCP channel subprocess |
 | `controller` | Shared lifecycle controller |
 | `trustSetup` | Narrow local trust setup controller |
 | `service` | Native service launcher, supplied by the lifecycle lane |
@@ -32,7 +31,7 @@ Native roles are `bun`, `sqlite`, `caddy`, `claude`, `trustHelper`, and the life
 
 ## Assembly and signing
 
-`bun run tauri:build -- --bundles app` builds and finalizes a complete Mac app. Tauri uses its normal resource map, external binaries and framework mechanisms. `scripts/make-dist.sh` selects the qualified runtime, builds TypeScript/UI, builds the trust helper and calls `stageAppPayload(contents)`. It refuses stale compiled output. The assembler copies the production dependency graph, built daemon/channel/worker modules, UI shell/assets, CLI/hooks, command grammar, instruction resources, runtime scripts and lock provenance. Runtime script imports of source modules are mapped to built modules. Source/build workflows continue using the repository's selector and revision validation.
+`bun run tauri:build -- --bundles app` builds and finalizes a complete Mac app. Tauri uses its normal resource map, external binaries and framework mechanisms. `scripts/make-dist.sh` selects the qualified runtime, builds TypeScript/UI, builds the trust helper and calls `stageAppPayload(contents)`. It refuses stale compiled output. The assembler copies the production dependency graph, built daemon/worker modules, UI shell/assets, CLI/hooks, command grammar, instruction resources, runtime scripts and lock provenance. Runtime script imports of source modules are mapped to built modules. Source/build workflows continue using the repository's selector and revision validation.
 
 The Claude SDK's native executable is moved out of the JavaScript dependency directory into `Contents/MacOS`; SDK invocation and provenance select it explicitly. Qualified Bun/Caddy live there too, while SQLite lives in `Contents/Frameworks`. The SQLite staging copy is writable for the bundle's attribute cleanup/signing; its qualified build-store source is untouched.
 

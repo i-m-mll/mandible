@@ -165,7 +165,7 @@ The dashboard and `mandible auth list` display the auth queue with all active re
 
 **Approve** (`POST /api/auth/request/:id/approve`) — Verifies a fresh action-bound operator signature before starting execution. The request remains pending on failed, cancelled, expired, or changed proof. **Cancel signing** stops the pending challenge without rejecting the request. Output streams after execution starts.
 
-**Reject** (`POST /api/auth/request/:id/reject`) — Declines the request with an optional reason. The result is delivered to the agent's inbox.
+**Reject** (`POST /api/auth/request/:id/reject`) — Declines the request with an optional reason. The submitting session is notified.
 
 **Skip** (`POST /api/auth/request/:id/skip`) — Moves the request to the back of the queue without rejecting it. Useful when you want to approve a different request first.
 
@@ -283,7 +283,8 @@ A required-hook failure:
 - leaves the merge successful and the queue unblocked;
 - **withholds deferred issue closures** until convergence completes;
 - notifies the originating session (`auth:convergence` SSE event) and creates
-  exactly one deduplicated inbox alert keyed by (request, hook);
+  exactly one deduplicated alert keyed by (request, hook), with one
+  notification for you;
 - preserves the hook output and full attempt history on the request;
 - does **not** create a ledger issue. An issue is for a repairable defect, not
   for every transient host failure.
@@ -324,7 +325,7 @@ The daemon resolves references and stores a sorted, deduplicated set. New submis
 
 ## Proven sibling supersession on success
 
-When a merge request completes successfully, Mandible marks only proven same-project, same-target, same-head siblings `superseded` and links them to the successful request. It also revalidates the remaining pending merge requests for the repo against the new target head. Requests that now conflict move to `needs_rebase`, broadcast an auth result, and appear in the submitting session's inbox.
+When a merge request completes successfully, Mandible marks only proven same-project, same-target, same-head siblings `superseded` and links them to the successful request. It also revalidates the remaining pending merge requests for the repo against the new target head. Requests that now conflict move to `needs_rebase`, broadcast an auth result, and notify the submitting session.
 
 ## Work Unit Resolution
 
@@ -334,6 +335,24 @@ After resolution, Mandible archives reliably linked terminal Codex worker thread
 
 This closes the loop between the auth queue, the issue tracker, and the work-unit lifecycle.
 
+## Merged-branch removal
+
+The last merge finalizer step, `remove_merged_branches`, removes every local branch the merge landed, with its worktree, through the [trash service](../trash-custody.md). Its candidates are the head branch (unless the stored command ends in `--preserve-head-branch`), the head's `<head>__*` children, and the branches of this repository's work units that the request closes or that the merge resolved by ancestry. No agent removes a merged worktree by hand.
+
+Each branch's result is recorded in `merge_finalizer_state.remove_merged_branches.output` as `removed` (proven merged, nothing unique), `trashed` (proven merged, unique bytes kept in reversible custody), or `kept` with a reason: `not_merged`, `protected`, `app_managed`, `preview_running` or `trash_refused`. The candidate list is written before the first removal and each result as it lands, so a daemon restart resumes the pending entries. A branch kept for `preview_running` or `trash_refused` is retried by the daemon's 30-second maintenance pass, and its record is rewritten when the result changes; the others are left to their owner. A preview instance's copied ledger removes and retries nothing.
+
+## Declared preview teardown
+
+A merge request can declare that the preview hosted by a branch it lands is torn down once the merge is live: `mandible auth request <branch> ... --teardown-preview <preview-branch>` (repeatable), or `mandible auth action add <request> --kind preview_teardown --issue <id> --branch <preview-branch>`. The declaration is a staged action of kind `preview_teardown` with payload `{ "branch": "<preview-branch>" }`, one per branch per request, accepted only on a merge request and only for a branch whose preview root records a preview. The approval shows it as a `Tear down preview` row the reviewer can veto; approving the request is the owner's discard of that preview's interactive data. A request without the declaration, or with it vetoed, leaves the preview running and its branch kept as `preview_running`.
+
+The action is withheld while convergence is pending or failed, like an issue closure. Once convergence no longer holds it, the request's one teardown runner takes each staged declaration in order, outside the ledger transaction and without delaying closures or other requests:
+
+1. No preview recorded for the branch: the action is `applied` with `No preview on <branch>`.
+2. The branch still exists and is not proven merged into the merge target: the action is `failed` with `not_merged`, and the preview keeps running. The report shows it as kept.
+3. Otherwise the preview's recorded run is torn down in a supervised subprocess (`scripts/preview-teardown.mjs`) as `accepted`, converged, with disposition `discard` and the summary `Merged by auth <id> as <merge>`. A cleaned run makes the action `applied` with its run ID; anything else makes it `failed` with the first line of the reason.
+
+The teardown leaves the worktree: the receipt's `worktreeDisposition` records that the merge finalizer removes it. When every declaration has settled, the runner retries the branches kept for a running preview, so the branch and its worktree are removed then rather than at the next maintenance pass. A daemon stopped during a teardown leaves the action staged; the start-up pass runs it again and the teardown resumes from the run's recorded intent. A preview instance's copied ledger executes no teardown.
+
 ## Stuck Request Recovery
 
 Mandible automatically recovers requests that get stuck due to daemon crashes or other interruptions. On startup, it examines incomplete requests and determines whether they actually succeeded (by checking for merge evidence in the output) or should be marked as failed. During runtime, a periodic check catches requests that have been stuck too long and marks them as interrupted.
@@ -342,7 +361,7 @@ This ensures the queue never gets permanently stuck, even after unclean daemon r
 
 ## Result Delivery
 
-After an auth request resolves (completed, rejected, withdrawn, superseded, expired), the result is broadcast via SSE (`auth:resolved` event) and delivered to the submitting agent's inbox. The next time the agent starts a session, the session-start hook picks up inbox items and surfaces the result.
+After an auth request resolves (completed, rejected, withdrawn, superseded, expired), the result is broadcast via SSE (`auth:resolved` event) and recorded as a notification for the submitting session; see [Notifications](/features/notifications).
 
 ## SSE Events
 

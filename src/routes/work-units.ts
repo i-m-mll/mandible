@@ -41,7 +41,7 @@ import {
 } from "../work-unit-custody.js";
 import { entityRefs, shortRef } from "../entity-refs.js";
 
-// Bug: a247bc3 — work-unit CRUD for inbox workqueue
+// Bug: a247bc3 — work-unit CRUD
 // Bug: 8a281b3 — liveness overlay, PATCH, GET /:id
 // Bug: f3dbb3e — shared liveness computation extracted to work-unit-utils.ts
 
@@ -91,9 +91,6 @@ interface PatchInput {
   reason?: string;
   state?: string;
   assigned_session_id?: string | null;
-  continuation?: string | null;
-  continuation_by?: string | null;
-  continuation_at?: number | null;
   auth_request_id?: string | null;
   provider?: string | null;
   provider_session_id?: string | null;
@@ -109,7 +106,7 @@ interface CustodyAssumeInput {
 
 /** Issue 72b00f8 — the narrow auth-queue surface custody approval needs. */
 export interface WorkUnitRouteOptions {
-  authQueue?: Pick<AuthQueue, "submit">;
+  authQueue?: Pick<AuthQueue, "submit" | "raiseNotice">;
   /** Codex thread-writer lock reader for holder liveness; tests inject it. */
   readCodexTaskLiveness?: ProviderTaskLivenessReader;
 }
@@ -253,6 +250,7 @@ export function registerWorkUnitRoutes(
   options: WorkUnitRouteOptions = {},
 ): void {
   const db = getDb();
+  const raise_notice = options.authQueue ? (requestId: string) => options.authQueue!.raiseNotice(requestId) : null;
   /**
    * The Codex reader for this request's holder decisions, over lock scans made
    * for it. Taken before the handler reads anything else, so the decision and
@@ -681,7 +679,7 @@ export function registerWorkUnitRoutes(
     }
     if (!body.reason?.trim()) { sendJson(res, 400, { error: "reason is required" }); return; }
     transferWorkUnitCustody(db, { unit: mapRow(rows[0] as Record<string, unknown>), expected_generation: body.expected_generation!,
-      new_user_id: null, new_session_id: null, authority_path: "handoff", reason: body.reason.trim(), comment_attribution: attributionForRequest(db, req) });
+      new_user_id: null, new_session_id: null, authority_path: "handoff", reason: body.reason.trim(), comment_attribution: attributionForRequest(db, req), raise_notice });
     sendJson(res, 200, { ok: true, id: row.id, released: 1 });
   }, { operation: { id: "post:/api/work-units/release", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow",
     refs: { body: { id: entityRefs.workUnit } } });
@@ -709,7 +707,7 @@ export function registerWorkUnitRoutes(
     if (!body.reason?.trim()) { sendJson(res, 400, { error: "reason is required" }); return; }
     db.transaction(() => {
       for (const row of rows) transferWorkUnitCustody(db, { unit: mapRow(row as unknown as Record<string, unknown>), expected_generation: row.custody_generation,
-        new_user_id: null, new_session_id: null, authority_path: "handoff", reason: body.reason!.trim(), comment_attribution: attributionForRequest(db, req) });
+        new_user_id: null, new_session_id: null, authority_path: "handoff", reason: body.reason!.trim(), comment_attribution: attributionForRequest(db, req), raise_notice });
     })();
     sendJson(res, 200, { ok: true, released: rows.length });
   }, { operation: { id: "post:/api/work-units/release-issue", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
@@ -827,6 +825,7 @@ export function registerWorkUnitRoutes(
         authority_path: authorityPath,
         reason: body.reason.trim(),
         comment_attribution: attributionForRequest(db, req),
+        raise_notice,
       });
       sendJson(res, 200, { work_unit: transferred, authority_path: authorityPath });
     } catch (error) {
@@ -920,21 +919,6 @@ export function registerWorkUnitRoutes(
       params.push(assigned ? serializeAssignmentTarget(assignmentTargetForSession(db, assigned, ambientIdentity)) : null);
       updates.push("assigned_session_id = ?");
       params.push(normalizeWorkUnitSessionId(body.assigned_session_id));
-    }
-
-    if ("continuation" in body) {
-      updates.push("continuation = ?");
-      params.push(body.continuation ?? null);
-    }
-
-    if ("continuation_by" in body) {
-      updates.push("continuation_by = ?");
-      params.push(body.continuation_by ?? null);
-    }
-
-    if ("continuation_at" in body) {
-      updates.push("continuation_at = ?");
-      params.push(body.continuation_at ?? null);
     }
 
     if ("auth_request_id" in body) {

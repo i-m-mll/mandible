@@ -110,12 +110,7 @@ const FIXTURES: Array<[string, RegExp, Fixture]> = [
     id: 'auth-warm', type: 'merge', status: 'pending', title: 'Warm auth request',
     repo: 'mandible', head_branch: 'feature/warm', base_branch: 'main', created_at: '2026-10-24T00:00:00.000Z',
   }]],
-  ['GET', /^\/api\/inbox\/global$/, () => ({
-    continuations: [],
-    auth_results: [],
-    open_issues: [{ id: 'e70757d', title: 'Warm inbox issue', repo_id: 'mandible', status: 'open', labels: [] }],
-    total: 1,
-  })],
+  ['GET', /^\/api\/notifications$/, () => ({ notifications: [], next_before: null })],
   ['GET', /^\/api\/work\/repos$/, () => [{ id: 'mandible', name: 'mandible', path: '/repo' }]],
   ['GET', /^\/api\/tasks$/, () => ({
     executors: [],

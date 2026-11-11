@@ -1,4 +1,3 @@
-import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MANAGED_REMINDER_SCHEMA } from "../src/contracts.js";
 import { setDb, type Db } from "../src/db.js";
@@ -9,15 +8,14 @@ import {
   cancelManagedReminder,
   createManagedReminder,
   getManagedReminder,
-  listManagedReminderOccurrences,
   reconcileManagedReminders,
 } from "../src/managed-reminders.js";
-import { countGlobalInboxBadge, registerInboxRoutes } from "../src/routes/inbox.js";
+import { countUnreadUserNotifications, raiseOpenUserNotifications } from "../src/notices/user-notifications.js";
 import { registerManagedReminderRoutes } from "../src/routes/reminders.js";
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
-import { createUser, SYSTEM_USER_ID } from "../src/users/store.js";
+import { createUser, setupOperator, SYSTEM_USER_ID } from "../src/users/store.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 const NOW = Date.parse("2026-08-14T12:00:00.000Z");
@@ -92,7 +90,6 @@ describe("managed reminder service", () => {
       created_by_user_id: userId,
       fired_by_user_id: SYSTEM_USER_ID,
     });
-    expect(listManagedReminderOccurrences(db, { projectId })).toHaveLength(1);
     expect(db.prepare("SELECT COUNT(*) AS count FROM managed_task_revisions").get())
       .toEqual({ count: 1 });
     expect(db.prepare(
@@ -260,30 +257,21 @@ describe("managed reminder routes", () => {
       .toMatchObject({ status: 201, body: { stored: true, fired_immediately: false } });
   });
 
-  it("acknowledges an Inbox occurrence without deleting it", async () => {
-    setDb(db);
+  it("notifies the operator once when a reminder fires", () => {
+    const operator = setupOperator(db, { slug: "reminder-operator", display_name: "Reminder Operator" }, NOW);
     const created = createManagedReminder(
       db,
       request({ kind: "at", at: "2026-08-14T11:00:00Z" }),
       { userId, evidenceMethod: "api_token" },
       { now: NOW, projectId },
     );
-    const occurrenceId = created.reminder.occurrence!.id;
-    const router = new Router();
-    registerInboxRoutes(router, {} as never, undefined, undefined, inlineLedgerReader());
-    expect(countGlobalInboxBadge(db)).toBe(1);
+    reconcileManagedReminders(db, NOW + 1);
+    raiseOpenUserNotifications(db);
 
-    const ack = await router.invoke({
-      method: "POST",
-      url: `/api/inbox/managed_reminder_occurrence/${occurrenceId}/ack`,
-      body: {},
-    });
-
-    expect(ack.status).toBe(200);
-    expect(countGlobalInboxBadge(db)).toBe(0);
-    expect(listManagedReminderOccurrences(db)).toEqual([
-      expect.objectContaining({ id: occurrenceId, acknowledged_by: "manual" }),
-    ]);
+    expect(db.prepare("SELECT subject_kind, subject_id, recipient_id, raised_at, text FROM notifications").all()).toEqual([{
+      subject_kind: "reminder", subject_id: created.reminder.id, recipient_id: operator.id, raised_at: NOW, text: "Review the threshold",
+    }]);
+    expect(countUnreadUserNotifications(db)).toBe(1);
   });
 });
 

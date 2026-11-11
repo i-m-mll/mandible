@@ -111,13 +111,7 @@ export function mapRow(row: Record<string, unknown>): AuthRequest {
     exit_code: row.exit_code == null ? null : Number(row.exit_code),
     output: String(row.output ?? ""),
     error: row.error == null ? null : String(row.error),
-    acknowledged_by: row.acknowledged_by == null ? null : String(row.acknowledged_by),
-    // Bug: 4e32923 — owner session + repo root + channel-delivery watermark.
-    target_session_id: row.target_session_id == null ? null : String(row.target_session_id),
     target_repo_root: row.target_repo_root == null ? null : String(row.target_repo_root),
-    delivered_at: row.delivered_at == null ? null : Number(row.delivered_at),
-    // Bug: 6d7411b — conversation_id for cross-resume matching
-    conversation_id: row.conversation_id == null ? null : String(row.conversation_id),
     approval_source: row.approval_source == null ? "manual" : String(row.approval_source),
     approval_lease_id: row.approval_lease_id == null ? null : String(row.approval_lease_id),
     clearance_use_id: row.clearance_use_id == null ? null : String(row.clearance_use_id),

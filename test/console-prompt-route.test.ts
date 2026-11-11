@@ -10,8 +10,8 @@ function routes(kind:'operator'|'agent'='operator') {
  const operator=setupOperator(db,{display_name:'Operator'});
  const agent=createUser(db,{slug:'terminal-agent',kind:'agent',display_name:'Agent'});
  const router=authenticatedTestRouter(kind==='operator'?operator:agent);
- const terminal={meta:{id:'terminal',backend_type:'pty',channel_enabled:false,is_operator:true,status:'running'}};
- const history={meta:{id:'history',backend_type:'sdk',channel_enabled:true,is_operator:false,status:'stopped',provider_session_id:'native'}};
+ const terminal={meta:{id:'terminal',backend_type:'pty',is_operator:true,status:'running'}};
+ const history={meta:{id:'history',backend_type:'sdk',is_operator:false,status:'stopped',provider_session_id:'native'}};
  const manager={get:vi.fn((id:string)=>id==='terminal'?terminal:id==='history'?history:undefined),isCredentialBearing:(id:string)=>id==='terminal',write:vi.fn(),start:vi.fn(),stop:vi.fn(),delete:vi.fn(),create:vi.fn(()=>({id:'new-terminal'}))};
  registerConsoleRoutes(router,manager as never);
  return {router,manager};

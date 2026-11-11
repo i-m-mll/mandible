@@ -168,6 +168,8 @@ export interface CustodyTransferInput {
   authority_path: CustodyAuthorityPath;
   reason: string;
   comment_attribution: LedgerAttributionInput | null;
+  /** Raises the settlement notice of the request the unit is bound to, which follows its responsibility. */
+  raise_notice: ((requestId: string) => void) | null;
 }
 export function transferWorkUnitCustody(db: Db, input: CustodyTransferInput): WorkUnit {
   const { unit } = input;
@@ -182,6 +184,11 @@ export function transferWorkUnitCustody(db: Db, input: CustodyTransferInput): Wo
       prior: unit.owner_user_id ? { user_id: unit.owner_user_id, session_id: unit.responsibility_session_id } : null,
       next: input.new_user_id ? { user_id: input.new_user_id, session_id: input.new_session_id } : null,
       generation, reason: input.reason });
+    if (input.raise_notice) {
+      for (const { id } of db.prepare("SELECT id FROM auth_requests WHERE custody_work_unit_id = ?").all(unit.id) as Array<{ id: string }>) {
+        input.raise_notice(id);
+      }
+    }
     if (unit.ledger_issue_id) new LedgerStore(db).addComment(unit.ledger_issue_id, {
       body: `Work-unit responsibility ${input.new_user_id ? "transferred to session " + (input.new_session_id?.slice(0, 8) ?? "(local user)") : "relinquished"}. Reason: ${input.reason}\n\nGeneration ${input.expected_generation} → ${generation}. Existing execution and human approval requirements remain in force.`,
       source: "mandible", author_display: "Mandible responsibility", attribution: input.comment_attribution,

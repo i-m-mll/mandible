@@ -1,5 +1,4 @@
 import { exactAgentRef, parseExactAgentRef } from "./ambient-provider-identity.js";
-import { mutateWorkUnit } from "./work-unit-history.js";
 import { DOMAIN_EVENTS } from "./contracts.js";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
@@ -171,7 +170,6 @@ export interface NavMetadataUpdate {
 export interface SessionUpdate {
   task?: string | null;
   status?: SessionStatus;
-  continuation?: string | null;
   pinned?: number | null;
 }
 
@@ -251,8 +249,6 @@ interface SessionRow {
   parent_id: string | null;
   agent_type: string | null;
   pinned: number | null;
-  continuation: string | null;
-  continuation_acked_by: string | null;
   description: string | null;
   conversation_id: string | null;
   created_at: string;
@@ -260,9 +256,6 @@ interface SessionRow {
   ended_at: string | null;
   // Bug: e01653d — real user activity time from JSONL transcript mtime
   last_active: string | null;
-  // Bug: 0b454df — channel-connected session tracking
-  channel_connected_at: number | null;
-  channel_last_tool_call: number | null;
   owner_user_id: string | null;
   // Issue 499c148 — client-token vs session-binding user disagreement.
   identity_mismatch_at: number | null;
@@ -304,11 +297,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   description TEXT,
   conversation_id TEXT,
   pinned INTEGER DEFAULT 0,
-  continuation TEXT,
-  continuation_acked_by TEXT,
   last_active TEXT,
-  channel_connected_at INTEGER,
-  channel_last_tool_call INTEGER,
   owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   identity_mismatch_at INTEGER,
   identity_mismatch_json TEXT,
@@ -323,8 +312,6 @@ CREATE INDEX IF NOT EXISTS sessions_app_idx ON sessions(app);
 CREATE INDEX IF NOT EXISTS sessions_nav_metadata_idx
   ON sessions(nav_metadata_status, nav_metadata_next_retry_at);
 CREATE INDEX IF NOT EXISTS sessions_branch_idx ON sessions(branch) WHERE branch IS NOT NULL;
-CREATE INDEX IF NOT EXISTS sessions_channel_idx
-  ON sessions(channel_connected_at) WHERE channel_connected_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_conversation_id
   ON sessions(conversation_id) WHERE conversation_id IS NOT NULL;
 `;
@@ -407,16 +394,6 @@ export function processLiveness(
 export function checkLiveness(session: Session, readStart: PidStartReader = cachedPidStartTime): "alive" | "dead" {
   if (session.status !== "active") {
     return "dead";
-  }
-
-  // Bug: 0b454df — channel-connected sessions: liveness is based on tool call
-  // freshness rather than PID, since the MCP channel server runs in a separate
-  // process that Mandible doesn't own. If channel_connected_at is set but there
-  // is no PID, use channel_last_tool_call for staleness.
-  if (session.channel_connected_at && !session.pid) {
-    const lastToolCall = session.channel_last_tool_call ?? session.channel_connected_at;
-    const CHANNEL_STALE_MS = 5 * 60 * 1000; // 5 minutes
-    return (Date.now() - lastToolCall) < CHANNEL_STALE_MS ? "alive" : "dead";
   }
 
   if (!session.pid) {
@@ -543,8 +520,6 @@ function toSession(row: SessionRow, attributionResolver: AttributionReadResolver
     parent_id: row.parent_id ?? null,
     agent_type: row.agent_type ?? null,
     pinned: row.pinned ?? 0,
-    continuation: row.continuation ?? null,
-    continuation_acked_by: row.continuation_acked_by ?? null,
     description: row.description ?? null,
     conversation_id: row.conversation_id ?? null,
     created_at: row.created_at,
@@ -552,9 +527,6 @@ function toSession(row: SessionRow, attributionResolver: AttributionReadResolver
     ended_at: row.ended_at ?? null,
     // Bug: e01653d — real user activity time from JSONL transcript mtime
     last_active: row.last_active ?? null,
-    // Bug: 0b454df — channel-connected session tracking
-    channel_connected_at: row.channel_connected_at ?? null,
-    channel_last_tool_call: row.channel_last_tool_call ?? null,
     owner_user_id: row.owner_user_id ?? null,
     owner: attributionResolver.user(row.owner_user_id),
     // Issue 499c148 — null unless a registration saw the client token and the
@@ -867,20 +839,17 @@ export class SessionRegistry {
       .prepare(
         `UPDATE sessions SET
           task = COALESCE(?, task),
-          continuation = COALESCE(?, continuation),
           pinned = COALESCE(?, pinned),
           status = ?,
           updated_at = ?,
           ended_at = ?
         WHERE id = ?`,
       )
-      .run(update.task ?? null, update.continuation ?? null, pinned, status, now, endedAt, id);
+      .run(update.task ?? null, pinned, status, now, endedAt, id);
 
     const updated = this.getSession(id);
     if (updated) {
       if (status === "ended" || status === "dead") {
-        // Bug: cbbb3d9 — transfer continuation to work unit on session end
-        this.transferContinuationToWorkUnit(updated);
         broadcast(DOMAIN_EVENTS.SESSION_ENDED, updated);
         this.announce(updated);
       } else {
@@ -1234,51 +1203,6 @@ export class SessionRegistry {
     }
   }
 
-  /**
-   * Transfer a session's continuation to linked work units when the session ends.
-   * Bug: cbbb3d9 — session-to-work-unit continuation transfer
-   */
-  private transferContinuationToWorkUnit(session: Session): void {
-    if (!session.continuation) {
-      return;
-    }
-    try {
-      // Find issues linked to this session under its row id or provider id
-      const links = this.db
-        .prepare(
-          "SELECT DISTINCT issue_id FROM ledger_session_issue_links WHERE session_id IN (?, ?)"
-        )
-        .all(session.id, session.conversation_id ?? session.id) as Array<{ issue_id: string }>;
-
-      if (links.length === 0) {
-        return;
-      }
-
-      const now = Date.now();
-      for (const link of links) {
-        // Find open/committed work unit for this issue
-        const wu = this.db
-          .prepare(
-            `SELECT id FROM work_units
-             WHERE ledger_issue_id = ? AND state IN ('open', 'committed')
-             ORDER BY created_at DESC LIMIT 1`
-          )
-          .get(link.issue_id) as { id: string } | undefined;
-
-        if (wu) {
-          mutateWorkUnit(this.db, wu.id, () => this.db
-            .prepare(
-              `UPDATE work_units SET continuation = ?, continuation_by = ?, continuation_at = ?
-               WHERE id = ? AND (continuation_at IS NULL OR continuation_at < ?)`
-            )
-            .run(session.continuation, session.id, now, wu.id, now));
-        }
-      }
-    } catch {
-      // Non-critical — best effort transfer
-    }
-  }
-
   private ensureLiveness(session: Session, readStart: PidStartReader = cachedPidStartTime): Session {
     if (session.status !== "active") {
       return session;
@@ -1292,8 +1216,6 @@ export class SessionRegistry {
       .prepare("UPDATE sessions SET status = ?, ended_at = ?, updated_at = ? WHERE id = ?")
       .run("dead", now, now, session.id);
     const updated = { ...session, status: "dead" as SessionStatus, ended_at: now, updated_at: now };
-    // Bug: cbbb3d9 — transfer continuation to work unit on session death
-    this.transferContinuationToWorkUnit(updated);
     broadcast(DOMAIN_EVENTS.SESSION_ENDED, updated);
     this.announce(updated);
     return updated;

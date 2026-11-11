@@ -72,7 +72,7 @@ function parseMarkdown(source: string): string {
 }
 
 // renderMarkdown / renderInlineMarkdown run marked.parse + DOMPurify on every
-// call. In the issues list, auth cards, and inbox these are invoked per row on
+// call. In the issues list and auth cards these are invoked per row on
 // every render, and every SSE event re-renders the mounted tabs, so the same
 // title/body strings are re-parsed and re-sanitized constantly. A bounded
 // insertion-order LRU keyed on the source string collapses those repeats to a

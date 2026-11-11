@@ -34,7 +34,7 @@ it('reloads through the installed service owner and refuses a changed owner befo
   fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify(manifest));
   vi.stubEnv('MANDIBLE_HOME', home);
   vi.stubEnv('MANDIBLE_RELEASE_ROOT', '');
-  const { reloadLocalFrontDoor } = await import('../scripts/iab-preview.mjs');
+  const { reloadLocalFrontDoor } = await import('../scripts/preview-teardown.mjs');
   expect(reloadLocalFrontDoor()).toBe('reloaded');
   expect(fs.readFileSync(receipt, 'utf8')).toBe('gateway reloaded by installed controller');
   expect(JSON.parse(fs.readFileSync(ownerFile, 'utf8'))).toEqual(owner);

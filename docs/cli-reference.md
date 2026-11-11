@@ -52,6 +52,7 @@ mandible auth request <branch> --title <text> [--issue <id>]... [--closes-issue 
 mandible auth request --type <type> --command <command> --cwd <path> --repo <ref> --title <text> --issue <id>
   [--type merge|commit|force-push|branch-delete|config-change|data-delete]
   [--promote-briefing GROUP EXPECTED-BASE PROPOSAL]
+  [--teardown-preview BRANCH]...
   [--diff-summary T] [--handoff T] [--repo R]
   [--cwd P] [--target B] [--depends-on ID] [--dirty-policy block|allow-untracked|stash|branch-off]
   [--supersedes ID] [--drop-superseded-action ORDINAL:REASON]...
@@ -119,8 +120,7 @@ mandible instructions post-export get
 mandible instructions post-export set <command>
 mandible instructions post-export clear
 
-## INBOX / TASK / MISC
-mandible inbox [check|add "text"|ack <type> <id>|watch <request-id>]
+## TASK / MISC
 mandible task "<description>" | --clear
 mandible help | -h | --help
 mandible auth help | -h | --help | ""   → shows auth subcommand list (does NOT error)
@@ -199,7 +199,6 @@ daemon or file-RPC spool is unavailable can pass `--graceful` or set
 - `mandible logs -h|--help|help` → prints logs usage, exits 0
 - `mandible conversations -h|--help|help` → prints conversations usage, exits 0
 - `mandible artifact -h|--help|help` → prints artifact usage, exits 0
-- `mandible inbox --help|-h` → prints inbox usage, exits 0
 
 ## `issue report` exit codes
 

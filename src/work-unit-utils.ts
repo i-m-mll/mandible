@@ -2,10 +2,9 @@ import { normalizeAmbientProviderIdentity, parseExactAgentRef } from "./ambient-
 import { parseAssignmentTarget } from "./work-unit-assignment.js";
 // Bug: f3dbb3e — shared work-unit liveness computation.
 // Canonical mapWorkUnitRow, computeWorkUnitLiveness, and enrichWithLiveness used by
-// both routes/work-units.ts and routes/inbox.ts (and routes/issues.ts).
+// both routes/work-units.ts and routes/issues.ts.
 
 import { getDb, type Db } from "./db.js";
-import { getChannelRegistry } from "./channel-registry.js";
 import type { SessionManager } from "./session-manager.js";
 import {
   resolveSessionAlias,
@@ -39,9 +38,6 @@ export function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
     provider_session_id: normalizeWorkUnitSessionId(row.provider_session_id),
     worker_provider: typeof row.worker_provider === "string" ? row.worker_provider : null,
     worker_provider_session_id: normalizeWorkUnitSessionId(row.worker_provider_session_id),
-    continuation: typeof row.continuation === "string" ? row.continuation : null,
-    continuation_by: typeof row.continuation_by === "string" ? row.continuation_by : null,
-    continuation_at: typeof row.continuation_at === "number" ? row.continuation_at : null,
     created_at: Number(row.created_at ?? 0),
     activated_at: typeof row.activated_at === "number" ? row.activated_at : null,
     last_commit_at: typeof row.last_commit_at === "number" ? row.last_commit_at : null,
@@ -197,38 +193,7 @@ function livenessFromSources(
   const sessionRow = sources.branchSession(workUnit.branch);
 
   if (!sessionRow) {
-    // Bug: 0b454df — check channel-connected sessions as a liveness source.
-    // Channel sessions may be on this branch without being found by the
-    // session query above (e.g., if the session was registered with a slightly
-    // different branch format). Check the channel registry directly.
-    const channelRegistry = getChannelRegistry();
-    const channelOnBranch = channelRegistry.getByBranch(workUnit.branch);
-    if (channelOnBranch.length > 0) {
-      const cs = channelOnBranch[0];
-      return {
-        state: "live",
-        agent_session_id: cs.session_id,
-        agent_status: "active",
-        is_processing: false,
-        last_activity: cs.last_tool_call,
-      };
-    }
     return noLiveness;
-  }
-
-  // Bug: 0b454df — if the session is channel-connected, check freshness
-  // via the channel registry rather than relying solely on PID/console state.
-  const channelRegistry = getChannelRegistry();
-  if (channelRegistry.isChannelConnected(sessionRow.id)) {
-    const isAlive = channelRegistry.isAlive(sessionRow.id);
-    const cs = channelRegistry.get(sessionRow.id);
-    return {
-      state: isAlive ? "live" : "stopped",
-      agent_session_id: sessionRow.id,
-      agent_status: isAlive ? "active" : "stale",
-      is_processing: false,
-      last_activity: cs?.last_tool_call ?? null,
-    };
   }
 
   // Check SDK processing state via console_sessions

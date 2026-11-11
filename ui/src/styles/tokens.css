@@ -188,12 +188,6 @@
   --diff-modified-bg: var(--status-warning-bg);
 
   /* Tier 3: component tokens */
-  --inbox-continuation: #60a5fa;
-  --inbox-continuation-bg: #60a5fa22;
-  --inbox-handoff: #f59e0b;
-  --inbox-handoff-bg: #f59e0b22;
-  --inbox-issue: #a78bfa;
-  --inbox-issue-bg: #a78bfa22;
 
   --auth-result-completed: #34d399;
   --auth-result-completed-bg: #34d39922;
@@ -362,12 +356,6 @@
   --chrome-icon-hover-indirect: #868788;
   --chrome-icon-hover-direct: #1A1C1F;
 
-  --inbox-continuation: #0b63ce;
-  --inbox-continuation-bg: var(--status-info-bg);
-  --inbox-handoff: #9a5b00;
-  --inbox-handoff-bg: var(--status-warning-bg);
-  --inbox-issue: #6d28d9;
-  --inbox-issue-bg: rgba(109, 40, 217, 0.11);
   --auth-result-completed: #047857;
   --auth-result-completed-bg: var(--status-success-bg);
   --auth-result-problem: #b42318;

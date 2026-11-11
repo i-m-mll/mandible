@@ -214,6 +214,11 @@ export function canonicalAuthMergeCommands(
   return commands;
 }
 
+/** Whether the request keeps its head branch after the merge (`--preserve-head-branch`). */
+export function preservesHeadBranch(request: { command: string }): boolean {
+  return request.command.endsWith(" --preserve-head-branch");
+}
+
 // Issue 08a5f04 (review advisory) — bytes allowed in a home path that may be
 // embedded verbatim in a canonical command executed via `bash -c`. No
 // whitespace and no shell metacharacters: alnum, `/`, `.`, `_`, `-` only.
@@ -233,11 +238,10 @@ function safeCanonicalHomeDir(): string | null {
 }
 
 /**
- * Issue 08a5f04 (channel-server compatibility) — normalize the legacy
+ * Issue 08a5f04 — normalize the legacy
  * single-source merge command shape at submission time.
  *
- * Older submitters (the MCP channel server's `mandible_submit_auth`, raw API
- * clients) stored `mandible auth merge <branch>` with no `--into <base>`;
+ * Older submitters (raw API clients) stored `mandible auth merge <branch>` with no `--into <base>`;
  * canonical enforcement at approval refuses that shape. When the submitted
  * command matches EXACTLY the legacy single-source shape, its one argument
  * byte-equals the server-resolved head branch, and both resolved branches are

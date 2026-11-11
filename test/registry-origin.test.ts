@@ -6,7 +6,7 @@ import { createUser, updateUser, addCredential, revokeCredential, addBinding, re
 import { addGroup, addGroupMember, addGrant, removeGroup, } from "../src/permissions/store.js";
 import { withRequestOrigin } from "../src/request-origin.js";
 import { withLedgerMutationActor } from "../src/ledger/mutation-history.js";
-import { createManagedReminder, reconcileManagedReminders, cancelManagedReminder, acknowledgeManagedReminderOccurrence } from "../src/managed-reminders.js";
+import { createManagedReminder, reconcileManagedReminders, cancelManagedReminder } from "../src/managed-reminders.js";
 import { parseManagedReminderCreateRequest } from "../src/managed-reminder-parser.js";
 import { MANAGED_REMINDER_SCHEMA } from "../src/contracts.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
@@ -100,9 +100,6 @@ it("restores reminder initiating origin at durable firing while preserving the s
   const completed = db.prepare("SELECT * FROM managed_task_events WHERE event_type = 'completed'").get();
   expect(completed).toMatchObject({ actor_user_id: SYSTEM_USER_ID, evidence_method: "system_internal" });
   expect(JSON.parse(completed.payload_json).request_origin).toEqual(origin);
-  const occurrence = db.prepare("SELECT id FROM managed_task_occurrences WHERE task_id = ?").get(result.reminder.id);
-  withRequestOrigin(later, () => acknowledgeManagedReminderOccurrence(db, occurrence.id, actor.id));
-  expect(JSON.parse(events().at(-1).payload_json).request_origin).toEqual(later);
   const cancel = withRequestOrigin(origin, () => createManagedReminder(db, request("cancel"), { userId: actor.id, evidenceMethod: "api_token" }, { now }));
   withRequestOrigin(later, () => cancelManagedReminder(db, cancel.reminder.id, { userId: actor.id, evidenceMethod: "api_token" }, now));
   expect(JSON.parse(db.prepare("SELECT payload_json FROM managed_task_events WHERE event_type = 'cancelled'").get().payload_json).request_origin).toEqual(later);

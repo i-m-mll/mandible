@@ -84,6 +84,7 @@ export const METADATA_BACKUP_TABLES = [
   // parents restore first.
   "auth_hook_executions",
   "auth_hook_alerts",
+  "notifications",
   "message_params",
   "providers",
   "artifact_blob",
@@ -233,7 +234,7 @@ export const METADATA_BACKUP_TABLES = [
   // managed reminders whose predicates may depend on them.
   "auth_request_merge_succeeded_facts",
   // Managed reminders (issue e257e5c, migration 130). Stable tasks own one
-  // immutable revision; idempotency receipts, bounded inbox occurrences, and
+  // immutable revision; idempotency receipts, bounded occurrences, and
   // audit events are all durable and non-reproducible. Keep parents first.
   "managed_tasks",
   "managed_task_revisions",

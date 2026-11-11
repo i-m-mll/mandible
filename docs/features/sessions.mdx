@@ -5,7 +5,7 @@ description: Live overview of all agent sessions across your machine.
 
 # Session Monitor
 
-The Session Monitor (previously called "Sessions") is the landing page of the Mandible dashboard. It shows every agent session Mandible knows about — Claude Code, Codex, Gemini, SDK-spawned agents, channel-connected sessions, and sessions known only from their indexed conversation — in a single table.
+The Session Monitor (previously called "Sessions") is the landing page of the Mandible dashboard. It shows every agent session Mandible knows about — Claude Code, Codex, Gemini, SDK-spawned agents, and sessions known only from their indexed conversation — in a single table.
 
 ## What you see
 
@@ -13,7 +13,7 @@ Each row represents one session. Columns:
 
 | Column | Meaning |
 |--------|---------|
-| **Status** | Colored dot: green (active), yellow (idle), red (ended/dead), grey (reaped). A pin icon appears if the session is pinned; a link badge appears for channel-connected sessions. |
+| **Status** | Colored dot: green (active), yellow (idle), red (ended/dead), grey (reaped). A pin icon appears if the session is pinned. |
 | **App** | Two-letter badge identifying the agent type (e.g. `CL` for Claude, `CX` for Codex). |
 | **Project** | Repository name pills extracted from the session's working directory. Branch name shown below when available. |
 | **Children** | Count of subagent sessions spawned by this parent. |
@@ -38,10 +38,6 @@ Pin a session from the context menu to float it to the top of the active list. P
 
 Mandible's reaper module (configurable in [Settings](/docs/features/settings)) automatically terminates idle agent processes after a configurable threshold. The Monitor highlights sessions approaching the threshold with a yellow warning. Reaped sessions show a `reaped` badge in the Inactive column.
 
-## Channel-connected sessions
-
-Sessions connected via the MCP channel server (`claude --channels server:mandible`) show a purple link badge next to their status dot. These sessions self-register with Mandible and get tool-usage-based liveness tracking, but Mandible does not control their lifecycle.
-
 ## Deep linking
 
-Other parts of the dashboard (Issues, Inbox, Graph) can link to a specific session. When you follow such a link, the Monitor scrolls to and briefly highlights the target row.
+Other parts of the dashboard (Issues, Notifications, Graph) can link to a specific session. When you follow such a link, the Monitor scrolls to and briefly highlights the target row.

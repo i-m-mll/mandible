@@ -24,6 +24,7 @@ import {
 import { getDaemonLogger } from "../daemon-log.js";
 import type { Db } from "../db.js";
 import { resolveId } from "../entity-refs.js";
+import { createOutcomeReporter } from "../notices/report.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthLifecycleActor, AuthRequest, AuthRequestInput, AuthRequestType } from "../types.js";
@@ -59,6 +60,7 @@ export function registerAuthRoutes(
   reader: LedgerReader,
 ): AuthQueue {
   const db = authQueue.db;
+  const outcomeReport = createOutcomeReporter(db);
   const fallbackRuntimeEpoch = randomUUID();
   const clearanceManager = clearance ?? authQueue.clearanceAuthority ?? new AuthClearanceManager(
     db, new DelegatedSigningResource(autoApproveManager, {
@@ -145,8 +147,7 @@ export function registerAuthRoutes(
         return;
       }
       try {
-        // Issue 08a5f04 — legacy submitters (MCP channel server, raw API
-        // clients) omit base_branch entirely; `mandible auth merge <branch>`
+        // Issue 08a5f04 — legacy submitters (raw API clients) omit base_branch entirely; `mandible auth merge <branch>`
         // has always meant "into the detected protected branch". Resolve that
         // default here so execution-context resolution (which validates the
         // base as protected, existing, and behind the head) can run. All
@@ -345,6 +346,7 @@ export function registerAuthRoutes(
       lifecycle_events: authQueue.listLifecycleEvents(request.id),
       responsibility: authQueue.requestResponsibility(request),
       execution_attempts: listAuthExecutionAttempts(db, request.id),
+      outcome_report: outcomeReport(request.id),
     });
   }, { operation: { id: "get:/api/auth/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
@@ -1044,12 +1046,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     issues: parseStringArray(body.issues),
     depends_on_ids: body.depends_on_ids as string[] | undefined,
     execution_mode: executionMode,
-    // Bug: 4e32923 — accept scoping fields from the CLI; null/missing means
-    // legacy behaviour (broadcast on resolution, no tier-1 ownership).
-    target_session_id: typeof body.target_session_id === "string" ? body.target_session_id : null,
     target_repo_root: typeof body.target_repo_root === "string" ? body.target_repo_root : null,
-    // Bug: 6d7411b — conversation_id for cross-resume matching
-    conversation_id: typeof body.conversation_id === "string" ? body.conversation_id : null,
     actions: body.actions === undefined ? undefined : body.actions as AuthRequestInput["actions"],
     supersedes_request_id: typeof body.supersedes_request_id === "string" ? body.supersedes_request_id : null,
     superseded_action_dispositions: Array.isArray(body.superseded_action_dispositions)

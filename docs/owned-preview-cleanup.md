@@ -110,6 +110,14 @@ runtime retirement and worktree custody. Borrowed worktrees remain with their
 owner. Newly acquired worktrees remain retained while the delivery work unit
 is unresolved; subsequent worktree disposition uses `wt`.
 
+A merge request can declare the teardown of the preview on a branch it lands
+(`mandible auth request ... --teardown-preview <branch>`). Once the merge is
+live, the daemon runs the same teardown for the run that branch's root records,
+selected under its lifecycle lock, as `accepted`, converged and `discard`. It
+leaves the worktree, and the receipt's worktree disposition names the merge
+finalizer, which removes the landed branch and its worktree after the teardown.
+The manual `teardown` command keeps its worktree behaviour.
+
 ```sh
 bun run iab-preview -- cleanup --apply --json
 ```

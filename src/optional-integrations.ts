@@ -11,7 +11,7 @@ const { ownershipConflict } = createRequire(import.meta.url)("../cli/integration
   ownershipConflict(target: string): string | null;
 };
 export const INTEGRATION_ACTION = z.object({
-  id: z.enum(["cli", "claude-hooks", "claude-mcp", "claude-skill", "codex-skill"]),
+  id: z.enum(["cli", "claude-hooks", "claude-skill", "codex-skill"]),
   action: z.enum(["install", "remove"]),
 });
 type IntegrationId = z.infer<typeof INTEGRATION_ACTION>["id"];
@@ -35,7 +35,6 @@ function destinations(): Record<IntegrationId, string> {
   return {
     cli: path.join(home, ".local/bin/mandible"),
     "claude-hooks": path.join(claude, "settings.json"),
-    "claude-mcp": process.env.CLAUDE_CONFIG_DIR ? path.join(claude, ".claude.json") : path.join(home, ".claude.json"),
     "claude-skill": path.join(claude, "skills/mandible/SKILL.md"),
     "codex-skill": path.join(home, ".agents/skills/mandible/SKILL.md"),
   };
@@ -48,19 +47,12 @@ function jsonFile(file: string): Record<string, unknown> {
   return parsed;
 }
 
-function mcpEntry() { return { type: "stdio", ...publicCommand("channel") }; }
-function sameMcp(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return record.command === publicCommand().command && JSON.stringify(record.args) === JSON.stringify(["channel"]);
-}
-
 export function readOptionalIntegrations(preview = false): OptionalIntegrations {
   const command = publicCommand().command;
   const skill = fs.readFileSync(productResource("cli/skills/mandible/SKILL.md"), "utf8");
   const labels: Record<IntegrationId, string> = {
     cli: "Command line shortcut", "claude-hooks": "Claude hooks and status line",
-    "claude-mcp": "Claude MCP channel", "claude-skill": "Claude Mandible skill", "codex-skill": "Codex Mandible skill",
+    "claude-skill": "Claude Mandible skill", "codex-skill": "Codex Mandible skill",
   };
   const items = Object.entries(destinations()).map(([key, destination]): OptionalIntegration => {
     const id = key as IntegrationId;
@@ -80,16 +72,10 @@ export function readOptionalIntegrations(preview = false): OptionalIntegrations 
         if (stat) return { ...item, status: stat.isSymbolicLink() && fs.readlinkSync(destination) === command ? "installed" : "conflict", detail: "Existing command shortcut" };
       } else if (id.endsWith("skill")) {
         if (fs.existsSync(destination)) return { ...item, status: fs.readFileSync(destination, "utf8") === skill ? "installed" : "conflict", detail: "Existing skill content is preserved" };
-      } else if (id === "claude-hooks") {
+      } else {
         jsonFile(destination);
         const status = getUserClaudeIntegrationStatus({ settingsPath: destination });
         return { ...item, status: status.status === "absent" ? "absent" : status.status === "installed" ? "installed" : "outdated", detail: status.details.join(", ") };
-      } else {
-        const config = jsonFile(destination);
-        const servers = config.mcpServers;
-        if (servers !== undefined && (!servers || typeof servers !== "object" || Array.isArray(servers))) throw new Error("Invalid mcpServers configuration");
-        const entry = (servers as Record<string, unknown> | undefined)?.mandible;
-        if (entry !== undefined) return { ...item, status: sameMcp(entry) ? "installed" : "conflict", detail: "Existing Mandible MCP registration" };
       }
       return item;
     } catch (error) { return { ...item, status: "conflict", detail: String(error) }; }
@@ -109,13 +95,6 @@ export function applyOptionalIntegration(input: z.infer<typeof INTEGRATION_ACTIO
       const options = { settingsPath: item.destination };
       if (input.action === "install") installUserClaudeIntegration(options);
       else uninstallUserClaudeIntegration(options);
-    } else if (input.id === "claude-mcp") {
-      const config = jsonFile(item.destination);
-      const servers = { ...(config.mcpServers as Record<string, unknown> | undefined) };
-      if (input.action === "install") servers.mandible = mcpEntry();
-      else delete servers.mandible;
-      fs.mkdirSync(path.dirname(item.destination), { recursive: true });
-      fs.writeFileSync(item.destination, `${JSON.stringify({ ...config, mcpServers: servers }, null, 2)}\n`, { mode: 0o600 });
     } else if (input.action === "remove") fs.unlinkSync(item.destination);
     else {
       fs.mkdirSync(path.dirname(item.destination), { recursive: true });

@@ -229,11 +229,6 @@ function listenForInstancePreflight(options: {
         res.end(JSON.stringify({ display_id: "reminder-1" }));
         return;
       }
-      if (req.method === "POST" && req.url === "/api/inbox/auth_result/item-1/ack") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
-        return;
-      }
       if (req.method === "POST" && req.url === "/api/projects") {
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ project: { project_key: "demo" } }));
@@ -433,7 +428,6 @@ describe("CLI instance mutation preflight", () => {
       ["settings", (port) => bash(capture("PUT", "/api/settings/app_theme"), port), "PUT /api/settings/app_theme"],
       ["auth check", (port) => bash(capture("POST", "/api/auth/check", '{"repo":"mandible"}'), port), "POST /api/auth/check"],
       ["project", (port) => mandible(["project", "add", "--key", "demo"], port), "POST /api/projects"],
-      ["inbox ack", (port) => mandible(["inbox", "ack", "auth_result", "item-1"], port), "POST /api/inbox/auth_result/item-1/ack"],
     ];
     await Promise.all(sends.map(async ([label, send, sent]) => {
       const target = await listenForInstancePreflight();

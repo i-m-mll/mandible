@@ -210,14 +210,9 @@ export interface Session {
   created_at: string;
   updated_at: string;
   pinned: number;
-  continuation: string | null;
-  continuation_acked_by: string | null;
   ended_at: string | null;
   // Bug: e01653d — real user activity time from JSONL transcript mtime
   last_active: string | null;
-  // Bug: 0b454df — channel-connected session tracking
-  channel_connected_at: number | null;
-  channel_last_tool_call: number | null;
   owner_user_id: string | null;
   owner?: ReadUserIdentity | null;
   // Issue 499c148 — set when this session's client token and its session
@@ -310,16 +305,8 @@ export interface AuthRequest {
   exit_code: number | null;
   output: string;
   error: string | null;
-  acknowledged_by: string | null;
-  // Bug: 4e32923 — owner session + repo for scoped channel delivery and
-  // tiered inbox escalation. delivered_at is set by the MCP channel server
-  // when it forwards the auth:resolved event to the owner; once set, the
-  // item is removed from the owner's tier-1 inbox.
-  target_session_id: string | null;
+  /** The protected checkout the merge runs in. */
   target_repo_root: string | null;
-  delivered_at: number | null;
-  // Bug: 6d7411b — conversation_id persists across Claude Code resumes
-  conversation_id: string | null;
   approval_source: "manual" | "auto_lease" | string;
   approval_lease_id: string | null;
   clearance_use_id?: string | null;
@@ -421,12 +408,7 @@ export interface AuthRequestInput {
   issues?: string[] | null;
   depends_on_ids?: string[];
   execution_mode?: AuthExecutionMode;
-  // Bug: 4e32923 — scoping fields supplied by the submitting CLI; if null,
-  // delivery falls back to legacy broadcast behaviour (pre-migration rows).
-  target_session_id?: string | null;
   target_repo_root?: string | null;
-  // Bug: 6d7411b — conversation_id persists across Claude Code resumes
-  conversation_id?: string | null;
   actions?: AuthRequestActionInput[];
   /** Verified request-boundary provenance; route-owned, never caller-authored. */
   requester_evidence_method?: string | null;
@@ -870,8 +852,6 @@ export interface ConsoleSession {
    * non-Claude sessions.
    */
   anthropic_billing?: AnthropicBillingPosture | null;
-  /** Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity. */
-  channel_enabled: boolean;
   owner_user_id: string | null;
   owner?: ReadUserIdentity | null;
   /**
@@ -907,14 +887,12 @@ export interface ConsoleSessionInput {
   mandible_session_id?: string | null;
   provider_session_id?: string | null;
   resume_at_message?: string | null;
-  /** Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity. */
-  channel_enabled?: boolean;
 }
 
-export type ConsoleTransportLane = 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
+export type ConsoleTransportLane = 'sdk' | 'pty' | 'acp' | 'spawn';
 
 export interface ConsoleTransportBadge {
-  label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
+  label: 'SDK' | 'PTY' | 'ACP' | 'Spawn';
   title: string;
 }
 

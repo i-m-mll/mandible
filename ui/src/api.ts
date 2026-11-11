@@ -18,7 +18,7 @@ import type { Query } from '@tanstack/preact-query';
 import type { FullTextSearchPending, FullTextSearchResponse } from '../../src/conversations/full-text-search-contract';
 import { FullTextSearchError, isFullTextSearchTerminal, readFullTextSearch, type SearchReadOptions, type SearchSnapshot } from './query/fullTextSearch';
 import type { ChatAttachment } from '../../src/conversation-control/attachments';
-import type { InboxData } from './views/inbox';
+import type { NotificationListItem, NotificationListResponse, ReadAllResult } from '../../src/notices/notification-log';
 import type { GraphEdge, GraphNode, GraphMode, GraphPayload } from './types/graph';
 import type { ProjectTimelineInput, ProjectTimelinePage, ProjectTimelineProjection } from './types/timeline';
 import { mergeTimelinePages, sameTimelineRows } from '../../src/timeline-pages';
@@ -797,8 +797,8 @@ export function invalidateDashboardApiCacheForEvent(type: string, data?: unknown
     if (type === 'briefing:round-published') invalidateArtifactReads();
     return;
   }
-  if (type === DOMAIN_EVENTS.INBOX_ACKNOWLEDGED) {
-    invalidateApiGetCache('/api/inbox');
+  if (type === DOMAIN_EVENTS.NOTIFICATION_CHANGED) {
+    invalidateApiGetCache('/api/notifications');
   } else if (type.startsWith('conversation:')) {
     invalidateApiGetCache('/api/conversations');
     invalidateCrossEntityProjections(type, data);
@@ -809,18 +809,15 @@ export function invalidateDashboardApiCacheForEvent(type: string, data?: unknown
     invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('auth:')) {
     invalidateApiGetCache('/api/auth/');
-    invalidateApiGetCache('/api/inbox');
     if (type !== 'auth:output') invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('work:') || type.startsWith('push:')) {
     invalidateApiGetCache('/api/work/');
-    invalidateApiGetCache('/api/inbox');
     invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('ledger:') || type === INTERFACE_NOTE_CHANGED_EVENT) {
     // Covers ledger:issue:*, ledger:comment:*, ledger:label:*, other ledger:*
     // events and interface-note writes; all can change an issue list row or detail projection.
     invalidateApiGetCache('/api/issues');
     invalidateApiGetCache('/api/ledger');
-    invalidateApiGetCache('/api/inbox');
     invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('space:')) {
     invalidateApiGetCache('/api/spaces');
@@ -831,7 +828,6 @@ export function invalidateDashboardApiCacheForEvent(type: string, data?: unknown
     invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('managed-reminders.')) {
     invalidateApiGetCache('/api/tasks');
-    invalidateApiGetCache('/api/inbox');
     invalidateCrossEntityProjections(type, data);
   } else if (type.startsWith('tasks.')) {
     invalidateApiGetCache('/api/tasks');
@@ -999,11 +995,6 @@ export async function killSession(sessionId: string): Promise<void> {
 export async function patchSession(sessionId: string, body: Record<string, unknown>): Promise<unknown> {
   const response = await apiPatch(`/api/sessions/${encodeURIComponent(sessionId)}`, body);
   return parseMaybeJson(response);
-}
-
-export async function getAuthQueue<T>(): Promise<T[]> {
-  const payload = await cachedApiGetJson<ApiList<T>>('/api/auth/queue', WARMED_ROUTE_GET_OPTIONS);
-  return normalizeList(payload);
 }
 
 export async function refreshAuthQueue<T>(signal?: AbortSignal): Promise<T[]> {
@@ -1423,23 +1414,27 @@ export async function getPushStatus(): Promise<unknown> {
   return parseMaybeJson(response);
 }
 
-// ── Inbox API ──
+// ── Notifications API ──
 
-export async function getInboxGlobal(): Promise<InboxData> {
-  return cachedApiGetJson<InboxData>('/api/inbox/global', WARMED_ROUTE_GET_OPTIONS);
+export type { NotificationListItem, NotificationListResponse, ReadAllResult };
+
+export async function getNotifications(
+  options: { before?: number; signal?: AbortSignal } = {},
+): Promise<NotificationListResponse> {
+  const path = options.before === undefined ? '/api/notifications' : `/api/notifications?before=${options.before}`;
+  return cachedApiGetJson<NotificationListResponse>(path, { ...WARMED_ROUTE_GET_OPTIONS, signal: options.signal });
 }
 
-export async function acknowledgeInboxItem(
-  type: 'continuation' | 'auth_result' | 'managed_reminder_occurrence',
-  id: string,
-): Promise<void> {
-  await apiPost(`/api/inbox/${type}/${encodeURIComponent(id)}/ack`, {});
-  invalidateApiGetCache('/api/inbox');
+export async function markNotificationRead(id: string): Promise<NotificationListItem> {
+  const response = await apiPost(`/api/notifications/${encodeURIComponent(id)}/read`, {});
+  invalidateApiGetCache('/api/notifications');
+  return await response.json() as NotificationListItem;
 }
 
-export async function ackAllInbox(): Promise<void> {
-  await apiPost('/api/inbox/ack-all');
-  invalidateApiGetCache('/api/inbox');
+export async function markAllNotificationsRead(): Promise<ReadAllResult> {
+  const response = await apiPost('/api/notifications/read', {});
+  invalidateApiGetCache('/api/notifications');
+  return await response.json() as ReadAllResult;
 }
 
 export async function getSessionIssues(sessionId: string): Promise<unknown[]> {
@@ -1460,7 +1455,6 @@ export type IssueContextLiveness = {
 export type IssueContextWorkUnit = {
   branch: string | null;
   state: string;
-  continuation: string | null;
   assigned_session_id: string | null;
   liveness: IssueContextLiveness;
 };
@@ -1666,7 +1660,6 @@ export async function getIssueSessions(repoId: string, issueId: string): Promise
 // Bug: cbbb3d9 — spawn SDK console session from issue hub
 export type SpawnIssueAgentResult = {
   conversation_id: string;
-  continuation: string | null;
   branch: string | null;
   cwd: string | null;
 };
@@ -2032,7 +2025,7 @@ export async function startConsoleSession(sessionId: string): Promise<void> {
 }
 
 export type ConsoleBackendType = 'pty' | 'sdk' | 'spawn' | 'acp';
-export type ConsoleTransportLane = 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
+export type ConsoleTransportLane = 'sdk' | 'pty' | 'acp' | 'spawn';
 export type ConsolePermissionDecision =
   | 'deny'
   | 'allow'

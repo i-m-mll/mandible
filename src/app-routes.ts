@@ -9,7 +9,7 @@ export type EntityKind = (typeof ENTITY_KINDS)[number];
 
 export const VIEW_TABS = [
   "issues", "auth", "artifacts", "briefing",
-  "spaces", "console", "work", "settings", "inbox", "logs", "graph", "timeline", "overview", "tasks",
+  "spaces", "console", "work", "settings", "notifications", "logs", "graph", "timeline", "overview", "tasks",
 ] as const;
 export type ViewTab = (typeof VIEW_TABS)[number];
 

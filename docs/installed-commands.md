@@ -14,8 +14,8 @@ The public command retains the existing CLI grammar, argument boundaries, stdin/
 | --- | --- |
 | `mandible identity exec -- <command> [args...]` | Scope inherited identity and export `MANDIBLE_EXECUTION_CONTEXT` plus exact `MANDIBLE_AGENT_REF`, then exec outside the installed runtime with the same PID, streams and exit status |
 | `mandible settings read` | Settings JSON from `/api/settings` through the CLI local transport and identity |
-| `mandible hook pre-tool-use` | Claude PreToolUse JSON on stdin; return per-call Bash or Mandible MCP `updatedInput`, preserving permission decisions |
-| `mandible hook session-start` | Project the native Claude ID into `CLAUDE_ENV_FILE`, attach the process and navigation metadata, and summarize escalated inbox items |
+| `mandible hook pre-tool-use` | Claude PreToolUse JSON on stdin; return a per-call Bash `updatedInput`, preserving permission decisions |
+| `mandible hook session-start` | Project the native Claude ID into `CLAUDE_ENV_FILE`, and attach the process and navigation metadata |
 | `mandible hook session-end` | End this native Claude session without ending an inherited parent |
 | `mandible hook subagent-start` | Register the child and open an optional configured transcript pane |
 | `mandible hook subagent-stop` | End the child and write an existing transcript directory’s completion sentinel |
@@ -24,14 +24,11 @@ The public command retains the existing CLI grammar, argument boundaries, stdin/
 | `mandible hook statusline` | Claude statusline JSON on stdin; chained statusline output on stdout |
 | `mandible hook session-execution claude` | Queue a native Claude execution observation from stdin |
 | `mandible hook session-execution codex` | Queue a native Codex execution observation from stdin |
-| `mandible channel` | MCP JSON-RPC over stdin/stdout; diagnostics on stderr |
+| `mandible hook notices claude` | Claude UserPromptSubmit JSON on stdin; print the settlement notices owed to this session on stdout and confirm their delivery |
+| `mandible hook notices codex` | Codex UserPromptSubmit JSON on stdin; print the settlement notices owed to this session on stdout and confirm their delivery |
 | `mandible git-guard <phase>` | Git reference-transaction phase argument and transaction stdin; nonzero refuses the update |
 
-Generated Claude settings invoke this command with session attribution and any chained statusline in environment assignments. Provider settings unrelated to Mandible remain user-owned. The SDK's channel invocation uses the same public command. CLI identity scoping remains in the existing CLI implementation; channel and hook inputs retain their respective provider identity contracts.
-
-Installed channels run from `~/.mandible/channel/` with their own copied Bun runtime, outside the replaceable app bundle. Opening the app, starting its backend, installing an accepted update, and invoking `mandible channel` verify and repair this installation. An unchanged bridge survives app updates and daemon restarts. A genuine bridge or runtime update disconnects only the MCP transport; the Claude chat remains open. Reconnect Mandible with `/mcp`. Review any interrupted tool call before retrying: mutations are never replayed automatically. Existing bundled channel children are retired during migration; unrelated consumers still prevent the guarded cleanup from deleting an old app bundle.
-
-The installed-command proof exercises channel repair and bundle replacement in the ordinary desktop context because macOS does not permit the installation lease's setuid `ps` inspection under `sandbox-exec`. A complementary proof runs the selected copied Bun and bridge inside the developer-denial sandbox and completes MCP initialization and a tool call. Other public-command proofs retain the sandbox. These checks do not replace exact signed candidate acceptance.
+Generated Claude settings invoke this command with session attribution and any chained statusline in environment assignments. Provider settings unrelated to Mandible remain user-owned. CLI identity scoping remains in the existing CLI implementation; hook inputs retain their provider identity contracts.
 
 Lifecycle exports use the existing Mandible-owned hooks and share their payload identity rules. They complement execution observations, which do not replace process attachment, native ID projection or navigation. Optional Zellij panes invoke the user's `agent-viewer` and `zj-query` tools by name, or explicit `MANDIBLE_AGENT_VIEWER` and `MANDIBLE_ZELLIJ_QUERY` paths. These external terminal adapters are not resolved through a Mandible checkout or personal dotfiles root.
 
@@ -63,7 +60,7 @@ After staging an app payload, run:
 scripts/bun-runtime.sh --exec --no-install scripts/prove-installed-commands.mjs /absolute/Mandible.app/Contents/Resources
 ```
 
-The macOS sandbox proof denies the checkout, dotfiles, developer runtime store, ambient developer tools and external runtime downloads. It exercises CLI grammar, prebuilt SQLite access, native-log inspection and parsed blocks, instruction rendering, generated hook attribution and chained output, execution outbox, MCP initialization, guarded Git updates and offline projected-client grammar. It is command evidence; exact signed candidate acceptance remains the production gate.
+The macOS sandbox proof denies the checkout, dotfiles, developer runtime store, ambient developer tools and external runtime downloads. It exercises CLI grammar, prebuilt SQLite access, native-log inspection and parsed blocks, instruction rendering, generated hook attribution and chained output, execution outbox, guarded Git updates and offline projected-client grammar. It is command evidence; exact signed candidate acceptance remains the production gate.
 
 The focused lifecycle/public-export proof uses the same staged resource root:
 

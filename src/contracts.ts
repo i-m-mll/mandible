@@ -54,8 +54,6 @@ export const DOMAIN_EVENTS = Object.freeze({
   AUTH_OUTPUT: "auth:output",
   AUTH_RESOLVED: "auth:resolved",
   AUTH_UPDATED: "auth:updated",
-  CHANNEL_SESSION_CONNECTED: "channel:session:connected",
-  CHANNEL_SESSION_DISCONNECTED: "channel:session:disconnected",
   CONSOLE_ATTENTION: "console:attention",
   CONSOLE_STATUS: "console:status",
   CONSOLE_PERMISSION_CLEARED: "console:permission:cleared",
@@ -79,10 +77,10 @@ export const DOMAIN_EVENTS = Object.freeze({
   DAEMON_RELOADED: "daemon:reloaded",
   DASHBOARD_BADGES: "dashboard:badges",
   HEARTBEAT: "heartbeat",
-  INBOX_ACKNOWLEDGED: "inbox:acknowledged",
   INTERFACE_NOTE_CHANGED: INTERFACE_NOTE_CHANGED_EVENT,
   MANDIBLE_REBUILDING: "mandible:rebuilding",
   MANDIBLE_REBUILD_FAILED: "mandible:rebuild-failed",
+  NOTIFICATION_CHANGED: "notification:changed",
   PUSH_AUTH_COMPLETE: "push:auth:complete",
   PUSH_AUTH_PENDING: "push:auth:pending",
   PUSH_COMPLETE: "push:complete",
@@ -130,7 +128,8 @@ export const WORK_SCAN_SKIP_WINDOW_MS = 30_000;
 const BADGE_COUNT = z.number().int().nonnegative();
 export const DASHBOARD_BADGE_COUNTS = z.object({
   auth: BADGE_COUNT,
-  inbox: BADGE_COUNT,
+  /** Unread notifications for the user; session notices never count. */
+  notifications: BADGE_COUNT,
   work: BADGE_COUNT,
   /** Latest Briefing rounds with no frozen submission from any member. */
   briefing: BADGE_COUNT,
@@ -141,11 +140,9 @@ export const DASHBOARD_BADGE_COUNTS = z.object({
 }).strict();
 export type DashboardBadgeCounts = z.infer<typeof DASHBOARD_BADGE_COUNTS>;
 
-export const INBOX_ACKNOWLEDGED_PAYLOAD = z.object({
-  kind: z.enum(["continuation", "auth_result", "hook_alert", "managed_reminder_occurrence", "delivered", "all"]),
-  id: z.string().min(1).nullable(),
-}).strict();
-export type InboxAcknowledged = z.infer<typeof INBOX_ACKNOWLEDGED_PAYLOAD>;
+/** A notification-log row was raised, delivered or read. */
+export const NOTIFICATION_CHANGED_PAYLOAD = z.object({ id: z.string().min(1) }).strict();
+export type NotificationChanged = z.infer<typeof NOTIFICATION_CHANGED_PAYLOAD>;
 
 export type EventPayload<E extends MandibleEventType> =
   E extends typeof DOMAIN_EVENTS.AUTH_RESOLVED ? AuthResolvedPayload
@@ -156,7 +153,7 @@ export type EventPayload<E extends MandibleEventType> =
     ? { parent_id: string; child: import("./types.js").Session }
   : E extends typeof DOMAIN_EVENTS.WORK_SCAN_COMPLETED ? WorkScanSummary
   : E extends typeof DOMAIN_EVENTS.DASHBOARD_BADGES ? DashboardBadgeCounts
-  : E extends typeof DOMAIN_EVENTS.INBOX_ACKNOWLEDGED ? InboxAcknowledged
+  : E extends typeof DOMAIN_EVENTS.NOTIFICATION_CHANGED ? NotificationChanged
   : E extends typeof DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED ? InterfaceNoteChangedPayload
   : E extends typeof DOMAIN_EVENTS.WORK_REPO_SCANNED ? WorkRepoScan
   : E extends `briefing:group-${string}` ? { group_id: string; [key: string]: unknown }
@@ -239,7 +236,6 @@ export type AuthRequestOutcome =
   | "expired"
   | null;
 
-/** Fields consumed by the channel; other resolution evidence remains on the event. */
 export const AUTH_RESOLVED_PAYLOAD = z.object({
   request_id: z.string().min(1),
   status: z.enum(AUTH_REQUEST_STATUSES),
@@ -251,8 +247,6 @@ export const AUTH_RESOLVED_PAYLOAD = z.object({
   resolved_at: z.number().nullable(),
   title: z.string().nullable(),
   head_branch: z.string().nullable(),
-  target_session_id: z.string().min(1).nullable(),
-  conversation_id: z.string().min(1).nullable(),
 }).passthrough().superRefine((payload, ctx) => {
   const outcome = computeAuthRequestOutcome(payload.status);
   if (outcome === null) {
@@ -266,13 +260,6 @@ export const AUTH_RESOLVED_PAYLOAD = z.object({
   }
 });
 export type AuthResolvedPayload = z.infer<typeof AUTH_RESOLVED_PAYLOAD>;
-
-export const CHANNEL_EVENT_SCHEMA = z.object({
-  type: z.literal(DOMAIN_EVENTS.AUTH_RESOLVED),
-  data: AUTH_RESOLVED_PAYLOAD,
-  timestamp: z.string().optional(),
-});
-export type ChannelEvent = z.infer<typeof CHANNEL_EVENT_SCHEMA>;
 
 export type AuthDependencyReadiness =
   | "ready"
@@ -512,6 +499,7 @@ export const AUTH_REQUEST_ACTION_KINDS = [
   "checkpoint_add",
   "link_add",
   "briefing_group_promote",
+  "preview_teardown",
 ] as const;
 export type AuthRequestActionKind = (typeof AUTH_REQUEST_ACTION_KINDS)[number];
 export type AuthRequestActionState = "staged" | "applied" | "failed" | "skipped_stale" | "vetoed";
@@ -584,11 +572,7 @@ export type AuthRequest = {
   exit_code: number | null;
   output: string;
   error: string | null;
-  acknowledged_by: string | null;
-  target_session_id: string | null;
   target_repo_root: string | null;
-  delivered_at: number | null;
-  conversation_id: string | null;
   approval_source: "manual" | "auto_lease" | string;
   approval_lease_id: string | null;
 };
@@ -628,9 +612,6 @@ export type WorkUnit = {
   provider_session_id: string | null;
   worker_provider: string | null;
   worker_provider_session_id: string | null;
-  continuation: string | null;
-  continuation_by: string | null;
-  continuation_at: number | null;
   created_at: number;
   activated_at: number | null;
   last_commit_at: number | null;
@@ -2569,7 +2550,7 @@ const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
   [DOMAIN_EVENTS.CONVERSATION_UPDATED, scopedChange("id")],
   [DOMAIN_EVENTS.WORK_SCAN_COMPLETED, WORK_SCAN_PAYLOAD],
   [DOMAIN_EVENTS.DASHBOARD_BADGES, DASHBOARD_BADGE_COUNTS],
-  [DOMAIN_EVENTS.INBOX_ACKNOWLEDGED, INBOX_ACKNOWLEDGED_PAYLOAD],
+  [DOMAIN_EVENTS.NOTIFICATION_CHANGED, NOTIFICATION_CHANGED_PAYLOAD],
   [DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED, z.object({ ids: z.array(z.string().min(1)), issue_id: z.string().min(1).nullable() }).strict()],
   [DOMAIN_EVENTS.WORK_REPO_SCANNED, WORK_REPO_SCAN_PAYLOAD],
   ...[DOMAIN_EVENTS.SESSION_REGISTERED, DOMAIN_EVENTS.SESSION_UPDATED, DOMAIN_EVENTS.SESSION_ENDED,
@@ -2603,5 +2584,3 @@ export function parseDomainEvent(value: unknown): { ok: true; value: MandibleEve
   }
   return { ok: true, value: envelope.data as MandibleEvent };
 }
-
-export const DOMAIN_EVENT_SCHEMA = z.custom<MandibleEvent>(value => parseDomainEvent(value).ok);

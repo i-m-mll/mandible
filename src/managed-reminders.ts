@@ -1,5 +1,4 @@
-import { requestOriginFromMetadata, withRequestOriginMetadata, withRequestOrigin } from "./request-origin.js";
-import { mutateLedgerRecord } from "./ledger/mutation-history.js";
+import { currentRequestOrigin, requestOriginFromMetadata, withRequestOriginMetadata, withRequestOrigin, type RequestOrigin } from "./request-origin.js";
 import { createHash } from "node:crypto";
 import type {
   ManagedReminder,
@@ -26,6 +25,8 @@ import { LedgerStore } from "./ledger/store.js";
 import { SYSTEM_USER_ID } from "./users/store.js";
 import { ulid } from "./users/ids.js";
 import { resolveId } from "./entity-refs.js";
+import { raiseReminderNotice } from "./notices/reminder-notices.js";
+import { raiseUserNotification } from "./notices/user-notifications.js";
 
 export class ManagedReminderError extends Error {
   constructor(message: string, public readonly status = 400, public readonly code = "reminder_error") {
@@ -154,63 +155,6 @@ function occurrenceFromRow(row: OccurrenceRow | undefined): ManagedReminderOccur
   };
 }
 
-/** Read seam for the Inbox projection lane; occurrence rows are the delivery. */
-export function listManagedReminderOccurrences(
-  db: Db,
-  filter: { projectId?: string; acknowledged?: boolean } = {},
-): ManagedReminderOccurrence[] {
-  const clauses: string[] = [];
-  const params: unknown[] = [];
-  if (filter.projectId) {
-    clauses.push("task.project_id = ?");
-    params.push(filter.projectId);
-  }
-  if (filter.acknowledged === true) clauses.push("occurrence.acknowledged_at IS NOT NULL");
-  if (filter.acknowledged === false) clauses.push("occurrence.acknowledged_at IS NULL");
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  const rows = db.prepare(
-    `SELECT occurrence.*
-       FROM managed_task_occurrences occurrence
-       JOIN managed_tasks task ON task.id = occurrence.task_id
-      ${where}
-      ORDER BY occurrence.created_at DESC, occurrence.id DESC`,
-  ).all(...params) as OccurrenceRow[];
-  return rows.map((row) => occurrenceFromRow(row) as ManagedReminderOccurrence);
-}
-
-/** Inbox acknowledgement mutates only delivery state; the occurrence remains durable. */
-export function acknowledgeManagedReminderOccurrence(
-  db: Db,
-  ref: string,
-  acknowledgedBy: string,
-  now: number = Date.now(),
-): ManagedReminderOccurrence {
-  const resolved = resolveId(db, "reminder_occurrence", ref);
-  if (!resolved.ok) {
-    throw resolved.error === "ambiguous"
-      ? new ManagedReminderError(`reminder occurrence reference is ambiguous: ${ref}`, 409, "ambiguous")
-      : new ManagedReminderError(`reminder occurrence not found: ${ref}`, 404, "not_found");
-  }
-  const id = resolved.id;
-  const task = db.prepare("SELECT task.project_id FROM managed_task_occurrences occurrence JOIN managed_tasks task ON task.id = occurrence.task_id WHERE occurrence.id = ?").get(id) as { project_id: string };
-  return mutateLedgerRecord(db, {
-    entity_type: "reminder_occurrence", entity_id: id, project_id: task.project_id,
-    snapshot: () => db.prepare("SELECT task_id, revision_id, acknowledged_by, acknowledged_at FROM managed_task_occurrences WHERE id = ?").get(id) ?? null,
-  }, () => {
-    const result = db.prepare(
-      `UPDATE managed_task_occurrences
-          SET acknowledged_by = ?, acknowledged_at = ?
-        WHERE id = ? AND acknowledged_at IS NULL`,
-    ).run(acknowledgedBy, now, id);
-    if (result.changes !== 1) {
-      throw new ManagedReminderError(`reminder occurrence already acknowledged: ${ref}`, 404, "not_found");
-    }
-    return occurrenceFromRow(
-      db.prepare("SELECT * FROM managed_task_occurrences WHERE id = ?").get(id) as OccurrenceRow,
-    ) as ManagedReminderOccurrence;
-  });
-}
-
 function reminderFromRow(db: Db, row: ReminderJoinedRow): ManagedReminder {
   const occurrence = db.prepare(
     `SELECT * FROM managed_task_occurrences
@@ -317,7 +261,7 @@ function appendAuditEvent(
 
 function capabilityFor(
   db: Db,
-  reminder: { taskId: string; revisionId: string; projectId: string; createdByUserId: string },
+  reminder: { taskId: string; revisionId: string; projectId: string; createdByUserId: string; origin: RequestOrigin | null },
 ): ReminderDatabaseCapability {
   return {
     evaluatePredicate(payload, now): ReminderEvaluationEvidence | null {
@@ -370,7 +314,7 @@ function capabilityFor(
           }
         : null;
     },
-    appendInboxOccurrence(evaluation, now): boolean {
+    appendOccurrence(evaluation, now): boolean {
       const state = db.prepare("SELECT lifecycle FROM managed_tasks WHERE id = ?")
         .get(reminder.taskId) as { lifecycle: ManagedReminderLifecycle } | undefined;
       if (state?.lifecycle !== "armed") return false;
@@ -395,6 +339,8 @@ function capabilityFor(
         now,
       );
       if (inserted.changes === 0) return false;
+      raiseUserNotification(db, { kind: "reminder", id: reminder.taskId }, payload.message, now);
+      raiseReminderNotice(db, { taskId: reminder.taskId, message: payload.message }, reminder.origin, now);
       const updated = db.prepare(
         `UPDATE managed_tasks
             SET lifecycle = 'completed', completed_at = ?, updated_at = ?
@@ -491,6 +437,7 @@ export function createManagedReminder(
         revisionId,
         projectId: project.id,
         createdByUserId: actor.userId,
+        origin: currentRequestOrigin(),
       }),
       payload,
       now,
@@ -584,6 +531,7 @@ export function reconcileManagedReminders(db: Db, now: number = Date.now()): {
           revisionId: task.active_revision_id,
           projectId: task.project_id,
           createdByUserId: task.created_by_user_id,
+          origin,
         }),
         parseStoredReminderPayload(revision.payload_json),
         now,

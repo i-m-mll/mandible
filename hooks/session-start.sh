@@ -143,33 +143,4 @@ payload=$(jq -n \
 
 api_send POST /api/sessions/register "$payload" >/dev/null || exit 1
 
-# Check inbox for pending items.
-# Bug: 4e32923 — surface a single-line summary of *escalated* (tier 2/3) and
-# legacy (tier 0) auth results plus continuations and work units. Owner
-# (tier-1) auth results are delivered live via the MCP channel server and
-# must not be re-surfaced at session start; otherwise every session would
-# re-see results that are already in the agent's context. Nothing prints if
-# there is nothing to show.
-inbox_json=$(api_get "/api/inbox/global?session_id=$(urlencode "$session_id")") || exit 1
-if [[ -n "$inbox_json" ]]; then
-  summary=$(printf '%s' "$inbox_json" | jq -r '
-    # Tier 1 is delivered via the channel server; surface only escalated /
-    # legacy auth results (tier in {0, 2, 3}) plus continuations and work units.
-    ( [ .auth_results[]? | select((.tier // 0) != 1) ] ) as $auth
-    | ( .continuations // [] ) as $cont
-    | ( .work_units // [] ) as $wu
-    | ( ($auth | length) + ($cont | length) + ($wu | length) ) as $n
-    | if $n == 0 then empty
-      else
-        "Mandible inbox: \($n) item(s)"
-        + (if ($auth | length) > 0 then " — \($auth | length) auth result(s)" else "" end)
-        + (if ($cont | length) > 0 then " — \($cont | length) continuation(s)" else "" end)
-        + (if ($wu | length) > 0 then " — \($wu | length) work unit(s)" else "" end)
-      end
-  ' 2>/dev/null || true)
-  if [[ -n "$summary" ]]; then
-    printf '%s\n' "$summary"
-  fi
-fi
-
 exit 0

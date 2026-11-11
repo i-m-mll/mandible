@@ -178,34 +178,6 @@ describe('owner-only local API socket', () => {
     expect((await request('GET', '/api/read', headers)).body.request_origin)
       .toBeNull();
   });
-  it('keeps a wrapper-launched Claude session and its claim intact when the channel server re-registers it', async () => {
-    // Issue f52d4dd: the channel server relabeled the session `claude-channel`
-    // and nulled the wrapper's pid and terminal, so every later `claude` claim
-    // from the session was refused.
-    const agent = createUser(db, { slug: 'claude-code', kind: 'agent', display_name: 'Claude Code' });
-    addBinding(db, agent.id, { binding_type: 'app_name', value: 'claude' });
-    registerSessionRoutes(router, new SessionRegistry(db, () => undefined));
-    const id = 'wrapped-claude-1';
-    const headers = { 'X-Mandible-Managed-Client': '1', 'X-Mandible-Managed-App': 'claude', 'X-Mandible-Managed-Session-Id': id };
-    expect((await request('POST', '/api/sessions/register', headers, true,
-      { id, app: 'claude', pid: process.pid, terminal: 'iterm' })).status).toBe(200);
-
-    for (const [key, value] of Object.entries({ MANDIBLE_SOCKET: socketPath, MANDIBLE_BASE: '', MANDIBLE_MANAGED_CLIENT: '1',
-      MANDIBLE_MANAGED_APP: 'claude', MANDIBLE_SESSION_ID: id, CLAUDE_CODE_SESSION_ID: '', CLAUDE_SESSION_ID: '' })) {
-      vi.stubEnv(key, value);
-    }
-    try {
-      const channel = await import('./helpers/channel-client.js');
-      await channel.registerSession({ id, status: 'active', cwd: root, branch: null });
-    } finally {
-      vi.unstubAllEnvs();
-    }
-
-    expect(db.prepare('SELECT app, pid, terminal FROM sessions WHERE id = ?').get(id))
-      .toEqual({ app: 'claude', pid: process.pid, terminal: 'iterm' });
-    expect(await request('GET', '/api/read', headers)).toMatchObject({ status: 200,
-      body: { identity: { user_id: agent.id, method: 'local_socket' } } });
-  });
   it('authenticates a Claude lifecycle hook as the Claude agent and forwards its pid', async () => {
     const agent = createUser(db, { slug: 'claude-hooks', kind: 'agent', display_name: 'Claude Hooks' });
     addBinding(db, agent.id, { binding_type: 'provider_session_env', value: 'CLAUDE_CODE_SESSION_ID' });
@@ -214,7 +186,6 @@ describe('owner-only local API socket', () => {
       operation: { id, effects, reportingCategory: null, requestSchema: null } });
     router.post('/api/sessions/register', (req, res) => { seen.push({ identity: req.client_identity, body: req.body as Record<string, unknown> }); res.json({}); },
       operation('hook.register', ['process:external']));
-    router.get('/api/inbox/global', (_req, res) => res.json({}), operation('hook.inbox', ['ledger:read']));
     const hook = spawn('bash', [path.resolve('hooks/session-start.sh')], { env: { ...process.env, MANDIBLE_SOCKET: socketPath,
       CLAUDE_CODE_SESSION_ID: 'claude-session-1', CLAUDE_PID: String(process.pid) } });
     let stderr = ''; hook.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -234,8 +205,6 @@ describe('owner-only local API socket', () => {
     addBinding(db, codexAgent.id, { binding_type: 'provider_session_env', value: 'CODEX_THREAD_ID' });
     const registry = new SessionRegistry(db, () => undefined);
     registerSessionRoutes(router, registry);
-    router.get('/api/inbox/global', (_req, res) => res.json({}),
-      { fileRpc: 'allow', operation: { id: 'hook.inbox', effects: ['ledger:read'], reportingCategory: null, requestSchema: null } });
     const wrapped = 'wrapped-coordinator';
     // Ownership follows the process tree: the hook's parent stands in for the
     // nested agent, and its grandparent for the wrapped one.

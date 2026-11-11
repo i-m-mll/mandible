@@ -78,7 +78,6 @@ Update session fields.
 
 | Field | Type | Description |
 |---|---|---|
-| `continuation` | string | Handoff notes for the next session |
 | `task` | string | Current task description |
 | `pinned` | number | Pin state (0 or 1) |
 | `starred` | number | Star state (0 or 1) |
@@ -180,42 +179,6 @@ Get IDs of all pinned sessions.
 
 ```json
 { "ids": ["abc-123", "def-456"] }
-```
-
-### GET /api/sessions/channel-connected
-
-List sessions connected via the MCP channel server.
-
-**Response:** `200 OK`
-
-```json
-{
-  "sessions": [{
-    "id": "...",
-    "app": "claude",
-    "status": "active",
-    "branch": "feature/foo",
-    "is_alive": true,
-    "tools_called": ["Read", "Edit"],
-    "last_tool_call_in_memory": 1711234567890
-  }]
-}
-```
-
-### POST /api/sessions/:id/channel-tool-call
-
-Record a tool call for a channel-connected session (used for liveness tracking).
-
-**Request body:**
-
-| Field | Type | Description |
-|---|---|---|
-| `tool_name` | string | Name of the tool called |
-
-**Response:** `200 OK`
-
-```json
-{ "ok": true }
 ```
 
 ### POST /api/sessions/:id/issues

@@ -15,7 +15,7 @@ function outdirArgument(argv) {
 const routeEntryPoints = {
   auth: 'ui/src/views/auth.tsx',
   artifacts: 'ui/src/views/artifacts.tsx',
-  inbox: 'ui/src/views/inbox.tsx',
+  notifications: 'ui/src/views/notifications.tsx',
   issues: 'ui/src/views/issues.tsx',
   console: 'ui/src/views/conversations.tsx',
   settings: 'ui/src/views/settings.tsx',
