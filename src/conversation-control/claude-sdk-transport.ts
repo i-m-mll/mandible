@@ -1,7 +1,8 @@
 import { claudePreToolUseProjection } from "../claude-execution-context.js";
 import { installedResourceRoot, leaveInstalledRuntime, readInstalledRelease, releaseFile } from "../../scripts/installed-release.mjs";
 import { publicCommand } from "../product-resources.js";
-import { loadedSettingsDeliverPreToolUseProjection } from "../claude-hook-settings.js";
+import { loadedSettingsDeliverNotices, loadedSettingsDeliverPreToolUseProjection } from "../claude-hook-settings.js";
+import type { NoticeLog } from "../notices/log.js";
 import { RUNTIME_SETTING_FIELDS } from "./types.js";
 import { managedQuestions, validQuestionAnswers } from "./questions.js";
 import { spawn } from "node:child_process";
@@ -15,6 +16,7 @@ import type { ControllerAcquisitionRequest } from "./adapter.js";
 import type { ConversationRuntimeOptions, ManagedPermissionRequest } from "./types.js";
 
 export type ClaudeSdk = Pick<typeof import("@anthropic-ai/claude-agent-sdk"), "startup">;
+export type TurnNotices = Pick<NoticeLog, "collect" | "delivered">;
 
 class InputQueue implements AsyncIterable<SDKUserMessage> {
   private readonly values: SDKUserMessage[] = [];
@@ -51,7 +53,7 @@ export class ClaudeSdkTransport {
   private processId: number | undefined;
   private drain: Promise<void> | null = null;
 
-  constructor(private readonly inputRequest: ControllerAcquisitionRequest, private readonly sdk: ClaudeSdk) {
+  constructor(private readonly inputRequest: ControllerAcquisitionRequest, private readonly sdk: ClaudeSdk, private readonly notices: TurnNotices | null = null) {
     for (const tool of inputRequest.runtime_options?.allowed_tools ?? []) this.allowedTools.add(tool);
   }
 
@@ -88,6 +90,14 @@ export class ClaudeSdkTransport {
       return {};
     };
     const settingSources = settings.setting_sources ?? ["user", "project", "local"];
+    const notices = this.notices && !loadedSettingsDeliverNotices(settingSources, request.cwd ?? process.cwd()) ? this.notices : null;
+    const noticesHook: HookCallback = async (event) => {
+      if (!notices || event.hook_event_name !== "UserPromptSubmit" || (event.agent_id && event.agent_id !== event.session_id)) return {};
+      const owed = notices.collect("claude", event.session_id);
+      if (owed.length === 0) return {};
+      notices.delivered(owed.map((notice) => notice.id));
+      return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: owed.map((notice) => notice.text).join("\n") } };
+    };
     const installed = installedResourceRoot();
     const release = installed ? readInstalledRelease(installed) : null;
     const options: Options = {
@@ -115,6 +125,7 @@ export class ClaudeSdkTransport {
         env: Object.fromEntries(Object.entries({ ...env, MANDIBLE_MANAGED_APP: "claude", MANDIBLE_SESSION_ID: providerId, MANDIBLE_SESSION_CWD: request.cwd ?? "", MANDIBLE_PROVIDER_SESSION_ID: providerId }).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
       } },
       hooks: { ...Object.fromEntries(["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"].map((name) => [name, [{ hooks: [executionHook] }]])),
+        ...(notices ? { UserPromptSubmit: [{ hooks: [executionHook, noticesHook] }] } : {}),
         // A second rewriter would race with a loaded settings handler; Claude Code keeps only one updatedInput.
         ...(loadedSettingsDeliverPreToolUseProjection(settingSources, request.cwd ?? process.cwd()) ? {} : {
           PreToolUse: [{ matcher: "Bash|mcp__mandible__.*", hooks: [async event => claudePreToolUseProjection(event as unknown as Record<string, unknown>)] }],

@@ -24,6 +24,8 @@ The public command retains the existing CLI grammar, argument boundaries, stdin/
 | `mandible hook statusline` | Claude statusline JSON on stdin; chained statusline output on stdout |
 | `mandible hook session-execution claude` | Queue a native Claude execution observation from stdin |
 | `mandible hook session-execution codex` | Queue a native Codex execution observation from stdin |
+| `mandible hook notices claude` | Claude UserPromptSubmit JSON on stdin; print the settlement notices owed to this session on stdout and confirm their delivery |
+| `mandible hook notices codex` | Codex UserPromptSubmit JSON on stdin; print the settlement notices owed to this session on stdout and confirm their delivery |
 | `mandible channel` | MCP JSON-RPC over stdin/stdout; diagnostics on stderr |
 | `mandible git-guard <phase>` | Git reference-transaction phase argument and transaction stdin; nonzero refuses the update |
 

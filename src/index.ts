@@ -45,6 +45,8 @@ import {
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerChannelRoutes } from "./routes/channel.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerNoticeRoutes } from "./routes/notices.js";
+import { createOutcomeReporter } from "./notices/report.js";
 import { registerWorkRoutes } from "./routes/work.js";
 import { registerIssueRoutes } from "./routes/issues.js";
 import { registerInterfaceNoteRoutes } from "./routes/interface-notes.js";
@@ -295,8 +297,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     // Issue 7d83fe5 — the main daemon owns candidate acceptance of runtime
     // self-update requests and runs it automatically.
     candidateAcceptanceExecutor: instance.role === "main" && operationalMutationsAllowed ? runCandidateAcceptance : null,
+    outcomeReporter: createOutcomeReporter(db),
   });
   registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager, ledgerReader);
+  registerNoticeRoutes(router, authQueue.notices!);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
     config_path: instance.role === "preview"
       ? path.join(instance.preview_root!, "work", "repos.json")
@@ -363,7 +367,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     },
     logger,
   });
-  registerDefaultConversationControllers(conversationControl);
+  registerDefaultConversationControllers(conversationControl, authQueue.notices!);
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
   issueDeps.conversationControl = conversationControl;
