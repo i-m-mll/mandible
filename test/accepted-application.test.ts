@@ -8,12 +8,7 @@ import { createHash } from 'node:crypto';
 vi.mock('../scripts/bundle-services.mjs', async original => ({
   ...await original<typeof import('../scripts/bundle-services.mjs')>(), adoptBundleRelease: vi.fn(),
 }));
-vi.mock('../scripts/channel-installation.mjs', async original => ({
-  ...await original<typeof import('../scripts/channel-installation.mjs')>(),
-  reconcileChannelInstallation: vi.fn(), retireLegacyChannels: vi.fn(),
-}));
 import { adoptBundleRelease } from '../scripts/bundle-services.mjs';
-import { reconcileChannelInstallation, retireLegacyChannels } from '../scripts/channel-installation.mjs';
 import { applicationIdentity } from '../scripts/accepted-release.mjs';
 import { installedFileIdentity, verifyApplicationRelease } from '../scripts/installed-release.mjs';
 import { applicationRootIdentity, prepareAcceptedApplication, preparedApplicationContext, installAcceptedApplication } from '../scripts/accepted-app-install.mjs';
@@ -92,12 +87,7 @@ it('carries prepared authority through exchange without rereading app bytes, exp
     });
     fs.writeFileSync(path.join(f.binding.nativeApp, 'old'), 'obsolete content is not an installation identity');
     installAcceptedApplication(f.binding, f.context, { prepared });
-    const installedResources = path.join(f.binding.nativeApp, 'Contents/Resources');
     expect(adoptBundleRelease).toHaveBeenCalledExactlyOnceWith(f.context, f.receipt.shipped, null, f.reference, { until: undefined });
-    expect(reconcileChannelInstallation).toHaveBeenCalledExactlyOnceWith({ home: f.context.home, resources: installedResources, release: f.receipt.shipped });
-    expect(retireLegacyChannels).toHaveBeenCalledExactlyOnceWith({ home: f.context.home, resources: installedResources });
-    expect(vi.mocked(adoptBundleRelease).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(reconcileChannelInstallation).mock.invocationCallOrder[0]);
-    expect(vi.mocked(reconcileChannelInstallation).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(retireLegacyChannels).mock.invocationCallOrder[0]);
     expect(preparedApplicationContext(prepared, f.binding)).toMatchObject({ installed: true, app: f.binding.nativeApp, digest: f.receipt.package.sha256 });
     expect(fs.existsSync(prepared.previous)).toBe(true);
     read.mockRestore();

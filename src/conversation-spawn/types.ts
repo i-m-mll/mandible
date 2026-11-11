@@ -29,8 +29,7 @@ export interface HistoricalConversationSpawnRequest {
   command: {
     name: "claude" | "codex" | "gemini";
     backend_type: "pty" | "sdk" | "spawn" | "acp";
-    transport_lane: "sdk" | "pty" | "channel" | "acp" | "spawn";
-    channel_enabled: boolean;
+    transport_lane: "sdk" | "pty" | "acp" | "spawn";
     run_options: Record<string, import("../session-run-options.js").SessionRunOptionValue>;
   };
 }

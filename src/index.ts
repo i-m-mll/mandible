@@ -43,7 +43,6 @@ import {
   writePidFile,
 } from "./lifecycle.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
-import { registerChannelRoutes } from "./routes/channel.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerWorkRoutes } from "./routes/work.js";
 import { registerIssueRoutes } from "./routes/issues.js";
@@ -107,10 +106,10 @@ import { ensureExactConversationFresh } from "./conversations/freshness.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { ChildRetentionScheduler } from "./conversations/retention.js";
 import { defaultCodexNativeArchiveAdapter } from "./conversation-control/codex-native-archive.js";
-import { getChannelRegistry } from "./channel-registry.js";
 import { installedResourceRoot, readInstalledRelease, verifyInstalledRelease } from "../scripts/installed-release.mjs";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import { startProtectedBranchGuardProjection } from "./protected-branch-guard.js";
+import { getMandibleHomePath } from "./platform-paths.js";
 import type { Logger, StartupCommitInfo } from "./types.js";
 import { DaemonMemoryDiagnostics, memoryWarningFractionFromEnv } from "./daemon-memory.js";
 import { EventLoopLagDiagnostics } from "./daemon-event-loop.js";
@@ -262,10 +261,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   });
   // Create router and register all partition routes
   const router = new Router({ logger, instance, clientAuth });
-  registerChannelRoutes(router);
   const sessionRegistry = new SessionRegistry(db, logger);
-  // Bug: 4e32923 — capture the auth queue so the inbox route can mark
-  // auth_requests as delivered when the channel server forwards the event.
   const autoApproveManager = new AuthAutoApproveManager({
     seedDefaultDurationSetting: operationalMutationsAllowed,
   });
@@ -632,18 +628,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     });
   }
 
-  // Bug: 73e0adf — clear stale channel_connected_at on daemon startup.
-  // Sessions that were channel-connected when the daemon last stopped are
-  // no longer live; clear their channel metadata so the dashboard doesn't
-  // show phantom channel badges.
-  if (operationalMutationsAllowed) {
+  if (instance.role === "main" && operationalMutationsAllowed) {
     try {
-      db.prepare(
-        `UPDATE sessions SET channel_connected_at = NULL, channel_last_tool_call = NULL
-         WHERE channel_connected_at IS NOT NULL AND status NOT IN ('active', 'idle')`
-      ).run();
+      fs.rmSync(getMandibleHomePath("channel"), { recursive: true, force: true });
     } catch (error) {
-      logger("warn", "channel_startup_cleanup_failed", { error: String(error) });
+      logger("warn", "channel_runtime_removal_failed", { error: String(error) });
     }
   }
 
@@ -687,24 +676,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Start periodic reaper (marks dead sessions whose PIDs vanished)
   if (operationalMutationsAllowed) {
     reaperTimer.start();
-  }
-
-  // Bug: 73e0adf — periodic channel registry pruning (every 5 minutes).
-  // Removes in-memory entries for channel sessions that haven't called
-  // any tool within the staleness window.
-  const CHANNEL_PRUNE_INTERVAL_MS = 5 * 60 * 1_000;
-  const channelPruneTimer = setInterval(() => {
-    try {
-      const pruned = getChannelRegistry().pruneStale();
-      if (pruned.length > 0) {
-        logger("info", "channel_prune", { pruned_count: pruned.length, session_ids: pruned });
-      }
-    } catch (error) {
-      logger("warn", "channel_prune_failed", { error: String(error) });
-    }
-  }, CHANNEL_PRUNE_INTERVAL_MS);
-  if (typeof channelPruneTimer === "object" && "unref" in channelPruneTimer) {
-    channelPruneTimer.unref();
   }
 
   // Bug: 8a281b3 — periodic work-unit reconciler (dead sessions, abandoned branches, auto-commit)
@@ -769,7 +740,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     executionOutbox.stop();
     await closeLocalSocket();
     await authorityDrain;
-    clearInterval(channelPruneTimer);
     // Bug: 737df04 — destroy all open connections (including SSE streams) before
     // calling server.close(). Without this, server.close() waits indefinitely for
     // long-lived SSE connections to drain, hits the 5s timeout, force-exits, and

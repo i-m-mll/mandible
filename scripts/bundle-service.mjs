@@ -8,7 +8,6 @@ import { admitBundleOwner, readBundleLaunch, bundleLaunchAllowed, bundleLoginSes
 import { installedRuntimeEnvironment, readInstalledRelease, releaseFile } from './installed-release.mjs';
 import { prepareGatewayAdmin } from './gateway-admin.mjs';
 import { PRODUCTION_ORIGIN } from './canonical-origin.mjs';
-import { ensureChannelInstallation, retireLegacyChannels } from './channel-installation.mjs';
 
 const root = process.env.MANDIBLE_RELEASE_ROOT;
 if (!root || !path.isAbsolute(root)) throw new Error('Foreground services require an explicit installed release root.');
@@ -39,8 +38,6 @@ if (bundleLaunchAllowed(preference, bundleLoginSession(), role)) {
     MANDIBLE_LAUNCH_MODE: preference.launchMode, MANDIBLE_BASE: PRODUCTION_ORIGIN,
     GIT_OPTIONAL_LOCKS: '0' });
   if (role === 'backend') {
-    await ensureChannelInstallation({ home: context.home, resources: root, release });
-    retireLegacyChannels({ home: context.home, resources: root });
     const { readMainInstance } = await import('./local-runtime.mjs');
     const main = readMainInstance(root);
     if (main.backend_generation !== release.provenance.commit) throw new Error('Registered backend generation differs from the owning release.');

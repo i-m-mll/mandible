@@ -24,7 +24,7 @@ Execution context contains `provider`, nullable `agent_id`, and nullable `sessio
 
 Exact scalar refs are `agent:claude:<encoded-session>:<encoded-agent>`, `agent:codex:<encoded-thread>` and `agent:gemini:<encoded-session>`. Components use canonical percent encoding and remain opaque. These refs identify claimed executors, never principals or credentials.
 
-Claude SessionStart retains session-level projection into `CLAUDE_ENV_FILE`. PreToolUse projects each Bash command's own structured context into its command environment and each Mandible MCP call's context into the reserved `__mandible_execution_context` argument. The adapter strips that argument before business dispatch and forwards it in `X-Mandible-Execution-Context`. Shared channel state and environment files never carry a child's identity. An absent hook `agent_id` confirms the main agent for that call. Without a per-call hook, Claude ambient session markers remain session-only evidence. Hooks return `updatedInput` without permission decisions and preserve other tool input fields.
+Claude SessionStart retains session-level projection into `CLAUDE_ENV_FILE`. PreToolUse projects each Bash command's own structured context into its command environment. Shared environment files never carry a child's identity. An absent hook `agent_id` confirms the main agent for that call. Without a per-call hook, Claude ambient session markers remain session-only evidence. Hooks return `updatedInput` without permission decisions and preserve other tool input fields.
 
 ## Authored Spaces and conversation metadata
 
@@ -64,4 +64,3 @@ Co-Authored-By: Codex (GPT) <codex@openai.com>
 
 Canonical execution-context envelope presence survives invalid values across HTTP, socket and file RPC. Managed callers retain that classification when identity is unknown; legacy session headers never replace an explicitly supplied canonical envelope. Native lifecycle hooks replace inherited context with their payload identity, and nested CLI invocations discard inherited exact context when the provider or enclosing session changes. Same-session child context remains available.
 
-Channel business tools derive their current actor from the request execution context independently of captured origin. Self-assignment, task updates, continuation authorship and auth submission session refs use that exact actor. Missing exact identity refuses self mutations. The channel wrapper session remains the connection and liveness target. A missing actor attachment refuses task updates without selecting the wrapper.

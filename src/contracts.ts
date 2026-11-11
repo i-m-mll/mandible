@@ -54,8 +54,6 @@ export const DOMAIN_EVENTS = Object.freeze({
   AUTH_OUTPUT: "auth:output",
   AUTH_RESOLVED: "auth:resolved",
   AUTH_UPDATED: "auth:updated",
-  CHANNEL_SESSION_CONNECTED: "channel:session:connected",
-  CHANNEL_SESSION_DISCONNECTED: "channel:session:disconnected",
   CONSOLE_ATTENTION: "console:attention",
   CONSOLE_STATUS: "console:status",
   CONSOLE_PERMISSION_CLEARED: "console:permission:cleared",
@@ -239,7 +237,6 @@ export type AuthRequestOutcome =
   | "expired"
   | null;
 
-/** Fields consumed by the channel; other resolution evidence remains on the event. */
 export const AUTH_RESOLVED_PAYLOAD = z.object({
   request_id: z.string().min(1),
   status: z.enum(AUTH_REQUEST_STATUSES),
@@ -266,13 +263,6 @@ export const AUTH_RESOLVED_PAYLOAD = z.object({
   }
 });
 export type AuthResolvedPayload = z.infer<typeof AUTH_RESOLVED_PAYLOAD>;
-
-export const CHANNEL_EVENT_SCHEMA = z.object({
-  type: z.literal(DOMAIN_EVENTS.AUTH_RESOLVED),
-  data: AUTH_RESOLVED_PAYLOAD,
-  timestamp: z.string().optional(),
-});
-export type ChannelEvent = z.infer<typeof CHANNEL_EVENT_SCHEMA>;
 
 export type AuthDependencyReadiness =
   | "ready"
@@ -2603,5 +2593,3 @@ export function parseDomainEvent(value: unknown): { ok: true; value: MandibleEve
   }
   return { ok: true, value: envelope.data as MandibleEvent };
 }
-
-export const DOMAIN_EVENT_SCHEMA = z.custom<MandibleEvent>(value => parseDomainEvent(value).ok);

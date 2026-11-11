@@ -40,7 +40,6 @@ interface ConsoleSessionRow {
   run_options_json: string;
   mandible_session_id: string | null;
   resume_at_message: string | null;
-  channel_enabled: number;
   transport_lane: string | null;
   owner_user_id: string | null;
 }
@@ -112,11 +111,10 @@ function computeAgentType(command: string, operator: boolean): ConsoleSession["a
   return command === "claude" || command === "codex" || command === "gemini" ? command : "shell";
 }
 function isTransportLane(value: unknown): value is ConsoleTransportLane {
-  return ["pty", "sdk", "acp", "spawn", "channel"].includes(String(value));
+  return ["pty", "sdk", "acp", "spawn"].includes(String(value));
 }
-function deriveTransportLane(_command: string, backend: BackendType, channel: boolean): ConsoleTransportLane { return channel ? "channel" : backend; }
 function transportLaneBadge(lane: ConsoleTransportLane): ConsoleTransportBadge {
-  return { label: ({ pty: "PTY", sdk: "SDK", acp: "ACP", spawn: "Spawn", channel: "Channel" } as const)[lane], title: lane === "pty" ? "Interactive terminal" : "Historical managed conversation" };
+  return { label: ({ pty: "PTY", sdk: "SDK", acp: "ACP", spawn: "Spawn" } as const)[lane], title: lane === "pty" ? "Interactive terminal" : "Historical managed conversation" };
 }
 function parseAllowedTools(value: string | null): string[] | null { return value ? JSON.parse(value) : null; }
 function parseRunOptions(value: string | null | undefined): Record<string, SessionRunOptionValue> { return value ? JSON.parse(value) : {}; }
@@ -132,9 +130,7 @@ function rowToSession(
       : row.backend_type === "acp"
         ? "acp"
         : "pty") as BackendType;
-  const transport_lane = isTransportLane(row.transport_lane)
-    ? row.transport_lane
-    : deriveTransportLane(row.command, backend_type, Boolean(row.channel_enabled));
+  const transport_lane = isTransportLane(row.transport_lane) ? row.transport_lane : backend_type;
   const sessionEnv = JSON.parse(row.env_json) as Record<string, string>;
   return {
     id: row.id,
@@ -163,7 +159,6 @@ function rowToSession(
     run_options: parseRunOptions(row.run_options_json),
     mandible_session_id: row.mandible_session_id ?? null,
     resume_at_message: row.resume_at_message ?? null,
-    channel_enabled: transport_lane === "channel" || Boolean(row.channel_enabled),
     agent_type: computeAgentType(row.command, is_operator),
     // Issue 8aadf70 — never let API-key vs subscription billing be a silent
     // inheritance of the daemon environment. Derived at read time (the daemon
@@ -198,7 +193,7 @@ export class SessionManager {
   create(input: ConsoleSessionInput, { allowOperator = false }: { allowOperator?: boolean } = {}): ConsoleSession {
     if (this.readOnly) throw new Error("Read-only instance cannot create a terminal");
     if (input.is_operator && !allowOperator) throw new Error("Operator terminals use startOperator");
-    if (input.backend_type && input.backend_type !== "pty" || input.transport_lane && input.transport_lane !== "pty" || input.channel_enabled || input.provider_session_id || input.resume_at_message || Object.keys(input.runOptions ?? {}).length) {
+    if (input.backend_type && input.backend_type !== "pty" || input.transport_lane && input.transport_lane !== "pty" || input.provider_session_id || input.resume_at_message || Object.keys(input.runOptions ?? {}).length) {
       throw new Error("Managed conversations use ConversationControlService");
     }
     const db = getDb();

@@ -13,13 +13,7 @@ mandible wrap -- claude
 mandible wrap -- codex exec "fix the bug"
 ```
 
-Claude sessions can also connect to Mandible's MCP channel:
-
-```bash
-claude --channels server:mandible
-```
-
-The channel provides tools and notifications; it does not transfer ownership of
-the external process. Local calls identify the agent by its provider/session or
-managed app/session claim. See [Local client access](/docs/local-client-access)
+Agents of every provider reach the ledger through the `mandible` command.
+Local calls identify the agent by its provider/session or managed app/session
+claim. See [Local client access](/docs/local-client-access)
 for the transport and identity contract.

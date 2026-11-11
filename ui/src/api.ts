@@ -2032,7 +2032,7 @@ export async function startConsoleSession(sessionId: string): Promise<void> {
 }
 
 export type ConsoleBackendType = 'pty' | 'sdk' | 'spawn' | 'acp';
-export type ConsoleTransportLane = 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
+export type ConsoleTransportLane = 'sdk' | 'pty' | 'acp' | 'spawn';
 export type ConsolePermissionDecision =
   | 'deny'
   | 'allow'

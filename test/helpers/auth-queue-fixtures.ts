@@ -564,9 +564,9 @@ export function insertConsoleSession(
     `INSERT INTO console_sessions (
       id, label, command, args_json, provider_session_id, cwd, env_json, cols, rows,
       status, auto_restart, is_operator, interaction_mode, created_at, updated_at,
-      backend_type, allowed_tools, mandible_session_id, resume_at_message, channel_enabled
+      backend_type, allowed_tools, mandible_session_id, resume_at_message
     ) VALUES (?, ?, 'codex', '[]', ?, NULL, '{}', 120, 30,
-      ?, 0, 0, 'both', ?, ?, 'spawn', NULL, ?, NULL, 0)`,
+      ?, 0, 0, 'both', ?, ?, 'spawn', NULL, ?, NULL)`,
   ).run(
     input.id,
     input.id,

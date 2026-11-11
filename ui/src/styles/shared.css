@@ -148,7 +148,6 @@ tr:last-child td {
 }
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
-:root[data-theme='light'] .channel-events-pane__card-json,
 :root[data-theme='light'] pre {
   background: var(--surface-code);
 }

@@ -47,13 +47,11 @@ type ConsoleSession = {
   started_at: number | null;
   stopped_at: number | null;
   backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
-  transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
+  transport_lane: 'sdk' | 'pty' | 'acp' | 'spawn';
   transport_badge?: {
-    label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
+    label: 'SDK' | 'PTY' | 'ACP' | 'Spawn';
     title: string;
   };
-  // Bug: b5e1c51 — Whether this PTY session has channel integration (Terminal + Events)
-  channel_enabled?: boolean;
   // Issue 499c148 — set when this session's client token and its session
   // bindings resolve to different users.
   identity_mismatch?: SessionIdentityMismatch | null;

@@ -63,7 +63,6 @@ case "${1:-}" in
       pre-tool-use|ingest-nudge|notification|statusline) hook=$1; shift; exec "$MANDIBLE_CLI_DIR/hooks/mandible-claude-$hook.sh" "$@" ;;
       *) echo "Usage: mandible hook <pre-tool-use|ingest-nudge|notification|statusline|session-execution|session-start|session-end|subagent-start|subagent-stop>" >&2; exit 2 ;;
     esac ;;
-  channel) shift; exec "$("$MANDIBLE_CLI_DIR/../scripts/bun-runtime.sh")" --no-install "$MANDIBLE_CLI_DIR/../dist/channel-server/index.js" "$@" ;;
   git-guard) shift; exec "$MANDIBLE_CLI_DIR/../hooks/git/reference-transaction" "$@" ;;
 esac
 source "$MANDIBLE_CLI_DIR/canonical-origin.sh"

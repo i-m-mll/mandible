@@ -749,10 +749,10 @@ describe("auth queue", () => {
     },
   );
 
-  // Issue 08a5f04 — channel-tool submissions through the route: the legacy
+  // Issue 08a5f04 — legacy submissions through the route: the legacy
   // single-source shape (no base_branch) is rewritten to the canonical command
   // at POST, never at approval, and both it and the canonical form approve.
-  it("normalizes channel-tool merge submissions at POST so approval accepts them", async () => {
+  it("normalizes legacy merge submissions at POST so approval accepts them", async () => {
     const repo = fs.realpathSync(createAuthCheckRepo());
     const db = createMigratedDbWithAgent();
     setDb(db);

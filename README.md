@@ -13,7 +13,7 @@ Mandible is an operations manager for AI agents. It consists of:
 1. A daemon that manages a ledger: issues, work units, user approvals, annotatable briefings, and an index of agent conversations. 
 2. A CLI that allows agents to interact with the ledger. 
 3. A web and desktop app where the user can interact with the ledger, as well as review conversations.
-4. Integrations that connect Claude Code, Codex, and Gemini to the ledger: lifecycle hooks, an MCP channel server, and Chat.
+4. Integrations that connect Claude Code, Codex, and Gemini to the ledger: lifecycle hooks and Chat.
 
 ## Feature highlights
 
@@ -39,7 +39,6 @@ Mandible is an operations manager for AI agents. It consists of:
 | Daemon (`src/`) | A Bun process serving the HTTP API, Server-Sent Events, WebSocket terminal I/O, and the app from one port. It runs ingestion, the auth queue, the work-unit reconciler, the session reaper, reminders, and backups. |
 | CLI (`bin/mandible`, `cli/`) | Shell scripts over the daemon API. Local calls use the owner-only Unix socket `~/.cache/mandible/local-api/production.sock`. A sandboxed agent with no loopback access sets `MANDIBLE_BASE=file:///path/to/spool` instead: the daemon watches the spool under `~/.cache/mandible/agent-rpc/`, answers request files in place, and serves ledger reads and writes, auth submission and listing, and work-unit mutation over it, never approval, merge, or admin routes. |
 | App (`ui/`, `src-tauri/`) | A Preact single-page app served by the daemon at `https://app.mandible.localhost:19420`, optionally wrapped in a Tauri macOS window that also controls the launchd services. |
-| Channel server (`channel-server/`) | An MCP server that gives a running Claude Code session Mandible tools and notifications. |
 | Hooks (`hooks/`) | Claude Code lifecycle hook scripts that attach a process to its session, and a Git `reference-transaction` guard for protected branches. |
 
 The daemon's loopback backend port is `29420`; browsers and the desktop reach it through the HTTPS front door at `app.mandible.localhost:19420`. See [Architecture](docs/concepts/architecture.mdx) and [Real-time events](docs/concepts/real-time-events.mdx).
@@ -183,7 +182,6 @@ Mandible has a contract and a policy layer. The contract (`cli/instructions-cont
 
 - **Lifecycle hooks** in `hooks/` (`session-start`, `session-end`, `subagent-start`, `subagent-stop`) attach the running process to its session so the app can navigate to its Zellij or tmux pane and kill it. Wire them into Claude Code's hook settings.
 - **`mandible claude-integration install`** adds the managed Stop and Notification hooks and chains the status line in `~/.claude/settings.json`, so the daemon ingests a turn as soon as it ends, relays Claude's notifications, and shows usage and context in Chat. It adds no managed PreToolUse hook when the settings already run `mandible hook pre-tool-use`, because Claude Code keeps only one of two parallel input rewrites; `status` detects drift and `uninstall` restores the prior settings.
-- **Channel server**: register `dist/channel-server/index.js` as the MCP server `mandible` and start `claude --channels server:mandible`. The session gets `mandible_check_inbox`, `mandible_report_status`, `mandible_submit_auth`, `mandible_get_issues`, and `mandible_request_work`, and receives approval results, inbox items, and work-unit assignments as notifications.
 - **Chat** drives Claude through `@anthropic-ai/claude-agent-sdk`. It registers its in-process PreToolUse projection only when no settings source it loads already runs `mandible hook pre-tool-use`. The session reports whether it bills to an API key found in the daemon environment or to the local Claude Code credentials.
 - **`mandible wrap -- claude`** registers a process attachment around any command with full TTY passthrough.
 
@@ -227,7 +225,7 @@ git clone <repo-url> mandible && cd mandible
 runtime="$(scripts/bun-runtime.sh)"
 export PATH="$(dirname "$runtime"):$PATH"
 bun install --frozen-lockfile
-bun run build            # daemon, channel server, and app
+bun run build            # daemon and app
 ```
 
 ### Run from source (development)

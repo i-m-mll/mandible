@@ -373,15 +373,6 @@ fn daemon_status(app: AppHandle) -> Result<DaemonStatus, String> {
 }
 
 #[command]
-fn daemon_reconcile_channel(app: AppHandle) -> Result<DaemonStatus, String> {
-    let _guard = DAEMON_CONTROL_LOCK
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let config = read_desktop_config(&app)?;
-    run_local_runtime(&app, "reconcile-channel", &config)
-}
-
-#[command]
 fn daemon_get_launch_mode(app: AppHandle) -> Result<String, String> {
     Ok(read_desktop_config(&app)?.daemon_launch_mode)
 }
@@ -888,7 +879,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             daemon_status,
-            daemon_reconcile_channel,
             daemon_get_launch_mode,
             daemon_set_launch_mode,
             daemon_start,
