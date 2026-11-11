@@ -235,7 +235,11 @@ type Outcome = 'done' | 'failed' | 'owner_changed';
 
 async function send(id: string, write: PendingWrite): Promise<Outcome> {
   try {
-    if (write.kind === 'create') await createInterfaceNote(write.input);
+    if (write.kind === 'create') {
+      // The daemon's record replaces the pending create at once, so the note is not missing until the next reconciliation.
+      const note = await createInterfaceNote(write.input);
+      daemonUnfiled = [...daemonUnfiled.filter((held) => held.id !== id), note];
+    }
     else if (write.kind === 'update') {
       const note = await updateInterfaceNoteText(id, write.text);
       if (note.owner.kind !== 'unfiled' && !isLoadedNote(id)) return 'owner_changed';
