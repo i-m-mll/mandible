@@ -150,6 +150,8 @@ import { acceptedReleaseSelection, bindAcceptedRelease } from "./accepted-releas
 import { GeneratedStorageMaintenance } from './generated-storage.js';
 import { retireFailedDelivery } from './failed-delivery-retirement.js';
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
+import { NOTICE_STATUSES, type OutcomeReporter } from "./notices/contract.js";
+import { NoticeLog, type NoticeCause } from "./notices/log.js";
 import type {
   AuthConvergence,
   AuthDependencyProjection,
@@ -160,6 +162,7 @@ import type {
   AuthRequestAction,
   AuthRequestActionInput,
   AuthRequestInput,
+  AuthRequestLifecycleEvent,
   AuthRequestOutcome,
   AuthRequestStatus,
   AuthRequestSummary,
@@ -439,6 +442,9 @@ export interface AuthQueueOptions {
   // Preview copies may edit their own auth rows, but must not inspect or change
   // host Git state, credentials, executor processes, or hook/runtime state.
   allowExternalEffects?: boolean;
+  // Issue 1d44a37 — the report settlement notices are rendered from. Without
+  // one, no notices are raised.
+  outcomeReporter?: OutcomeReporter | null;
 }
 
 const GIT_OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
@@ -596,6 +602,7 @@ export class AuthQueue {
   private readonly broadcast: (event: SseEvent) => void;
   private readonly executor: typeof executeAuthCommand;
   private readonly hookManager: AuthHookManager;
+  readonly notices: NoticeLog | null;
   private readonly autoApprover?: AuthAutoApprover;
   private clearanceManager?: AuthClearanceManager;
   private readonly clearanceSettlementFailures = new Set<unknown>();
@@ -684,6 +691,10 @@ export class AuthQueue {
       }
     };
     this.executor = options.executor ?? executeAuthCommand;
+    this.notices = options.outcomeReporter ? new NoticeLog(this.db, options.outcomeReporter, (id) => {
+      const request = this.getRequestById(id);
+      return request ? { ...this.requestResponsibility(request), work_unit_id: request.custody_work_unit_id ?? null } : null;
+    }, this.now) : null;
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
     this.clearanceManager = options.clearanceManager;
@@ -808,7 +819,7 @@ export class AuthQueue {
         proof.mergeBase, proof.mergeHead, proof.frozenCandidate.tree, output, reference.evidenceId, this.now(), this.now(), request.id, request.execution_evidence_id,
       );
       if (changed.changes !== 1) throw new Error('Publication evidence pointer changed before adoption.');
-      appendAuthLifecycleEvent(this.db, {
+      this.appendLifecycleEvent({
         requestId: request.id, eventType: request.status === "completed" ? "revised" : "completed", priorStatus: request.status, nextStatus: "completed", priorSnapshot,
         actor: { user_id: systemAction().user_id, evidence_method: "execution_evidence", evidence_id: reference.evidenceId, authority_path: "system" },
         reason: "Adopted exact signed publication and externally verified first-upgrade runtime receipt; no merge replay.", occurredAt: this.now(),
@@ -1244,6 +1255,7 @@ export class AuthQueue {
   /** Daemon incidents this queue raised and resolves once their condition clears. */
   private readonly handoffIncidents = new Map<string, string>();
   private idleConvergenceIncident: string | null = null;
+  private noticeIncident: string | null = null;
 
   /** The idle tick's convergence; a failure is reported, never discarded. */
   private async convergeWhileIdle(): Promise<void> {
@@ -1487,7 +1499,7 @@ export class AuthQueue {
            WHERE id = ? AND status = 'executing' AND exit_code IS NULL`
         ).run(now + this.ttlMs, now, request.id);
         if (changed.changes === 1) {
-          appendAuthLifecycleEvent(this.db, {
+          this.appendLifecycleEvent({
             requestId: request.id, eventType: "revised", priorStatus: "executing",
             nextStatus: "pending", actor: systemAction(),
             reason, occurredAt: now,
@@ -1539,7 +1551,7 @@ export class AuthQueue {
       this.db.transaction(() => {
         const status = authExecutionStatus(exitCode);
         complete.run(status, exitCode, now, now, error, request.id);
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: request.id, eventType: status, priorStatus: request.status,
           nextStatus: status, actor: systemAction(), reason: error, occurredAt: now,
         });
@@ -1548,7 +1560,7 @@ export class AuthQueue {
     const requeueRecovered = (request: AuthRequest) => {
       this.db.transaction(() => {
         requeue.run(now + this.ttlMs, now, request.id);
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: request.id, eventType: "revised", priorStatus: request.status,
           nextStatus: "pending", actor: systemAction(),
           reason: `Recovered interrupted execution (${context}).`, occurredAt: now,
@@ -2264,7 +2276,7 @@ export class AuthQueue {
             throw new AuthQueueError("custody_conflict", "Work-unit custody changed before submission completed.");
           }
         }
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: request.id,
           eventType: "submitted",
           priorStatus: null,
@@ -2299,7 +2311,7 @@ export class AuthQueue {
           if (changed.changes !== 1) {
             throw new AuthQueueError("invalid_status", "Predecessor changed before supersession completed.");
           }
-          appendAuthLifecycleEvent(this.db, {
+          this.appendLifecycleEvent({
             requestId: predecessor.id,
             eventType: "superseded",
             priorStatus: "pending",
@@ -2421,6 +2433,37 @@ export class AuthQueue {
     return custody ?? null;
   }
 
+  /** The status transition writer; a transition into `NOTICE_STATUSES` raises its notice. */
+  private appendLifecycleEvent(input: Parameters<typeof appendAuthLifecycleEvent>[1]): AuthRequestLifecycleEvent {
+    const event = appendAuthLifecycleEvent(this.db, input);
+    if (input.nextStatus !== input.priorStatus && (NOTICE_STATUSES as readonly string[]).includes(input.nextStatus)) {
+      const actor = input.actor?.authority_path === "system" ? null : input.actor;
+      this.raiseNotice(input.requestId, { kind: "transition", actor: actor ? { user_id: actor.user_id, session_id: actor.session_id ?? null } : null });
+    }
+    return event;
+  }
+
+  /**
+   * A notice that cannot be raised never fails the write that raised it: the
+   * failure is a daemon incident, resolved by the next notice raised.
+   */
+  raiseNotice(requestId: string, cause: NoticeCause = { kind: "change" }): void {
+    if (!this.notices) return;
+    try {
+      this.notices.raise(requestId, cause);
+    } catch (error) {
+      authLog("error", "auth_notice_raise_failed", { subsystem: "auth", auth_request_id: requestId, error: errorMessage(error) ?? String(error) });
+      try { this.noticeIncident = raiseDaemonIncident(this.db, { task: "auth-notice-raise", exitClass: "runner" }).incident_id; }
+      catch (incidentError) { authLog("error", "auth_notice_incident_failed", { subsystem: "auth", error: errorMessage(incidentError) ?? String(incidentError) }); }
+      return;
+    }
+    const incidentId = this.noticeIncident;
+    if (!incidentId) return;
+    this.noticeIncident = null;
+    try { resolveDaemonIncident(this.db, { incidentId, task: "auth-notice-raise" }); }
+    catch (incidentError) { authLog("error", "auth_notice_incident_failed", { subsystem: "auth", error: errorMessage(incidentError) ?? String(incidentError) }); }
+  }
+
   requestResponsibility(request: AuthRequest): { owner_user_id: string | null; responsibility_session_id: string | null; custody_generation: number } {
     if (request.custody_work_unit_id) return this.db.prepare("SELECT owner_user_id, responsibility_session_id, custody_generation FROM work_units WHERE id = ?")
       .get(request.custody_work_unit_id) as ReturnType<AuthQueue["requestResponsibility"]>;
@@ -2444,6 +2487,7 @@ export class AuthQueue {
       recordResponsibilityTransfer(this.db, { kind: "auth_request", id,
         prior: prior.owner_user_id ? { user_id: prior.owner_user_id, session_id: prior.responsibility_session_id } : null,
         next, generation: expectedGeneration + 1, reason });
+      this.raiseNotice(id);
     })();
   }
 
@@ -2584,7 +2628,7 @@ export class AuthQueue {
           throw new AuthQueueError("lifecycle_conflict", "Repair preconditions changed; inspect again.");
         }
         const priorSnapshot = authRequestSnapshot(this.db, requestId);
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId, eventType: "revised", priorStatus: "pending", nextStatus: "pending",
           actor, priorSnapshot, reason: "Guarded recovery of an independently rederived candidate-only snapshot drift.",
           occurredAt: this.now(),
@@ -2748,7 +2792,7 @@ export class AuthQueue {
     this.db.transaction(() => {
       this.assertLifecycleCas(request, custody, expectedRevision, expectedGeneration);
       result = mutate();
-      appendAuthLifecycleEvent(this.db, {
+      this.appendLifecycleEvent({
         requestId: request.id, eventType: "revised", priorStatus: request.status,
         nextStatus: request.status, actor, priorSnapshot, occurredAt: this.now(),
       });
@@ -3301,7 +3345,7 @@ export class AuthQueue {
           };
         }
         updated = this.readRequestByExactId(requestId)!;
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId,
           eventType: "revised",
           priorStatus: "pending",
@@ -3406,7 +3450,7 @@ export class AuthQueue {
           `UPDATE auth_requests SET ${RETURN_TO_PENDING_ASSIGNMENTS} WHERE id = ?`,
           [now + this.ttlMs, now]
         );
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: request.id, eventType: "revised", priorStatus: request.status,
           nextStatus: "pending", actor: systemAction(), reason: "Explicit retry.", occurredAt: now,
         });
@@ -3448,7 +3492,7 @@ export class AuthQueue {
           `UPDATE auth_requests SET ${RETURN_TO_PENDING_ASSIGNMENTS} WHERE id = ?`,
           [now + this.ttlMs, now]
         );
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: request.id, eventType: "revised", priorStatus: request.status,
           nextStatus: "pending", actor: systemAction(), reason: "Explicit requeue.", occurredAt: now,
         });
@@ -3508,7 +3552,7 @@ export class AuthQueue {
             throw new AuthQueueError("custody_conflict", "Work-unit custody changed before withdrawal completed.");
           }
         }
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: request.id,
           eventType: "withdrawn",
           priorStatus: "pending",
@@ -3850,14 +3894,14 @@ export class AuthQueue {
           evidence_id: operatorProof?.evidenceId,
           credential_id: exactCredentialId ?? operatorProof?.credentialId,
         };
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: request.id, eventType: "approved", priorStatus: "pending",
           nextStatus: "approved", actor: approvalActor, occurredAt: now,
         });
         this.db.prepare(
           "UPDATE auth_requests SET status = 'executing', updated_at = ? WHERE id = ? AND status = 'approved'",
         ).run(now, request.id);
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: request.id, eventType: "executing", priorStatus: "approved",
           nextStatus: "executing", actor: approvalActor, occurredAt: now,
         });
@@ -3951,14 +3995,14 @@ export class AuthQueue {
             evidence_id: authorization.use.evidence_id,
             credential_id: lease.credential_id,
           };
-          appendAuthLifecycleEvent(this.db, {
+          this.appendLifecycleEvent({
             requestId, eventType: "approved", priorStatus: "pending", nextStatus: "approved",
             actor: clearanceActor, occurredAt: now,
           });
           this.db.prepare(
             "UPDATE auth_requests SET status = 'executing', updated_at = ? WHERE id = ? AND status = 'approved'",
           ).run(now, requestId);
-          appendAuthLifecycleEvent(this.db, {
+          this.appendLifecycleEvent({
             requestId, eventType: "executing", priorStatus: "approved", nextStatus: "executing",
             actor: clearanceActor, occurredAt: now,
           });
@@ -4104,7 +4148,7 @@ export class AuthQueue {
       this.writeResolvedRequest(request,
         "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?",
         [context.cwd, context.target_repo_root, context.repo, context.merge_head_sha, at]);
-      appendAuthLifecycleEvent(this.db, {
+      this.appendLifecycleEvent({
         requestId: request.id, eventType: "revised", priorStatus: "pending", nextStatus: "pending",
         actor: systemAction(), priorSnapshot,
         reason: "Execution context derived before approval.", occurredAt: at,
@@ -5000,7 +5044,7 @@ export class AuthQueue {
         if (changed.changes !== 1) {
           throw new AuthQueueError("lifecycle_conflict", "Request changed during candidate refresh.");
         }
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: request.id, eventType: "revised", priorStatus: "pending",
           nextStatus: "pending", actor: systemAction(), priorSnapshot,
           reason: "Derived merge candidate refreshed after a verified protected-base advance.",
@@ -5263,7 +5307,7 @@ export class AuthQueue {
           "UPDATE auth_requests SET status = 'rejected', resolved_at = ?, updated_at = ?, error = ? WHERE id = ?",
           [now, now, reason]
         );
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: request.id,
           eventType: "rejected",
           priorStatus: "pending",
@@ -5438,7 +5482,7 @@ export class AuthQueue {
         );
         const stored = this.requireRequest(request.id);
         const evidenced = exitCode === 0 ? commitEvidence(this.ensureSuccessfulExecutionEvidence(stored)) : stored;
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: request.id,
           eventType: status,
           priorStatus: request.status,
@@ -5487,7 +5531,7 @@ export class AuthQueue {
         if (request.status !== "pending" || request.expires_at > now) continue;
         this.db.transaction(() => {
           this.db.prepare("UPDATE auth_requests SET status = 'expired', resolved_at = expires_at, updated_at = ?, error = ? WHERE id = ? AND status = 'pending'").run(now, "Expired.", id);
-          appendAuthLifecycleEvent(this.db, { requestId: id, eventType: "expired", priorStatus: "pending", nextStatus: "expired", actor: systemAction(), reason: "Expired.", occurredAt: request.expires_at });
+          this.appendLifecycleEvent({ requestId: id, eventType: "expired", priorStatus: "pending", nextStatus: "expired", actor: systemAction(), reason: "Expired.", occurredAt: request.expires_at });
         })();
         const resolved = this.requireRequest(id);
         this.queueCandidateCleanup(resolved);
@@ -5796,7 +5840,7 @@ export class AuthQueue {
               this.db.prepare(
                 `UPDATE auth_requests SET ${RETURN_TO_PENDING_ASSIGNMENTS} WHERE id = ?`,
               ).run(now + this.ttlMs, now, request.id);
-              appendAuthLifecycleEvent(this.db, {
+              this.appendLifecycleEvent({
                 requestId: request.id, eventType: "revised", priorStatus: refreshed.status,
                 nextStatus: "pending", actor: systemAction(),
                 reason: `Atomic recovery requeued request: ${inspection.detail}`, occurredAt: now,
@@ -6038,6 +6082,7 @@ export class AuthQueue {
         title: request.title ?? null,
       },
     });
+    this.raiseNotice(request.id);
     return convergence;
   }
 
@@ -6067,6 +6112,7 @@ export class AuthQueue {
         approved_by_user_id: current.approved_by_user_id,
         execution_evidence_id: current.execution_evidence_id,
       }, () => this.assertExecution(current.id, execution));
+      this.raiseNotice(current.id);
     } catch (error) {
       authLog("warn", "auth_withheld_closure_release_failed", {
         subsystem: "auth",
@@ -6399,7 +6445,7 @@ export class AuthQueue {
           .run(status, now, now, exitCode, errorText, id);
         const stored = this.requireRequest(id);
         const evidenced = exitCode === 0 ? commitEvidence(this.ensureSuccessfulExecutionEvidence(stored)) : stored;
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: id,
           eventType: status,
           priorStatus: prior.status,
@@ -6740,6 +6786,7 @@ export class AuthQueue {
       this.db
         .prepare("UPDATE auth_requests SET merge_finalizer_state = ?, updated_at = ? WHERE id = ?")
         .run(JSON.stringify(state), this.now(), id);
+      this.raiseNotice(id);
     } catch (error) {
       authLog("warn", "auth_finalizer_state_write_failed", {
         subsystem: "auth",
@@ -7203,7 +7250,7 @@ export class AuthQueue {
         const reason = error instanceof Error ? error.message : String(error);
         if (current.error !== reason) this.db.transaction(() => {
           this.db.prepare("UPDATE auth_requests SET error=?,updated_at=? WHERE id=? AND status='pending'").run(reason,this.now(),current.id);
-          appendAuthLifecycleEvent(this.db,{ requestId:current.id,eventType:"revised",priorStatus:"pending",nextStatus:"pending",actor:systemAction(),reason,occurredAt:this.now() });
+          this.appendLifecycleEvent({ requestId:current.id,eventType:"revised",priorStatus:"pending",nextStatus:"pending",actor:systemAction(),reason,occurredAt:this.now() });
         })();
         this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED,data:{ request:this.readRequestByExactId(current.id)! } });
         continue;
@@ -7224,7 +7271,7 @@ export class AuthQueue {
         const result = this.db.transaction(() => {
           const changed = markNeedsRebase.run(now, now, reason, current.id);
           if (changed.changes === 1) {
-            appendAuthLifecycleEvent(this.db, {
+            this.appendLifecycleEvent({
               requestId: current.id, eventType: "needs_rebase", priorStatus: "pending",
               nextStatus: "needs_rebase", actor: systemAction(), reason, occurredAt: now,
             });
@@ -7607,11 +7654,12 @@ export class AuthQueue {
     appliedAt: number | null,
   ): void {
     const now = this.now();
-    this.db.prepare(
+    const row = this.db.prepare(
       `UPDATE auth_request_actions
        SET state = ?, applied_at = ?, updated_at = ?, outcome_detail = ?
-       WHERE id = ? AND state = 'staged'`,
-    ).run(state, appliedAt, now, detail, actionId);
+       WHERE id = ? AND state = 'staged' RETURNING auth_request_id`,
+    ).get(state, appliedAt, now, detail, actionId) as { auth_request_id: string } | undefined;
+    if (row) this.raiseNotice(row.auth_request_id);
   }
 
   private removeActionResolveLink(request: AuthRequest, action: AuthRequestAction, issueId?: string): void {
@@ -7714,7 +7762,7 @@ export class AuthQueue {
         this.assertObservation(completed.id, completedObservation);
         this.assertObservation(sibling.id, siblingObservation);
         supersedeStmt.run(completed.id, now, now, reason, sibling.id);
-        appendAuthLifecycleEvent(this.db, {
+        this.appendLifecycleEvent({
           requestId: sibling.id,
           eventType: "superseded",
           priorStatus: sibling.status,

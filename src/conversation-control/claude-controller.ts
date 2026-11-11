@@ -18,7 +18,7 @@ import { AdapterLifecycle, AdapterProviderEvents, adapterFailure, type AdapterLi
 import { CLAUDE_SDK_MANAGED_PROFILE } from "./provider-capabilities.js";
 import { chatItemIdentityKey } from "./provider-live.js";
 import { claudeAttachmentContent } from "./attachment-delivery.js";
-import { ClaudeSdkTransport, type ClaudeSdk } from "./claude-sdk-transport.js";
+import { ClaudeSdkTransport, type ClaudeSdk, type TurnNotices } from "./claude-sdk-transport.js";
 import type { ExecutionTransition } from "../session-execution.js";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -77,7 +77,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
   private readonly runtimeListeners = new Set<(event: ProviderRuntimeEvent) => void>();
   private readonly controllers = new Map<string, ClaudeController>();
   private readonly acquiring = new Set<string>();
-  constructor(private readonly options: { sdk?: ClaudeSdk } = {}) {}
+  constructor(private readonly options: { sdk?: ClaudeSdk; notices?: TurnNotices | null } = {}) {}
 
   async acquire(input: ControllerAcquisitionRequest): Promise<Result<ControllerLease, ConversationControlError>> {
     if (this.controllers.has(input.conversation_id) || this.acquiring.has(input.conversation_id)) {
@@ -87,7 +87,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
     let processOwner: ClaudeSdkTransport | null = null;
     try {
       const sdk = this.options.sdk ?? await import("@anthropic-ai/claude-agent-sdk");
-      processOwner = new ClaudeSdkTransport(input, sdk);
+      processOwner = new ClaudeSdkTransport(input, sdk, this.options.notices ?? null);
       await processOwner.start();
       const controller: ClaudeController = {
         conversationId: input.conversation_id,
@@ -159,7 +159,7 @@ export class ClaudeSdkControllerAdapter implements ConversationControllerAdapter
           ? { kind: "resume-provider-session", conversation_id: owned.conversationId, generation: owned.generation, controller_instance_id: owned.controllerInstanceId, provider_session_id: owned.providerSessionId, cwd: owned.acquisition.cwd, runtime_options: settings }
           : { kind: "start", conversation_id: owned.conversationId, generation: owned.generation, controller_instance_id: owned.controllerInstanceId, cwd: owned.acquisition.cwd!, runtime_options: settings };
         const sdk = this.options.sdk ?? await import("@anthropic-ai/claude-agent-sdk");
-        const replacement = new ClaudeSdkTransport(acquisition, sdk);
+        const replacement = new ClaudeSdkTransport(acquisition, sdk, this.options.notices ?? null);
         await replacement.start();
         if (replacement.pid) this.lifecycle.emit(this.event(owned, { kind: "controller-process", at: Date.now(), pid: replacement.pid }));
         owned.process = replacement;

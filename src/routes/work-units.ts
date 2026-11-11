@@ -109,7 +109,7 @@ interface CustodyAssumeInput {
 
 /** Issue 72b00f8 — the narrow auth-queue surface custody approval needs. */
 export interface WorkUnitRouteOptions {
-  authQueue?: Pick<AuthQueue, "submit">;
+  authQueue?: Pick<AuthQueue, "submit" | "raiseNotice">;
   /** Codex thread-writer lock reader for holder liveness; tests inject it. */
   readCodexTaskLiveness?: ProviderTaskLivenessReader;
 }
@@ -253,6 +253,7 @@ export function registerWorkUnitRoutes(
   options: WorkUnitRouteOptions = {},
 ): void {
   const db = getDb();
+  const raise_notice = options.authQueue ? (requestId: string) => options.authQueue!.raiseNotice(requestId) : null;
   /**
    * The Codex reader for this request's holder decisions, over lock scans made
    * for it. Taken before the handler reads anything else, so the decision and
@@ -681,7 +682,7 @@ export function registerWorkUnitRoutes(
     }
     if (!body.reason?.trim()) { sendJson(res, 400, { error: "reason is required" }); return; }
     transferWorkUnitCustody(db, { unit: mapRow(rows[0] as Record<string, unknown>), expected_generation: body.expected_generation!,
-      new_user_id: null, new_session_id: null, authority_path: "handoff", reason: body.reason.trim(), comment_attribution: attributionForRequest(db, req) });
+      new_user_id: null, new_session_id: null, authority_path: "handoff", reason: body.reason.trim(), comment_attribution: attributionForRequest(db, req), raise_notice });
     sendJson(res, 200, { ok: true, id: row.id, released: 1 });
   }, { operation: { id: "post:/api/work-units/release", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow",
     refs: { body: { id: entityRefs.workUnit } } });
@@ -709,7 +710,7 @@ export function registerWorkUnitRoutes(
     if (!body.reason?.trim()) { sendJson(res, 400, { error: "reason is required" }); return; }
     db.transaction(() => {
       for (const row of rows) transferWorkUnitCustody(db, { unit: mapRow(row as unknown as Record<string, unknown>), expected_generation: row.custody_generation,
-        new_user_id: null, new_session_id: null, authority_path: "handoff", reason: body.reason!.trim(), comment_attribution: attributionForRequest(db, req) });
+        new_user_id: null, new_session_id: null, authority_path: "handoff", reason: body.reason!.trim(), comment_attribution: attributionForRequest(db, req), raise_notice });
     })();
     sendJson(res, 200, { ok: true, released: rows.length });
   }, { operation: { id: "post:/api/work-units/release-issue", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow" });
@@ -827,6 +828,7 @@ export function registerWorkUnitRoutes(
         authority_path: authorityPath,
         reason: body.reason.trim(),
         comment_attribution: attributionForRequest(db, req),
+        raise_notice,
       });
       sendJson(res, 200, { work_unit: transferred, authority_path: authorityPath });
     } catch (error) {

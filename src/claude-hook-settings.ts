@@ -51,18 +51,22 @@ const MANAGED_HOOK_MARKER = "MANDIBLE_MANAGED_CLAUDE_HOOK=1";
 const MANAGED_STATUSLINE_MARKER = "MANDIBLE_MANAGED_CLAUDE_STATUSLINE=1";
 const MANAGED_METADATA_KEY = "__mandible";
 const CLAUDE_INTEGRATION_KEY = "claudeIntegration";
-const HOOK_EVENTS = {
-  PreToolUse: "mandible-claude-pre-tool-use.sh",
-  SessionStart: "mandible-claude-session-start.sh",
-  SessionEnd: "mandible-claude-session-end.sh",
-  SubagentStart: "mandible-claude-subagent-start.sh",
-  SubagentStop: "mandible-claude-subagent-stop.sh",
-  PostToolUse: "mandible-claude-ingest-nudge.sh",
-  Stop: "mandible-claude-ingest-nudge.sh",
-  Notification: "mandible-claude-notification.sh",
-} as const;
+/** Each event's `mandible hook` arguments. */
+const HOOK_EVENTS: Record<string, readonly string[]> = {
+  PreToolUse: ["pre-tool-use"],
+  SessionStart: ["session-start"],
+  SessionEnd: ["session-end"],
+  SubagentStart: ["subagent-start"],
+  SubagentStop: ["subagent-stop"],
+  PostToolUse: ["ingest-nudge"],
+  Stop: ["ingest-nudge"],
+  Notification: ["notification"],
+  UserPromptSubmit: ["notices", "claude"],
+};
+const STATUSLINE_HOOK = ["statusline"] as const;
 
 const PUBLIC_PRE_TOOL_USE_INVOCATION = /(?<![\w.-])mandible\s+hook\s+pre-tool-use(?![\w.-])/;
+const NOTICES_INVOCATION = /(?<![\w.-])mandible\s+hook\s+notices(?![\w.-])/;
 
 export function mergeMandibleClaudeHookSettings(
   baseSettings: ClaudeSettings | null | undefined,
@@ -80,11 +84,11 @@ function mergeMandibleClaudeHookSettingsWithMetadata(
   const baseHooks = isRecord(base.hooks) ? base.hooks : {};
   const hooks: Record<string, unknown> = removeManagedHooks(baseHooks);
 
-  for (const [eventName, scriptName] of Object.entries(HOOK_EVENTS)) {
+  for (const [eventName, hook] of Object.entries(HOOK_EVENTS)) {
     // Claude Code runs an event's hooks in parallel and keeps only one updatedInput,
     // so a managed copy beside a handler composing this hook would race with it.
     if (eventName === "PreToolUse" && settingsDeliverPreToolUseProjection(base)) continue;
-    const command = mandibleHookCommand(scriptName, sessionRef, MANAGED_HOOK_MARKER);
+    const command = mandibleHookCommand(hook, sessionRef, MANAGED_HOOK_MARKER);
     const existingMatchers = Array.isArray(hooks[eventName])
       ? [...hooks[eventName] as unknown[]]
       : [];
@@ -108,13 +112,26 @@ export function settingsDeliverPreToolUseProjection(settings: ClaudeSettings): b
   ));
 }
 
-export function loadedSettingsDeliverPreToolUseProjection(sources: readonly ClaudeSettingSource[], cwd: string): boolean {
+/** Whether the settings already print settlement notices at turn start, managed or not. */
+export function settingsDeliverNotices(settings: ClaudeSettings): boolean {
+  return hookCommands(settings.hooks, "UserPromptSubmit").some((command) => NOTICES_INVOCATION.test(command.replace(/['"\\]/g, "")));
+}
+
+function loadedSettings(sources: readonly ClaudeSettingSource[], cwd: string): ClaudeSettings[] {
   const files: Record<ClaudeSettingSource, string> = {
     user: defaultClaudeUserSettingsPath(),
     project: path.join(cwd, ".claude", "settings.json"),
     local: path.join(cwd, ".claude", "settings.local.json"),
   };
-  return sources.some((source) => settingsDeliverPreToolUseProjection(readJsonObject(files[source])));
+  return sources.map((source) => readJsonObject(files[source]));
+}
+
+export function loadedSettingsDeliverPreToolUseProjection(sources: readonly ClaudeSettingSource[], cwd: string): boolean {
+  return loadedSettings(sources, cwd).some(settingsDeliverPreToolUseProjection);
+}
+
+export function loadedSettingsDeliverNotices(sources: readonly ClaudeSettingSource[], cwd: string): boolean {
+  return loadedSettings(sources, cwd).some(settingsDeliverNotices);
 }
 
 export function installUserClaudeIntegration(
@@ -189,15 +206,15 @@ export function getUserClaudeIntegrationStatus(
   if (!metadata) {
     return { status: "absent", settingsPath, details: ["metadata_missing"], chainedStatusLine: null };
   }
-  for (const [eventName, scriptName] of Object.entries(HOOK_EVENTS)) {
-    const satisfied = hasManagedHook(settings.hooks, eventName, scriptName)
+  for (const [eventName, hook] of Object.entries(HOOK_EVENTS)) {
+    const satisfied = hasManagedHook(settings.hooks, eventName, hook)
       || (eventName === "PreToolUse" && settingsDeliverPreToolUseProjection(settings));
     if (!satisfied) {
       details.push(`hook_missing:${eventName}`);
     }
   }
   const statusLine = normalizeStatusLineCommand(settings.statusLine);
-  if (!statusLine || !statusLine.includes(MANAGED_STATUSLINE_MARKER) || !hasHookInvocation(statusLine, "mandible-claude-statusline.sh")) {
+  if (!statusLine || !statusLine.includes(MANAGED_STATUSLINE_MARKER) || !hasHookInvocation(statusLine, STATUSLINE_HOOK)) {
     details.push("statusline_missing");
   }
   const status = details.length > 0 ? "drifted" : "installed";
@@ -220,9 +237,9 @@ function appendHookMatcher(existing: unknown[], matcher: ClaudeHookMatcher): unk
   return alreadyPresent ? existing : [...existing, matcher];
 }
 
-function mandibleHookCommand(scriptName: string, sessionRef: string, marker?: string): string {
+function mandibleHookCommand(hook: readonly string[], sessionRef: string, marker?: string): string {
   const prefix = marker ? `${marker} ` : "";
-  return `${prefix}MANDIBLE_SESSION_REF=${shellQuote(sessionRef)} ${hookInvocation(scriptName)}`;
+  return `${prefix}MANDIBLE_SESSION_REF=${shellQuote(sessionRef)} ${hookInvocation(hook)}`;
 }
 
 function mergeMandibleStatusLine(
@@ -251,7 +268,7 @@ function mandibleStatusLineCommand(sessionRef: string, chainedStatusLine: string
   if (chainedStatusLine) {
     parts.push(`MANDIBLE_CHAINED_STATUSLINE=${shellQuote(chainedStatusLine)}`);
   }
-  parts.push(hookInvocation("mandible-claude-statusline.sh"));
+  parts.push(hookInvocation(STATUSLINE_HOOK));
   return parts.join(" ");
 }
 
@@ -279,17 +296,17 @@ function normalizeStatusLineCommand(value: unknown): string | null {
 }
 
 function isMandibleStatusLineCommand(command: string | null): boolean {
-  return Boolean(command?.includes(MANAGED_STATUSLINE_MARKER) || (command && hasHookInvocation(command, "mandible-claude-statusline.sh")));
+  return Boolean(command?.includes(MANAGED_STATUSLINE_MARKER) || (command && hasHookInvocation(command, STATUSLINE_HOOK)));
 }
 
-function hookInvocation(scriptName: string): string {
-  const hook = scriptName.replace(/^mandible-claude-/, "").replace(/\.sh$/, "");
-  const invocation = publicCommand("hook", hook);
+function hookInvocation(hook: readonly string[]): string {
+  const invocation = publicCommand("hook", ...hook);
   return [invocation.command, ...invocation.args].map(shellQuote).join(" ");
 }
 
-function hasHookInvocation(command: string, scriptName: string): boolean {
-  return command.includes(scriptName) || command.includes(hookInvocation(scriptName));
+/** Also matches the script path an earlier installer wrote. */
+function hasHookInvocation(command: string, hook: readonly string[]): boolean {
+  return command.includes(`mandible-claude-${hook[0]}.sh`) || command.includes(hookInvocation(hook));
 }
 
 function defaultClaudeUserSettingsPath(): string {
@@ -415,9 +432,9 @@ function hookCommands(hooksValue: unknown, eventName: string): string[] {
   ));
 }
 
-function hasManagedHook(hooksValue: unknown, eventName: string, scriptName: string): boolean {
+function hasManagedHook(hooksValue: unknown, eventName: string, hook: readonly string[]): boolean {
   return hookCommands(hooksValue, eventName).some((command) => (
-    command.includes(MANAGED_HOOK_MARKER) && hasHookInvocation(command, scriptName)
+    command.includes(MANAGED_HOOK_MARKER) && hasHookInvocation(command, hook)
   ));
 }
 
