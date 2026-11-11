@@ -55,7 +55,7 @@ function targetLink(target: NotificationTarget): { href: string; label: string }
     case 'conversation':
       return { href: viewHref('console', { conversation: target.id }), label: `conversation:${shortRouteId(target.id)}` };
     case 'reminder':
-      return { href: viewHref('tasks', { task: `mandible-reminder:${target.id}` }), label: `reminder:${shortRouteId(target.id)}` };
+      return { href: viewHref('tasks', { task: `mandible-reminder:${target.id}` }), label: shortRouteId(target.id) };
   }
 }
 

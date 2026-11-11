@@ -62,7 +62,7 @@ import { formatAbsoluteTime, formatRelativeTime } from '../lib/format';
 import { readPersistedViewState, usePersistedViewState } from '../hooks/usePersistedViewState';
 import { useLiveLoad } from '../app-shell';
 import { refreshAbandoned } from '../lib/coalesced-refresh';
-import { currentRoute, replaceRoute, routeWithParams } from '../routing';
+import { currentRoute, replaceRoute, routeWithParams, shortRouteId } from '../routing';
 
 const TASKS_SELECTION_STATE_KEY = 'mandible.tasks.selection:v1';
 
@@ -1398,7 +1398,7 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
               variant="standard"
               identity={{
                 entityLabel: selected.reminder.project_key,
-                displayRef: selected.reminder.id.slice(0, 7),
+                displayRef: shortRouteId(selected.reminder.id),
                 canonicalRef: selected.reminder.id,
                 copyLabel: 'Copy reminder reference',
               }}
