@@ -24,6 +24,7 @@ import {
 import { getDaemonLogger } from "../daemon-log.js";
 import type { Db } from "../db.js";
 import { resolveId } from "../entity-refs.js";
+import { createOutcomeReporter } from "../notices/report.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthLifecycleActor, AuthRequest, AuthRequestInput, AuthRequestType } from "../types.js";
@@ -59,6 +60,7 @@ export function registerAuthRoutes(
   reader: LedgerReader,
 ): AuthQueue {
   const db = authQueue.db;
+  const outcomeReport = createOutcomeReporter(db);
   const fallbackRuntimeEpoch = randomUUID();
   const clearanceManager = clearance ?? authQueue.clearanceAuthority ?? new AuthClearanceManager(
     db, new DelegatedSigningResource(autoApproveManager, {
@@ -345,6 +347,7 @@ export function registerAuthRoutes(
       lifecycle_events: authQueue.listLifecycleEvents(request.id),
       responsibility: authQueue.requestResponsibility(request),
       execution_attempts: listAuthExecutionAttempts(db, request.id),
+      outcome_report: outcomeReport(request.id),
     });
   }, { operation: { id: "get:/api/auth/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 

@@ -17,6 +17,8 @@ if [[ "$json" == 1 ]]; then
   exit 0
 fi
 printf '%s\n' "$response" | jq -r '
+  def subject: if .kind == "action" then "\(.action) \(.issue)" elif .kind == "finalizer" then .step
+    elif .kind == "hook" then .hook_id else .branch end;
   "\(.id[0:8]) [\(.status)] \(.title)",
   (if .status == "failed" then
     "  failed: \(.failure_reason)",
@@ -40,9 +42,11 @@ printf '%s\n' "$response" | jq -r '
       ($a.missing_merges[] | "    \(.[0:10]) recorded Mandible merge no longer in the branch history"),
       (if $a.truncated then "    only the newest \($a.checked_commits) commits were checked" else empty end)
     end),
-  (if (.convergence.state // "none") == "none" then empty
-   else "", "Convergence: \(.convergence.state)" + (
-     if .convergence.state == "complete" then " (post-merge hooks finished; the merge is live)"
-     elif .convergence.state == "pending" then " (post-merge hooks or the runtime handoff are still running)"
-     else " (" + ([.convergence.hooks[] | select(.required and (.state == "failed" or .state == "retired")) | (if (.label // "") != "" then .label else .hook_id end) + (if .state == "retired" then " [retired]" else "" end) + ": " + (.failure // (if .exit_code == null then "timed out" else "exit \(.exit_code)" end))] | join("; ")) + ")" end)
-   end)'
+  (.outcome_report // empty | .steps as $steps |
+    ["action", "finalizer", "hook", "branch_removal", "preview_teardown"] as $kinds |
+    {action: ["action", "actions"], finalizer: ["finalizer step", "finalizer steps"], hook: ["hook", "hooks"],
+     branch_removal: ["branch removed", "branches removed"], preview_teardown: ["preview torn down", "previews torn down"]} as $noun |
+    ([$kinds[] as $k | [$steps[] | select(.kind == $k and .state == "done")] | length | select(. > 0) as $n
+      | "\($n) \($noun[$k][if $n == 1 then 0 else 1 end])"] | select(length > 0) | "  done: " + join(", ")),
+    ($kinds[] as $k | [$steps[] | select(.kind == $k and .state != "done")] | group_by([.state, .reason])[]
+      | "  \($k | gsub("_"; " ")) \(.[0].state)\(if .[0].reason then ", \(.[0].reason)" else "" end) (\(length)): \(map(subject) | join(", "))"))'

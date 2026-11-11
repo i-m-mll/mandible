@@ -206,7 +206,7 @@ const FINALIZER_MAX_QUEUED = 32;
 const FINALIZER_MAX_ATTEMPTS = 3;
 // Stage 3 finalizer steps in execution order. Durable per-step state is keyed
 // by these names in auth_requests.merge_finalizer_state.
-const FINALIZER_STEP_NAMES = [
+export const FINALIZER_STEP_NAMES = [
   "revalidate_pending",
   "auto_dismiss_duplicates",
   "resolve_ancestry_work_units",
