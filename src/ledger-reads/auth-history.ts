@@ -22,9 +22,9 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   // Issue 7d64d8f — small scalar digest; list surfaces need it to label an
   // agent-authored canonical change message without refetching the detail row.
   "commit_message_digest",
-  "last_executed_at", "acknowledged_by", "post_merge_handoff", "issue_ids",
-  "depends_on_id", "depends_on_ids", "issues", "type", "target_session_id", "target_repo_root",
-  "delivered_at", "conversation_id", "approval_source", "approval_lease_id",
+  "last_executed_at", "post_merge_handoff", "issue_ids",
+  "depends_on_id", "depends_on_ids", "issues", "type", "target_repo_root",
+  "approval_source", "approval_lease_id",
   "issue_references", "issue_closures", "merge_preflight_base_sha",
   "merge_preflight_queue_fingerprint", "merge_head_sha", "merge_candidate_tree_sha",
   "merge_candidate_pin_sha", "merge_atomic_enabled", "merge_finalized_at",

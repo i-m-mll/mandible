@@ -24,8 +24,7 @@ async function watch(mode: 'sse' | 'poll', statuses: string[]) {
     if (req.url === '/api/auth/v2/request') { res.statusCode = 201; return res.end('{"request_id":"watch123"}'); }
     const response = (status: string) => ({ request_id: 'watch123', status, outcome: ['pending', 'approved', 'executing'].includes(status) ? null : status === 'completed' ? 'succeeded' : status,
       exit_code: status === 'failed' ? 42 : status === 'completed' ? 0 : null, failure_reason: 'reviewed head changed',
-      error: null, error_output: null, resolved_at: ['pending', 'approved', 'executing'].includes(status) ? null : 1, title: 'Watch fixture', head_branch: null,
-      target_session_id: null, conversation_id: null });
+      error: null, error_output: null, resolved_at: ['pending', 'approved', 'executing'].includes(status) ? null : 1, title: 'Watch fixture', head_branch: null });
     if (req.url === '/api/events/subscribe') {
       res.setHeader('Content-Type', 'text/event-stream');
       if (mode === 'sse') for (const status of statuses) res.write(`data: ${JSON.stringify({ type: 'auth:resolved', data: response(status) })}\n\n`);

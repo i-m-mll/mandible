@@ -1114,7 +1114,7 @@ export class AuthHookManager {
         request.id,
         run.hook_id,
         run.hook_label,
-        request.target_session_id ?? request.session_id ?? null,
+        request.session_id ?? null,
         request.repo ?? null,
         detail,
         now,

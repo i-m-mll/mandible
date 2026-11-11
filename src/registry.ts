@@ -256,9 +256,6 @@ interface SessionRow {
   ended_at: string | null;
   // Bug: e01653d — real user activity time from JSONL transcript mtime
   last_active: string | null;
-  // Bug: 0b454df — channel-connected session tracking
-  channel_connected_at: number | null;
-  channel_last_tool_call: number | null;
   owner_user_id: string | null;
   // Issue 499c148 — client-token vs session-binding user disagreement.
   identity_mismatch_at: number | null;
@@ -300,11 +297,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   description TEXT,
   conversation_id TEXT,
   pinned INTEGER DEFAULT 0,
-  continuation TEXT,
-  continuation_acked_by TEXT,
   last_active TEXT,
-  channel_connected_at INTEGER,
-  channel_last_tool_call INTEGER,
   owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   identity_mismatch_at INTEGER,
   identity_mismatch_json TEXT,
@@ -319,8 +312,6 @@ CREATE INDEX IF NOT EXISTS sessions_app_idx ON sessions(app);
 CREATE INDEX IF NOT EXISTS sessions_nav_metadata_idx
   ON sessions(nav_metadata_status, nav_metadata_next_retry_at);
 CREATE INDEX IF NOT EXISTS sessions_branch_idx ON sessions(branch) WHERE branch IS NOT NULL;
-CREATE INDEX IF NOT EXISTS sessions_channel_idx
-  ON sessions(channel_connected_at) WHERE channel_connected_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_conversation_id
   ON sessions(conversation_id) WHERE conversation_id IS NOT NULL;
 `;
@@ -536,9 +527,6 @@ function toSession(row: SessionRow, attributionResolver: AttributionReadResolver
     ended_at: row.ended_at ?? null,
     // Bug: e01653d — real user activity time from JSONL transcript mtime
     last_active: row.last_active ?? null,
-    // Bug: 0b454df — channel-connected session tracking
-    channel_connected_at: row.channel_connected_at ?? null,
-    channel_last_tool_call: row.channel_last_tool_call ?? null,
     owner_user_id: row.owner_user_id ?? null,
     owner: attributionResolver.user(row.owner_user_id),
     // Issue 499c148 — null unless a registration saw the client token and the

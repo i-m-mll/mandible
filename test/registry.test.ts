@@ -69,7 +69,7 @@ function pidlessSession(updatedAt: string): Session {
     nav_metadata_last_attempt_at: null, nav_metadata_next_retry_at: null, task: null, status: "active",
     parent_id: null, agent_type: null, description: null, conversation_id: null, created_at: updatedAt, updated_at: updatedAt,
     pinned: 0, ended_at: null, last_active: null,
-    channel_connected_at: null, channel_last_tool_call: null, owner_user_id: null, identity_mismatch: null,
+    owner_user_id: null, identity_mismatch: null,
   };
 }
 

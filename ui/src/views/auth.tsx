@@ -1101,9 +1101,7 @@ function AuthRequestDetail({
   const resolvedAt = formatMetadataTimestamp(request.resolved_at ?? null);
   const finalizedAt = formatMetadataTimestamp(request.finalized_at as string | number | null | undefined);
   const mergeSha = getStringField(request, 'merge_sha') ?? getStringField(request, 'merged_sha');
-  const targetSession = getStringField(request, 'target_session_id');
-  const targetRepo = getStringField(request, 'target_repo');
-  const conversationId = getStringField(request, 'conversation_id') ?? getStringField(request, 'target_conversation_id');
+  const targetRepo = getStringField(request, 'target_repo_root');
   const closeActionsAfter = (callback: () => void) => {
     callback();
     setActionsOpen(false);
@@ -1184,9 +1182,7 @@ function AuthRequestDetail({
         <MetadataRow label="Merge SHA" value={mergeSha} />
         <MetadataRow label="Finalized" value={finalizedAt} />
         <MetadataRow label="Session" value={sessionId ?? null} />
-        <MetadataRow label="Target session" value={targetSession} />
         <MetadataRow label="Target repo" value={targetRepo} />
-        <MetadataRow label="Conversation" value={conversationId} />
       </dl>
     </DetailPaneModal>
   );
