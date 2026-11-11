@@ -3,19 +3,36 @@ import {
   type FileInterfaceNotesRequest,
   type FileInterfaceNotesResult,
   type InterfaceNote,
+  type InterfaceNoteErrorCode,
   type InterfaceNoteInput,
 } from '../../../src/interface-notes/contract';
 import type { IssueRepoSummary } from '../../../src/types';
 import { browserSessionFetch } from '../client-auth-token';
 
+/** A refusal from the daemon. `code` is an `InterfaceNoteErrorCode` for the routes' own refusals, another daemon code otherwise, or null. */
+export class InterfaceNotesApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code: InterfaceNoteErrorCode | (string & {}) | null) {
+    super(message);
+    this.name = 'InterfaceNotesApiError';
+  }
+}
+
+/** True when a replayed write needs no further attempt: the daemon holds, or has moved past, the state it asked for. */
+export function interfaceNoteWriteSettled(error: unknown): boolean {
+  return error instanceof InterfaceNotesApiError
+    && (error.code === 'note_exists' || error.code === 'note_not_found' || error.code === 'note_filed');
+}
+
 async function json<T>(response: Response, action: string): Promise<T> {
   if (response.ok) return response.status === 204 ? (undefined as T) : (await response.json()) as T;
   let message = `${action} failed (${response.status}).`;
+  let code: string | null = null;
   try {
     const body = await response.json() as { message?: string; error?: string };
+    code = body.error ?? null;
     message = body.message ?? body.error ?? message;
   } catch { /* keep the status message */ }
-  throw new Error(message);
+  throw new InterfaceNotesApiError(message, response.status, code);
 }
 
 const write = (method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<Response> =>
@@ -44,8 +61,14 @@ export async function updateInterfaceNoteText(id: string, text: string): Promise
   return json<InterfaceNote>(await write('PATCH', INTERFACE_NOTE_ROUTES.note(id), { text }), 'Saving the note');
 }
 
-export async function deleteInterfaceNote(id: string): Promise<void> {
-  await json<void>(await write('DELETE', INTERFACE_NOTE_ROUTES.note(id)), 'Removing the note');
+/** The toolbar's delete: refused with `note_filed` when the note has been filed, which leaves its comment untouched. */
+export async function deleteUnfiledInterfaceNote(id: string): Promise<void> {
+  await json<void>(await write('DELETE', INTERFACE_NOTE_ROUTES.note(id)), 'Deleting the note');
+}
+
+/** The issue view's remove control. */
+export async function removeInterfaceNoteFromComment(id: string, commentId: string): Promise<void> {
+  await json<void>(await write('DELETE', INTERFACE_NOTE_ROUTES.noteOnComment(id, commentId)), 'Removing the note');
 }
 
 export async function fileInterfaceNotes(request: FileInterfaceNotesRequest): Promise<FileInterfaceNotesResult> {

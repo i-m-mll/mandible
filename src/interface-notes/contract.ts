@@ -64,13 +64,46 @@ export interface InterfaceNoteChangedPayload {
 export const INTERFACE_NOTE_ROUTES = {
   /** GET: unfiled notes, or `?issue=<ref>` for one issue's filed notes. POST InterfaceNoteInput: 201, or 409 `note_exists`. */
   collection: "/api/interface-notes",
-  /** PATCH `{ text }`: edit; a filed note's edit revises its comment body. DELETE: remove; the last note of a comment soft-deletes the comment. */
+  /**
+   * PATCH `{ text }`: edit, whoever owns the note; a filed note's edit revises its comment body. 404 `note_not_found`.
+   * DELETE: delete an unfiled note. 404 `note_not_found`; 409 `note_filed` when the note has an owner, which is left untouched.
+   */
   note: (id: string): string => `/api/interface-notes/${encodeURIComponent(id)}`,
+  /**
+   * DELETE: remove a filed note from the comment that owns it; the last note of a comment soft-deletes the comment.
+   * 404 `note_not_found`; 409 `note_owner_mismatch` when that comment does not own the note.
+   */
+  noteOnComment: (id: string, commentId: string): string =>
+    `/api/interface-notes/${encodeURIComponent(id)}?comment=${encodeURIComponent(commentId)}`,
   /** POST FileInterfaceNotesRequest: one new comment carrying the notes. */
   file: "/api/interface-notes/file",
   /** GET /api/issues with this query lists only issues that carry notes, most recently annotated first. */
   issuesWithNotesQuery: "has_notes=true",
 } as const;
+
+/**
+ * Every refusal of an interface-notes route is `{ error: <code>, message?: string }` with the status below.
+ * A caller replaying a write treats `note_exists` on create, and `note_not_found` or `note_filed` on
+ * edit or delete, as done: the daemon already holds the state the write asked for, or has moved past it.
+ * Any other failure leaves the write pending.
+ */
+export const INTERFACE_NOTE_ERRORS = {
+  /** POST collection: a note with this id is already held. */
+  note_exists: 409,
+  /** PATCH, DELETE: no note with this id. */
+  note_not_found: 404,
+  /** DELETE of an unfiled note: the note has been filed and stays on its comment. */
+  note_filed: 409,
+  /** DELETE from a comment: that comment does not own the note. */
+  note_owner_mismatch: 409,
+  /** POST, PATCH: the text, target or pin fails validation. */
+  invalid_note: 400,
+  /** POST file: the issue ref does not resolve. */
+  issue_not_found: 404,
+  /** POST file with `new_issue`: `interface_notes_project` is unset or does not resolve. */
+  receiving_project_unset: 409,
+} as const;
+export type InterfaceNoteErrorCode = keyof typeof INTERFACE_NOTE_ERRORS;
 
 export const MAX_INTERFACE_NOTE_TEXT = 10_000;
 
