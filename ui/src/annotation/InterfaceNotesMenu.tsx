@@ -7,7 +7,7 @@ import {
 } from '../../../src/interface-notes/contract';
 import type { IssueRepoSummary } from '../../../src/types';
 import { getLedgerIssueInitialDetailByIssueId } from '../api';
-import { getSelectedWritableChatTarget, highlightDraftAttachments } from '../chat/attachmentDrafts';
+import { getSelectedWritableChatTarget, getWritableChatTarget, highlightDraftAttachments } from '../chat/attachmentDrafts';
 import { appTip } from '../components/shared/AppHoverTips';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { useAnchoredMenu, type AnchoredMenuPlacement } from '../hooks/useAnchoredMenu';
@@ -212,7 +212,8 @@ function OpenMenu({ request: opened, receivingProject }: { request: MenuRequest;
     }
     highlightDraftAttachments(staged.value.target, staged.value.addedIds);
     settle({ ok: true });
-    navigateTo(viewHref('console', { conversation: staged.value.target }));
+    // Opening a conversation reloads it, so a Chat that is already showing is left as it is.
+    if (getWritableChatTarget() !== staged.value.target) navigateTo(viewHref('console', { conversation: staged.value.target }));
   };
 
   const unload = () => {
