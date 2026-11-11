@@ -22,6 +22,8 @@ export type DetailPaneModalProps = {
   scrollLockClassName?: string;
   className?: string;
   panelClassName?: string;
+  /** Controls placed in the header before the close control. */
+  headerActions?: ComponentChildren;
   children: ComponentChildren;
 };
 
@@ -44,6 +46,7 @@ export function DetailPaneModal({
   scrollLockClassName,
   className = '',
   panelClassName = '',
+  headerActions,
   children,
 }: DetailPaneModalProps): JSX.Element | null {
   const paneContext = useContext(DetailPaneOverlayContext);
@@ -162,7 +165,12 @@ export function DetailPaneModal({
       <div className={`detail-pane-modal__panel${panelClassName ? ` ${panelClassName}` : ''}`} ref={panelRef}>
         <div className="detail-pane-modal__header">
           <h3 id={titleId}>{title}</h3>
-          <OverlayCloseButton label={closeLabel} onClick={onClose} />
+          {headerActions ? (
+            <div className="detail-pane-modal__header-actions">
+              {headerActions}
+              <OverlayCloseButton label={closeLabel} onClick={onClose} />
+            </div>
+          ) : <OverlayCloseButton label={closeLabel} onClick={onClose} />}
         </div>
         {children}
       </div>
