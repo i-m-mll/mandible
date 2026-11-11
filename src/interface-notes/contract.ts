@@ -104,6 +104,8 @@ export const INTERFACE_NOTE_ERRORS = {
   receiving_project_unset: 409,
   /** POST file: every listed note was filed or deleted meanwhile; no comment or issue is created. */
   nothing_to_file: 409,
+  /** Any route, in a preview that keeps notes in its source instance: that instance did not answer. */
+  source_unavailable: 503,
 } as const;
 export type InterfaceNoteErrorCode = keyof typeof INTERFACE_NOTE_ERRORS;
 

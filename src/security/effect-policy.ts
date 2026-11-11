@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { resolvesToProductionDbPath } from "../../cli/production-db-guard.cjs";
 import type { InstanceInfo } from "../types.js";
 import {
   PRODUCTION_EFFECTS,
@@ -28,8 +29,14 @@ export function authorizeEffects(
     : { allowed: false, code: "effect_forbidden", missing };
 }
 
-export function effectsForInstance(role: InstanceInfo["role"]): readonly Effect[] {
-  return role === "preview" ? STANDARD_PREVIEW_EFFECTS : PRODUCTION_EFFECTS;
+/**
+ * The effect ceiling of an instance. A preview copied from the live ledger may write
+ * interface notes to it; a preview copied from any other database keeps them in its copy.
+ */
+export function effectsForInstance(role: InstanceInfo["role"], sourceDbPath: string | null): readonly Effect[] {
+  if (role !== "preview") return PRODUCTION_EFFECTS;
+  if (sourceDbPath !== null && resolvesToProductionDbPath(sourceDbPath)) return STANDARD_PREVIEW_EFFECTS;
+  return STANDARD_PREVIEW_EFFECTS.filter((effect) => effect !== "notes:source");
 }
 
 export function validatePreviewWritableRoots(instance: InstanceInfo): void {

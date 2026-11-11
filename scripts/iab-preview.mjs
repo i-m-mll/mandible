@@ -25,6 +25,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 const { liveDbPath } = require("../cli/mandible-paths.cjs");
 import SqliteDatabase from "../src/sqlite.ts";
+import { effectsForInstance } from "../src/security/effect-policy.ts";
 import { conversationStructureCachePath, CONVERSATION_STRUCTURE_CACHE_VERSION } from "../src/conversations/structure-cache-path.ts";
 import { projectConversationCache } from "../src/conversations/structure-cache.ts";
 
@@ -1862,9 +1863,7 @@ function previewIsolationEnv(previewRoot, sourceDb) {
     MANDIBLE_INSTANCE_SOURCE_ARTIFACT_DIR: path.resolve(
       process.env.MANDIBLE_ARTIFACT_DIR?.trim() || path.join(mandibleHome(), "artifacts"),
     ),
-    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify([
-      "ledger:read", "ledger:write", "files:preview", "preferences:instance",
-    ]),
+    MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(effectsForInstance("preview", sourceDb)),
     MANDIBLE_WRITABLE_ROOTS: JSON.stringify([previewRoot]),
     // Recyclable writable state stays under the preview root. Client-auth is
     // the deliberate exception: its authority id, pepper, and bounded session
@@ -2311,7 +2310,8 @@ function readHealth(port) {
 function hasExpectedPreviewPolicy(health) {
   return health?.instance?.role === "preview" &&
     Array.isArray(health.instance.allowed_effects) &&
-    health.instance.allowed_effects.join(",") === "ledger:read,ledger:write,files:preview,preferences:instance";
+    typeof health.instance.source_db_path === "string" &&
+    health.instance.allowed_effects.join(",") === effectsForInstance("preview", health.instance.source_db_path).join(",");
 }
 
 function hasExpectedPreviewFileRpc(metadata, health, previewRoot) {

@@ -18,7 +18,7 @@ import { setSetting } from '../src/client-auth/settings-kv';
 import { resolveInstanceInfo } from '../src/instance-policy';
 import { registerBriefingRoutes } from '../src/routes/briefing';
 import { Router } from '../src/server';
-import { STANDARD_PREVIEW_EFFECTS } from '../src/security/effect-policy';
+import { effectsForInstance } from '../src/security/effect-policy';
 import { createUser } from '../src/users/store';
 
 import { AppShellProvider } from '../ui/src/app-shell';
@@ -63,7 +63,7 @@ describe('copied-preview Briefing publication boundary', () => {
         dbPath: privateDbPath, sourceDbPath,
       });
       expect(previewInstance).toMatchObject({
-        role: 'preview', allowed_effects: STANDARD_PREVIEW_EFFECTS,
+        role: 'preview', allowed_effects: effectsForInstance('preview', sourceDbPath),
         db_path: privateDbPath, source_db_path: sourceDbPath,
       });
       const preview = new Router({ clientAuth: new UiRoundTripGate(privateDb), instance: previewInstance });
