@@ -13,7 +13,6 @@ import { waitUntilPasses } from "./helpers/wait-until.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { acceptedReleaseReceiptFixture } from './helpers/accepted-release-fixture.js';
 import { acceptedReleaseSelection, bindAcceptedRelease } from '../src/accepted-release-selection.js';
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { collectAuthMergeReview } from "../src/auth-change-report.js";
 import { CandidateAcceptanceRuns, latestCandidateAcceptance, type CandidateAcceptanceInput, type CandidateAcceptanceOutcome } from "../src/candidate-acceptance.js";
 import { setDb } from "../src/db.js";
@@ -122,7 +121,7 @@ beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-self-update-home-"));
   vi.stubEnv("MANDIBLE_HOME", home);
   db = createMigratedDb();
-  operatorId = configureSigningCredential(db, repo, "ssh_key").operatorId;
+  operatorId = configureSigningCredential(db, repo).operatorId;
   fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n.mandible-test-signing-key*\n");
   registerWorkRepo(db, repo);
   projectId = createLedgerProject(db, repo).project.id;
@@ -413,7 +412,7 @@ describe("candidate acceptance gate", () => {
 
     setDb(db);
     const router = authenticatedTestRouter(getOperator(db)!);
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => db));
+    registerAuthRoutes(router, queue, inlineLedgerReader(() => db));
     for (const url of [`/api/auth/request/${request.id}`, "/api/auth/queue", "/api/auth/history"]) {
       inspector.mockClear();
       if (url === "/api/auth/history") db.prepare("UPDATE auth_requests SET status = 'failed', resolved_at = 1").run();

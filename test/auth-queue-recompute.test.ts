@@ -121,7 +121,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/unaccounted-c", { "uc.txt": "uc\n" });
         commitOnBranch(repo, "feature/rogue", { "rogue.txt": "rogue\n" });
         registerWorkRepo(db, repo);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         // Plain descendant commit on the protected base.
         const first = (await submitPinnedRequest(queue, repo, "feature/unaccounted-a"));
@@ -166,7 +166,7 @@ describe("auth queue", () => {
           commitOnBranch(repo, `feature/${branch}`, { [`${branch}.txt`]: `${branch}\n` });
         }
         registerWorkRepo(db, repo);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
         const expectInvalidated = async (id: string) => {
           expect((await queue.getRequest(id))).toMatchObject({
             merge_candidate_pin_sha: null,
@@ -234,7 +234,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/pin-fail", { "pf.txt": "pf\n" });
         commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
         registerWorkRepo(db, repo);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         const request = (await submitPinnedRequest(queue, repo, "feature/pin-fail"));
         const originalPin = request.merge_candidate_pin_sha!;
@@ -278,7 +278,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/remote", { "rm.txt": "rm\n" });
         commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
         registerWorkRepo(db, repo);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         const request = (await submitPinnedRequest(queue, repo, "feature/remote"));
         db.prepare("UPDATE auth_requests SET execution_mode = 'remote' WHERE id = ?").run(request.id);
@@ -309,7 +309,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/base-race", { "br.txt": "br\n" });
         commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
         registerWorkRepo(db, repo);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         const request = (await submitPinnedRequest(queue, repo, "feature/base-race"));
         const originalPin = request.merge_candidate_pin_sha!;
@@ -353,7 +353,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
         registerWorkRepo(db, repo);
         git(repo, ["config", "core.hooksPath", ".git/hooks"]);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         const request = (await submitPinnedRequest(queue, repo, "feature/head-race"));
         const reviewedHead = request.merge_head_sha!;
@@ -408,7 +408,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/cas-gone", { "cg.txt": "cg\n" });
         commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
         registerWorkRepo(db, repo);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         const request = (await submitPinnedRequest(queue, repo, "feature/cas-gone"));
         const newBase = advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-cas-sib");
@@ -448,7 +448,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/cas-db", { "cd.txt": "cd\n" });
         commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
         registerWorkRepo(db, repo);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         const request = (await submitPinnedRequest(queue, repo, "feature/cas-db"));
         const newBase = advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-cas-db");
@@ -507,7 +507,7 @@ describe("auth queue", () => {
           // signers file is non-empty) but the key that actually signs the
           // protected merge was never registered — the exact 2026-08-12
           // production shape.
-          configureSigningCredential(db, repo, "ssh_key");
+          configureSigningCredential(db, repo);
           const unregisteredKeyPath = path.join(repo, ".unregistered-signing-key");
           execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", unregisteredKeyPath]);
           const unregisteredFingerprint = execFileSync(
@@ -550,7 +550,7 @@ describe("auth queue", () => {
           commitOnBranch(repo, "feature/drifted", { "df.txt": "df\n" });
           commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
           registerWorkRepo(db, repo);
-          configureSigningCredential(db, repo, "ssh_key");
+          configureSigningCredential(db, repo);
 
           const request = (await submitPinnedRequest(queue, repo, "feature/drifted"));
           const reviewedHead = request.merge_head_sha!;

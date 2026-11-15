@@ -15,7 +15,6 @@ import { CONVERSATION_IDENTITY_SCHEMA_SQL } from './conversations/identity.js';
 import { ARTIFACT_CUSTODY_TRIGGERS_SQL } from './artifact-custody-schema.js';
 import { ARTIFACT_SOURCE_SCHEMA_SQL } from './artifact-source-schema.js';
 import type { Db } from "./db.js";
-import { AUTH_CLEARANCE_SCHEMA_SQL } from "./auth-clearance-schema.js";
 import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.js";
 import { PROTECTED_BASE_AUDIT_SCHEMA_SQL } from "./protected-base-audit-schema.js";
 import { OPERATOR_TRUST_CHANGES_SCHEMA_SQL, USER_CREDENTIALS_INDEX_SQL, USER_CREDENTIALS_TABLE_SQL } from "./operator-signing/schema.js";
@@ -36,7 +35,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 239;
+export const BASELINE_SCHEMA_VERSION = 240;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -168,8 +167,12 @@ export const CONVERSATION_OPENING_LINEAGE_SQL: readonly string[] = [
   "ALTER TABLE conversations ADD COLUMN agent_created INTEGER NOT NULL DEFAULT 0 CHECK(agent_created IN (0, 1))",
 ];
 
+export const AUTH_PREREQUISITE_COLUMN_SQL =
+  "ALTER TABLE auth_requests ADD COLUMN depends_on_ids TEXT CHECK (depends_on_ids IS NULL OR (json_valid(depends_on_ids) AND json_type(depends_on_ids) = 'array' AND depends_on_id IS NULL))";
+
+/** Schema v221; its trigger is dropped at v240 along with clearances. */
 export const AUTH_PREREQUISITE_SCHEMA_SQL = [
-  "ALTER TABLE auth_requests ADD COLUMN depends_on_ids TEXT CHECK (depends_on_ids IS NULL OR (json_valid(depends_on_ids) AND json_type(depends_on_ids) = 'array' AND depends_on_id IS NULL))",
+  AUTH_PREREQUISITE_COLUMN_SQL,
   `CREATE TRIGGER auth_prerequisites_clearance_review_frozen
     BEFORE UPDATE OF depends_on_id, depends_on_ids ON auth_requests
     WHEN OLD.clearance_use_id IS NOT NULL
@@ -416,12 +419,12 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE \"artifact_drafts\" (\n          id              TEXT PRIMARY KEY,\n          artifact_id     TEXT NOT NULL REFERENCES artifact(id) ON DELETE CASCADE,\n          version_id      TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,\n          content         TEXT NOT NULL,\n          media_type      TEXT,\n          label           TEXT,\n          note            TEXT,\n          metadata_json   TEXT NOT NULL DEFAULT '{}',\n          created_at      INTEGER NOT NULL,\n          updated_at      INTEGER NOT NULL,\n          UNIQUE(artifact_id)\n        )",
   "CREATE TABLE \"artifact_links\" (\n          id                  TEXT PRIMARY KEY,\n          blob_id             TEXT NOT NULL REFERENCES artifact_blob(id) ON DELETE RESTRICT,\n          entity_type         TEXT NOT NULL,\n          entity_id           TEXT NOT NULL,\n          link_type           TEXT NOT NULL DEFAULT 'references',\n          role                TEXT,\n          repo_id             TEXT,\n          provider_id         TEXT,\n          source              TEXT NOT NULL DEFAULT 'artifact_registry',\n          metadata_json       TEXT NOT NULL DEFAULT '{}',\n          created_at          INTEGER NOT NULL,\n          updated_at          INTEGER NOT NULL,\n          link_kind           TEXT NOT NULL DEFAULT 'pinned'\n            CHECK(link_kind IN ('pinned','living')),\n          series_ref          TEXT,\n          target_type         TEXT NOT NULL\n            CHECK(target_type IN ('artifact','artifact_version','artifact_blob')),\n          target_id           TEXT NOT NULL,\n          fallback_version_id TEXT REFERENCES artifact_version(id) ON DELETE RESTRICT,\n          CHECK (\n            (link_kind = 'living' AND target_type = 'artifact') OR\n            (link_kind = 'pinned' AND target_type IN ('artifact_version','artifact_blob'))\n          )\n        )",
   "CREATE TABLE \"artifact_version\" (\n        id                  TEXT PRIMARY KEY,\n        artifact_id         TEXT NOT NULL REFERENCES artifact(id) ON DELETE CASCADE,\n        version_no          INTEGER NOT NULL,\n        blob_id             TEXT NOT NULL REFERENCES artifact_blob(id) ON DELETE RESTRICT,\n        source_kind         TEXT NOT NULL\n          CHECK(source_kind IN ('tracked_repo','local_only','managed')),\n        content_hash        TEXT NOT NULL,\n        source_project_id   TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        repo_path           TEXT,\n        commit_sha          TEXT,\n        observed_path       TEXT,\n        parent_version_id   TEXT REFERENCES artifact_version(id) ON DELETE SET NULL,\n        custody_mode        TEXT NOT NULL CHECK(custody_mode IN ('git','managed')),\n        label               TEXT,\n        note                TEXT,\n        metadata_json       TEXT NOT NULL DEFAULT '{}',\n        created_at          INTEGER NOT NULL,\n        CHECK(length(content_hash)=64 AND content_hash NOT GLOB '*[^a-f0-9]*'),\n        CHECK((custody_mode='git' AND source_project_id IS NOT NULL AND repo_path IS NOT NULL AND length(repo_path)>0 AND commit_sha IS NOT NULL AND length(commit_sha) IN (40,64) AND commit_sha NOT GLOB '*[^a-f0-9]*') OR (custody_mode='managed' AND source_project_id IS NULL AND repo_path IS NULL AND commit_sha IS NULL)),\n        UNIQUE(artifact_id, version_no)\n      )",
-  "CREATE TABLE attribution_evidence (\n        id              TEXT PRIMARY KEY,\n        evidence_method TEXT NOT NULL,\n        credential_id   TEXT REFERENCES user_credentials(id) ON DELETE SET NULL,\n        lease_id        TEXT REFERENCES delegated_signing_leases(id) ON DELETE SET NULL,\n        verified_at     INTEGER NOT NULL,\n        details_json    TEXT NOT NULL DEFAULT '{}'\n                          CHECK(json_valid(details_json) AND json_type(details_json)='object')\n      )",
+  "CREATE TABLE attribution_evidence (\n        id              TEXT PRIMARY KEY,\n        evidence_method TEXT NOT NULL,\n        credential_id   TEXT REFERENCES user_credentials(id) ON DELETE SET NULL,\n        verified_at     INTEGER NOT NULL,\n        details_json    TEXT NOT NULL DEFAULT '{}'\n                          CHECK(json_valid(details_json) AND json_type(details_json)='object')\n      )",
   "CREATE TABLE auth_hooks (\n        id            TEXT PRIMARY KEY,\n        repo_pattern  TEXT NOT NULL DEFAULT '*',\n        auth_type     TEXT NOT NULL DEFAULT 'merge',\n        command       TEXT NOT NULL,\n        label         TEXT NOT NULL DEFAULT '',\n        enabled       INTEGER NOT NULL DEFAULT 1,\n        builtin       INTEGER NOT NULL DEFAULT 0,\n        position      INTEGER NOT NULL DEFAULT 0,\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL\n      , required INTEGER NOT NULL DEFAULT 1)",
   "CREATE TABLE auth_hook_alerts (\n        id                TEXT PRIMARY KEY,\n        auth_request_id   TEXT NOT NULL,\n        hook_id           TEXT NOT NULL,\n        hook_label        TEXT NOT NULL DEFAULT '',\n        session_id        TEXT,\n        repo              TEXT,\n        detail            TEXT NOT NULL DEFAULT '',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        acknowledged_at   INTEGER,\n        acknowledged_by   TEXT,\n        UNIQUE(auth_request_id, hook_id)\n      )",
   AUTH_HOOK_EXECUTIONS_TABLE_SQL,
   AUTH_REQUEST_ACTIONS_TABLE_SQL,
-  "CREATE TABLE auth_requests (\n  id            TEXT PRIMARY KEY,\n  session_id    TEXT,\n  command       TEXT NOT NULL,\n  title         TEXT NOT NULL,\n  cwd           TEXT,\n  diff_summary  TEXT,\n  spec_content  TEXT,\n  status        TEXT NOT NULL DEFAULT 'pending',\n  created_at    INTEGER NOT NULL,\n  updated_at    INTEGER NOT NULL,\n  approved_at   INTEGER,\n  resolved_at   INTEGER,\n  skipped_at    INTEGER,\n  expires_at    INTEGER NOT NULL,\n  exit_code     INTEGER,\n  output        TEXT NOT NULL DEFAULT '',\n  error         TEXT\n, repo TEXT, base_branch TEXT, head_branch TEXT, files_changed INTEGER DEFAULT 0, additions INTEGER DEFAULT 0, deletions INTEGER DEFAULT 0, execution_mode TEXT NOT NULL DEFAULT 'daemon', commit_message TEXT, last_executed_at INTEGER, post_merge_handoff TEXT, issue_ids TEXT, depends_on_id TEXT, issues TEXT, type TEXT NOT NULL DEFAULT 'merge', target_repo_root TEXT, approval_source TEXT NOT NULL DEFAULT 'manual', approval_lease_id TEXT, issue_references TEXT, issue_closures TEXT, merge_preflight_base_sha TEXT, merge_preflight_queue_fingerprint TEXT, merge_head_sha TEXT, merge_finalized_at INTEGER, requested_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, approved_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, execution_evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL, merge_finalizer_state TEXT, merge_candidate_tree_sha TEXT, merge_candidate_pin_sha TEXT, merge_atomic_enabled INTEGER NOT NULL DEFAULT 0, commit_message_digest TEXT, supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT, superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT)",
+  "CREATE TABLE auth_requests (\n  id            TEXT PRIMARY KEY,\n  session_id    TEXT,\n  command       TEXT NOT NULL,\n  title         TEXT NOT NULL,\n  cwd           TEXT,\n  diff_summary  TEXT,\n  spec_content  TEXT,\n  status        TEXT NOT NULL DEFAULT 'pending',\n  created_at    INTEGER NOT NULL,\n  updated_at    INTEGER NOT NULL,\n  approved_at   INTEGER,\n  resolved_at   INTEGER,\n  skipped_at    INTEGER,\n  expires_at    INTEGER NOT NULL,\n  exit_code     INTEGER,\n  output        TEXT NOT NULL DEFAULT '',\n  error         TEXT\n, repo TEXT, base_branch TEXT, head_branch TEXT, files_changed INTEGER DEFAULT 0, additions INTEGER DEFAULT 0, deletions INTEGER DEFAULT 0, execution_mode TEXT NOT NULL DEFAULT 'daemon', commit_message TEXT, last_executed_at INTEGER, post_merge_handoff TEXT, issue_ids TEXT, depends_on_id TEXT, issues TEXT, type TEXT NOT NULL DEFAULT 'merge', target_repo_root TEXT, issue_references TEXT, issue_closures TEXT, merge_preflight_base_sha TEXT, merge_preflight_queue_fingerprint TEXT, merge_head_sha TEXT, merge_finalized_at INTEGER, requested_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, approved_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, execution_evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL, merge_finalizer_state TEXT, merge_candidate_tree_sha TEXT, merge_candidate_pin_sha TEXT, merge_atomic_enabled INTEGER NOT NULL DEFAULT 0, commit_message_digest TEXT, supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT, superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT)",
   ...AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
   ...WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   "CREATE TABLE auth_request_merge_succeeded_facts (\n        auth_request_id   TEXT PRIMARY KEY,\n        project_id        TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        base_branch       TEXT NOT NULL,\n        completed_at      INTEGER NOT NULL,\n        canonical_message INTEGER NOT NULL CHECK(canonical_message IN (0,1)),\n        recorded_at       INTEGER NOT NULL\n      )",
@@ -447,7 +450,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   ...CONVERSATION_SPAWN_SCHEMA_SQL,
   CONVERSATION_IDENTITY_SCHEMA_SQL,
   ...CONVERSATION_SIDEBAR_INDEX_SQL,
-  "CREATE TABLE delegated_signing_leases (\n        id            TEXT PRIMARY KEY,\n        credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,\n        owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        minted_at     INTEGER NOT NULL,\n        expires_at    INTEGER NOT NULL,\n        mint_method   TEXT NOT NULL\n                        CHECK(mint_method IN ('fresh_presence','reused_lease'))\n      )",
   "CREATE TABLE graph_edges (\n        id            TEXT PRIMARY KEY,\n        source_id     TEXT NOT NULL,\n        target_id     TEXT NOT NULL,\n        edge_type     TEXT NOT NULL,\n        edge_class    TEXT NOT NULL DEFAULT 'provenance',\n        provenance    TEXT NOT NULL DEFAULT 'system',\n        confidence    TEXT NOT NULL DEFAULT 'observed',\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at    INTEGER,\n        observed_at   INTEGER NOT NULL,\n        source        TEXT NOT NULL\n      )",
   "CREATE TABLE graph_entities (\n        id                  TEXT PRIMARY KEY,\n        entity_type         TEXT NOT NULL,\n        repo_id             TEXT,\n        provider_id         TEXT,\n        external_id         TEXT,\n        title               TEXT NOT NULL,\n        status              TEXT,\n        labels_json         TEXT NOT NULL DEFAULT '[]',\n        summary_json        TEXT NOT NULL DEFAULT '{}',\n        detail_ref_json     TEXT NOT NULL DEFAULT '{}',\n        action_context_json TEXT NOT NULL DEFAULT '{}',\n        visual_json         TEXT NOT NULL DEFAULT '{}',\n        created_at          INTEGER,\n        updated_at          INTEGER,\n        observed_at         INTEGER NOT NULL,\n        source              TEXT NOT NULL\n      )",
   "CREATE TABLE issue_branches (\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        branch TEXT NOT NULL,\n        role TEXT NOT NULL DEFAULT 'primary'\n          CHECK(role IN ('primary','superseded')),\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        PRIMARY KEY (issue_id, branch)\n      )",
@@ -541,7 +543,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_artifact_version_hash\n        ON artifact_version(content_hash)",
   "CREATE INDEX idx_artifact_version_source_project\n        ON artifact_version(source_project_id)\n        WHERE source_project_id IS NOT NULL",
   "CREATE INDEX idx_attribution_evidence_credential\n        ON attribution_evidence(credential_id) WHERE credential_id IS NOT NULL",
-  "CREATE INDEX idx_attribution_evidence_lease\n        ON attribution_evidence(lease_id) WHERE lease_id IS NOT NULL",
   "CREATE INDEX idx_auth_hook_alerts_open\n        ON auth_hook_alerts(acknowledged_at, created_at DESC)",
   AUTH_HOOK_EXECUTIONS_INDEX_SQL,
   "CREATE INDEX idx_auth_hooks_repo_type\n        ON auth_hooks(repo_pattern, auth_type)",
@@ -569,8 +570,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_conv_started ON conversations(started_at)",
   "CREATE INDEX idx_conv_started_ms\n        ON conversations(started_at_ms) WHERE started_at_ms IS NOT NULL",
   "CREATE INDEX idx_conversation_ingest_state_updated\n        ON conversation_ingest_state(updated_at)",
-  "CREATE INDEX idx_delegated_signing_leases_credential\n        ON delegated_signing_leases(credential_id)",
-  "CREATE INDEX idx_delegated_signing_leases_owner\n        ON delegated_signing_leases(owner_user_id)",
   "CREATE INDEX idx_graph_edges_class\n        ON graph_edges(edge_class)",
   "CREATE INDEX idx_graph_edges_source\n        ON graph_edges(source_id)",
   "CREATE INDEX idx_graph_edges_target\n        ON graph_edges(target_id)",
@@ -980,10 +979,6 @@ const DEFAULT_SETTINGS: ReadonlyArray<readonly [string, string]> = [
     "true"
   ],
   [
-    "auth_auto_approve_duration_minutes",
-    "60"
-  ],
-  [
     "ledger.issues.read_mode",
     "scanner"
   ],
@@ -1096,10 +1091,6 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     }
     db.exec("ALTER TABLE auth_requests ADD COLUMN requester_evidence_method TEXT");
     db.exec("ALTER TABLE auth_requests ADD COLUMN requester_credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT");
-    for (const statement of AUTH_CLEARANCE_SCHEMA_SQL.filter((sql) => !sql.includes("auth_requests_clearance_review_frozen"))) {
-      db.exec(statement);
-    }
-    db.exec("ALTER TABLE auth_requests ADD COLUMN clearance_use_id TEXT REFERENCES auth_clearance_uses(id) ON DELETE RESTRICT");
     db.exec("ALTER TABLE auth_requests ADD COLUMN supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT");
     db.exec("ALTER TABLE auth_requests ADD COLUMN superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT");
     db.exec("ALTER TABLE auth_requests ADD COLUMN custody_work_unit_id TEXT REFERENCES work_units(id) ON DELETE RESTRICT");
@@ -1133,7 +1124,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     // Match forward migration order: publication binding follows all prior auth columns.
     for (const statement of SPACE_PUBLICATION_AUTH_SCHEMA_SQL) db.exec(statement);
     db.exec(AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL);
-    for (const statement of AUTH_PREREQUISITE_SCHEMA_SQL) db.exec(statement);
+    db.exec(AUTH_PREREQUISITE_COLUMN_SQL);
     db.exec("ALTER TABLE work_units ADD COLUMN custody_generation INTEGER NOT NULL DEFAULT 0 CHECK(custody_generation >= 0)");
     for (const statement of WORKER_THREAD_ARCHIVES_SCHEMA_SQL) db.exec(statement);
     for (const statement of LEDGER_ORIGIN_SCHEMA_SQL) db.exec(statement);
@@ -1144,8 +1135,6 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     db.exec("ALTER TABLE work_units ADD COLUMN responsibility_session_id TEXT");
     for (const sql of RESPONSIBILITY_SCHEMA_SQL) db.exec(sql);
     for (const statement of EXACT_AGENT_WORK_UNIT_SCHEMA_SQL) db.exec(statement);
-    const clearanceFreezeTrigger = AUTH_CLEARANCE_SCHEMA_SQL.find((sql) => sql.includes("auth_requests_clearance_review_frozen"));
-    if (clearanceFreezeTrigger) db.exec(clearanceFreezeTrigger);
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
       .run("schema_version", String(schemaVersion));
 

@@ -438,5 +438,5 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       value: body.value,
       deprecated: DEPRECATED_REAPER_SETTINGS.has(key) || undefined,
     });
-  }), { operation: { id: "put:/api/settings/:key", effects: ({ params }) => ["protected_branches", "auth_auto_approve_duration_minutes"].includes(params.key) ? ["ledger:write", "auth:credentials"] : ["ledger:write"], requestSchema: null, reportingCategory: "settings" }, fileRpc: "deny" });
+  }), { operation: { id: "put:/api/settings/:key", effects: ({ params }) => params.key === "protected_branches" ? ["ledger:write", "auth:credentials"] : ["ledger:write"], requestSchema: null, reportingCategory: "settings" }, fileRpc: "deny" });
 }

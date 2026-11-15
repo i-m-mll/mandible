@@ -71,7 +71,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/rogue", { "rg.txt": "rg\n" });
         commitOnBranch(repo, "feature/decoy", { "dc.txt": "dc\n" });
         registerWorkRepo(db, repo);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         const request = (await submitPinnedRequest(queue, repo, "feature/forge-target"));
         // Signed but UNRECORDED base advance (no completed queue request).
@@ -112,7 +112,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/ev-sib-2", { "evs2.txt": "s2\n" });
         registerWorkRepo(db, repo);
         git(repo, ["config", "core.hooksPath", ".git/hooks"]);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         const first = (await submitPinnedRequest(queue, repo, "feature/ev-a"));
         const second = (await submitPinnedRequest(queue, repo, "feature/ev-b"));
@@ -165,7 +165,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/reuse-sib", { "rs.txt": "rs\n" });
         commitOnBranch(repo, "feature/reuse-decoy", { "rd.txt": "rd\n" });
         registerWorkRepo(db, repo);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         const request = (await submitPinnedRequest(queue, repo, "feature/reuse-target"));
         const newBase = advanceMainViaAuthorizedMerge(db, repo, "feature/reuse-sib", "merge-reuse-1");
@@ -197,7 +197,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/octo-1", { "o1.txt": "o1\n" });
         commitOnBranch(repo, "feature/octo-2", { "o2.txt": "o2\n" });
         registerWorkRepo(db, repo);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         const request = (await submitPinnedRequest(queue, repo, "feature/octo-target"));
         // Signed octopus merge: first parent main, then octo-1 AND octo-2.
@@ -232,7 +232,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/signer-target", { "st.txt": "st\n" });
         commitOnBranch(repo, "feature/signer-sib", { "ss.txt": "ss\n" });
         registerWorkRepo(db, repo);
-        const operatorSigning = configureSigningCredential(db, repo, "ssh_key");
+        const operatorSigning = configureSigningCredential(db, repo);
 
         // Second ACTIVE registered user with their own real signing key.
         const outsider = createUser(db, {
@@ -281,7 +281,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, "feature/long", { "long.txt": "long\n" });
         registerWorkRepo(db, repo);
         git(repo, ["config", "core.hooksPath", ".git/hooks"]);
-        configureSigningCredential(db, repo, "ssh_key");
+        configureSigningCredential(db, repo);
 
         const multi = (await submitPinnedRequest(queue, repo, "feature/multi"));
         const long = (await submitPinnedRequest(queue, repo, "feature/long"));

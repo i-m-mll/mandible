@@ -24,7 +24,6 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   "commit_message_digest",
   "last_executed_at", "post_merge_handoff", "issue_ids",
   "depends_on_id", "depends_on_ids", "issues", "type", "target_repo_root",
-  "approval_source", "approval_lease_id",
   "issue_references", "issue_closures", "merge_preflight_base_sha",
   "merge_preflight_queue_fingerprint", "merge_head_sha", "merge_candidate_tree_sha",
   "merge_candidate_pin_sha", "merge_atomic_enabled", "merge_finalized_at",
@@ -39,7 +38,7 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   // `authAttributionReadFields`, which reads exactly these three ids. They are
   // small scalar id columns, so projecting them costs nothing.
   "space_publication_id", "requested_by_user_id", "requester_evidence_method", "requester_credential_id",
-  "approved_by_user_id", "execution_evidence_id", "clearance_use_id",
+  "approved_by_user_id", "execution_evidence_id",
   "supersedes_request_id", "superseded_by_request_id",
   "custody_work_unit_id",
   // Issue 8ae6b5f — small bounded JSON: where a dirty policy moved protected-root changes.

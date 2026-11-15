@@ -42,7 +42,7 @@ import { startDaemon } from "../src/index.js";
 import { checkHealth } from "../src/lifecycle.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
 import { appendAuthLifecycleEvent, listAuthExecutionAttempts, listAuthLifecycleEvents } from "../src/auth-lifecycle.js";
-import { AUTH_SNAPSHOT_SHAPE_V220, AUTH_SNAPSHOT_SHAPE_V221, authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
+import { AUTH_SNAPSHOT_SHAPE_V220, AUTH_SNAPSHOT_SHAPE_V221, AUTH_SNAPSHOT_SHAPE_V238, authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { readLedgerChangeFeed } from "../src/ledger/change-feed.js";
 import { addProject } from "../src/ledger/project-registry.js";
@@ -1172,7 +1172,7 @@ describe("v238 delivery column retirement", () => {
       db.prepare("UPDATE auth_requests SET delivered_at = 5, acknowledged_by = 'session-1' WHERE id = 'drifted-request'").run();
       const before = db.prepare("SELECT * FROM auth_request_lifecycle_events ORDER BY auth_request_id, revision").all();
 
-      migrate(db);
+      migrate(db, 238);
 
       const after = db.prepare("SELECT * FROM auth_request_lifecycle_events ORDER BY auth_request_id, revision").all() as Array<{ snapshot_json: string; snapshot_sha256: string }>;
       for (const event of after) expect(sha256(event.snapshot_json)).toBe(event.snapshot_sha256);
@@ -1180,10 +1180,55 @@ describe("v238 delivery column retirement", () => {
       const pending = listAuthLifecycleEvents(db, "pending-request");
       expect(pending).toHaveLength(2);
       expect(pending[1]).toMatchObject({ revision: 2, event_type: "revised", prior_status: "pending", next_status: "pending", authority_path: "legacy" });
-      expect(pending[1].snapshot_sha256).toBe(authSnapshotDigest(authRequestSnapshot(db, "pending-request")));
+      expect(pending[1].snapshot_sha256).toBe(authSnapshotDigest(authRequestSnapshot(db, "pending-request", AUTH_SNAPSHOT_SHAPE_V238)));
       expect(listAuthLifecycleEvents(db, "executing-request")).toHaveLength(1);
       expect(listAuthLifecycleEvents(db, "drifted-request")).toHaveLength(1);
       expect(db.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("v240 delegation removal", () => {
+  const credential = (db: Db, id: string, type: string) => db.prepare(`INSERT INTO user_credentials (id, user_id, type, fingerprint, created_at)
+    VALUES (?, (SELECT id FROM users LIMIT 1), ?, ?, 1)`).run(id, type, `fp-${id}`);
+
+  it("revokes delegated credentials, drops delegation state and rebases pending snapshots", () => {
+    const db = migrateFixtureThrough(239);
+    try {
+      setupOperator(db, { slug: "owner", display_name: "Owner" });
+      credential(db, "delegated", "delegated_ssh_key");
+      credential(db, "recipient", "yubikey_recipient");
+      db.prepare(`INSERT INTO auth_requests (id, command, title, status, created_at, updated_at, expires_at)
+        VALUES ('pending-request', 'mandible auth merge feature/x --into main', 'Pending', 'pending', 1, 2, 3)`).run();
+      const snapshot = authRequestSnapshot(db, "pending-request", AUTH_SNAPSHOT_SHAPE_V238);
+      db.prepare(`INSERT INTO auth_request_lifecycle_events (id, auth_request_id, revision, event_type, next_status,
+        snapshot_json, snapshot_sha256, occurred_at) VALUES ('receipt', 'pending-request', 1, 'submitted', 'pending', ?, ?, 1)`)
+        .run(snapshot, authSnapshotDigest(snapshot));
+
+      migrate(db);
+
+      expect(db.prepare("SELECT id, status FROM user_credentials WHERE id IN ('delegated', 'recipient') ORDER BY id").all())
+        .toEqual([{ id: "delegated", status: "revoked" }, { id: "recipient", status: "revoked" }]);
+      expect(db.prepare(`SELECT name FROM sqlite_master WHERE name IN
+        ('auth_clearances', 'auth_clearance_uses', 'delegated_signing_leases', 'delegated_signing_runtime_bindings')`).all()).toEqual([]);
+      const pending = listAuthLifecycleEvents(db, "pending-request");
+      expect(pending).toHaveLength(2);
+      expect(pending[1].snapshot_sha256).toBe(authSnapshotDigest(authRequestSnapshot(db, "pending-request")));
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("refuses to migrate a request approved under a delegated lease", () => {
+    const db = migrateFixtureThrough(239);
+    try {
+      db.prepare(`INSERT INTO auth_requests (id, command, title, status, created_at, updated_at, expires_at, approval_lease_id)
+        VALUES ('leased', 'mandible auth merge feature/x --into main', 'Leased', 'completed', 1, 2, 3, 'lease')`).run();
+      expect(() => migrate(db)).toThrow("delegated_history_would_be_lost");
+      expect(db.prepare("SELECT approval_lease_id FROM auth_requests WHERE id = 'leased'").get()).toEqual({ approval_lease_id: "lease" });
     } finally {
       db.close();
     }
@@ -1367,7 +1412,7 @@ it("retires project ACL schema and rows while preserving global capability IDs a
     store.addComment(issue.id, { body: "Historical comment", attribution: { user_id: agent.id, evidence_method: "session_claim" } });
     const projectRows = db.prepare("SELECT id, display_name, project_key, created_at, updated_at FROM ledger_projects ORDER BY id").all();
     const tables = ["ledger_issues", "ledger_comments", "ledger_body_revisions", "ledger_events", "users", "user_groups", "user_group_members",
-      "work_unit_custody_events", "auth_request_lifecycle_events", "auth_clearances", "auth_clearance_uses"];
+      "work_unit_custody_events", "auth_request_lifecycle_events"];
     const history = () => Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
     const before = history();
     const violations = db.pragma("foreign_key_check");

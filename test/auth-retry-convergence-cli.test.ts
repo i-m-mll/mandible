@@ -3,7 +3,6 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { expect, it, vi } from "vitest";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthHookManager } from "../src/auth-hooks.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
@@ -24,7 +23,7 @@ it("retries a failed hook through the CLI and real route without replaying the m
   const executor = vi.fn(async () => ({ exit_code: 0, output: "merge executed" }));
   const queue = new AuthQueue({ db, hookManager: hooks, executor, backgroundMaintenance: false });
   const router = new Router({ clientAuth: auth });
-  registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => db));
+  registerAuthRoutes(router, queue, inlineLedgerReader(() => db));
   const requestId = crypto.randomUUID();
   const mergeSha = "a".repeat(40);
   // Retained successful publication: only convergence remains to be repaired.

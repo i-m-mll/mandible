@@ -126,15 +126,13 @@ function readPublicationState(db: Db, binding: RuntimePublicationBinding) {
         || JSON.stringify(JSON.parse(liveSelection.payload).payload) !== JSON.stringify(selected.selection)) fail('accepted release selection was removed or vetoed');
   }
   if (binding.mergeBase && binding.mergeBase !== base || binding.mergeHead && binding.mergeHead !== head) fail("reviewed revisions differ");
-  for (const field of ["command", "repo", "base_branch", "head_branch", "approved_by_user_id", "commit_message", "commit_message_digest", "approval_lease_id"]) {
+  for (const field of ["command", "repo", "base_branch", "head_branch", "approved_by_user_id", "commit_message", "commit_message_digest"]) {
     if (row[field] !== frozen[field]) fail(`frozen ${field} differs`);
   }
   const atomic = extractAtomicMergeState(row.output ?? "");
   if (atomic.invalid || atomic.prepared && (atomic.prepared.merge_sha !== commit || atomic.prepared.base_sha !== base || atomic.prepared.head_sha !== head || atomic.prepared.tree_sha !== tree) ||
       atomic.applied && (atomic.applied.merge_sha !== commit || atomic.applied.base_sha !== base)) fail("atomic publication evidence differs");
-  const lease = row.approval_lease_id ? db.prepare("SELECT credential_id FROM delegated_signing_leases WHERE id = ?").get(row.approval_lease_id) as { credential_id: string } | undefined : undefined;
-  if (row.approval_lease_id && !lease) fail("delegated approval credential is unavailable");
-  return { row, hook, event: event!, frozen, base, head, tree, commit: commit!, selected, liveSelection, lease };
+  return { row, hook, event: event!, frozen, base, head, tree, commit: commit!, selected, liveSelection };
 }
 
 type PublicationState = ReturnType<typeof readPublicationState>;
@@ -156,8 +154,7 @@ export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePu
   const { row, hook, base, head, tree, commit } = state;
   const root = realpathSync(binding.root);
   if (realpathSync(row.target_repo_root ?? row.cwd) !== root) fail("repository binding differs");
-  const lease = state.lease;
-  const signature = (await verifyAuthorizedMergeCommitSignature(db, root, commit!, row.approved_by_user_id, lease?.credential_id));
+  const signature = (await verifyAuthorizedMergeCommitSignature(db, root, commit!, row.approved_by_user_id));
   if (!signature.verified || !signature.credential_id) fail("published signature is not authorized");
   const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
   for (const key of Object.keys(env)) if (/^GIT_(CONFIG_(COUNT|KEY_|VALUE_|PARAMETERS)|DIR$|WORK_TREE$|INDEX_FILE$)/.test(key)) delete env[key as keyof typeof env];
@@ -197,13 +194,14 @@ export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePu
 
 function publicationPayload(binding: RuntimePublicationBinding, state: PublicationState,
   signer: { credentialId: string; fingerprint: string }, canonicalRoot: string) {
+  // `approvalLeaseId` is part of the @1 schema that publications frozen by earlier runtimes carry; no approval has a lease.
   return { schema: "mandible-runtime-publication@1",
     requestId: binding.requestId, executionId: binding.executionId, hookId: binding.hookId, commandDigest: binding.commandDigest,
     repository: { root: binding.root, target: state.row.target_repo_root ?? state.row.cwd, canonicalRoot },
     command: state.row.command, repo: state.row.repo, baseBranch: state.row.base_branch, headBranch: state.row.head_branch,
     mergeCommit: state.commit, mergeBase: state.base, mergeHead: state.head, tree: state.tree,
     snapshotRevision: state.event.revision, snapshotDigest: state.event.snapshot_sha256,
-    commitMessageDigest: state.frozen.commit_message_digest ?? null, approvalLeaseId: state.row.approval_lease_id ?? null,
+    commitMessageDigest: state.frozen.commit_message_digest ?? null, approvalLeaseId: null,
     authorizerUserId: state.row.approved_by_user_id, signerCredentialId: signer.credentialId, fingerprint: signer.fingerprint,
     acceptedRelease: state.selected?.selection ?? null };
 }
@@ -232,7 +230,7 @@ export async function freezeRuntimeHandoffPublication(db: Db, binding: RuntimePu
     });
     const authorization = state.row.execution_evidence_id ? getAttributionEvidence(db, state.row.execution_evidence_id) : null;
     const details = { auth_request_id: state.row.id, authorizer_user_id: state.row.approved_by_user_id,
-      executor_user_id: systemAction().user_id, approval_source: state.row.approval_source,
+      executor_user_id: systemAction().user_id,
       signer_user_id: state.row.approved_by_user_id, verified: true, publication_verified: true,
       commit_sha: state.commit, target_head_sha: state.commit, fingerprint: credential.fingerprint,
       authorization_evidence_id: authorization?.id ?? null, authorization_evidence_method: authorization?.evidence_method ?? null,
@@ -263,8 +261,7 @@ function readFrozenPublicationAuthority(db: Db, binding: RuntimePublicationBindi
         || digest(payload) !== binding.publicationEvidence!.digest || evidence.details.runtime_publication_digest !== binding.publicationEvidence!.digest
         || !evidence.credential_id || evidence.credential_id !== payload.signerCredentialId) fail("frozen publication evidence differs");
     const credentialId = evidence!.credential_id!;
-    if (!authorizedMergeSignerLines(db, state.row.approved_by_user_id, credentialId).length
-        || state.lease && state.lease.credential_id !== credentialId) fail("publication signer is no longer authorized");
+    if (!authorizedMergeSignerLines(db, state.row.approved_by_user_id, credentialId).length) fail("publication signer is no longer authorized");
     const credential = db.prepare("SELECT fingerprint FROM user_credentials WHERE id = ?").get(credentialId) as { fingerprint: string };
     const expected = publicationPayload(binding, state, { credentialId, fingerprint: credential.fingerprint }, payload!.repository.canonicalRoot);
     if (JSON.stringify(payload) !== JSON.stringify(expected)

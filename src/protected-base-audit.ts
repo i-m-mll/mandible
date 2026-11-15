@@ -8,8 +8,7 @@
  * incremental and needs no state of its own beyond the stored result.
  * Recorded merges therefore pass whatever key signed them. Every commit above
  * that tip is one Mandible did not record, and must be signed with an operator
- * `ssh_key` (the `unrecorded_commit` rule in src/protected-branch-signers.ts);
- * anything else, including a delegated-key signature, is listed on the
+ * `ssh_key` (src/protected-branch-signers.ts); anything else is listed on the
  * request.
  */
 
@@ -66,7 +65,7 @@ export async function auditProtectedBase(db: Db, input: ProtectedBaseAuditInput)
     audit.truncated = !audit.baseline_sha && above.length > PROTECTED_BASE_AUDIT_LIMIT;
     const checked = above.slice(0, PROTECTED_BASE_AUDIT_LIMIT);
     audit.checked_commits = checked.length;
-    audit.unexpected = (await readCommitSignatures(db, input.cwd, checked, "unrecorded_commit")).flatMap((commit): ProtectedBaseAuditCommit[] =>
+    audit.unexpected = (await readCommitSignatures(db, input.cwd, checked)).flatMap((commit): ProtectedBaseAuditCommit[] =>
       commit.status === "operator" ? [] : [{
         sha: commit.sha,
         subject: commit.subject,

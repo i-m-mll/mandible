@@ -84,7 +84,7 @@ export function activeSigningCredentials(db: Db): SigningCredentialRow[] {
      JOIN users AS owner ON owner.id = credential.user_id
      WHERE credential.status = 'active'
        AND owner.status = 'active'
-       AND credential.type IN ('ssh_key', 'delegated_ssh_key')
+       AND credential.type = 'ssh_key'
        AND credential.public_material IS NOT NULL
      ORDER BY credential.created_at ASC, credential.id ASC`,
   ).all() as SigningCredentialRow[];
@@ -262,15 +262,11 @@ export async function verifyAuthorizedMergeCommitSignature(
   cwd: string | null,
   commitSha: string | null,
   approverUserId: string,
-  credentialId?: string | null,
 ): Promise<MergeSignatureVerification> {
   const verification = (await verifyMergeCommitSignature(db, cwd, commitSha));
   if (!verification.verified) return verification;
   if (verification.user_id !== approverUserId) {
     return unverified(commitSha, "signer_is_not_approving_user", verification.fingerprint);
-  }
-  if (credentialId && verification.credential_id !== credentialId) {
-    return unverified(commitSha, "signer_is_not_delegated_credential", verification.fingerprint);
   }
   return verification;
 }

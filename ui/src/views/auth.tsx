@@ -147,14 +147,11 @@ export type AuthRequest = {
   resolved_at?: number | string | null;
   depends_on_ids?: string[];
   dependencies?: AuthDependencyProjection[];
-  approval_source?: string;
-  approval_lease_id?: string | null;
   requested_by_user_id?: string | null;
   requester_evidence_method?: string | null;
   requester_credential_id?: string | null;
   approved_by_user_id?: string | null;
   execution_evidence_id?: string | null;
-  clearance_use_id?: string | null;
   supersedes_request_id?: string | null;
   superseded_by_request_id?: string | null;
   lifecycle_events?: Array<{
@@ -388,12 +385,6 @@ function getAuthExecutionCallout(status: string, consoleText: string): AuthExecu
   const text = consoleText.toLowerCase();
   if (text.includes('merge conflict') || text.includes('conflicts remain') || text.includes('manual resolution')) {
     return { text: 'Merge needs attention in the terminal', spinner: false };
-  }
-  if (text.includes('waiting for yubikey touch')) {
-    return { text: 'Touch your YubiKey now', spinner: true };
-  }
-  if (text.includes('delegated signing key ready')) {
-    return { text: 'Authentication complete; starting git work', spinner: true };
   }
   if (text.includes('reusing submit-time merge preflight')) {
     return { text: 'Using submit-time merge check', spinner: true };
@@ -1172,9 +1163,6 @@ function AuthRequestDetail({
         <MetadataRow label="Updated" value={formatMetadataTimestamp(request.updated_at ?? null)} />
         <MetadataRow label="Last executed" value={lastExecutedAt} />
         <MetadataRow label="Resolved" value={resolvedAt} />
-        <MetadataRow label="Approval source" value={request.approval_source ?? null} />
-        <MetadataRow label="Approval lease" value={request.approval_lease_id ?? null} />
-        <MetadataRow label="Clearance use" value={request.clearance_use_id ?? null} />
         <MetadataRow label="Requester evidence" value={request.requester_evidence_method ?? null} />
         <MetadataRow label="Requester credential" value={request.requester_credential_id ?? null} />
         <MetadataRow label="Requester" value={requester?.display_name ?? request.requested_by_user_id ?? null} />

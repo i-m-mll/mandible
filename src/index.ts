@@ -20,9 +20,6 @@ import {
   type OperationalLogStore,
 } from "./operational-log-db.js";
 import { allowsOperationalMutations, resolveInstanceInfo } from "./instance-policy.js";
-import { AuthAutoApproveManager } from "./auth-auto-approve.js";
-import { AuthClearanceManager } from "./auth-clearance.js";
-import { DelegatedSigningResource } from "./delegated-signing-resource.js";
 import { AuthQueue } from "./auth-queue.js";
 import { runCandidateAcceptance } from "./candidate-acceptance.js";
 import { NavMetadataEnricher } from "./nav-enrichment.js";
@@ -267,26 +264,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Create router and register all partition routes
   const router = new Router({ logger, instance, clientAuth });
   const sessionRegistry = new SessionRegistry(db, logger);
-  const autoApproveManager = new AuthAutoApproveManager({
-    seedDefaultDurationSetting: operationalMutationsAllowed,
-  });
-  const delegatedSigningResource = new DelegatedSigningResource(autoApproveManager, {
-    db,
-    runtimeEpoch: startupEpoch,
-    allowRuntimeAuthority: instance.role === "main" && operationalMutationsAllowed,
-  });
-  const clearanceManager = new AuthClearanceManager(
-    db,
-    delegatedSigningResource,
-    startupEpoch,
-  );
-  void delegatedSigningResource.attachAvailable().then((reconnect) => {
-    if (reconnect.attached > 0 || reconnect.refused > 0) {
-      logger(reconnect.refused > 0 ? "warn" : "info", "delegated_signer_reconnect", reconnect);
-    }
-  }, (error: unknown) => {
-    logger("warn", "delegated_signer_reconnect_failed", { error: String(error) });
-  });
   const approvalHelper = resolveApprovalHelperPath();
   if (approvalHelper && process.platform === "darwin") {
     void registerApprovalHelperBundle(approvalHelper).then((registered) => {
@@ -296,8 +273,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const operatorSigning = new OperatorSigningAuthority(db, new HelperOperatorSigner(approvalHelper), getMandibleConfigPath("approval-keys"));
   const authQueue = new AuthQueue({
     operatorSigning,
-    autoApprover: autoApproveManager,
-    clearanceManager,
     backgroundMaintenance: operationalMutationsAllowed,
     allowExternalEffects: operationalMutationsAllowed,
     restartAvailability: restartAvailability ?? undefined,
@@ -306,7 +281,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     candidateAcceptanceExecutor: instance.role === "main" && operationalMutationsAllowed ? runCandidateAcceptance : null,
     outcomeReporter: createOutcomeReporter(db),
   });
-  registerAuthRoutes(router, authQueue, autoApproveManager, clearanceManager, ledgerReader);
+  registerAuthRoutes(router, authQueue, ledgerReader);
   registerNoticeRoutes(router, authQueue.notices!);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
     config_path: instance.role === "preview"

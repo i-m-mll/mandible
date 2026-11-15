@@ -1,6 +1,5 @@
-import { systemActor } from "../identity/resolver.js";
 import { ensureAgentGroupMembership } from "../permissions/store.js";
-import { currentLedgerMutationActor, mutateLedgerRecord } from "../ledger/mutation-history.js";
+import { mutateLedgerRecord } from "../ledger/mutation-history.js";
 import { isSqliteConstraint as isUniqueConstraint } from "../sqlite.js";
 import type { Db } from "../db.js";
 import { providerSessionEnvBindingValues } from "../ambient-provider-identity.js";
@@ -12,11 +11,9 @@ import {
   type AddBindingInput,
   type AddAttributionEvidenceInput,
   type AddCredentialInput,
-  type AddDelegatedSigningLeaseInput,
   type AttributionEvidence,
   type CreateUserInput,
   type CredentialCustody,
-  type DelegatedSigningLease,
   type SetupOperatorInput,
   type UpdateUserInput,
   type User,
@@ -96,18 +93,8 @@ interface EvidenceRow {
   id: string;
   evidence_method: string;
   credential_id: string | null;
-  lease_id: string | null;
   verified_at: number;
   details_json: string;
-}
-
-interface DelegatedSigningLeaseRow {
-  id: string;
-  credential_id: string;
-  owner_user_id: string;
-  minted_at: number;
-  expires_at: number;
-  mint_method: DelegatedSigningLease["mint_method"];
 }
 
 // --- mappers ---
@@ -162,14 +149,9 @@ function mapEvidence(row: EvidenceRow): AttributionEvidence {
     id: row.id,
     evidence_method: row.evidence_method,
     credential_id: row.credential_id,
-    lease_id: row.lease_id,
     verified_at: row.verified_at,
     details: parseJsonObject(row.details_json),
   };
-}
-
-function mapDelegatedSigningLease(row: DelegatedSigningLeaseRow): DelegatedSigningLease {
-  return { ...row };
 }
 
 // --- validation helpers ---
@@ -221,7 +203,6 @@ const PRIVATE_MATERIAL_DENYLIST: readonly RegExp[] = [
 const SSH_SHA256_FINGERPRINT = /^SHA256:[A-Za-z0-9+/=]{40,50}$/;
 const SSH_PUBLIC_LINE =
   /^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-[a-z0-9-]+|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\n]{0,256})?$/;
-const AGE_RECIPIENT = /^age1[a-z0-9]{10,100}$/;
 // api_token: an opaque hash/identifier, single line, no embedded material.
 const API_TOKEN_FINGERPRINT = /^[A-Za-z0-9][A-Za-z0-9+/=_.:-]{7,511}$/;
 
@@ -290,8 +271,7 @@ function validateCredentialMaterial(input: AddCredentialInput): void {
 
   // 3. Per-type public-shape allowlist.
   switch (input.type) {
-    case "ssh_key":
-    case "delegated_ssh_key": {
+    case "ssh_key": {
       if (!SSH_SHA256_FINGERPRINT.test(fingerprint)) {
         throw new UserRegistryError(
           "invalid",
@@ -302,21 +282,6 @@ function validateCredentialMaterial(input: AddCredentialInput): void {
         throw new UserRegistryError(
           "invalid",
           `public_material for ${input.type} must be a single-line OpenSSH public key.`,
-        );
-      }
-      break;
-    }
-    case "yubikey_recipient": {
-      if (!AGE_RECIPIENT.test(fingerprint)) {
-        throw new UserRegistryError(
-          "invalid",
-          "fingerprint for yubikey_recipient must be an age recipient (age1…).",
-        );
-      }
-      if (publicMaterial && !AGE_RECIPIENT.test(publicMaterial)) {
-        throw new UserRegistryError(
-          "invalid",
-          "public_material for yubikey_recipient must be an age recipient (age1…).",
         );
       }
       break;
@@ -532,13 +497,11 @@ export function retireEnclaveCustody(db: Db, credentialId: string): void {
   });
 }
 
-function insertCredential(
-  db: Db,
-  ref: string,
-  input: AddCredentialInput,
-  custody: CredentialCustody | null,
-  now: number,
-): UserCredential {
+/**
+ * Every check `addCredential` makes before it writes, so a caller can refuse a
+ * malformed credential before asking for a signature that would authorize it.
+ */
+export function validateCredentialInput(db: Db, ref: string, input: AddCredentialInput): User {
   const user = resolveUserOrThrow(db, ref);
   if (!(CREDENTIAL_TYPES as readonly string[]).includes(input.type)) {
     throw new UserRegistryError(
@@ -549,6 +512,24 @@ function insertCredential(
   const fingerprint = input.fingerprint.trim();
   if (!fingerprint) throw new UserRegistryError("invalid", "fingerprint is required.");
   validateCredentialMaterial({ ...input, fingerprint });
+  if (findActiveCredentialByFingerprint(db, fingerprint)) {
+    throw new UserRegistryError(
+      "conflict",
+      `An active credential already exists for fingerprint '${fingerprint}'. Revoke it before re-adding.`,
+    );
+  }
+  return user;
+}
+
+function insertCredential(
+  db: Db,
+  ref: string,
+  input: AddCredentialInput,
+  custody: CredentialCustody | null,
+  now: number,
+): UserCredential {
+  const user = validateCredentialInput(db, ref, input);
+  const fingerprint = input.fingerprint.trim();
   const publicMaterial = input.public_material?.trim() || null;
 
   const id = ulid(now);
@@ -629,78 +610,6 @@ export function findActiveCredentialByFingerprint(
   return row ? mapCredential(row) : null;
 }
 
-export function addDelegatedSigningLease(
-  db: Db,
-  input: AddDelegatedSigningLeaseInput,
-): DelegatedSigningLease {
-  const owner = getUserById(db, input.owner_user_id);
-  if (!owner || owner.status !== "active" || owner.kind !== "human") {
-    throw new UserRegistryError("invalid", "Delegated signing lease owner must be an active human user.");
-  }
-  const credential = db
-    .prepare("SELECT * FROM user_credentials WHERE id = ?")
-    .get(input.credential_id) as CredentialRow | undefined;
-  if (
-    !credential ||
-    credential.status !== "active" ||
-    credential.user_id !== owner.id ||
-    credential.type !== "delegated_ssh_key"
-  ) {
-    throw new UserRegistryError(
-      "invalid",
-      "Delegated signing lease requires the owner's active delegated_ssh_key credential.",
-    );
-  }
-  if (input.expires_at <= input.minted_at) {
-    throw new UserRegistryError("invalid", "Delegated signing lease expiry must follow mint time.");
-  }
-
-  return mutateLedgerRecord(db, {
-    entity_type: "signing_lease",
-    entity_id: input.id,
-    snapshot: () => db.prepare("SELECT id, credential_id, owner_user_id, minted_at, expires_at, mint_method FROM delegated_signing_leases WHERE id = ?").get(input.id) ?? null,
-  }, () => {
-    db.prepare(
-      `INSERT INTO delegated_signing_leases (
-         id, credential_id, owner_user_id, minted_at, expires_at, mint_method
-       ) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(
-      input.id,
-      input.credential_id,
-      input.owner_user_id,
-      input.minted_at,
-      input.expires_at,
-      input.mint_method,
-    );
-    return getDelegatedSigningLease(db, input.id)!;
-  });
-}
-
-/** Shorten durable signing authority without extending or replacing the lease. */
-export function shortenDelegatedSigningLease(
-  db: Db,
-  leaseId: string,
-  now: number = Date.now(),
-  automatic = false,
-): void {
-  const system = { ...systemActor(), actor_type: "system" as const, actor_id: null };
-  const actor = automatic ? system : currentLedgerMutationActor() ?? system;
-  mutateLedgerRecord(db, {
-    entity_type: "signing_lease", entity_id: leaseId,
-    attribution: actor.attribution, actor_type: actor.actor_type, actor_id: actor.actor_id,
-    snapshot: () => db.prepare("SELECT expires_at FROM delegated_signing_leases WHERE id = ?").get(leaseId) ?? null,
-  }, () => db.prepare(
-    "UPDATE delegated_signing_leases SET expires_at = MIN(expires_at, MAX(minted_at + 1, ?)) WHERE id = ?",
-  ).run(now, leaseId));
-}
-
-export function getDelegatedSigningLease(db: Db, id: string): DelegatedSigningLease | null {
-  const row = db
-    .prepare("SELECT * FROM delegated_signing_leases WHERE id = ?")
-    .get(id) as DelegatedSigningLeaseRow | undefined;
-  return row ? mapDelegatedSigningLease(row) : null;
-}
-
 export function addAttributionEvidence(
   db: Db,
   input: AddAttributionEvidenceInput,
@@ -710,13 +619,12 @@ export function addAttributionEvidence(
   const id = ulid(now);
   db.prepare(
     `INSERT INTO attribution_evidence (
-       id, evidence_method, credential_id, lease_id, verified_at, details_json
-     ) VALUES (?, ?, ?, ?, ?, ?)`,
+       id, evidence_method, credential_id, verified_at, details_json
+     ) VALUES (?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.evidence_method,
     input.credential_id ?? null,
-    input.lease_id ?? null,
     now,
     serializeMetadata(input.details),
   );
@@ -805,7 +713,7 @@ function setSetting(db: Db, key: string, value: string, now: number = Date.now()
 }
 
 function isSigningCredentialType(type: string): boolean {
-  return type === "ssh_key" || type === "delegated_ssh_key";
+  return type === "ssh_key";
 }
 
 export function getOperatorId(db: Db): string | null {
@@ -976,37 +884,10 @@ function ensureActiveBinding(
   addBinding(db, userId, { binding_type: bindingType, value }, now);
 }
 
-// --- read helpers for downstream waves (leases / evidence) ---
-
-interface LeaseRow {
-  id: string;
-  credential_id: string;
-  owner_user_id: string;
-  minted_at: number;
-  expires_at: number;
-  mint_method: DelegatedSigningLease["mint_method"];
-}
-
-export function listLeases(db: Db, ownerRef?: string): DelegatedSigningLease[] {
-  let rows: LeaseRow[];
-  if (ownerRef) {
-    const user = resolveUserOrThrow(db, ownerRef);
-    rows = db
-      .prepare("SELECT * FROM delegated_signing_leases WHERE owner_user_id = ? ORDER BY minted_at ASC")
-      .all(user.id) as LeaseRow[];
-  } else {
-    rows = db
-      .prepare("SELECT * FROM delegated_signing_leases ORDER BY minted_at ASC")
-      .all() as LeaseRow[];
-  }
-  return rows.map((row) => ({ ...row }));
-}
-
 interface EvidenceRow {
   id: string;
   evidence_method: string;
   credential_id: string | null;
-  lease_id: string | null;
   verified_at: number;
   details_json: string;
 }

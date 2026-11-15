@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { configureSigningCredential, git } from "./helpers/auth-queue-fixtures.js";
 import { setDb, type Db } from "../src/db.js";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -63,7 +62,7 @@ describe("client-auth durable attribution", () => {
     authEvents = [];
     authQueue = new AuthQueue({ db, broadcast: (event) => authEvents.push(event), backgroundMaintenance: false });
     router = new Router({ clientAuth: authenticator });
-    registerAuthRoutes(router, authQueue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => authQueue.db));
+    registerAuthRoutes(router, authQueue, inlineLedgerReader(() => authQueue.db));
     registerIssueRoutes(router, {
       getRepos: () => [],
       getRepoById: () => undefined,
@@ -350,7 +349,7 @@ describe("client-auth durable attribution", () => {
     expect(denied.status).toBe(403);
 
     git(tempDir, ["init", "--initial-branch=main"]);
-    configureSigningCredential(db, tempDir, "ssh_key");
+    configureSigningCredential(db, tempDir);
     const approved = await router.invoke({
       method: "POST",
       url: `/api/auth/request/${requestId}/approve`,

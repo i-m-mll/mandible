@@ -57,7 +57,7 @@ describe("immutable Git commit facts", () => {
     const db = createMigratedDb();
     try {
       const original = git(repo, ["rev-parse", "HEAD"]);
-      configureSigningCredential(db, repo, "ssh_key");
+      configureSigningCredential(db, repo);
       const replacement = git(repo, ["commit-tree", "HEAD^{tree}", "-S", "-m", "Signed replacement"]);
       expect((await verifyMergeCommitSignature(db, repo, replacement)).verified).toBe(true);
       git(repo, ["replace", original, replacement]);

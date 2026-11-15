@@ -117,7 +117,6 @@ describe('SettingsView', () => {
       '/api/backup/status',
       '/api/runtime/status',
       '/api/auth/hooks',
-      '/api/auth/clearances/signing',
     ];
     const requestedUrls = fetchMock.mock.calls.map(([input]) => String(input));
     expect(requestedUrls.filter((url) => forbiddenReads.includes(url))).toEqual([]);

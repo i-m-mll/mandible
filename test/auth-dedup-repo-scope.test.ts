@@ -15,7 +15,6 @@ import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../src/auth-queue.js";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { setDb, type Db } from "../src/db.js";
 import { clearRepoIdentityCache } from "../src/repo-identity.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
@@ -266,7 +265,7 @@ describe("POST /api/auth/request duplicate refusal", () => {
 
   function createRouter(queue: AuthQueue): TestRouteRegistrar {
     const app = new TestRouteRegistrar();
-    registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db: db! }), undefined, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(app, queue, inlineLedgerReader(() => queue.db));
     return app;
   }
 

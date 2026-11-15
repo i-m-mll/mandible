@@ -28,8 +28,6 @@ const CHANGE_LABEL: Record<string, string> = {
   signer_add: 'Signer added',
   signer_revoke: 'Signer removed',
   protected_branches: 'Protected branches changed',
-  delegated_signer_setup: 'Delegated signer set up',
-  delegated_signer_remove: 'Delegated signer removed',
 };
 
 export default function SigningSettings({ instance }: Props): JSX.Element {
@@ -185,7 +183,7 @@ export default function SigningSettings({ instance }: Props): JSX.Element {
                 <span className="settings-view__number-label">{credential.fingerprint}</span>
                 {credential.label && <span className="settings-view__number-desc">{credential.label}</span>}
               </div>
-              <span className="settings-view__badge">{credential.type === 'delegated_ssh_key' ? 'Delegated' : 'Verify only'}</span>
+              <span className="settings-view__badge">Verify only</span>
             </div>
           ))}
           {status.trust_changes.length > 0 && (

@@ -307,9 +307,6 @@ export interface AuthRequest {
   error: string | null;
   /** The protected checkout the merge runs in. */
   target_repo_root: string | null;
-  approval_source: "manual" | "auto_lease" | string;
-  approval_lease_id: string | null;
-  clearance_use_id?: string | null;
   supersedes_request_id?: string | null;
   superseded_by_request_id?: string | null;
   custody_work_unit_id?: string | null;

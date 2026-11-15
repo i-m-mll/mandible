@@ -1,6 +1,5 @@
 import { exactAgentRef } from "../ambient-provider-identity.js";
-import { attributionForRequest } from "../client-auth/authz.js";
-import { responsibilityActor, holdsResponsibility, sessionResponsibilityActor } from "../responsibility.js";
+import { responsibilityActor, sessionResponsibilityActor } from "../responsibility.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-action.js";
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
@@ -9,9 +8,6 @@ import { runtimeHandoffLockRefusal } from "../../scripts/runtime-handoff-lock.mj
 import { AuthActionValidationError } from "../auth-actions.js";
 import { listAuthExecutionAttempts } from "../auth-lifecycle.js";
 import { mergeChangeMessageRequirement, authDescriptionRequirement } from "../auth-change-message.js";
-import { AuthAutoApproveManager } from "../auth-auto-approve.js";
-import { AuthClearanceError, AuthClearanceManager } from "../auth-clearance.js";
-import { DelegatedSigningResource } from "../delegated-signing-resource.js";
 import {
   computeAuthMergeReviewMetadata,
   describeGitFailure,
@@ -34,9 +30,7 @@ import {
   authAttributionReadFields,
 } from "../identity/read-projection.js";
 import { ClientAuthzError, requireAttribution, requireIdentity, requireOperator } from "../client-auth/authz.js";
-import { sendSigningRefusal } from "../operator-signing/http.js";
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { readBody } from "./http.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
@@ -56,19 +50,10 @@ const authRouteLog = getDaemonLogger();
 export function registerAuthRoutes(
   app: RouteRegistrar,
   authQueue: AuthQueue,
-  autoApproveManager: AuthAutoApproveManager,
-  clearance: AuthClearanceManager | undefined,
   reader: LedgerReader,
 ): AuthQueue {
   const db = authQueue.db;
   const outcomeReport = createOutcomeReporter(db);
-  const fallbackRuntimeEpoch = randomUUID();
-  const clearanceManager = clearance ?? authQueue.clearanceAuthority ?? new AuthClearanceManager(
-    db, new DelegatedSigningResource(autoApproveManager, {
-      db, runtimeEpoch: fallbackRuntimeEpoch, allowRuntimeAuthority: authQueue.externalEffectsAllowed,
-    }), fallbackRuntimeEpoch,
-  );
-  authQueue.registerClearanceAuthority(clearanceManager);
   app.post("/api/auth/check", async (req, res) => {
     if (!authQueue.externalEffectsAllowed) {
       res.status(403).json({
@@ -835,135 +820,6 @@ export function registerAuthRoutes(
     }
   }, { operation: { id: "post:/api/auth/request/:id/result", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
-  app.get("/api/auth/clearances", (req, res) => {
-    try {
-      requireOperator(db, req);
-      const requestId = typeof req.query.request_id === "string" ? req.query.request_id : null;
-      res.json({ clearances: clearanceManager.list(requestId) });
-    } catch (error) {
-      handleClearanceError(error, res);
-    }
-  }, { operation: { id: "get:/api/auth/clearances", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny",
-    refs: { query: { request_id: (ref) => resolveId(db, "auth_request", ref) } } });
-
-  // Keep this static path ahead of /:id so "signing" is never interpreted as
-  // a clearance reference by order-sensitive HTTP routers.
-  app.get("/api/auth/clearances/signing", (req, res) => {
-    try {
-      requireOperator(db, req);
-      res.json(clearanceManager.signingStatus());
-    } catch (error) {
-      handleClearanceError(error, res);
-    }
-  }, { operation: { id: "get:/api/auth/clearances/signing", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-
-  app.get("/api/auth/clearances/:id", (req, res) => {
-    try {
-      requireOperator(db, req);
-      const clearance = clearanceManager.show(req.params.id);
-      res.json({ clearance, uses: clearanceManager.uses(clearance.id) });
-    } catch (error) {
-      handleClearanceError(error, res);
-    }
-  }, { operation: { id: "get:/api/auth/clearances/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-
-  app.post("/api/auth/clearances", async (req, res) => {
-    const body = readBody<Record<string, unknown>>(req);
-    try {
-      const allowed = ["request_id", "grantee", "project", "base", "issue", "head", "action", "duration_minutes", "max_uses"];
-      if (Object.keys(body).some(key => !allowed.includes(key))) {
-        res.status(400).json({ error: "Unsupported clearance field." });
-        return;
-      }
-      if (body.action !== undefined && body.action !== "merge") {
-        throw new AuthClearanceError("unsupported_action", "Clearance action is fixed to merge.");
-      }
-      const operator = requireOperator(db, req);
-      const clearance = await clearanceManager.issue({
-        requestId: typeof body.request_id === "string" ? body.request_id : null,
-        grantee: String(body.grantee ?? ""),
-        project: typeof body.project === "string" ? body.project : null,
-        baseBranch: typeof body.base === "string" ? body.base : null,
-        issueRef: typeof body.issue === "string" ? body.issue : null,
-        headBranch: typeof body.head === "string" ? body.head : null,
-        action: "merge",
-        durationMinutes: typeof body.duration_minutes === "number" ? body.duration_minutes : undefined,
-        maxUses: typeof body.max_uses === "number" ? body.max_uses : undefined,
-      }, operator.user_id, async (grant) => {
-        const signing = authQueue.operatorSigningAuthority;
-        if (!signing) return { ok: false, code: "operator_signature_signing_failed", detail: "This instance has no approval signer." };
-        const signed = await signing.signStatement({ kind: "clearance_grant", content: { ...grant } },
-          "issue a merge clearance", req.signal, () => undefined);
-        return signed.ok ? { ok: true } : { ok: false, code: `operator_signature_${signed.error.code}`, detail: signed.error.detail };
-      });
-      res.status(201).json({ clearance });
-    } catch (error) {
-      handleClearanceError(error, res);
-    }
-  }, { operation: { id: "post:/api/auth/clearances", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
-
-  app.post("/api/auth/clearances/:id/revoke", async (req, res) => {
-    try {
-      const operator = requireOperator(db, req);
-      res.json({ clearance: await clearanceManager.revoke(req.params.id, operator.user_id) });
-    } catch (error) {
-      handleClearanceError(error, res);
-    }
-  }, { operation: { id: "post:/api/auth/clearances/:id/revoke", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
-
-  app.post("/api/auth/request/:id/clearance/execute", async (req, res) => {
-    try {
-      const request = await authQueue.getRequest(req.params.id);
-      const owner = request ? authQueue.requestResponsibility(request) : null;
-      if (!request || !owner || !holdsResponsibility(db, owner, responsibilityActor(req))) {
-        res.status(403).json({ error: "Current request responsibility is required." }); return;
-      }
-      if (!validateAuthProject(db, res, request.repo)) return;
-      const executing = (await authQueue.approveWithClearance(request.id, { ...responsibilityActor(req),
-        evidence_method: attributionForRequest(db, req)?.evidence_method ?? req.client_identity!.method,
-        credential_id: req.client_identity!.credential_id }));
-      res.status(202).json({ request_id: executing.id, status: executing.status, clearance_use_id: executing.clearance_use_id });
-    } catch (error) {
-      if (error instanceof AuthClearanceError) handleClearanceError(error, res);
-      else handleQueueError(error, res);
-    }
-  }, { operation: { id: "post:/api/auth/request/:id/clearance/execute", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
-
-  app.post("/api/auth/clearances/signing/setup", async (req, res) => {
-    const body = readBody<Record<string, unknown>>(req);
-    try {
-      requireOperator(db, req);
-      const options = {
-        name: typeof body.name === "string" ? body.name : undefined,
-        email: typeof body.email === "string" ? body.email : undefined,
-        ageRecipient: typeof body.age_recipient === "string" ? body.age_recipient : undefined,
-        overwrite: body.overwrite === true,
-      };
-      const signing = authQueue.operatorSigningAuthority;
-      if (!signing) { res.status(409).json({ error: "This instance has no approval signer.", code: "operator_signature_signing_failed" }); return; }
-      const signed = await signing.authorizeTrustChange("delegated_signer_setup", { options },
-        "set up the delegated clearance signer", req.signal, () => undefined);
-      if (!signed.ok) { sendSigningRefusal(res, signed.error); return; }
-      res.status(201).json(await clearanceManager.setupSigning(options));
-    } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-    }
-  }, { operation: { id: "post:/api/auth/clearances/signing/setup", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
-
-  app.delete("/api/auth/clearances/signing", async (req, res) => {
-    try {
-      requireOperator(db, req);
-      const signing = authQueue.operatorSigningAuthority;
-      if (!signing) { res.status(409).json({ error: "This instance has no approval signer.", code: "operator_signature_signing_failed" }); return; }
-      const signed = await signing.authorizeTrustChange("delegated_signer_remove", { status: clearanceManager.signingStatus() },
-        "remove the delegated clearance signer", req.signal, () => undefined);
-      if (!signed.ok) { sendSigningRefusal(res, signed.error); return; }
-      res.json(await clearanceManager.removeSigning());
-    } catch (error) {
-      handleClearanceError(error, res);
-    }
-  }, { operation: { id: "delete:/api/auth/clearances/signing", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
-
   return authQueue;
 }
 
@@ -1453,25 +1309,6 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
   }
 
   res.status(500).json({ error: "Unexpected auth queue error." });
-}
-
-function handleClearanceError(error: unknown, res: ResponseLike): void {
-  if (error instanceof ClientAuthzError) {
-    res.status(error.status).json({ error: error.message, code: error.code });
-    return;
-  }
-  if (error instanceof AuthClearanceError) {
-    const status = error.code === "not_found" || error.code === "request_not_found"
-      ? 404
-      : error.code.includes("ambiguous") || error.code.endsWith("_mismatch")
-        ? 409
-        : error.code === "operator_required"
-          ? 403
-          : 422;
-    res.status(status).json({ error: error.message, code: error.code });
-    return;
-  }
-  res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
 }
 
 // Bug: 929c6d0 — extract the last N lines from a string for error output summaries.

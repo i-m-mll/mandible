@@ -3,7 +3,6 @@ import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { describe, expect, it, vi } from "vitest";
 import { createQueue, createMigratedDb, createAuthCheckRepo, AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import type { AuthRequestInput } from "../src/types.js";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { addCredential } from "../src/users/store.js";
@@ -47,7 +46,7 @@ describe("approval Description", () => {
     const credential = addCredential(db,operator.id,{ type: "api_token", fingerprint: "description-api" });
     const router = authenticatedTestRouter(operator,{ credentialId: credential.id });
     const queue = createQueue({ db, backgroundMaintenance: false });
-    registerAuthRoutes(router,queue,new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
     try {
       for (const [type, code] of [["merge", "change_message_required"], ["config-change", "description_required"]] as const) {
         const result = await router.invoke({ method: "POST", url: "/api/auth/v2/request",

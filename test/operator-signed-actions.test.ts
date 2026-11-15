@@ -11,7 +11,7 @@ import { Router } from "../src/server.js";
 import { registerUserRoutes } from "../src/routes/users.js";
 import { registerSettingsRoutes } from "../src/routes/settings.js";
 import { OPERATOR_STATEMENT_NAMESPACE, OperatorSigningAuthority, listTrustChanges, verifySshSignature } from "../src/operator-signing/authority.js";
-import { addBinding, createUser, getAttributionEvidence, listCredentials, setupOperator } from "../src/users/store.js";
+import { addBinding, createUser, listCredentials, setupOperator } from "../src/users/store.js";
 import { SoftwareOperatorSigner } from "./helpers/operator-signing-fixtures.js";
 
 let db: Db; let root: string; let auth: ClientAuthenticator; let router: Router;
@@ -129,14 +129,13 @@ it("bootstraps automatically for a missing key, asks first for an unclassified f
   expect(listCredentials(db, operatorId).filter((credential) => credential.custody === "enclave")).toHaveLength(1);
 });
 
-it("records a clearance grant statement as verified credential-signature evidence", async () => {
+it("refuses a malformed or duplicate signer before asking for a touch", async () => {
   expect((await enroll()).status).toBe(201);
-  const grant = { grantee_user_id: agentId, project_id: "p", base_branch: "main", issue_id: null, head_branch: "feature/x", expires_at: 1, max_uses: 1, delegated_public_key: null };
-  const signed = await signing.signStatement({ kind: "clearance_grant", content: grant }, "issue a merge clearance", undefined, (evidence) => evidence.id);
-  if (!signed.ok) throw new Error(signed.error.detail);
-  const evidence = getAttributionEvidence(db, signed.value)!;
-  expect(evidence).toMatchObject({ evidence_method: "credential_signature", credential_id: enclaveKey().id, details: { verified: true } });
-  const statement = String(evidence.details.statement);
-  expect(JSON.parse(statement)).toMatchObject({ kind: "clearance_grant", operator_user_id: operatorId, content: grant });
-  expect(await verifySshSignature(enclaveKey().public_material!, OPERATOR_STATEMENT_NAMESPACE, statement, String(evidence.details.signature))).toBe(true);
+  const touches = signer.touches.length;
+  const addSigner = (body: Record<string, unknown>) => asOperator("POST", "/api/users/operator/credentials", body);
+  expect((await addSigner({ type: "ssh_key", fingerprint: "not-a-fingerprint" })).status).toBe(400);
+  const existing = enclaveKey();
+  expect((await addSigner({ type: "ssh_key", fingerprint: existing.fingerprint, public_material: existing.public_material })).status).toBe(409);
+  expect(signer.touches).toHaveLength(touches);
+  expect(listTrustChanges(db).map((entry) => entry.kind)).toEqual(["approval_key_enrollment"]);
 });

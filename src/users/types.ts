@@ -14,8 +14,6 @@ export type UserStatus = "active" | "retired";
  */
 export const CREDENTIAL_TYPES = [
   "ssh_key",
-  "yubikey_recipient",
-  "delegated_ssh_key",
   "api_token",
 ] as const;
 export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
@@ -35,8 +33,6 @@ export const BINDING_TYPES = [
 export type BindingType = (typeof BINDING_TYPES)[number];
 export type BindingStatus = "active" | "inactive";
 
-export type MintMethod = "fresh_presence" | "reused_lease";
-
 /** Locked classes of evidence that may be persisted for durable attribution. */
 export const EVIDENCE_METHODS = [
   "local_default",
@@ -44,7 +40,6 @@ export const EVIDENCE_METHODS = [
   "external_import",
   "credential_signature",
   "hardware_presence",
-  "delegated_lease",
   "system_internal",
   "api_token",
 ] as const;
@@ -105,34 +100,14 @@ export interface AttributionEvidence {
   id: string;
   evidence_method: EvidenceMethod;
   credential_id: string | null;
-  lease_id: string | null;
   verified_at: number;
   details: Record<string, unknown>;
-}
-
-export interface DelegatedSigningLease {
-  id: string;
-  credential_id: string;
-  owner_user_id: string;
-  minted_at: number;
-  expires_at: number;
-  mint_method: MintMethod;
 }
 
 export interface AddAttributionEvidenceInput {
   evidence_method: EvidenceMethod;
   credential_id?: string | null;
-  lease_id?: string | null;
   details?: Record<string, unknown>;
-}
-
-export interface AddDelegatedSigningLeaseInput {
-  id: string;
-  credential_id: string;
-  owner_user_id: string;
-  minted_at: number;
-  expires_at: number;
-  mint_method: MintMethod;
 }
 
 export interface CreateUserInput {

@@ -5,7 +5,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { extractAtomicMergeState } from "../src/auth-signature-verification.js";
 import { configureDaemonLogger, flushDaemonLogger } from "../src/daemon-log.js";
@@ -288,7 +287,7 @@ describe("atomic auth merge", () => {
     const router = new Router();
     // Issue e9cd064 — routes bound to the queue's database never reach the singleton.
     resetDb({ reason: "auth routes must use the queue's database" });
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
     const server = createServer({
       db,
       sse: new SseManager(),

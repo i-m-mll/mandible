@@ -31,9 +31,8 @@ export interface CommitSignature {
 }
 
 /**
- * Anything that signs a commit for Mandible: the operator's approval key, or a
- * clearance's delegated grant key. The returned signature must already be
- * verified against the credential it names.
+ * Anything that signs a commit for Mandible: the operator's approval key. The
+ * returned signature must already be verified against the credential it names.
  */
 export interface MergeCommitSigner {
   sign(message: Buffer, namespace: "git", signal?: AbortSignal): Promise<Signed<CommitSignature>>;

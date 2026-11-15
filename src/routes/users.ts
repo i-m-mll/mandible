@@ -5,6 +5,7 @@ import type { ResponseLike, RouteRegistrar } from "../server.js";
 import {
   addBinding,
   addCredential,
+  validateCredentialInput,
   createUser,
   getOperator,
   listBindings,
@@ -90,11 +91,9 @@ function userView(db: ReturnType<typeof getDb>, ref: string) {
   };
 }
 
-const SIGNING_TYPES = new Set(["ssh_key", "delegated_ssh_key"]);
-
 /** The operator's signing credentials are the gate's trust set; other credentials are not. */
 function inTrustSet(db: ReturnType<typeof getDb>, userId: string, type: string): boolean {
-  return SIGNING_TYPES.has(type) && getOperator(db)?.id === userId;
+  return type === "ssh_key" && getOperator(db)?.id === userId;
 }
 
 function signerSummary(credential: UserCredential) {
@@ -125,7 +124,7 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
       requireOperator(db, req);
       const operator = getOperator(db);
       const credentials = operator
-        ? listCredentials(db, operator.id).filter((credential) => SIGNING_TYPES.has(credential.type)).map(signerSummary)
+        ? listCredentials(db, operator.id).filter((credential) => credential.type === "ssh_key").map(signerSummary)
         : [];
       const approvalKeys = operatorSigning ? await operatorSigning.approvalKeyStatus() : [];
       sendJson(res, 200, {
@@ -156,20 +155,22 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
           : "The selected value is not a readable OpenSSH public key.");
       }
       const existing = listCredentials(db, operator.id).find((credential) =>
-        credential.fingerprint === resolved.value.fingerprint && SIGNING_TYPES.has(credential.type));
+        credential.fingerprint === resolved.value.fingerprint && credential.type === "ssh_key");
       if (existing) {
         sendJson(res, 200, { credential: existing, unchanged: true });
         return;
       }
+      const input = {
+        type: "ssh_key",
+        fingerprint: resolved.value.fingerprint,
+        public_material: resolved.value.material,
+        label: "Settings public-key import",
+      };
+      validateCredentialInput(db, operator.id, input);
       const { value: credential } = signedOrThrow(await signing().authorizeTrustChange("signer_add",
         { type: "ssh_key", custody: "external", fingerprint: resolved.value.fingerprint, public_key: resolved.value.material },
         `trust the signing key ${resolved.value.fingerprint}`, req.signal,
-        () => addCredential(db, operator.id, {
-          type: "ssh_key",
-          fingerprint: resolved.value.fingerprint,
-          public_material: resolved.value.material,
-          label: "Settings public-key import",
-        })));
+        () => addCredential(db, operator.id, input)));
       sendJson(res, 201, { credential, unchanged: false });
     } catch (error) {
       handleError(res, error);
@@ -495,10 +496,11 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
         label: optionalString(body, "label") ?? null,
         metadata: optionalMetadata(body),
       };
+      validateCredentialInput(db, target.id, input);
       const add = () => addCredential(db, target.id, input);
       const credential = inTrustSet(db, target.id, type)
         ? signedOrThrow(await signing().authorizeTrustChange("signer_add",
-          { type, custody: type === "ssh_key" ? "external" : null, fingerprint: input.fingerprint.trim(), public_key: input.public_material },
+          { type, custody: "external", fingerprint: input.fingerprint.trim(), public_key: input.public_material },
           `trust the signing key ${input.fingerprint.trim()}`, req.signal, add)).value
         : add();
       sendJson(res, 201, { credential });

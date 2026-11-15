@@ -220,8 +220,6 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     payload: {
       auth_request_id: "auth_timeline_1",
       issue_id: authDone.id,
-      approval_source: "manual",
-      approval_lease_id: null,
     },
     occurred_at: BASE + 190,
   });

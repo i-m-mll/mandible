@@ -3,7 +3,6 @@ import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { Router } from "../src/server.js";
 import { uniqueMissingPath } from "./helpers/auth-queue-fixtures.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { setDb } from "../src/db.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
@@ -77,7 +76,7 @@ describe("auth request immutable lifecycle", () => {
     setDb(db);
     const request = (await submit());
     const router = authenticatedTestRouter(operator, { credentialId: credential.id });
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
     const edited = "Merge feature/original: Explain the reviewed change\r\n\r\nWhy:\r\nMake the action understandable.\r\n\r\nVerification:\r\nThe edited document's checks pass.\r\n";
     const result = await router.invoke({ method: "PUT", url: `/api/auth/v2/request/${request.id}`,
       body: { commit_message: edited, canonical_message: true, verification: "The edited document's checks pass.", expected_revision: 1, expected_custody_generation: 1 } });

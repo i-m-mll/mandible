@@ -1126,16 +1126,6 @@ export async function retryAuthRequest(requestId: string): Promise<void> {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/retry`);
 }
 
-export type DelegatedSigningStatus = {
-  provider: string;
-  configured: boolean;
-  public_key: string | null;
-  public_key_path: string;
-  encrypted_passphrase_path: string;
-  recipient_path: string;
-  missing_tools: string[];
-};
-
 export type OperatorSigningCredential = {
   id: string;
   type: string;
@@ -1150,8 +1140,7 @@ export type ApprovalKeyState = 'usable' | 'key_missing' | 'key_invalidated' | 'b
 
 export type OperatorTrustChange = {
   id: string;
-  kind: 'approval_key_enrollment' | 'signer_add' | 'signer_revoke' | 'protected_branches'
-    | 'delegated_signer_setup' | 'delegated_signer_remove';
+  kind: 'approval_key_enrollment' | 'signer_add' | 'signer_revoke' | 'protected_branches';
   authorization: 'signed' | 'bootstrap';
   statement: string;
   created_at: number;
@@ -1179,72 +1168,6 @@ export async function registerOperatorSigningKey(publicKey: string): Promise<{ c
 export async function enrollApprovalKey(input: { confirm_bootstrap?: boolean } = {}): Promise<{ credential: OperatorSigningCredential; trust_change: OperatorTrustChange }> {
   const response = await apiPost('/api/users/operator/approval-key', input);
   return (await parseMaybeJson(response)) as { credential: OperatorSigningCredential; trust_change: OperatorTrustChange };
-}
-
-export async function getDelegatedSigningStatus(): Promise<DelegatedSigningStatus> {
-  const response = await apiGet('/api/auth/clearances/signing');
-  return (await parseMaybeJson(response)) as DelegatedSigningStatus;
-}
-
-export async function setupDelegatedSigning(input: {
-  name?: string;
-  email?: string;
-  age_recipient?: string;
-  overwrite?: boolean;
-}): Promise<DelegatedSigningStatus> {
-  const response = await apiPost('/api/auth/clearances/signing/setup', input);
-  return (await parseMaybeJson(response)) as DelegatedSigningStatus;
-}
-
-export async function removeDelegatedSigning(): Promise<DelegatedSigningStatus> {
-  const response = await apiDelete('/api/auth/clearances/signing');
-  return (await parseMaybeJson(response)) as DelegatedSigningStatus;
-}
-
-export type AuthClearance = {
-  id: string;
-  issuer_user_id: string;
-  grantee_user_id: string;
-  grantee_credential_id: string | null;
-  retired_at: number | null;
-  retirement_reason: string | null;
-  project_id: string;
-  base_branch: string;
-  issue_id: string | null;
-  head_branch: string | null;
-  action: 'merge';
-  issued_at: number;
-  expires_at: number;
-  max_uses: number;
-  consumed_uses: number;
-  revoked_at: number | null;
-  runtime_epoch: string;
-};
-
-export async function getAuthClearances(): Promise<AuthClearance[]> {
-  const response = await apiGet('/api/auth/clearances');
-  const body = await parseMaybeJson(response) as { clearances?: AuthClearance[] };
-  return body.clearances ?? [];
-}
-
-export async function createAuthClearance(input: {
-  request_id?: string;
-  grantee: string;
-  project?: string;
-  base?: string;
-  issue?: string;
-  head?: string;
-  action?: 'merge';
-  duration_minutes?: number;
-  max_uses?: number;
-}): Promise<AuthClearance> {
-  const response = await apiPost('/api/auth/clearances', input);
-  return ((await parseMaybeJson(response)) as { clearance: AuthClearance }).clearance;
-}
-
-export async function revokeAuthClearance(id: string): Promise<AuthClearance> {
-  const response = await apiPost(`/api/auth/clearances/${encodeURIComponent(id)}/revoke`);
-  return ((await parseMaybeJson(response)) as { clearance: AuthClearance }).clearance;
 }
 
 export async function getWorkRepos<T>(): Promise<T[]> {

@@ -11,7 +11,7 @@ import { systemAction } from "../src/identity/resolver.js";
 import { withLedgerMutationActor } from "../src/ledger/mutation-history.js";
 import { onProtectionInputsChanged } from "../src/protection-inputs.js";
 import { addGrant, removeGrant, addGroup, addGroupMember, evaluateGlobalCapability } from "../src/permissions/store.js";
-import { addCredential, addDelegatedSigningLease, createUser, setupOperator } from "../src/users/store.js";
+import { addCredential, createUser, setupOperator } from "../src/users/store.js";
 import type { ResolvedClientIdentity } from "../src/server.js";
 import { ConversationSpawnService } from "../src/conversation-spawn/service.js";
 import { createManagedReminder } from "../src/managed-reminders.js";
@@ -181,26 +181,6 @@ it.each(["spawn", "reminder", "artifact-source", "artifact-lineage", "work-unit"
   const before = snapshot();
   expect(ok(await repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ kind: "historical_reference", value: expected, count: 1 }));
   expect(await repairRegistry(db, { merge, apply: true })).toMatchObject({ ok: false, error: { code: "merge_conflict" } });
-  expect(snapshot()).toEqual(before);
-});
-
-it.each(["active", "expired", "revoked"])("pins %s clearance scope without changing authority", async state => {
-  const { source, merge } = pair();
-  const owner = setupOperator(db, { slug: "owner" });
-  const agent = createUser(db, { slug: "clearance-agent", kind: "agent", display_name: "Agent" });
-  const credential = addCredential(db, agent.id, { type: "api_token", fingerprint: "agent-token-fingerprint" });
-  const delegated = addCredential(db, owner.id, { type: "delegated_ssh_key", fingerprint: `SHA256:${"C".repeat(43)}`,
-    public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"C".repeat(20)} test` });
-  addDelegatedSigningLease(db, { id: "lease", credential_id: delegated.id, owner_user_id: owner.id,
-    minted_at: 1, expires_at: 100, mint_method: "fresh_presence" });
-  db.prepare(`INSERT INTO auth_clearances(id,issuer_user_id,grantee_user_id,grantee_credential_id,project_id,
-    base_branch,head_branch,action,issued_at,expires_at,max_uses,revoked_at,revoked_by_user_id,runtime_epoch,signing_lease_id)
-    VALUES ('clearance',?,?,?,?,'main','feature/pin','merge',1,?,1,?,?,'epoch','lease')`)
-    .run(owner.id, agent.id, credential.id, source.id, state === "active" ? Date.now()+60_000 : 100,
-      state === "revoked" ? 50 : null, state === "revoked" ? owner.id : null);
-  const before = snapshot();
-  expect(ok(await repairRegistry(db, { merge })).merge!.conflicts).toContainEqual(expect.objectContaining({ value: "auth_clearances.project_id", count: 1 }));
-  expect((await repairRegistry(db, { merge, apply: true })).ok).toBe(false);
   expect(snapshot()).toEqual(before);
 });
 

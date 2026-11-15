@@ -87,7 +87,7 @@ export function buildProtectedBranchGuardProjection(db: Db): ProtectedBranchGuar
   }
   return {
     protectedRefs: [...refs].sort().map((line) => line.split("\t") as [string, string]),
-    allowedSigners: operatorAllowedSignerLines(db, "ref_update"),
+    allowedSigners: operatorAllowedSignerLines(db),
   };
 }
 

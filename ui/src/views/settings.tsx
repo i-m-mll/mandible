@@ -16,16 +16,13 @@ import SigningSettings from '../components/settings/SigningSettings';
 import { formatRelativeTime } from '../lib/format';
 import {
   getBackupStatus,
-  getDelegatedSigningStatus,
   getDesktopDaemonStatus,
   getSecureLocalConnectionsStatus,
   isDesktopShell,
   navigateToDesktopBootstrap,
-  removeDelegatedSigning,
   restartDesktopDaemon,
   runBackupNow,
   setDesktopDaemonLaunchMode,
-  setupDelegatedSigning,
   startDesktopDaemon,
   setupSecureLocalConnections,
   stopDesktopDaemon,
@@ -36,7 +33,6 @@ import {
   listCanonicalProjects,
   type BackupStatus,
   type CanonicalProject,
-  type DelegatedSigningStatus,
   type DesktopDaemonLaunchMode,
   type InstructionDeliverySettings,
   type InstructionTarget,
@@ -843,139 +839,6 @@ function formatBytes(bytes: number): string {
   if (kb < 1024) return `${kb.toFixed(1)} KB`;
   const mb = kb / 1024;
   return `${mb.toFixed(1)} MB`;
-}
-
-export function DelegatedSigningSection({ instance }: { instance?: InstanceInfo | null }): JSX.Element {
-  const [signing, setSigning] = useState<DelegatedSigningStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState(false);
-  const [feedback, setFeedback] = useState<FeedbackState>(null);
-  const readAllowed = canPerformOperation(instance, 'GET', '/api/auth/clearances/signing');
-  const setupAllowed = canPerformOperation(instance, 'POST', '/api/auth/clearances/signing/setup');
-  const removeAllowed = canPerformOperation(instance, 'DELETE', '/api/auth/clearances/signing');
-
-  const load = useCallback(() => {
-    if (!readAllowed) return;
-    getDelegatedSigningStatus()
-      .then(setSigning)
-      .catch((err) => setFeedback({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Failed to load auth status',
-      }));
-  }, [readAllowed]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const handleRemove = useCallback(async () => {
-    if (!removeAllowed) return;
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const removed = await removeDelegatedSigning();
-      setSigning(removed);
-      setConfirmRemove(false);
-      setFeedback({ type: 'success', message: 'Delegated signing material removed' });
-    } catch (err) {
-      setFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Removal failed' });
-    } finally {
-      setBusy(false);
-    }
-  }, [removeAllowed]);
-
-  const handleSetup = useCallback(async () => {
-    if (!setupAllowed) return;
-    setBusy(true);
-    setFeedback(null);
-    try {
-      await setupDelegatedSigning({});
-      load();
-      setFeedback({ type: 'success', message: 'Delegated signing key created' });
-    } catch (err) {
-      setFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Setup failed' });
-    } finally {
-      setBusy(false);
-    }
-  }, [load, setupAllowed]);
-
-  return (
-    <div className="settings-view__delegated-signing">
-      <div className="settings-view__number-row" data-settings-searchable>
-        <div className="settings-view__number-info">
-          <span className="settings-view__number-label">Delegated signing key</span>
-          <span className="settings-view__number-desc">
-            {signing?.configured
-              ? 'Ready to issue scoped protected-merge clearances.'
-              : 'Create a local signing key wrapped by a YubiKey age identity.'}
-          </span>
-        </div>
-        <div className="settings-view__number-controls">
-          <button
-            type="button"
-            className="btn btn--active btn--sm"
-            onClick={handleSetup}
-            disabled={!setupAllowed || busy || signing?.configured === true}
-          >
-            {busy ? 'Setting up...' : signing?.configured ? 'Configured' : 'Set up'}
-          </button>
-          {signing?.configured && (
-            <button
-              type="button"
-              className="btn btn--sm"
-              onClick={() => setConfirmRemove(true)}
-              disabled={!removeAllowed || busy}
-            >
-              Remove
-            </button>
-          )}
-          {signing && signing.missing_tools?.length > 0 && (
-            <span className="settings-view__feedback settings-view__feedback--error">
-              Missing {signing.missing_tools.join(', ')}
-            </span>
-          )}
-        </div>
-      </div>
-      {confirmRemove && (
-        <div className="settings-view__confirm" role="alertdialog" aria-labelledby="delegated-signing-remove-title">
-          <div className="settings-view__confirm-body">
-            <strong id="delegated-signing-remove-title">Remove delegated signing material?</strong>
-            <span>This revokes the runtime signer handles and deletes the local delegated key files. Existing clearance audit rows remain, but cannot execute.</span>
-          </div>
-          <div className="settings-view__confirm-actions">
-            <button type="button" className="btn btn--sm" onClick={() => setConfirmRemove(false)} disabled={busy}>Cancel</button>
-            <button type="button" className="btn btn--active btn--sm" onClick={handleRemove} disabled={!removeAllowed || busy}>
-              {busy ? 'Removing...' : 'Remove key material'}
-            </button>
-          </div>
-        </div>
-      )}
-      {!readAllowed ? (
-        <DetailPaneNotice severity="info" density="compact" title="Credential status unavailable">
-          This instance cannot read delegated signing credentials.
-        </DetailPaneNotice>
-      ) : !setupAllowed || !removeAllowed ? (
-        <DetailPaneNotice severity="info" density="compact" title="Credential changes unavailable">
-          Credential setup and removal are unavailable in this instance.
-        </DetailPaneNotice>
-      ) : null}
-      {readAllowed && signing?.public_key && (
-        <div className="settings-view__field" data-settings-searchable data-settings-search-text="delegated signing public key">
-          <textarea
-            className="settings-view__input settings-view__input--mono"
-            value={signing.public_key}
-            readOnly
-            rows={3}
-          />
-        </div>
-      )}
-      {feedback && (
-        <div data-settings-searchable data-settings-search-text="delegated signing key">
-          <SettingsFeedback feedback={feedback} />
-        </div>
-      )}
-    </div>
-  );
 }
 
 function formatDaemonState(state: DesktopDaemonStatus['state']): string {
@@ -2050,7 +1913,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell key={SETTINGS_SECTIONS.auth.id} section={SETTINGS_SECTIONS.auth}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.auth}
-          description="Approval display, queue retention, and hardware-backed delegated signing."
+          description="Approval display and queue retention."
         />
         <div className="settings-view__section-body">
           <ToggleRow
@@ -2077,7 +1940,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             onSave={saveSetting}
             defaultEnabled
           />
-          <DelegatedSigningSection instance={instance} />
         </div>
       </SettingsSectionShell>,
 

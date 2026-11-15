@@ -27,7 +27,7 @@ beforeEach(() => {
   process.env.MANDIBLE_ARTIFACT_DIR = path.join(repo, ".git", "artifacts");
   fs.writeFileSync(path.join(repo, "doc.md"), original);
   git(repo, ["add", "doc.md"]); git(repo, ["commit", "-m", "Document base"]);
-  operatorId = configureSigningCredential(db, repo, "ssh_key").operatorId;
+  operatorId = configureSigningCredential(db, repo).operatorId;
   fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n.mandible-test-signing-key*\n");
   registerWorkRepo(db, repo);
   const registered = createLedgerProject(db, repo); project = registered.project.id;

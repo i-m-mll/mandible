@@ -45,7 +45,6 @@ export type ApiList<T> = T[] | ApiListEnvelope<T> | LegacyListEnvelope<T>;
 export const DOMAIN_EVENTS = Object.freeze({
   ARTIFACT_CHANGED: "artifact:changed",
   AUTH_APPROVAL_PHASE: "auth:approval_phase",
-  AUTH_AUTO_APPROVE: "auth:auto-approve",
   AUTH_CONVERGENCE: "auth:convergence",
   AUTH_FINALIZED: "auth:finalized",
   AUTH_LIFECYCLE: "auth:lifecycle",
@@ -574,8 +573,6 @@ export type AuthRequest = {
   output: string;
   error: string | null;
   target_repo_root: string | null;
-  approval_source: "manual" | "auto_lease" | string;
-  approval_lease_id: string | null;
 };
 
 export type AuthOutputChunk = {

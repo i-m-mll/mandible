@@ -350,10 +350,10 @@ describe("ledger issue routes", () => {
     db.prepare(
       `INSERT INTO auth_requests (
         id, type, command, title, repo, base_branch, head_branch,
-        execution_mode, status, created_at, updated_at, expires_at, output, approval_source
+        execution_mode, status, created_at, updated_at, expires_at, output
       ) VALUES (
         'auth_pending', 'merge', 'git merge feature/child', 'Merge child',
-        ?, 'main', 'feature/child', 'daemon', 'pending', ?, ?, ?, '', 'manual'
+        ?, 'main', 'feature/child', 'daemon', 'pending', ?, ?, ?, ''
       )`,
     ).run(repoInfo.id, now, now, now + 60_000);
     const server = new TestIssueServer();

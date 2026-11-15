@@ -13,7 +13,7 @@ function git(repo: string, args: string[], input?: string): string {
   return result.stdout.trim();
 }
 
-/** Requires configureSigningCredential(db, repo, "ssh_key") from auth-queue-fixtures. */
+/** Requires configureSigningCredential(db, repo) from auth-queue-fixtures. */
 export async function approveWithTestOperator(queue: AuthQueue, request: AuthRequest, operatorId: string): Promise<AuthRequest> {
   return approveAsFixtureOperator(queue, request.id, operatorId);
 }

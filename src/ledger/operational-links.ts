@@ -344,8 +344,6 @@ function* authRequestLedgerCompletion(
     issues?: string[] | null;
     commit_message?: string | null;
     merge_output?: string | null;
-    approval_source?: string | null;
-    approval_lease_id?: string | null;
     approved_by_user_id?: string | null;
     execution_evidence_id?: string | null;
     resolution?: LedgerIssueResolution;
@@ -407,8 +405,6 @@ function* authRequestLedgerCompletion(
         payload: {
           auth_request_id: input.auth_request_id,
           issue_id: issueId,
-          approval_source: input.approval_source ?? null,
-          approval_lease_id: input.approval_lease_id ?? null,
           approved_by_user_id: input.approved_by_user_id ?? null,
           execution_evidence_id: input.execution_evidence_id ?? null,
         },
@@ -459,8 +455,6 @@ export async function applyWithheldAuthRequestClosures(
     auth_request_id: string;
     repo_ref?: string | null;
     merge_output?: string | null;
-    approval_source?: string | null;
-    approval_lease_id?: string | null;
     approved_by_user_id?: string | null;
     execution_evidence_id?: string | null;
     resolution?: LedgerIssueResolution;
@@ -522,7 +516,7 @@ function closeAuthRequestIssue(
   db: Db,
   input: {
     auth_request_id: string; repo_ref?: string | null;
-    approval_lease_id?: string | null; resolution?: LedgerIssueResolution;
+    resolution?: LedgerIssueResolution;
   },
   issueId: string,
   actor: LedgerActorInput,
@@ -537,7 +531,7 @@ function closeAuthRequestIssue(
     authRequestId: input.auth_request_id, issueId, commitSha: mergeSha, repoRef: input.repo_ref ?? "",
   }, actor);
   store.setIssueStatus(issueId, "closed", input.resolution ?? "delivered", {
-    actor_type: "system", actor_id: input.approval_lease_id ?? null, attribution: actor.attribution,
+    actor_type: "system", actor_id: null, attribution: actor.attribution,
   }, "auth_queue");
   return true;
 }

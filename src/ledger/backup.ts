@@ -127,11 +127,10 @@ export const METADATA_BACKUP_TABLES = [
   // authoritative lifecycle and retention record.
   "trash_entries",
   // User registry core (issue e89c2b0 / umbrella 8e2e8b2). Canonical identity,
-  // immutable credentials, claimed bindings, verified attribution evidence, and
-  // delegated-signing leases — durable metadata, not reproducible runtime, so it
-  // is backed up. Parent-before-child order: `users` first, then its credentials
-  // and bindings, then leases (FK credential + user), then evidence (FK
-  // credential + lease). The metadata backup emits each table's inline
+  // immutable credentials, claimed bindings, and verified attribution evidence —
+  // durable metadata, not reproducible runtime, so it is backed up.
+  // Parent-before-child order: `users` first, then its credentials and
+  // bindings, then evidence (FK credential). The metadata backup emits each table's inline
   // UNIQUE/FK/CHECK as part of its own DDL, so slug uniqueness and the credential
   // status/kind CHECK constraints survive a backup round-trip.
   "users",
@@ -143,14 +142,9 @@ export const METADATA_BACKUP_TABLES = [
   "user_settings",
   "user_credentials",
   "user_bindings",
-  "delegated_signing_leases",
   "attribution_evidence",
   // Every authorization of a change to the operator's trust set, with its signatures.
   "operator_trust_changes",
-  // Scoped merge clearances are durable audit metadata. Runtime signer handles
-  // are deliberately absent and therefore every restored grant fails closed.
-  "auth_clearances",
-  "auth_clearance_uses",
   // Reviewed-record audit chain for protected merges: the hashed lifecycle
   // revisions of every auth request, the protected-base audit and candidate
   // acceptance each approval was judged against, and the immutable work-unit
@@ -269,10 +263,6 @@ export function metadataBackupTables(db: Db): readonly string[] {
 }
 
 export const REPRODUCIBLE_OR_RUNTIME_TABLES = [
-  // Local live-capability identity and exclusive daemon claims. Restoring this
-  // table would make a copied database appear able to reconnect to authority
-  // from another installation, so it is deliberately never backed up.
-  "delegated_signing_runtime_bindings",
   // The last execution state each provider session reported. It describes
   // live runtime and is stale in any restored copy; the next hook rewrites it.
   "provider_session_execution",

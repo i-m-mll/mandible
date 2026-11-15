@@ -93,7 +93,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/b", { "b.txt": "b\n" });
       commitOnBranch(repo, "feature/c", { "c.txt": "c\n" });
       registerWorkRepo(db, repo);
-      configureSigningCredential(db, repo, "ssh_key");
+      configureSigningCredential(db, repo);
       const project = createLedgerProject(db, repo);
       const issue = createLedgerIssue(db, project.project.id, "8420a44");
       const operator = getOperator(db)!;
@@ -575,7 +575,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, `feature/${branch}`, { [`${branch}.txt`]: `${branch}\n` });
       }
       registerWorkRepo(db, repo);
-      configureSigningCredential(db, repo, "ssh_key");
+      configureSigningCredential(db, repo);
       const submit = async (branch: string, extra: { depends_on_ids?: string[] } = {}) => (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: `mandible auth merge feature/${branch} --into main`,

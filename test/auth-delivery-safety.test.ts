@@ -27,7 +27,7 @@ let executorCalls: number;
 beforeEach(() => {
   repo = createAuthCheckRepo();
   db = createMigratedDb();
-  operatorId = configureSigningCredential(db, repo, "ssh_key").operatorId;
+  operatorId = configureSigningCredential(db, repo).operatorId;
   fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n.mandible-test-signing-key*\n");
   hookCalls = 0;
   executorCalls = 0;

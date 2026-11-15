@@ -2,7 +2,7 @@
 
 The auth queue manages protected-branch merges and other authenticated actions. Agents submit requests; the user approves via the dashboard or terminal.
 
-Projects organize the local OS owner’s ledger and do not restrict local agents. Canonical project identity still scopes approval requests and clearances. Active identity, current responsibility, exact signed scope, global effect capabilities, transport credentials, browser-origin checks and preview limits remain enforced.
+Projects organize the local OS owner’s ledger and do not restrict local agents. Canonical project identity still scopes approval requests. Active identity, current responsibility, exact signed scope, global effect capabilities, transport credentials, browser-origin checks and preview limits remain enforced.
 
 ## Types
 
@@ -250,19 +250,6 @@ Approve a pending request. For a protected merge, Mandible builds the exact merg
 ### POST /api/auth/request/:id/cancel-proof
 
 Cancel the configured operator's in-flight merge-commit signature. Requires `approve_auth`; unavailable through file RPC. Returns `200` with `{ "cancelled": true }`. It does not reject or withdraw the pending request, and cannot undo an already verified approval.
-
-### Scoped protected-merge clearances
-
-`GET /api/auth/clearances`, `GET /api/auth/clearances/:id`,
-`POST /api/auth/clearances`, and `POST /api/auth/clearances/:id/revoke` are
-operator-only and require operator proof. A signed clearance grants a bounded
-scope to an agent user. `POST /api/auth/request/:id/clearance/execute` uses
-the current responsible actor and an applicable clearance for that actor, not a
-prior requester's grant. Execution is merge-only, daemon-only, runtime-bound,
-and requires effect authority, exact candidate acceptance, and
-existing process and signer fences. Responsibility is rechecked before one use
-is atomically consumed. Old credential-bound scopes are retired and must be
-reissued, rather than widened.
 
 ```json
 {

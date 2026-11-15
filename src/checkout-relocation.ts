@@ -59,8 +59,6 @@ export const CHECKOUT_PATH_POLICIES: readonly CheckoutPathPolicy[] = [
     "workflow_runs.project_path", "workflow_runs.summary_path", "workflow_runs.script_path", "workflow_workers.transcript_path"),
   ...pin("Checkout-relative path; follows its checkout by id", "space_exports.path", "space_publications.path"),
   ...pin("Completed push record", "push_history.repo_root"),
-  ...pin("Signing runtime binding outside checkouts",
-    "delegated_signing_runtime_bindings.socket_path", "delegated_signing_runtime_bindings.public_key_path"),
 ];
 
 const PATH_LIKE_COLUMN = /(^|_)(root|path|cwd)$/;

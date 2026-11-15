@@ -35,7 +35,7 @@ describe("auth queue", () => {
       git(repo, ["commit", "--amend", "-m", "atomic recovery\n\nCloses-Mandible-Issue: abc1234"]);
       git(repo, ["checkout", "main"]);
       registerWorkRepo(db, repo);
-      const signing = configureSigningCredential(db, repo, "ssh_key");
+      const signing = configureSigningCredential(db, repo);
       git(repo, ["config", "commit.gpgsign", "true"]);
 
       let executionStarted: () => void;

@@ -65,7 +65,7 @@ export interface TrustChange {
 }
 
 export interface OperatorStatement {
-  kind: "trust_change" | "clearance_grant";
+  kind: "trust_change";
   content: Record<string, unknown>;
 }
 

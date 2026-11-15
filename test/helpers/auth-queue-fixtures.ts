@@ -47,7 +47,6 @@ import {
 import {
   addCredential,
   addEnclaveApprovalKey,
-  addDelegatedSigningLease,
   getOperator,
   listCredentials,
 } from "../../src/users/store.js";
@@ -346,34 +345,12 @@ export function registerWorkRepo(
 
 // --- users, credentials, evidence -----------------------------------------
 
-export function registerTestDelegatedLease(
-  db: InstanceType<typeof SqliteDatabase>,
-  id: string,
-  now = Date.now(),
-): string {
-  const operator = getOperator(db)!;
-  const credential = addCredential(db, operator.id, {
-    type: "delegated_ssh_key",
-    fingerprint: `SHA256:${"A".repeat(43)}`,
-    public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"A".repeat(20)} auth-test`,
-  }, now - 1000);
-  addDelegatedSigningLease(db, {
-    id,
-    credential_id: credential.id,
-    owner_user_id: operator.id,
-    minted_at: now - 1000,
-    expires_at: now + 60_000,
-    mint_method: "fresh_presence",
-  });
-  return operator.id;
-}
-
 export function executionEvidenceChain(
   db: InstanceType<typeof SqliteDatabase>,
   executionEvidenceId: string,
 ): {
   signature: { evidence_method: string; credential_id: string | null; details_json: string };
-  authorization: { evidence_method: string; lease_id: string | null; details_json: string };
+  authorization: { evidence_method: string; details_json: string };
 } {
   const signature = db.prepare(
     "SELECT evidence_method, credential_id, details_json FROM attribution_evidence WHERE id = ?",
@@ -384,10 +361,9 @@ export function executionEvidenceChain(
   };
   const authorizationId = JSON.parse(signature.details_json).authorization_evidence_id as string;
   const authorization = db.prepare(
-    "SELECT evidence_method, lease_id, details_json FROM attribution_evidence WHERE id = ?",
+    "SELECT evidence_method, details_json FROM attribution_evidence WHERE id = ?",
   ).get(authorizationId) as {
     evidence_method: string;
-    lease_id: string | null;
     details_json: string;
   };
   return { signature, authorization };
@@ -403,12 +379,11 @@ export function executionEvidenceChain(
 export function configureSigningCredential(
   db: InstanceType<typeof SqliteDatabase>,
   repo: string,
-  type: "ssh_key" | "delegated_ssh_key",
 ): { credentialId: string; keyPath: string; operatorId: string } {
   const keyPath = path.join(git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "mandible-test-signing-key");
   const operator = getOperator(db)!;
   // One operator has one approval key: further repositories sign with the same key.
-  const enrolled = type === "ssh_key" ? listCredentials(db, operator.id).find((credential) => credential.custody === "enclave" && credential.status === "active") : undefined;
+  const enrolled = listCredentials(db, operator.id).find((credential) => credential.custody === "enclave" && credential.status === "active");
   if (enrolled) {
     fs.copyFileSync(fixtureOperatorSigning(db).keyPath(enrolled.fingerprint), keyPath);
     fs.chmodSync(keyPath, 0o600);
@@ -423,10 +398,8 @@ export function configureSigningCredential(
     encoding: "utf8",
   }).trim().split(/\s+/)[1]!;
   // The test key is both the enrolled approval key and the repo's git signer.
-  const credential = type === "ssh_key"
-    ? addEnclaveApprovalKey(db, operator.id, { fingerprint, public_material: publicMaterial })
-    : addCredential(db, operator.id, { type, fingerprint, public_material: publicMaterial });
-  if (type === "ssh_key") installFixtureApprovalKey(db, fingerprint, keyPath);
+  const credential = addEnclaveApprovalKey(db, operator.id, { fingerprint, public_material: publicMaterial });
+  installFixtureApprovalKey(db, fingerprint, keyPath);
   git(repo, ["config", "gpg.format", "ssh"]);
   git(repo, ["config", "user.signingkey", keyPath]);
   return { credentialId: credential.id, keyPath, operatorId: operator.id };
@@ -456,8 +429,8 @@ export function insertSiblingMergeRequest(
     `INSERT INTO auth_requests (
       id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
       merge_head_sha, status, created_at, updated_at, expires_at, output, execution_mode,
-      files_changed, additions, deletions, approval_source, approved_by_user_id
-    ) VALUES (?, NULL, 'merge', ?, ?, ?, ?, 'main', ?, ?, ?, ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual', ?)`
+      files_changed, additions, deletions, approved_by_user_id
+    ) VALUES (?, NULL, 'merge', ?, ?, ?, ?, 'main', ?, ?, ?, ?, ?, ?, '', 'daemon', 0, 0, 0, ?)`
   ).run(
     requestId,
     `mandible auth merge ${sourceBranch} --into main`,

@@ -3,7 +3,6 @@ import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import path from 'node:path';
 import { expect, it } from 'vitest';
 import { AuthQueue } from '../src/auth-queue.js';
-import { AuthAutoApproveManager } from '../src/auth-auto-approve.js';
 import { setDb } from '../src/db.js';
 import { registerAuthRoutes } from '../src/routes/auth.js';
 import { createServer } from '../src/server.js';
@@ -75,7 +74,7 @@ it('keeps pending lifecycle and registered health work live while preserving sam
       return { exit_code: 0, signal: null, stdout: '', stderr: '', output: '', started_at: epoch, finished_at: clock };
     },
   });
-  registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+  registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
   // Register the real server health handler, not a private sentinel. No listener or daemon is started.
   createServer({ db, router, sse: new SseManager(), logger: () => undefined, version: 'held-executor-fixture',
     getStartupInfo: () => null, instance: { ...MAIN_CLI_INSTANCE_RESPONSE.instance, writable_roots: [repo] } });

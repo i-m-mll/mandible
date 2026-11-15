@@ -35,8 +35,6 @@ export const OPERATOR_TRUST_CHANGE_KINDS = [
   "signer_add",
   "signer_revoke",
   "protected_branches",
-  "delegated_signer_setup",
-  "delegated_signer_remove",
 ] as const;
 
 /** Every change to whom the gate trusts or what it covers, with its authorization. Insert-only. */
