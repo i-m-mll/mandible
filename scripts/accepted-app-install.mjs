@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { applicationIdentity, resolveAcceptedRelease, readAcceptedReleaseReceipt } from './accepted-release.mjs';
-import { readInstalledRelease } from './installed-release.mjs';
+import { applicationIdentity, resolveAcceptedRelease, readAcceptedReleaseReceipt, readAcceptedInstalledRelease } from './accepted-release.mjs';
 import { assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { adoptBundleRelease, readBundleOwner } from './bundle-services.mjs';
 import { runtimeObservationTimeout } from './runtime-observation.mjs';
@@ -19,8 +18,7 @@ export function verifyAcceptedApplication(binding) {
 }
 export function inspectAcceptedApplication(binding) {
   const receipt = readAcceptedReleaseReceipt(binding.acceptedRelease.reference);
-  const shipped = readInstalledRelease(path.join(binding.nativeApp, 'Contents/Resources'));
-  if (JSON.stringify(shipped) !== JSON.stringify(receipt.shipped)) throw new Error('Installed manifest differs from the exact accepted release.');
+  readAcceptedInstalledRelease(receipt, path.join(binding.nativeApp, 'Contents/Resources'));
   return receipt;
 }
 export function acceptedInstallPaths(binding) {
@@ -48,7 +46,7 @@ export function preparedApplicationContext(prepared, binding) {
   if (!verified || verified.binding !== JSON.stringify(binding)) throw new Error('Operation requires its own live prepared application.');
   verified.assertHeld();
   sameRoot(verified.app, prepared.identity);
-  return { app: verified.app, resources: path.join(verified.app, 'Contents/Resources'), release: verified.receipt.shipped,
+  return { app: verified.app, resources: path.join(verified.app, 'Contents/Resources'), release: verified.release,
     receipt: verified.receipt, reference: binding.acceptedRelease.reference, digest: prepared.packageSha256,
     bundleIdentifier: prepared.bundleIdentifier, identity: prepared.identity, installed: verified.installed };
 }
@@ -90,10 +88,11 @@ export function prepareAcceptedApplication(binding, { until, attemptId, assertHe
   if (stageIdentity) sameRoot(target, stageIdentity);
   const identity = applicationRootIdentity(target);
   if (applicationIdentity(target) !== receipt.package.sha256) throw new Error('Prepared application differs from the exact accepted package.');
+  const release = readAcceptedInstalledRelease(receipt, path.join(target, 'Contents/Resources'));
   const bundleIdentifier = serviceInstallationContext({ home: binding.home ?? path.dirname(binding.nativeApp), bundleRoot: target }).bundleIdentifier;
   assertHeld();
   const prepared = Object.freeze({ packageSha256: receipt.package.sha256, bundleIdentifier, target, installed, identity, attemptId, ...paths });
-  preparedApplications.set(prepared, { binding: JSON.stringify(binding), receipt, app: target, installed, assertHeld });
+  preparedApplications.set(prepared, { binding: JSON.stringify(binding), receipt, release, app: target, installed, assertHeld });
   return prepared;
 }
 
@@ -130,7 +129,7 @@ export function installAcceptedApplication(binding, context, { until, prepared }
   const verified = preparedApplications.get(prepared);
   verified.app = binding.nativeApp; verified.installed = true;
   check();
-  adoptBundleRelease(context, accepted.receipt.shipped, owner, binding.acceptedRelease.reference, { until });
+  adoptBundleRelease(context, accepted.release, owner, binding.acceptedRelease.reference, { until });
   check();
   return { packageSha256: accepted.receipt.package.sha256, ...paths };
 }

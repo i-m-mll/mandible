@@ -37,9 +37,8 @@ async function fixture(db = createMigratedDb()) {
   const shipped = { schema: 'mandible-installed-release@1', version: '1', target: `${process.platform}-${process.arch}`, layout: { kind: 'macos-app', roots: { resources: '.' } },
     provenance: { commit: candidate.pin_sha, source_digest: 'e'.repeat(64) }, entrypoints: { daemon: 'program' }, native: {}, files: { program: installedFileIdentity(program) } } as any;
   fs.writeFileSync(path.join(pending.resources, 'release.json'), JSON.stringify(shipped));
-  const evidence = path.join(home, 'evidence.json'); fs.writeFileSync(evidence, '{}');
   const accepted = await retainAcceptedRelease({ pending, candidate, shipped, expectedDigest: applicationIdentity(pending.app),
-    acceptance: { record_id: record, request_id: id }, evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 } });
+    acceptance: { record_id: record, request_id: id }, evidence: Buffer.from('{}') });
   const metadataFile = path.join(pending.root, 'metadata.json');
   const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8')); delete metadata.ownership.processOwner; saveOwnedMetadata(metadataFile, metadata);
   db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, exit_code, merge_candidate_pin_sha, merge_candidate_tree_sha,

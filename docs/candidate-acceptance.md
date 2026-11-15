@@ -103,33 +103,22 @@ Route sweeps using `--keep` additionally require `--project` and `--work-unit`
 owner IDs, `--reason`, and `--review-by` within seven days. Ordinary disposable
 sweeps use process ownership without inventing ledger work units.
 
-Before execution, a run copies the built application into pending owned-run
-custody at `<authority-home>/accepted-releases/<run-id>/Mandible.app` and checks
-its signature and whole-app digest. On a pass, it checks that the exercised app
-is unchanged and seals it in place; no rebuild or second copy occurs. Only a
-passing acceptance row authorizes selection of its receipt. A sealing or cleanup
-failure fails the row; any preserved material remains owned by its delivery
-work unit.
+Before execution, a run copies the built application into pending owned-run custody and checks its signature and whole-app digest. After the runtime checks and scratch cleanup pass, it checks that the exercised app is unchanged and seals it in place. Only a passing acceptance row authorizes selection of its receipt. A sealing or cleanup failure fails the row; any preserved material remains owned by its delivery work unit.
 
-`scripts/accepted-release.mjs` and its declaration file define the single
-`mandible-accepted-release@1` receipt and resolver. The immutable receipt binds:
+The daemon explicitly advertises `MANDIBLE_ACCEPTANCE_RECEIPT_SCHEMA=mandible-accepted-release@2`. V2 stores the app at `<authority-home>/accepted-releases/.v2/<run-id>/Mandible.app` and seals a single UTF-8 certificate at `<authority-home>/accepted-releases/.v2/.receipts/<run-id>-accepted-release.json`. The certificate is capped at 64 KiB and records:
 
-- `acceptance`: unique owned-run ID and the daemon's acceptance row/request IDs
-  when supplied by the authority;
-- `candidate`: exact `pin_sha`, `tree_sha`, `base_sha` and `head_sha`;
-- `target` and `shipped`: the finalized installed-release manifest;
-- `package`: `owned-run` custody handle, `Mandible.app` relative path and whole
-  app SHA-256;
-- `retention`: canonical project, delivery work-unit owner and disposal policy;
-- `evidence`: immutable bounded acceptance evidence file and its SHA-256.
+- The exact candidate pin, tree, base and head; run, acceptance row and request; canonical project and work unit.
+- The owned app locator, whole-app SHA-256, exact installed-manifest SHA-256 and target.
+- The acceptance contract version, fixed gate verdicts, and bounded interaction, health and shutdown observations.
+
+The certificate contains no shipped inventory or raw diagnostics. Operations that need the manifest read it from the retained or installed app and verify it against the certificate. Diagnostic output and ledger summaries are size-bounded projections and do not confer acceptance.
+
+For bootstrap, an old daemon sends no capability. The producer then uses the existing `mandible-accepted-release@1` format, including its embedded shipped manifest, with the app and receipt at their original locations and a hash-verified, bounded proof stored at `<authority-home>/accepted-releases/.receipts/evidence/<run-id>-acceptance.json`. Unknown capabilities are refused. Both receipt versions remain readable; historical v1 receipts retain their original evidence path, digest, and bytes.
 
 The result's existing string `receipt` field carries
 `accepted-release:<receipt-sha256>:<base64url-absolute-receipt-path>` (at most
 512 characters). It survives the legacy authority's 64 KiB result compaction.
-`resolveAcceptedRelease(reference, expectedCandidate)` verifies that exact
-receipt, evidence, custody identity, whole app and shipped inventory/provenance;
-it returns `{receipt, app, resources}` or refuses. It never selects a newer run
-or rebuilds bytes.
+`resolveAcceptedRelease(reference, expectedCandidate)` verifies the exact receipt, evidence, custody identity, whole app, and installed manifest. It returns `{receipt, app, resources, release}` or refuses. It never selects a newer run or rebuilds bytes.
 
 The daemon binds a passing acceptance automatically as one `checkpoint_add`
 action with `kind: accepted-release`, targeted at the request-bound delivery
@@ -155,10 +144,7 @@ owned-run cleanup refuses their unresolved interactive outputs. After delivery
 or abandonment the owner calls `disposeAcceptedRelease(reference, candidate,
 reason)`, which explicitly finalizes the retained run with a discard disposition
 and uses ordinary owned-run cleanup. Pending approval never
-expires retained bytes. Acceptance evidence and compact cleanup receipts remain
-available after package disposal. The immutable accepted-release receipt also
-remains in `<authority-home>/accepted-releases/.receipts/<run-id>-accepted-release.json`,
-outside the package cleanup root; its original reference and hash do not change.
+expires retained bytes. The immutable accepted-release receipt and compact cleanup records stay outside the package cleanup root, so receipt references and digests survive disposal.
 
 The command reports missing platform or candidate prerequisites as `unavailable`, and execution, interaction, log or cleanup failures as `failed`; the daemon records either as a failed run with the reason. Only `passed` exits successfully. An incomplete health observation never passes
 this finite gate. Event-loop stalls, lag warnings, memory warnings, concrete

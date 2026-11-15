@@ -16,7 +16,7 @@ import { acceptedInstallPaths, preparedApplicationContext, applicationRootIdenti
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions, parseLoadedService } from './service-definitions.mjs';
 import { admitBundleOwner } from './bundle-services.mjs';
 import { installedResourceRoot, installedRuntimeEnvironment, installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
-import { readAcceptedReleaseReceipt, disposeAcceptedRelease } from './accepted-release.mjs';
+import { readAcceptedReleaseReceipt, readAcceptedInstalledRelease, disposeAcceptedRelease } from './accepted-release.mjs';
 import { ownedRunReceipt, inspectRunConsumers } from './owned-run.mjs';
 import SqliteDatabase from '../src/sqlite.ts';
 import { verifyRuntimeHandoffAuthority } from '../src/runtime-handoff-proof.ts';
@@ -33,14 +33,14 @@ export function verifyUpdaterClosure(reference) {
   const receipt = readAcceptedReleaseReceipt(reference);
   const app = path.join(receipt.package.handle.root, receipt.package.path);
   const resources = path.join(app, 'Contents/Resources');
-  const release = receipt.shipped;
+  const release = readAcceptedInstalledRelease(receipt, resources);
   for (const relative of new Set(['handoff/helper.mjs', release.native.bun, release.native.sqlite])) {
     const expected = release.files[relative];
     if (!expected) throw new Error(`Updater closure input is not approved: ${relative}`);
     const actual = installedFileIdentity(releaseFile(resources, relative, release.layout));
     if (actual.sha256 !== expected.sha256 || actual.size !== expected.size) throw new Error(`Approved updater closure changed: ${relative}`);
   }
-  return { receipt, app, resources };
+  return { receipt, app, resources, release };
 }
 function withAcceptedClosure(journal, operation) {
   if (acceptedOperations.getStore()?.bindingDigest === journal.bindingDigest) return operation();
@@ -360,10 +360,10 @@ async function armRuntimeHandoffOwned(root) {
   let approved;
   try { approved = await freezeRuntimeHandoffPublication(authority, preliminary); } finally { authority.close(); }
   const accepted = verifyUpdaterClosure(approved.acceptedRelease.reference);
-  const runtime = releaseFile(accepted.resources, accepted.receipt.shipped.native.bun);
+  const runtime = releaseFile(accepted.resources, accepted.release.native.bun, accepted.release.layout);
   const dir = handoffDirectory(home, requestId, executionId);
   fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
-  const runtimeHash = accepted.receipt.shipped.files[accepted.receipt.shipped.native.bun].sha256;
+  const runtimeHash = accepted.release.files[accepted.release.native.bun].sha256;
   const preparation = { requestId, executionId, root, runtime, runtimeHash };
   const preparationFile = path.join(dir, 'preparation.json');
   if (fs.existsSync(preparationFile)) {
@@ -378,7 +378,7 @@ async function armRuntimeHandoffOwned(root) {
     mergeBase: process.env.MANDIBLE_AUTH_MERGE_BASE_SHA || undefined, mergeHead: process.env.MANDIBLE_AUTH_MERGE_HEAD_SHA || undefined,
     mergeCommit: process.env.MANDIBLE_AUTH_MERGE_COMMIT_SHA || undefined,
     nativeApp: path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app'), desktopWasRunning: desktopRunning(path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app')),
-    runtime: { path: runtime, version: accepted.receipt.shipped.provenance.bun_revision, sha256: runtimeHash } };
+    runtime: { path: runtime, version: accepted.release.provenance.bun_revision, sha256: runtimeHash } };
   assertNativePredecessor(binding);
   if (binding.bundleOwner) {
     if (!process.env.MANDIBLE_DESKTOP_INSTALL_PATH) binding.nativeApp = binding.bundleOwner.bundleRoot;
