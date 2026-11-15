@@ -15,7 +15,8 @@ import { inspectRunConsumers, OWNED_RUN_SCHEMA, ownedRunReceipt, saveOwnedMetada
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const sha256 = /^[a-f0-9]{64}$/;
-const recoverySchema = 'mandible-restored-accepted-release-quarantine@1';
+const historicalRecoverySchema = 'mandible-restored-accepted-release-quarantine@1';
+const recoverySchema = 'mandible-restored-accepted-release-quarantine@2';
 const generatedDiscardManifestDigest = digest(JSON.stringify([
   { path: 'Mandible.app', kind: 'generated', disposition: 'disposable', manifest: [] },
 ]));
@@ -50,12 +51,13 @@ function onlyApp(outputs) {
 function readDisposition(handle, receipt) {
   const outcome = ownedRunReceipt(handle);
   if (!outcome || outcome.schema !== OWNED_RUN_SCHEMA || outcome.outcome !== 'abandoned'
-      || outcome.disposition !== 'discard' || outcome.cleanup !== 'completed'
-      || !Array.isArray(outcome.remaining) || outcome.remaining.length || !outcome.summary?.trim()
+      || outcome.disposition !== 'discard' || !['pending', 'completed'].includes(outcome.cleanup)
+      || outcome.cleanup === 'completed' && (!Array.isArray(outcome.remaining) || outcome.remaining.length)
+      || !outcome.summary?.trim()
       || !Number.isFinite(Date.parse(outcome.finalizedAt)) || !sha256.test(outcome.manifestDigest ?? '')
       || !outcome.instanceId || outcome.project !== receipt.retention.project || outcome.workUnit !== receipt.retention.work_unit
       || !Number.isSafeInteger(outcome.rootIdentity?.dev) || !Number.isSafeInteger(outcome.rootIdentity?.ino)) {
-    throw new Error('Completed discard outcome does not bind this release owner.');
+    throw new Error('Recorded discard outcome does not bind this release owner.');
   }
   if (outcome.generatedRecovery && !onlyApp(outcome.generatedRecovery.outputs)) {
     throw new Error('Completed discard outcome covers unexpected outputs.');
@@ -81,6 +83,10 @@ function readRestoredOwner(location, outcome, receipt) {
   if (output?.path !== receipt.package.path || !(stale || terminal)) {
     throw new Error('Release metadata does not match the prior disposition or its creating owner.');
   }
+  if (!outcome.generatedRecovery && (!terminal || !Array.isArray(output.manifest)
+      || !output.manifest.some(entry => entry.path === receipt.package.path && entry.kind === 'directory'))) {
+    throw new Error('Inventoried disposition requires its exact terminal output inventory.');
+  }
   const producer = metadata.pendingAcceptance;
   if (producer && (producer.runId !== run.runId || producer.recordId !== receipt.acceptance.record_id
       || producer.requestId !== receipt.acceptance.request_id || !path.isAbsolute(producer.scratchRoot ?? ''))) {
@@ -90,8 +96,8 @@ function readRestoredOwner(location, outcome, receipt) {
 }
 
 function dispositionAuthority(db, reference, receipt, outcome) {
-  if (!onlyApp(outcome.generatedRecovery?.outputs) || outcome.manifestDigest !== generatedDiscardManifestDigest) {
-    throw new Error('Completed outcome does not prove discard of exactly Mandible.app.');
+  if (outcome.generatedRecovery && (!onlyApp(outcome.generatedRecovery.outputs) || outcome.manifestDigest !== generatedDiscardManifestDigest)) {
+    throw new Error('Generated outcome does not prove discard of exactly Mandible.app.');
   }
   const locator = reference.slice(reference.lastIndexOf(':'));
   const { record_id, request_id } = receipt.acceptance;
@@ -151,6 +157,13 @@ function checkQuarantine(directory, volume) {
   }
 }
 
+function dispositionDigest(file, schema) {
+  const bytes = ownedFile(file).bytes;
+  if (schema === historicalRecoverySchema) return digest(bytes);
+  const { cleanup, remaining, reason, unlinkedApparentBytes, physicalRecovery, ...disposition } = JSON.parse(bytes);
+  return digest(JSON.stringify(disposition));
+}
+
 function syncDirectory(directory) {
   const fd = fs.openSync(directory, 'r');
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
@@ -180,18 +193,22 @@ export async function recoverRestoredAcceptedRelease(db, home, runId, { applyTok
       throw new Error('Sealed release does not bind this exact package and run.');
     }
     const outcomeFile = path.join(receipts, `${runId}.json`);
-    const outcomeDigest = digest(ownedFile(outcomeFile).bytes);
     const outcome = readDisposition(handle, receipt);
     const storageStat = ownedDirectory(storage);
     checkQuarantine(quarantine, storageStat.dev);
+    const existingIntent = statIfPresent(recoveryReceipt) ? ownedFile(recoveryReceipt).bytes : null;
+    const schema = existingIntent ? JSON.parse(existingIntent).schema : recoverySchema;
+    if (![recoverySchema, historicalRecoverySchema].includes(schema)) throw new Error('Unknown quarantine receipt schema.');
+    const outcomeDigest = dispositionDigest(outcomeFile, schema);
     if (purge) {
       checkReferences(db, home, reference, receipt);
       const authority = dispositionAuthority(db, reference, receipt, outcome);
-      const intentBytes = ownedFile(recoveryReceipt).bytes;
+      if (!existingIntent) throw new Error('No exact quarantine receipt is available.');
+      const intentBytes = existingIntent;
       const intent = JSON.parse(intentBytes);
       const quarantinePlan = { root, destination, reference, packageSha256: receipt.package.sha256, authority, recoveryReceipt };
       const expectedToken = digest(JSON.stringify([quarantinePlan, intent.rootIdentity?.dev, intent.rootIdentity?.ino, intent.metadataDigest, outcomeDigest]));
-      if (intent.schema !== recoverySchema || Object.entries(quarantinePlan).some(([key, value]) => JSON.stringify(intent[key]) !== JSON.stringify(value))
+      if (Object.entries(quarantinePlan).some(([key, value]) => JSON.stringify(intent[key]) !== JSON.stringify(value))
           || intent.outcomeDigest !== outcomeDigest || intent.applyToken !== expectedToken || !sha256.test(intent.metadataDigest ?? '')) {
         throw new Error('Quarantine intent does not bind the historical release and restored inode.');
       }
@@ -199,6 +216,7 @@ export async function recoverRestoredAcceptedRelease(db, home, runId, { applyTok
         const stat = ownedDirectory(destination);
         if (stat.dev !== intent.rootIdentity.dev || stat.ino !== intent.rootIdentity.ino) throw new Error('Quarantine destination changed.');
       }
+      checkProducers({ ownership: {} }, outcome);
       return purgeQuarantinedRelease({
         root, destination, recoveryReceipt, intentDigest: digest(intentBytes), packageSha256: receipt.package.sha256, applyToken, inspect,
         readOwnedFile: ownedFile, syncDirectory,
@@ -212,7 +230,7 @@ export async function recoverRestoredAcceptedRelease(db, home, runId, { applyTok
           checkReferences(db, home, reference, receipt);
           const freshAuthority = dispositionAuthority(db, reference, receipt, outcome);
           if (JSON.stringify(freshAuthority) !== JSON.stringify(authority)
-              || digest(ownedFile(seal).bytes) !== sealDigest || digest(ownedFile(outcomeFile).bytes) !== outcomeDigest
+              || digest(ownedFile(seal).bytes) !== sealDigest || dispositionDigest(outcomeFile, schema) !== outcomeDigest
               || digest(ownedFile(recoveryReceipt).bytes) !== digest(intentBytes)) throw new Error('Quarantine custody changed before purge.');
           assertLifecycleLockHeld();
           mark();
@@ -240,7 +258,7 @@ export async function recoverRestoredAcceptedRelease(db, home, runId, { applyTok
     const plan = { root, destination, reference, packageSha256: receipt.package.sha256, authority, recoveryReceipt };
     const token = digest(JSON.stringify([plan, rootStat.dev, rootStat.ino, metadataDigest, outcomeDigest]));
     if (applyToken !== undefined && token !== applyToken) throw new Error('Recovery evidence changed since the dry run.');
-    const intent = { schema: recoverySchema, ...plan, rootIdentity: { dev: rootStat.dev, ino: rootStat.ino },
+    const intent = { schema, ...plan, rootIdentity: { dev: rootStat.dev, ino: rootStat.ino },
       metadataDigest, outcomeDigest, applyToken: token };
     const inspectIntent = () => {
       if (!statIfPresent(recoveryReceipt)) return false;
@@ -267,7 +285,7 @@ export async function recoverRestoredAcceptedRelease(db, home, runId, { applyTok
       const currentRoot = ownedDirectory(root);
       if (currentRoot.ino !== rootStat.ino || currentRoot.dev !== rootStat.dev
           || digest(ownedFile(seal).bytes) !== sealDigest
-          || digest(ownedFile(outcomeFile).bytes) !== outcomeDigest
+          || dispositionDigest(outcomeFile, schema) !== outcomeDigest
           || digest(ownedFile(path.join(root, 'metadata.json')).bytes) !== metadataDigest) {
         throw new Error('Release custody changed during recovery.');
       }

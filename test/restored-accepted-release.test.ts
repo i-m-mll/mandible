@@ -13,7 +13,7 @@ import { testRuntimeRoot } from './helpers/runtime-isolation.js';
 const candidate = { pin_sha: 'a'.repeat(40), tree_sha: 'b'.repeat(40), base_sha: 'c'.repeat(40), head_sha: 'd'.repeat(40) };
 const userDiscard = 'The owner explicitly authorized discard.';
 
-async function restoredFixture({ legacy = false, reason = legacy ? userDiscard : 'Operational references released.' } = {}) {
+async function restoredFixture({ legacy = false, survivor = false, reason = legacy ? userDiscard : 'Operational references released.' } = {}) {
   const home = fs.mkdtempSync(path.join(fs.realpathSync(testRuntimeRoot), 'restored-'));
   const database = path.join(home, 'mandible.db');
   const db = createMigratedDb({ path: database });
@@ -66,9 +66,11 @@ async function restoredFixture({ legacy = false, reason = legacy ? userDiscard :
     }
     fs.utimesSync(copiedMetadata, 1, 1);
     fs.writeFileSync(path.join(restored, '.DS_Store'), 'Finder sidecar');
-    await disposeAcceptedRelease(reference, candidate, reason, { home, database });
-    expect(fs.existsSync(pending.root)).toBe(false);
-    fs.renameSync(restored, pending.root);
+    await disposeAcceptedRelease(reference, candidate, reason, { home, database, deferCleanup: survivor });
+    if (!survivor) {
+      expect(fs.existsSync(pending.root)).toBe(false);
+      fs.renameSync(restored, pending.root);
+    }
     fs.rmSync(scratch, { recursive: true });
     const outcome = path.join(storage, '.receipts', `${runId}.json`);
     return { db, home, requestId, runId, root: pending.root, app: pending.app, program, sealed, outcome, reference,
@@ -153,7 +155,7 @@ it('requires completed legacy discard and rejects changed payload or custody', a
   try {
     const invalidOutcome = JSON.parse(fs.readFileSync(unsupported.outcome, 'utf8'));
     fs.writeFileSync(unsupported.outcome, JSON.stringify({ ...invalidOutcome, disposition: 'transferred' }));
-    expect(await unsupported.recover()).toMatchObject({ action: 'preserve', reason: expect.stringContaining('Completed discard outcome') });
+    expect(await unsupported.recover()).toMatchObject({ action: 'preserve', reason: expect.stringContaining('Recorded discard outcome') });
     const plan = await f.recover();
     expect(plan).toMatchObject({ action: 'quarantine', authority: { kind: 'prior-discard' } });
     if (plan.action !== 'quarantine') throw new Error(JSON.stringify(plan));
@@ -211,5 +213,22 @@ it('purges only matching quarantined bytes and resumes partial or rootless delet
     expect(await recover(plan.applyToken)).toMatchObject({ action: 'purged' });
     expect(fs.existsSync(f.outcome)).toBe(true);
     expect(fs.existsSync(f.sealed)).toBe(true);
+  } finally { f.db.close(); }
+});
+
+it('quarantines exact terminal residue on the original inode after a pending discard', async () => {
+  const f = await restoredFixture({ survivor: true });
+  try {
+    const original = JSON.parse(fs.readFileSync(f.outcome, 'utf8'));
+    expect(original.cleanup).toBe('pending');
+    expect(original.rootIdentity.ino).toBe(fs.statSync(f.root).ino);
+    const plan = await f.recover();
+    if (plan.action !== 'quarantine') throw new Error(JSON.stringify(plan));
+    expect(await f.recover(plan.applyToken)).toMatchObject({ action: 'quarantined' });
+    expect(fs.statSync(plan.destination).ino).toBe(original.rootIdentity.ino);
+    expect(JSON.parse(fs.readFileSync(f.outcome, 'utf8'))).toEqual(original);
+    await disposeAcceptedRelease(f.reference, candidate, 'Resume normal rootless completion.', { home: f.home, database: f.db.name });
+    expect(JSON.parse(fs.readFileSync(f.outcome, 'utf8')).cleanup).toBe('completed');
+    expect(await recoverRestoredAcceptedRelease(f.db, f.home, f.runId, { purge: true })).toMatchObject({ action: 'purge' });
   } finally { f.db.close(); }
 });

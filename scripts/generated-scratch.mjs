@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers, processIdentity, saveOwnedMetadata, recoverGeneratedReceipt } from './owned-run.mjs';
+import { withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers, processIdentity, saveOwnedMetadata, recoverOwnedRunDisposition } from './owned-run.mjs';
 
 export function recordScratchProcess(metadataFile, child, group = false) {
   if (!child.pid) return;
@@ -46,8 +46,14 @@ export async function reconcileGeneratedScratch(parent, { apply = false, limit =
     if (job.file) {
       try {
         const receipt = JSON.parse(fs.readFileSync(job.file, 'utf8'));
-        if (!receipt.generatedRecovery || !ownerIdle(receipt.generatedRecovery) || receipt.cleanup === 'completed' && !fs.existsSync(receipt.root)) continue;
-        const reconcile = () => recoverGeneratedReceipt(job.file, { apply, inspect });
+        if (typeof receipt.root !== 'string' || path.dirname(receipt.root) !== fs.realpathSync(parent)) {
+          results.push({ file: job.file, action: 'skip', reason: 'disposition root is outside generated scratch storage' });
+          continue;
+        }
+        const exists = !!fs.lstatSync(receipt.root, { throwIfNoEntry: false });
+        if (receipt.cleanup === 'completed' && !exists
+            || exists && (!receipt.generatedRecovery || !ownerIdle(receipt.generatedRecovery))) continue;
+        const reconcile = () => recoverOwnedRunDisposition(job.file, { apply, inspect });
         results.push(apply ? await withOwnedRunLock(receipt.root, reconcile, { recoverStale: true }) : reconcile());
       } catch (error) { results.push({ file: job.file, action: 'cleanup-pending', reason: String(error) }); }
       continue;

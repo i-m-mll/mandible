@@ -16,8 +16,8 @@ import { acceptedInstallPaths, preparedApplicationContext, applicationRootIdenti
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions, parseLoadedService } from './service-definitions.mjs';
 import { admitBundleOwner } from './bundle-services.mjs';
 import { installedResourceRoot, installedRuntimeEnvironment, installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
-import { readAcceptedReleaseReceipt, disposeAcceptedRelease } from './accepted-release.mjs';
-import { ownedRunReceipt, inspectRunConsumers } from './owned-run.mjs';
+import { readAcceptedReleaseReceipt, readImmutableAcceptedRelease, disposeAcceptedRelease } from './accepted-release.mjs';
+import { inspectRunConsumers } from './owned-run.mjs';
 import SqliteDatabase from '../src/sqlite.ts';
 import { verifyRuntimeHandoffAuthority } from '../src/runtime-handoff-proof.ts';
 import { assertCacheTransitionFileIdentities, cacheFileIdentity, cacheTransitionReceiptPath, incompatibleConversationCachePaths, OBSOLETE_CACHE_SUFFIXES, publishCacheInvalidationReceipt, validateCacheInvalidationReceipt } from '../src/conversations/cache-transition-receipt.ts';
@@ -110,8 +110,7 @@ async function disposeSupersededRelease(journal) {
   const b = journal.binding;
   const superseded = b.bundleOwner?.acceptedRelease;
   if (!superseded || superseded === b.acceptedRelease.reference) return;
-  const old = readAcceptedReleaseReceipt(superseded);
-  if (ownedRunReceipt(old.package.handle)?.cleanup === 'completed') return;
+  const old = readImmutableAcceptedRelease(superseded);
   let result;
   try {
     result = await disposeAcceptedRelease(superseded, old.candidate, `Superseded by ${b.acceptedRelease.reference}`,
@@ -120,7 +119,7 @@ async function disposeSupersededRelease(journal) {
     if (error.consumers?.length) throw inUse(`The superseded release ${old.package.handle.root}`, error.consumers);
     throw error;
   }
-  if (result.action !== 'delete-owned' || result.remaining?.length) throw new Error('Superseded package cleanup is incomplete.');
+  if (result.action !== 'delete-owned' || result.remaining?.length) throw new Error(`Superseded package cleanup is incomplete: ${result.reason ?? result.action}`);
 }
 function removeLegacyBridge(journal) {
   const runner = journal.binding.priorBackend.argv[1];

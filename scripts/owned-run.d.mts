@@ -19,5 +19,5 @@ export function saveOwnedMetadata(file: string, metadata: unknown): void;
 export function ownedRunIdentityMatches(root: string, run: OwnedRun): boolean;
 export function finalizeOwnedRun(file: string, input: { expectedRevision: number; outcome: string; summary: string; converged?: boolean; disposition?: string; destination?: string; reviewBy?: string; transferReference?: string }, options?: { inspect?: (root: string) => ConsumerInspection }): { ownership: OwnedRun };
 export function cleanupOwnedRun(file: string, options?: { apply?: boolean; inspect?: (root: string) => ConsumerInspection }): { action: string; reason: string; remaining?: string[]; reclaimedBytes?: number; receipt?: string };
-export function recoverGeneratedReceipt(file: string, options?: { apply?: boolean; inspect?: (root: string) => ConsumerInspection }): { action: string; reason?: string; remaining?: string[] };
+export function recoverOwnedRunDisposition(file: string, options?: { apply?: boolean; inspect?: (root: string) => ConsumerInspection }): { action: string; reason?: string; remaining?: string[] };
 export { processIdentity, recoverLifecycleLock } from './lifecycle-lock.mjs';

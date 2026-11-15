@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { applicationIdentity, installedFileIdentity, readInstalledRelease } from './installed-release.mjs';
-import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers } from './owned-run.mjs';
+import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers, ownedRunReceipt, recoverOwnedRunDisposition, OWNED_RUN_SCHEMA } from './owned-run.mjs';
 import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
 import { readBundleOwner } from './bundle-services.mjs';
+import { generatedOwnerIdle } from './generated-scratch.mjs';
 import { readRuntimeHandoffLock, runtimeHandoffSettled } from './runtime-handoff-lock.mjs';
 
 export const ACCEPTED_RELEASE_SCHEMA = 'mandible-accepted-release@1';
@@ -120,8 +121,23 @@ export function readAcceptedReleaseReceipt(reference, expectedCandidate) {
   return receipt;
 }
 
+export function acceptedReleaseDisposition(receipt) {
+  const outcome = ownedRunReceipt(receipt.package.handle);
+  if (outcome && (outcome.schema !== OWNED_RUN_SCHEMA || outcome.outcome !== 'abandoned'
+      || outcome.disposition !== 'discard' || !['pending', 'completed'].includes(outcome.cleanup)
+      || !/^[a-f0-9]{64}$/.test(outcome.manifestDigest ?? '')
+      || outcome.project !== receipt.retention.project || outcome.workUnit !== receipt.retention.work_unit
+      || !Number.isSafeInteger(outcome.rootIdentity?.dev) || !Number.isSafeInteger(outcome.rootIdentity?.ino)
+      || (outcome.generatedRecovery && (outcome.generatedRecovery.outputs?.length !== 1
+        || outcome.generatedRecovery.outputs[0] !== receipt.package.path)))) {
+    throw new Error('Accepted release disposition does not match its sealed custody.');
+  }
+  return outcome;
+}
+
 function acceptedReleaseOwner(receipt) {
   const handle = receipt.package.handle;
+  if (acceptedReleaseDisposition(receipt)) throw new Error('Accepted payload is disposed or claimed for disposal.');
   const metadata = JSON.parse(fs.readFileSync(path.join(handle.root, 'metadata.json'), 'utf8'));
   if (!ownedRunIdentityMatches(handle.root, metadata.ownership) || metadata.ownership.runId !== handle.runId
       || metadata.ownership.project !== receipt.retention.project || metadata.ownership.workUnit !== receipt.retention.work_unit) throw new Error('Accepted release owner changed.');
@@ -144,39 +160,54 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
   return { receipt, app, resources };
 }
 
-/** Explicit delivery-owner disposal; pending acceptances never expire as cache material. */
+/** Explicit delivery-owner disposal uses sealed identity and live custody. */
 export async function disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld, claim, database, deferCleanup = false, inspect = inspectRunConsumers } = {}) {
   if (!reason?.trim()) throw new Error('Accepted release disposal requires an owner reason.');
-  const receipt = readAcceptedReleaseReceipt(reference, expectedCandidate);
+  const receipt = readImmutableAcceptedRelease(reference, expectedCandidate);
   const root = receipt.package.handle.root;
   home ??= path.dirname(path.dirname(root));
+  const present = () => !!fs.lstatSync(root, { throwIfNoEntry: false });
+  const disposition = acceptedReleaseDisposition(receipt);
+  if (!present() && disposition?.cleanup === 'completed') return { action: 'delete-owned', reason: 'payload already removed', remaining: [] };
   if (!assertHeld) return withInstallationGatewayLock(home, (_token, held) => disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld: held, claim, database, deferCleanup, inspect }));
   assertHeld();
-  if (!fs.existsSync(root)) return { action: 'delete-owned', reason: 'payload already removed', remaining: [] };
   return withOwnedRunLock(root, async () => {
-    const exact = readAcceptedReleaseReceipt(reference, expectedCandidate);
+    const exact = readImmutableAcceptedRelease(reference, expectedCandidate);
+    const outcome = acceptedReleaseDisposition(exact);
+    const hasRoot = present();
+    if (!hasRoot && outcome?.cleanup === 'completed') return { action: 'delete-owned', reason: 'payload already removed', remaining: [] };
     const references = acceptedReleaseFilesystemReferences(home, reference);
     if (references.length) throw new Error(`Accepted release is retained: ${references.join(', ')}`);
+    if (hasRoot && outcome && !ownedRunIdentityMatches(root, outcome)) throw new Error('Accepted release root identity changed; explicit recovery required.');
     const metadataFile = path.join(root, 'metadata.json');
-    const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
-    const { ownership } = metadata;
-    if (!ownedRunIdentityMatches(root, ownership) || ownership.runId !== exact.package.handle.runId
-        || ownership.project !== exact.retention.project || ownership.workUnit !== exact.retention.work_unit) throw new Error('Accepted release owner changed.');
-    if (ownership.state === 'investigating') throw new Error('Explicit investigation retains these bytes until released.');
-    if (metadata.pendingAcceptance && ownership.state !== 'terminal') {
+    const metadataStat = fs.lstatSync(metadataFile, { throwIfNoEntry: false });
+    if (metadataStat && !metadataStat.isFile()) throw new Error('Accepted release metadata is not an owned file.');
+    const metadata = metadataStat ? JSON.parse(fs.readFileSync(metadataFile, 'utf8')) : null;
+    const ownership = metadata?.ownership;
+    if (!outcome && (!hasRoot || !ownedRunIdentityMatches(root, ownership) || ownership.runId !== exact.package.handle.runId
+        || ownership.project !== exact.retention.project || ownership.workUnit !== exact.retention.work_unit)) {
+      throw new Error('Accepted release owner changed or is absent without a disposition.');
+    }
+    if (ownership?.state === 'investigating') throw new Error('Explicit investigation retains these bytes until released.');
+    if (!outcome && ownership.state === 'terminal') throw new Error('Terminal release lacks its exact disposition.');
+    if (hasRoot && outcome && [ownership, outcome.generatedRecovery].some(run => (run?.processOwner || run?.processes?.length) && !generatedOwnerIdle(run))) {
+      throw new Error('Accepted release is retained: acceptance producer lifetime live or uncertain');
+    }
+    if (hasRoot && !outcome && metadata.pendingAcceptance) {
       const { acceptedReleaseProducerReferences, acceptedReleaseProducerReferencesAsync } = await import('./accepted-release-retention.mjs');
       const producers = deferCleanup ? await acceptedReleaseProducerReferencesAsync(metadata) : acceptedReleaseProducerReferences(metadata);
       if (producers.length) throw new Error(`Accepted release is retained: ${producers.join(', ')}`);
     }
-    const consumers = await inspect(root);
+    const consumers = hasRoot ? await inspect(root) : { idle: true };
     if (!consumers.idle) throw Object.assign(new Error(consumers.reason), { consumers: consumers.pids ?? [] });
     assertHeld();
-    const mark = () => { if (ownership.state !== 'terminal') {
+    const mark = () => {
+      if (outcome) return;
       metadata.ownership = { ...ownership, disposable: true,
         outputs: ownership.outputs.map(output => ({ ...output, kind: 'generated' })) };
       saveOwnedMetadata(metadataFile, metadata);
       finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: 'abandoned', disposition: 'discard', summary: reason });
-    } };
+    };
     if (claim) claim(mark);
     else {
       const [{ default: Database }, { claimAcceptedReleaseDisposal }] = await Promise.all([import('../src/sqlite.ts'), import('./accepted-release-retention.mjs')]);
@@ -186,7 +217,11 @@ export async function disposeAcceptedRelease(reference, expectedCandidate, reaso
     }
     assertHeld();
     if (deferCleanup) return { action: 'cleanup-pending', reason: 'Disposal claimed; ordinary generated-storage maintenance owns cleanup.' };
-    return cleanupOwnedRun(metadataFile, { apply: true });
+    const current = acceptedReleaseDisposition(exact);
+    if (!current) throw new Error('Disposal claim does not have a durable disposition.');
+    const result = recoverOwnedRunDisposition(current.receipt, { apply: true, inspect: () => consumers });
+    if (result.action === 'disposed') return { action: 'delete-owned', reason: result.reason, remaining: [] };
+    return result;
   }, { recoverStale: true });
 }
 
