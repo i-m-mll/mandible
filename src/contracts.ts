@@ -124,6 +124,8 @@ export type WorkRepoScan = z.infer<typeof WORK_REPO_SCAN_PAYLOAD>;
 
 /** A repository scanned within this window is current; scans and the Work view treat it as fresh. */
 export const WORK_SCAN_SKIP_WINDOW_MS = 30_000;
+/** How long a merge approval's Touch ID sheet stays open; the helper is cancelled when it closes. */
+export const OPERATOR_PROOF_WINDOW_MS = 60_000;
 
 const BADGE_COUNT = z.number().int().nonnegative();
 export const DASHBOARD_BADGE_COUNTS = z.object({

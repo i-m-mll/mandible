@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { AuthQueue } from "../src/auth-queue.js";
 import type { AuthRequest } from "../src/types.js";
 import { commitOnBranch, git } from "./helpers/auth-queue-fixtures.js";
+import { operatorCaller } from "./helpers/operator-signing-fixtures.js";
 import { forgeX, insertEvidence, markers, newKey, plainMove, registerExternalOperatorKey, rig, row, type Rig } from "./helpers/approval-gate-rig.js";
 
 async function settle(queue: AuthQueue): Promise<void> {
@@ -79,4 +80,38 @@ describe("only the approved merge of a request completes it", () => {
       } finally { await r.dispose(); }
     });
   }
+});
+
+describe("an approval is of what was reviewed, one sheet at a time", () => {
+  it("refuses a revision other than the one shown, before any sheet", async () => {
+    const r = rig();
+    try {
+      const request = await r.submit("feature/reviewed");
+      const shown = r.queue.lifecycleRevision(request.id)!;
+      git(r.repo, ["checkout", "feature/reviewed"]); git(r.repo, ["commit", "--allow-empty", "-m", "newer head"]); git(r.repo, ["checkout", "main"]);
+      await r.queue.update(request.id, { merge_head_sha: git(r.repo, ["rev-parse", "feature/reviewed"]) });
+      expect(r.queue.lifecycleRevision(request.id)).not.toBe(shown);
+      await expect(r.queue.approveAsOperator(request.id, operatorCaller(r.operatorId), shown)).rejects.toMatchObject({ code: "lifecycle_conflict" });
+      expect(r.signer.touches).toHaveLength(0);
+      expect(row(r.db, request.id).status).toBe("pending");
+    } finally { await r.dispose(); }
+  });
+
+  it("refuses a second signed action while a sheet is open, without opening another", async () => {
+    const r = rig();
+    const gate = r.signer.block();
+    try {
+      const request = await r.submit("feature/first");
+      const approving = r.approve(request.id);
+      await gate.entered;
+      let applied = false;
+      const second = await r.queue.operatorSigningAuthority!.authorizeTrustChange("protected_branches", { from: ["main"], to: [] },
+        "change which branches Mandible protects", undefined, () => { applied = true; });
+      expect(second).toMatchObject({ ok: false, error: { code: "signing_in_progress" } });
+      expect(applied).toBe(false);
+      gate.release();
+      await approving;
+      expect(r.signer.touches).toHaveLength(1);
+    } finally { gate.release(); await r.dispose(); }
+  });
 });

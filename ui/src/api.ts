@@ -1,5 +1,5 @@
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
-import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, type DashboardBadgeCounts } from '../../src/contracts';
+import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, OPERATOR_PROOF_WINDOW_MS, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
 import { detailKeys, detailKeysForEvent } from './query/detailKeys';
 import { isSpaceDocumentQuery, projectionAffectedByEvent, spacePacketMatches } from './query/resourceInvalidation';
@@ -1079,12 +1079,16 @@ export async function cancelApprovalProof(requestId: string): Promise<void> {
   if (!response.ok) throw new Error('Could not cancel operator signing.');
 }
 
-export async function approveAuthRequest(requestId: string): Promise<void> {
+/** Approve the request at `lifecycleRevision`, the revision that was shown; the server refuses any other. */
+export async function approveAuthRequest(requestId: string, lifecycleRevision: number | null): Promise<void> {
   // Bug: 58d93ee — extract server error message so the dashboard can surface it
   // (e.g. invalid_command: "Auth request has no command set")
   // Bug: 737df04 — wrap in AbortController so the fetch does not hang indefinitely
-  // if Mandible is mid-startup-scan and the event loop is saturated.
-  const APPROVE_TIMEOUT_MS = 65_000;
+  // if Mandible is mid-startup-scan and the event loop is saturated. The
+  // server closes the Touch ID sheet after OPERATOR_PROOF_WINDOW_MS; the extra
+  // allowance covers preparing the candidate before the sheet opens. On
+  // timeout the sheet is cancelled too, so no sheet outlives this click.
+  const APPROVE_TIMEOUT_MS = OPERATOR_PROOF_WINDOW_MS + 15_000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), APPROVE_TIMEOUT_MS);
 
@@ -1094,11 +1098,13 @@ export async function approveAuthRequest(requestId: string): Promise<void> {
     response = await browserSessionFetch(path, {
       method: 'POST',
       headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lifecycle_revision: lifecycleRevision }),
       signal: controller.signal,
     });
   } catch (e) {
     clearTimeout(timeoutId);
     if (e instanceof Error && e.name === 'AbortError') {
+      await cancelApprovalProof(requestId).catch(() => undefined);
       throw new Error('Approve timed out — Mandible may be starting up. Try again in a moment.');
     }
     throw e;

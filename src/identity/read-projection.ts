@@ -37,6 +37,11 @@ export class AttributionReadResolver {
 
   constructor(private readonly db: Db) {}
 
+  lifecycleRevision(requestId: string): number | null {
+    return (this.db.prepare("SELECT MAX(revision) AS revision FROM auth_request_lifecycle_events WHERE auth_request_id = ?")
+      .get(requestId) as { revision: number | null }).revision;
+  }
+
   user(userId: string | null | undefined): ReadUserIdentity | null {
     if (!userId) return null;
     if (this.users.has(userId)) return this.users.get(userId) ?? null;
@@ -135,6 +140,7 @@ export function resolvedActorDisplay(
 export function authAttributionReadFields(
   resolver: AttributionReadResolver,
   request: {
+    id: string;
     requested_by_user_id?: string | null;
     approved_by_user_id?: string | null;
     execution_evidence_id?: string | null;
@@ -150,5 +156,6 @@ export function authAttributionReadFields(
     // method name. Those disagree whenever verification failed.
     merge_signature: resolver.mergeSignatureClaim(request.execution_evidence_id),
     approval_tier: isAuthMergeCommand(request) ? "signed" : "courtesy",
+    lifecycle_revision: resolver.lifecycleRevision(request.id),
   };
 }

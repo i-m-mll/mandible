@@ -10,7 +10,7 @@ import type { OperatorSigningAuthority } from "./operator-signing/authority.js";
 import { SignedActionRefused } from "./operator-signing/http.js";
 import { buildMergeCommit, commitTime, defaultMergeMessage, signedCommitObject, writeCommitObject } from "./merge-commit.js";
 import type { EvidenceMethod } from "./users/types.js";
-import { DOMAIN_EVENTS, type AuthResolvedPayload } from "./contracts.js";
+import { DOMAIN_EVENTS, OPERATOR_PROOF_WINDOW_MS, type AuthResolvedPayload } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { childOutput } from "./child-observation.js";
@@ -3502,6 +3502,12 @@ export class AuthQueue {
     } finally { finishObservation(); }
   }
 
+  /** The request's latest lifecycle revision. */
+  lifecycleRevision(id: string): number | null {
+    const row = this.db.prepare("SELECT MAX(revision) AS revision FROM auth_request_lifecycle_events WHERE auth_request_id = ?").get(this.requireRequest(id).id) as { revision: number | null };
+    return row.revision;
+  }
+
   listLifecycleEvents(id: string) {
     const request = this.requireRequest(id);
     return listAuthLifecycleEvents(this.db, request.id);
@@ -3658,12 +3664,14 @@ export class AuthQueue {
   }
 
   /**
-   * The operator's manual approval. A protected merge is a signed action: the
-   * enrolled approval key signs the action-bound challenge, with one touch,
+   * The operator's manual approval of the request at `reviewedRevision`, the
+   * lifecycle revision the approver was shown; any other revision is refused
+   * before signing. A protected merge is a signed action: the enrolled
+   * approval key signs the reviewed merge commit itself, with one touch,
    * inside this request. Every other approval is a courtesy action: it needs
    * no proof and its evidence records the caller client auth resolved.
    */
-  async approveAsOperator(id: string, caller: ApprovalCaller): Promise<AuthRequest> {
+  async approveAsOperator(id: string, caller: ApprovalCaller, reviewedRevision: number): Promise<AuthRequest> {
     const finishObservation = this.beginObservation();
     try {
       this.requireExternalEffects("Operator approval");
@@ -3671,6 +3679,9 @@ export class AuthQueue {
       if (request.type === "custody-transfer") throw new AuthQueueError("invalid_command", "Custody-transfer approval is retired; explicitly assume responsibility instead.");
       if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
       if (this.operatorProofInFlight.has(request.id)) throw new AuthQueueError("invalid_status", "Operator signing is already in progress.");
+      if (this.lifecycleRevision(request.id) !== reviewedRevision) {
+        throw new AuthQueueError("lifecycle_conflict", "The request changed since it was shown; review it again before approving.");
+      }
       const controller = new AbortController();
       this.operatorProofInFlight.set(request.id, controller);
       try {
@@ -3688,14 +3699,17 @@ export class AuthQueue {
         const operatorId = this.resolveApproverUserId(caller.user_id);
         const digest = this.approvalDigest(request);
         const issuedAt = this.now();
-        const expiresAt = issuedAt + 60_000;
+        const expiresAt = issuedAt + OPERATOR_PROOF_WINDOW_MS;
         if (isAuthMergeCommand(request)) {
           if (!this.operatorSigning) throw new SignedActionRefused({ code: "approval_key_required", detail: "This daemon has no approval signer." });
           const unsigned = await this.buildReviewedMergeCommit(request, issuedAt);
           this.broadcastApprovalPhase(request.id, "awaiting_signature");
+          let expired = false;
+          const expiry = setTimeout(() => { expired = true; controller.abort(); }, OPERATOR_PROOF_WINDOW_MS);
           const signed = await this.operatorSigning.commitSigner(
-            `approve merging ${request.head_branch} into ${request.base_branch} at ${request.merge_preflight_base_sha!.slice(0, 7)}`,
-          ).sign(unsigned, "git", controller.signal);
+            `approve merging ${request.head_branch} into ${request.base_branch} of ${request.repo ?? request.cwd} at ${request.merge_preflight_base_sha!.slice(0, 7)} (request ${request.id.slice(0, 8)})`,
+          ).sign(unsigned, "git", controller.signal).finally(() => clearTimeout(expiry));
+          if (expired) throw new AuthQueueError("invalid_status", "The approval window closed before Touch ID; approve again.");
           if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new SignedActionRefused({ code: "cancelled", detail: "Signing was cancelled." });
           if (!signed.ok) throw new SignedActionRefused(signed.error);
           if (this.now() >= expiresAt || this.approvalDigest(request) !== digest ||

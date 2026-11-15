@@ -713,13 +713,18 @@ export function registerAuthRoutes(
   app.post("/api/auth/request/:id/approve", globalCapabilityRoute("approve_auth", async (req, res) => {
     try {
       const identity = req.client_identity!;
+      const reviewedRevision = readBody<Record<string, unknown>>(req).lifecycle_revision;
+      if (!Number.isInteger(reviewedRevision)) {
+        res.status(400).json({ error: "lifecycle_revision, the revision of the request that was reviewed, is required.", code: "lifecycle_precondition_required" });
+        return;
+      }
       const request = await authQueue.approveAsOperator(req.params.id, {
         user_id: identity.user_id,
         evidence_method: requireAttribution(db, req).evidence_method,
         identity_method: identity.method,
         source: identity.source,
         credential_id: identity.credential_id,
-      });
+      }, reviewedRevision as number);
       res.status(202).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);

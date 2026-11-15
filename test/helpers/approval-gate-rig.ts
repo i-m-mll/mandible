@@ -153,7 +153,7 @@ export function rig(options: { fakeClock?: boolean } = {}): Rig {
         title: `Merge ${branch}`, cwd: repo, repo: path.basename(repo), base_branch: "main", head_branch: branch,
         merge_head_sha: git(repo, ["rev-parse", branch]) });
     },
-    approve: (id) => queue.approveAsOperator(id, operatorCaller(signing.operatorId)),
+    approve: (id) => queue.approveAsOperator(id, operatorCaller(signing.operatorId), queue.lifecycleRevision(id)!),
     objects: () => git(repo, ["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"]),
     evidenceCount: () => (db.prepare("SELECT count(*) AS n FROM attribution_evidence").get() as { n: number }).n,
     main: () => git(repo, ["rev-parse", "main"]),

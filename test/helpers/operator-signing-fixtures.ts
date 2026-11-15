@@ -86,5 +86,5 @@ export function operatorCaller(userId: string): ApprovalCaller {
 export function approveAsFixtureOperator(queue: AuthQueue, id: string, userId?: string): ReturnType<AuthQueue["approveAsOperator"]> {
   const internals = queue as unknown as { db: Db; operatorSigning: OperatorSigningAuthority | null };
   internals.operatorSigning ??= fixtureOperatorSigning(internals.db);
-  return queue.approveAsOperator(id, operatorCaller(userId ?? getOperator(internals.db)!.id));
+  return queue.approveAsOperator(id, operatorCaller(userId ?? getOperator(internals.db)!.id), queue.lifecycleRevision(id)!);
 }

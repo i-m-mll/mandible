@@ -70,6 +70,12 @@ const REFUSALS: Record<SigningRefusalCode, ApprovalRefusal> = {
     severity: 'error',
     reenroll: false,
   },
+  signing_in_progress: {
+    title: 'Another approval is waiting',
+    body: 'A Touch ID sheet for another signed action is already open. One click opens one sheet: finish or cancel that one, then approve again.',
+    severity: 'warning',
+    reenroll: false,
+  },
   signing_failed: {
     title: 'Signing failed',
     body: 'The approval helper could not sign. Nothing was approved.',

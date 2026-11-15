@@ -34,6 +34,7 @@ export type SigningRefusalCode =
   | ApprovalKeyUnavailable
   | "bootstrap_confirmation_required"
   | "cancelled"
+  | "signing_in_progress"
   | "signing_failed"
   | "untrusted_signature"
   | "stale";
@@ -127,6 +128,9 @@ export async function verifySshSignature(publicMaterial: string, namespace: stri
  * fingerprint under `keyDirectory`, so no stored row can name another file.
  */
 export class OperatorSigningAuthority {
+  /** One signed action at a time: one click, one sheet. */
+  private signing = false;
+
   constructor(
     private readonly db: Db,
     private readonly signer: OperatorSigner,
@@ -164,8 +168,23 @@ export class OperatorSigningAuthority {
     });
   }
 
+  /** Run one signed action; a second while one is in flight is refused at once, without a sheet. */
+  private async exclusive<T>(action: () => Promise<Signed<T>>): Promise<Signed<T>> {
+    if (this.signing) return refuse("signing_in_progress", "Another signed action is waiting for Touch ID; finish or cancel it first.");
+    this.signing = true;
+    try {
+      return await action();
+    } finally {
+      this.signing = false;
+    }
+  }
+
   /** One touch: the enrolled approval key signs `message` in `namespace`, verified before it is returned. */
-  async signWithApprovalKey(namespace: string, message: Buffer | string, reason: string, signal?: AbortSignal): Promise<Signed<VerifiedSignature>> {
+  signWithApprovalKey(namespace: string, message: Buffer | string, reason: string, signal?: AbortSignal): Promise<Signed<VerifiedSignature>> {
+    return this.exclusive(() => this.signWithEnrolledKey(namespace, message, reason, signal));
+  }
+
+  private async signWithEnrolledKey(namespace: string, message: Buffer | string, reason: string, signal?: AbortSignal): Promise<Signed<VerifiedSignature>> {
     const operatorId = this.operatorId();
     if (!operatorId.ok) return operatorId;
     const [key, ...others] = this.enclaveKeys(operatorId.value);
@@ -239,7 +258,11 @@ export class OperatorSigningAuthority {
    * biometry unavailable or locked out, no session) refuses enrollment. A
    * replaced key stays as a verify-only signer.
    */
-  async enroll(signal?: AbortSignal, options: { confirmBootstrap?: boolean } = {}): Promise<Signed<{ credential: UserCredential; change: TrustChange }>> {
+  enroll(signal?: AbortSignal, options: { confirmBootstrap?: boolean } = {}): Promise<Signed<{ credential: UserCredential; change: TrustChange }>> {
+    return this.exclusive(() => this.enrollExclusively(signal, options));
+  }
+
+  private async enrollExclusively(signal: AbortSignal | undefined, options: { confirmBootstrap?: boolean }): Promise<Signed<{ credential: UserCredential; change: TrustChange }>> {
     const operatorId = this.operatorId();
     if (!operatorId.ok) return operatorId;
     const statuses = await this.approvalKeyStatus();

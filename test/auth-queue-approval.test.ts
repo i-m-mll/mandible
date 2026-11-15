@@ -92,16 +92,16 @@ describe("auth queue", () => {
 
       for (const result of ["cancelled", "biometry_unavailable", "key_invalidated"] as const) {
         signer.next.push({ result });
-        await expect(queue.approveAsOperator(request.id, operatorCaller(signing.operatorId))).rejects.toMatchObject({ refusal: { code: result } });
+        await expect(queue.approveAsOperator(request.id, operatorCaller(signing.operatorId), queue.lifecycleRevision(request.id)!)).rejects.toMatchObject({ refusal: { code: result } });
         expect(await queue.getRequest(request.id)).toMatchObject({ status: "pending", approved_by_user_id: null, execution_evidence_id: null });
         expect([objects(), evidence(), git(repo, ["rev-parse", "main"])]).toEqual([objectsBefore, evidenceBefore, base]);
       }
 
-      await queue.approveAsOperator(request.id, operatorCaller(signing.operatorId));
+      await queue.approveAsOperator(request.id, operatorCaller(signing.operatorId), queue.lifecycleRevision(request.id)!);
       await waitForStatus(queue, request.id, "completed");
       expect(signer.touches).toHaveLength(4);
       const touch = signer.touches[1]!;
-      expect(touch).toMatchObject({ namespace: "git", reason: `approve merging feature/one-touch into main at ${base.slice(0, 7)}` });
+      expect(touch).toMatchObject({ namespace: "git", reason: `approve merging feature/one-touch into main of ${path.basename(repo)} at ${base.slice(0, 7)} (request ${request.id.slice(0, 8)})` });
       const tip = git(repo, ["rev-parse", "main"]);
       const published = git(repo, ["cat-file", "commit", tip]);
       expect(published.replace(/^gpgsig [^]*?-----END SSH SIGNATURE-----\n/m, "")).toBe(touch.message.toString("utf8").trimEnd());

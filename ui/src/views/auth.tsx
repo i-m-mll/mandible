@@ -171,6 +171,8 @@ export type AuthRequest = {
   execution_evidence?: AttributionReadProjection | null;
   merge_signature?: MergeSignatureClaim;
   approval_tier?: ApprovalTier;
+  /** The lifecycle revision shown; approving sends it so the server approves only what was reviewed. */
+  lifecycle_revision?: number | null;
   // Issue 7d83fe5 — runtime self-update acceptance of the current candidate.
   candidate_acceptance?: CandidateAcceptanceProjection | null;
   publication_blocker?: AuthPublicationBlocker | null;

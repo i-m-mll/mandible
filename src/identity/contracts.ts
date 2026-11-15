@@ -53,5 +53,7 @@ export interface AuthAttributionReadFields {
   execution_evidence: AttributionReadProjection | null;
   merge_signature: MergeSignatureClaim;
   approval_tier: ApprovalTier;
+  /** The latest lifecycle revision; an approval names the revision it reviewed. */
+  lifecycle_revision: number | null;
 }
 

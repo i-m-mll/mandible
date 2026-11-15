@@ -353,6 +353,7 @@ describe("client-auth durable attribution", () => {
     const approved = await router.invoke({
       method: "POST",
       url: `/api/auth/request/${requestId}/approve`,
+      body: { lifecycle_revision: (db.prepare("SELECT MAX(revision) AS revision FROM auth_request_lifecycle_events WHERE auth_request_id = ?").get(requestId) as { revision: number }).revision },
       credential: operatorToken,
       transport: "http",
     });
