@@ -26,7 +26,7 @@ import {
   extractSuccessfulMergeCommitSha,
   extractAtomicMergeState,
   isValidCommitSha,
-  verifyAuthorizedMergeCommitSignature,
+  verifyApprovedMerge,
   type MergeSignatureVerification,
 } from "./auth-signature-verification.js";
 import {
@@ -1656,12 +1656,7 @@ export class AuthQueue {
     if (parents.length !== 2 || parents[0] !== baseSha || parents[1] !== expectedHead || targetTree !== candidateTree) {
       return { outcome: "failed", detail: "target ref does not match the pinned atomic merge commit" };
     }
-    const signature = (await verifyAuthorizedMergeCommitSignature(
-      this.db,
-      cwd,
-      prepared.merge_sha,
-      request.approved_by_user_id,
-    ));
+    const signature = (await verifyApprovedMerge(this.db, cwd, request, prepared.merge_sha));
     if (!signature.verified) {
       return { outcome: "failed", detail: `atomic merge signature is not authorized: ${signature.reason}` };
     }
@@ -4429,10 +4424,9 @@ export class AuthQueue {
    *     with duplicate SHA claims across requests refused as reuse — and the
    *     commit's second parent is exactly that request's reviewed
    *     `merge_head_sha`.
-   *  3. Every commit on that chain carries a trusted SSH signature that
-   *     verifies specifically against an active signing credential of that
-   *     request's approving user (`git verify-commit` against the user
-   *     registry via verifyAuthorizedMergeCommitSignature).
+   *  3. Every commit on that chain is the approved merge of that request
+   *     (verifyApprovedMerge): the commit its approval signed, verifying
+   *     against the approving credential.
    *
    * Anything else — non-descendant rewrites, direct commits to the protected
    * branch, unsigned or unrecorded merges (including legacy multi-source
@@ -4533,12 +4527,7 @@ export class AuthQueue {
           recorded_request_id: record.id,
         });
       }
-      const signature = (await verifyAuthorizedMergeCommitSignature(
-        this.db,
-        cwd,
-        commit,
-        record.approved_by_user_id,
-      ));
+      const signature = (await verifyApprovedMerge(this.db, cwd, record, commit));
       if (!signature.verified) {
         return refuse("signature_not_authorized", {
           commit,
@@ -4625,6 +4614,7 @@ export class AuthQueue {
     );
     const audit = (await auditProtectedBase(this.db, {
       cwd: request.cwd, baseSha: request.merge_preflight_base_sha, recordedMerges, now: this.now(),
+      isApprovedMerge: async (sha) => (await verifyApprovedMerge(this.db, request.cwd, evidence.recorded.get(sha)!, sha)).verified,
     }));
     this.assertObservation(request.id, observed);
     evidence.assertCurrent();
@@ -4999,15 +4989,13 @@ export class AuthQueue {
     if (request.type !== "merge") return null;
     const mergeSha = extractSuccessfulMergeCommitSha(request.output);
     if (!mergeSha) return "Missing or malformed merge publication receipt.";
-    const retainedEvidence = request.execution_evidence_id ? getAttributionEvidence(this.db, request.execution_evidence_id) : null;
-    if (retainedEvidence?.evidence_method === "credential_signature" && retainedEvidence.details.publication_verified === true && retainedEvidence.details.verified === true && retainedEvidence.details.commit_sha === mergeSha && retainedEvidence.details.signer_user_id === request.approved_by_user_id) return null;
     if (!request.approved_by_user_id || !request.merge_preflight_base_sha || !request.merge_head_sha || !request.merge_candidate_tree_sha) return "Merge publication has no exact reviewed candidate or approving user.";
     const state = extractAtomicMergeState(request.output);
     if (state.invalid || !state.prepared || state.prepared.merge_sha !== mergeSha || state.prepared.base_sha !== request.merge_preflight_base_sha ||
       state.prepared.head_sha !== request.merge_head_sha || state.prepared.tree_sha !== request.merge_candidate_tree_sha) return "Merge publication receipt does not match the prepared reviewed candidate.";
     const cwd = request.target_repo_root ?? request.cwd;
     if (!cwd) return "Merge publication repository is unavailable.";
-    const signature = (await verifyAuthorizedMergeCommitSignature(this.db, cwd, mergeSha, request.approved_by_user_id));
+    const signature = (await verifyApprovedMerge(this.db, cwd, request, mergeSha));
     if (!signature.verified) return `Merge publication signature is not authorized: ${signature.reason}.`;
     try {
       const options = { timeout: 5_000, env: authGitEnv() };
@@ -6542,11 +6530,6 @@ export class AuthQueue {
   private async prepareSuccessfulSignatureEvidence(request: AuthRequest): Promise<(stored: AuthRequest) => AuthRequest> {
     if (!isAuthMergeCommand(request) || !request.requested_by_user_id) return stored => stored;
 
-    const authorizationEvidence = request.execution_evidence_id
-      ? getAttributionEvidence(this.db, request.execution_evidence_id)
-      : null;
-    if (authorizationEvidence?.evidence_method === "credential_signature" && authorizationEvidence.details.commit_sha) return stored => stored;
-
     const commitSha = extractSuccessfulMergeCommitSha(request.output);
     const cwd = request.target_repo_root ?? request.cwd;
     let targetHeadSha: string | null = null;
@@ -6560,7 +6543,7 @@ export class AuthQueue {
     let verification: MergeSignatureVerification;
     try {
       verification = cwd && commitSha && request.approved_by_user_id
-        ? (await verifyAuthorizedMergeCommitSignature(this.db, cwd, commitSha, request.approved_by_user_id))
+        ? (await verifyApprovedMerge(this.db, cwd, request, commitSha))
         : { verified: false, commit_sha: commitSha, fingerprint: null, credential_id: null, user_id: null, reason: "missing_publication_identity" };
     } catch {
       verification = {
@@ -6578,6 +6561,10 @@ export class AuthQueue {
     return (stored) => this.db.transaction(() => {
       this.assertPublicationAuthority(stored, verification.credential_id);
       const authorizationEvidence = stored.execution_evidence_id ? getAttributionEvidence(this.db, stored.execution_evidence_id) : null;
+      if (authorizationEvidence?.details.publication_verified === true) {
+        if (authorizationEvidence.details.commit_sha !== verification.commit_sha) throw new Error("Recorded publication differs from the verified merge.");
+        return stored;
+      }
       const verifiedAt = stored.resolved_at ?? this.now();
       const current = this.readRequestByExactId(request.id);
       if (!current) throw new Error(`Auth request '${request.id}' disappeared during finalization.`);

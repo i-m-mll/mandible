@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import type { AuthQueue } from "../../src/auth-queue.js";
+import type { Db } from "../../src/db.js";
+import { getAttributionEvidence } from "../../src/users/store.js";
 import type { AuthRequest } from "../../src/types.js";
 import { approveAsFixtureOperator } from "./operator-signing-fixtures.js";
 
@@ -18,14 +20,15 @@ export async function approveWithTestOperator(queue: AuthQueue, request: AuthReq
   return approveAsFixtureOperator(queue, request.id, operatorId);
 }
 
-/** Publish the exact candidate in a temporary test repository with its registered operator key. */
-export function publishTestCandidate(repo: string, request: AuthRequest, approvalSignedSha?: string): { mergeSha: string; output: string } {
+/** Publish the merge commit the request's approval signed, as the executor does. */
+export function publishTestCandidate(db: Db, repo: string, request: AuthRequest): { mergeSha: string; output: string } {
   const base = request.merge_preflight_base_sha;
   const head = request.merge_head_sha;
   const tree = request.merge_candidate_tree_sha;
   if (!base || !head || !tree || !request.base_branch) throw new Error("Fixture requires a reviewed candidate.");
-  const mergeSha = approvalSignedSha
-    ?? git(repo, ["commit-tree", tree, "-p", base, "-p", head, "-S", "-F", "-"], request.commit_message ?? "Reviewed test merge\n");
+  const signed = request.execution_evidence_id ? getAttributionEvidence(db, request.execution_evidence_id)?.details.signed_commit_sha : null;
+  if (typeof signed !== "string") throw new Error("Fixture requires an approval that signed the merge commit.");
+  const mergeSha = signed;
   if (git(repo, ["rev-list", "--parents", "-n", "1", mergeSha]) !== `${mergeSha} ${base} ${head}` || git(repo, ["rev-parse", `${mergeSha}^{tree}`]) !== tree) {
     throw new Error("The approval-signed commit is not the reviewed merge.");
   }

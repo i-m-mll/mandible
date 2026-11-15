@@ -7,7 +7,7 @@ import type { Db } from "./db.js";
 import { readGitCommitFacts } from "./git-object-facts.js";
 import { canonicalizeChangeMessage } from "./auth-change-message.js";
 import { acceptedReleaseSelection, type AcceptedReleaseSelection } from './accepted-release-selection.js';
-import { authorizedMergeSignerLines, extractAtomicMergeState, extractSuccessfulMergeCommitSha, verifyAuthorizedMergeCommitSignature } from "./auth-signature-verification.js";
+import { authorizedMergeSignerLines, extractAtomicMergeState, extractSuccessfulMergeCommitSha, verifyApprovedMerge } from "./auth-signature-verification.js";
 import { addAttributionEvidence, getAttributionEvidence } from "./users/store.js";
 import { systemAction } from "./identity/resolver.js";
 
@@ -154,7 +154,7 @@ export async function verifyRuntimeHandoffPublication(db: Db, binding: RuntimePu
   const { row, hook, base, head, tree, commit } = state;
   const root = realpathSync(binding.root);
   if (realpathSync(row.target_repo_root ?? row.cwd) !== root) fail("repository binding differs");
-  const signature = (await verifyAuthorizedMergeCommitSignature(db, root, commit!, row.approved_by_user_id));
+  const signature = (await verifyApprovedMerge(db, root, { id: row.id, approved_by_user_id: row.approved_by_user_id, execution_evidence_id: row.execution_evidence_id }, commit!));
   if (!signature.verified || !signature.credential_id) fail("published signature is not authorized");
   const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
   for (const key of Object.keys(env)) if (/^GIT_(CONFIG_(COUNT|KEY_|VALUE_|PARAMETERS)|DIR$|WORK_TREE$|INDEX_FILE$)/.test(key)) delete env[key as keyof typeof env];

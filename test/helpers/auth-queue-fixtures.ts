@@ -650,7 +650,7 @@ export async function seedHistoricalAuthExecution(queue: AuthQueue, id: string):
 /** A real signed exact-candidate receipt from the delivery fixture. */
 export async function publishFixtureExecution(queue: AuthQueue, options: Parameters<NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']>>[0]) {
   const { publishTestCandidate } = await import('./auth-delivery-fixtures.js');
-  const { output } = publishTestCandidate(options.cwd!, (await queue.getRequest(options.request_id))!, options.env?.MANDIBLE_AUTH_SIGNED_MERGE_SHA);
+  const { output } = publishTestCandidate((queue as unknown as { db: Db }).db, options.cwd!, (await queue.getRequest(options.request_id))!);
   options.onOutput?.({ request_id: options.request_id, stream: 'stderr', text: output, timestamp: Date.now() });
   return { exit_code: 0, signal: null, stdout: '', stderr: output, output, started_at: Date.now(), finished_at: Date.now() };
 }
@@ -681,7 +681,7 @@ export async function approvePausedFixtureRequest(queue: AuthQueue, id: string):
 export async function completeFixturePublication(queue: AuthQueue, id: string): Promise<void> {
   const request = (await queue.getRequest(id))!;
   const output = request.type === 'merge'
-    ? (await import('./auth-delivery-fixtures.js')).publishTestCandidate(request.cwd!, request).output
+    ? (await import('./auth-delivery-fixtures.js')).publishTestCandidate((queue as unknown as { db: Db }).db, request.cwd!, request).output
     : 'ok';
   const release = pausedFixtureExecutions.get(queue)?.get(id);
   if (!release) throw new Error('Fixture execution was not paused.');

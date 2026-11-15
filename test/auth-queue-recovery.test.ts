@@ -39,8 +39,9 @@ describe("auth queue", () => {
       git(repo, ["config", "commit.gpgsign", "true"]);
 
       let executionStarted: () => void;
+      let signedSha: string | undefined;
       const started = new Promise<void>(resolve => { executionStarted = resolve; });
-      queue = new AuthQueue({ db, now: () => 0, hookManager: createNoopHookManager(), backgroundMaintenance: false, executor: async () => { executionStarted(); return new Promise<never>(() => {}); } });
+      queue = new AuthQueue({ db, now: () => 0, hookManager: createNoopHookManager(), backgroundMaintenance: false, executor: async (options) => { signedSha = options.env?.MANDIBLE_AUTH_SIGNED_MERGE_SHA; executionStarted(); return new Promise<never>(() => {}); } });
       const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: "mandible auth merge feature/atomic-recovery --into main",
@@ -54,17 +55,7 @@ describe("auth queue", () => {
       await approveFixtureRequest(queue, request.id);
       await started;
       const pinned = request;
-      const mergeSha = git(repo, [
-        "commit-tree",
-        pinned.merge_candidate_tree_sha!,
-        "-p",
-        pinned.merge_preflight_base_sha!,
-        "-p",
-        pinned.merge_head_sha!,
-        "-S",
-        "-m",
-        pinned.commit_message!,
-      ]);
+      const mergeSha = signedSha!;
       const prepared = `MANDIBLE_MERGE_PREPARED ${JSON.stringify({
         merge_sha: mergeSha,
         base_sha: pinned.merge_preflight_base_sha,

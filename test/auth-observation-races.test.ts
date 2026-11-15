@@ -224,7 +224,7 @@ for (const change of ["output", "authority", "lifecycle"] as const) {
     const f = await fixture();
     await approveAsFixtureOperator(f.queue, f.request.id, f.signing.operatorId);
     await f.ready;
-    const publication = publishTestCandidate(f.repo, f.queue.getRequestExact(f.request.id)!);
+    const publication = publishTestCandidate(f.db, f.repo, f.queue.getRequestExact(f.request.id)!);
     const held = holdChild((kind, _program, args) => kind === "execFile" && args.includes("--batch"));
     const completion = f.queue.setResult(f.request.id, 0, publication.output);
     try {

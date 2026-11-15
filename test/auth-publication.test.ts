@@ -58,7 +58,7 @@ async function advance(changes: Record<string,string>, modeChange = false) {
   }
   const sibling = (await queue.submit({ ...AUTH_MERGE_REVIEW, type:"merge",command:"mandible auth merge feature/sibling --into main",title:"Sibling",cwd:repo,repo:path.basename(repo),head_branch:"feature/sibling",base_branch:"main",merge_head_sha:git(repo,["rev-parse","feature/sibling"])}));
   await approveAsFixtureOperator(queue, sibling.id,operatorId);
-  const result = publishTestCandidate(repo,(await queue.getRequest(sibling.id))!);
+  const result = publishTestCandidate(db, repo,(await queue.getRequest(sibling.id))!);
   expect((await queue.setResult(sibling.id,0,result.output)).exit_code).toBe(0);
   (await queue.dispose()); queue = makeQueue();
   return result.mergeSha;

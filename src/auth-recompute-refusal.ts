@@ -123,6 +123,12 @@ function explainBaseTransition(detail: Record<string, unknown>): string {
           `external signer in Settings, then approve again.`
         );
       }
+      if (signatureReason === "not_the_signed_merge" || signatureReason === "signer_is_not_approving_credential") {
+        return (
+          `${range}: merge commit ${commit} is not the merge commit its recorded approval signed with the approval key ` +
+          `(${signatureReason}). Verify how that commit reached the branch before re-approving.`
+        );
+      }
       if (signatureReason === "signer_is_not_approving_user") {
         return (
           `${range}: merge commit ${commit} is signed by ${key}, which belongs to a different user than the ` +

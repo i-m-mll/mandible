@@ -5,11 +5,11 @@
  * (submission, candidate refresh, and approval just before execution). It
  * walks the base's first-parent history back to the newest recorded Mandible
  * merge into that repo and branch, the last tip Mandible knows, so it is
- * incremental and needs no state of its own beyond the stored result.
- * Recorded merges therefore pass whatever key signed them. Every commit above
- * that tip is one Mandible did not record, and must be signed with an operator
- * `ssh_key` (src/protected-branch-signers.ts); anything else is listed on the
- * request.
+ * incremental and needs no state of its own beyond the stored result. A
+ * recorded merge is the baseline only when it is the approved merge of the
+ * request that recorded it; one that is not is audited like any other commit.
+ * Every commit above the baseline must be signed with an operator `ssh_key`
+ * (src/protected-branch-signers.ts); anything else is listed on the request.
  */
 
 import { childOutput } from "./child-observation.js";
@@ -28,6 +28,8 @@ export interface ProtectedBaseAuditInput {
   baseSha: string;
   /** Recorded Mandible merge commits into this repo and branch, with their completion times. */
   recordedMerges: ReadonlyMap<string, number>;
+  /** Whether a recorded merge commit is the approved merge of the request that recorded it. */
+  isApprovedMerge(sha: string): Promise<boolean>;
   now: number;
 }
 
@@ -56,7 +58,7 @@ export async function auditProtectedBase(db: Db, input: ProtectedBaseAuditInput)
       .split(/\s+/).filter(Boolean);
     const above: string[] = [];
     for (const sha of history) {
-      if (input.recordedMerges.has(sha)) {
+      if (input.recordedMerges.has(sha) && await input.isApprovedMerge(sha)) {
         audit.baseline_sha = sha;
         break;
       }
