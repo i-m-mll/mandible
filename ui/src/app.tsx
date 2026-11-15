@@ -1551,6 +1551,9 @@ function App(): JSX.Element {
       client.on('auth:resolved', authResolvedHandler),
       client.on('auth:finalized', handler),
       client.on('auth:lifecycle', handler),
+      client.on('auth:approval_phase', (payload) => {
+        window.dispatchEvent(new CustomEvent('auth:approval_phase', { detail: payload.data }));
+      }),
       client.on('work:branch:updated', handler),
       client.on('work:scan:completed', (payload) => {
         handler(payload);

@@ -33,7 +33,7 @@ import {
   AttributionReadResolver,
   authAttributionReadFields,
 } from "../identity/read-projection.js";
-import { ClientAuthzError, requireIdentity, requireOperator } from "../client-auth/authz.js";
+import { ClientAuthzError, requireAttribution, requireIdentity, requireOperator } from "../client-auth/authz.js";
 import { sendSigningRefusal } from "../operator-signing/http.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -729,7 +729,7 @@ export function registerAuthRoutes(
       const identity = req.client_identity!;
       const request = await authQueue.approveAsOperator(req.params.id, {
         user_id: identity.user_id,
-        evidence_method: attributionForRequest(db, req)?.evidence_method ?? "local_default",
+        evidence_method: requireAttribution(db, req).evidence_method,
         identity_method: identity.method,
         source: identity.source,
         credential_id: identity.credential_id,

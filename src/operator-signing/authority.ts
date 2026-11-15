@@ -6,6 +6,7 @@ import path from "node:path";
 import { observeChild } from "../child-observation.js";
 import { trustedSshKeygenPath } from "../auth-signature-verification.js";
 import type { Db } from "../db.js";
+import type { MergeCommitSigner } from "../merge-commit.js";
 import { resolveOpenSshPublicKey } from "./public-key.js";
 import { ulid } from "../users/ids.js";
 import {
@@ -19,7 +20,7 @@ import type { AttributionEvidence, UserCredential } from "../users/types.js";
 import type { OPERATOR_TRUST_CHANGE_KINDS } from "./schema.js";
 import type { KeyState, OperatorSigner, SignOutcome } from "./signer.js";
 
-/** Namespace of every typed operator statement; commits use `git`, the approval challenge `mandible-auth`. */
+/** Namespace of every typed operator statement; merge commits use `git`. */
 export const OPERATOR_STATEMENT_NAMESPACE = "mandible-operator";
 
 export type TrustChangeKind = (typeof OPERATOR_TRUST_CHANGE_KINDS)[number];
@@ -157,7 +158,7 @@ export class OperatorSigningAuthority {
   }
 
   /** One touch: the enrolled approval key signs `message` in `namespace`, verified before it is returned. */
-  async signWithApprovalKey(namespace: string, message: string, reason: string, signal?: AbortSignal): Promise<Signed<VerifiedSignature>> {
+  async signWithApprovalKey(namespace: string, message: Buffer | string, reason: string, signal?: AbortSignal): Promise<Signed<VerifiedSignature>> {
     const operatorId = this.operatorId();
     if (!operatorId.ok) return operatorId;
     const [key, ...others] = this.enclaveKeys(operatorId.value);
@@ -166,7 +167,12 @@ export class OperatorSigningAuthority {
     return this.signWith(key, namespace, message, reason, signal);
   }
 
-  private async signWith(key: UserCredential, namespace: string, message: string, reason: string, signal?: AbortSignal): Promise<Signed<VerifiedSignature>> {
+  /** The approval key as a merge-commit signer; `reason` is shown on the sheet. */
+  commitSigner(reason: string): MergeCommitSigner {
+    return { sign: (message, namespace, signal) => this.signWithApprovalKey(namespace, message, reason, signal) };
+  }
+
+  private async signWith(key: UserCredential, namespace: string, message: Buffer | string, reason: string, signal?: AbortSignal): Promise<Signed<VerifiedSignature>> {
     const outcome = await this.signer.sign({ key: this.keyPath(key.fingerprint), namespace, message: Buffer.from(message), reason }, signal);
     if (signal?.aborted) return refuse("cancelled", "Signing was cancelled.");
     if (outcome.result !== "signed") return signOutcomeRefusal(outcome);

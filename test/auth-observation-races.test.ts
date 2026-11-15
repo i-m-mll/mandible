@@ -262,7 +262,7 @@ for (const change of ["description", "command", "authority", "custody", "withdra
     const f = await fixture();
     const custody = change === "custody" ? bindCustody(f) : null;
     if (change === 'accepted package') recordPassingCandidateAcceptance(f.db, f.request.id, true);
-    const held = holdChild((kind, _program, args) => kind === "spawn" && args.includes("sign") && args.includes("mandible-auth"));
+    const held = holdChild((kind, _program, args) => kind === "spawn" && args.includes("sign") && args.includes("git"));
     const approval = approveAsFixtureOperator(f.queue, f.request.id, f.signing.operatorId);
     try {
       await reached(held, approval);
@@ -281,7 +281,7 @@ for (const change of ["description", "command", "authority", "custody", "withdra
 }
 
 for (const change of ["head", "base", "pin", "object", "hooks"] as const) {
-  it(`rejects ${change} changes during post-proof Git observation`, async () => {
+  it(`rejects ${change} changes while the approval observes Git`, async () => {
     const f = await fixture();
     const held = holdChild((kind, _program, args) => kind === "execFile" && args[0] === "config" && args.includes("user.email"));
     const approval = approveAsFixtureOperator(f.queue, f.request.id, f.signing.operatorId);

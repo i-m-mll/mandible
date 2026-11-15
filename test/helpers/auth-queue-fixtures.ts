@@ -677,7 +677,7 @@ export async function seedHistoricalAuthExecution(queue: AuthQueue, id: string):
 /** A real signed exact-candidate receipt from the delivery fixture. */
 export async function publishFixtureExecution(queue: AuthQueue, options: Parameters<NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']>>[0]) {
   const { publishTestCandidate } = await import('./auth-delivery-fixtures.js');
-  const { output } = publishTestCandidate(options.cwd!, (await queue.getRequest(options.request_id))!);
+  const { output } = publishTestCandidate(options.cwd!, (await queue.getRequest(options.request_id))!, options.env?.MANDIBLE_AUTH_SIGNED_MERGE_SHA);
   options.onOutput?.({ request_id: options.request_id, stream: 'stderr', text: output, timestamp: Date.now() });
   return { exit_code: 0, signal: null, stdout: '', stderr: output, output, started_at: Date.now(), finished_at: Date.now() };
 }

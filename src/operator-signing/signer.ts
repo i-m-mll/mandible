@@ -163,3 +163,27 @@ export function resolveApprovalHelperPath(env: NodeJS.ProcessEnv = process.env):
   const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "src-tauri", "resources", "MandibleApproval.app", "Contents", "MacOS", "mandible-approval-helper");
   return existsSync(source) ? source : null;
 }
+
+const LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+
+/**
+ * Register the helper's app bundle with LaunchServices. The first Touch ID
+ * sheet after an install builds the bundle record for the sheet's name and
+ * icon (measured 395 ms against 103 ms warm, issue 11a30fc); registering at
+ * startup does that work before any click.
+ */
+export async function registerApprovalHelperBundle(helperPath: string): Promise<{ ok: true } | { ok: false; detail: string }> {
+  const bundle = path.resolve(helperPath, "..", "..", "..");
+  if (!bundle.endsWith(".app")) return { ok: false, detail: `The approval helper is not inside an app bundle: ${helperPath}` };
+  return new Promise((resolve) => {
+    const child = spawn(LSREGISTER, ["-f", bundle], { stdio: ["ignore", "ignore", "pipe"], env: {} });
+    let stderr = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.on("error", (error) => { clearTimeout(timer); resolve({ ok: false, detail: error.message }); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve(code === 0 ? { ok: true } : { ok: false, detail: `lsregister exited ${code ?? "by signal"}: ${stderr.trim() || "no detail"}` });
+    });
+  });
+}

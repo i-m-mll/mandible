@@ -159,7 +159,7 @@ If something looks wrong, the user can:
 
 The user clicks Approve. This triggers `POST /api/auth/request/:id/approve`.
 
-Mandible signs a fresh challenge with the configured operator key and verifies it against active registered operator credentials. The challenge includes the exact request and staged-action snapshot, a nonce, and a 60-second expiry. The request stays `pending` until verification succeeds. Cancel signing, a missing key, an expired challenge, or changed reviewed bytes leave it unexecuted. The dashboard offers **Cancel signing** while proof is pending.
+Mandible builds the exact merge commit from the merge tree retained at submission and asks the approval key to sign it. The Touch ID sheet appears; one touch produces the commit's signature, which Mandible verifies against the enrolled key before writing the signed commit object. No branch refers to it yet. If the protected base moved since submission, Mandible first recomputes the candidate (the dashboard shows "Base moved; updating the merge…") and signs the merge on the new base. The request stays `pending` until the signature verifies; cancelling the sheet, a missing key, a 60-second expiry, or changed reviewed bytes leave it unexecuted with nothing written. While the sheet is up the dashboard shows the waiting state in place and takes no focus, because Touch ID stops matching while the sheet is not frontmost; click the sheet if it is behind another window. **Cancel signing** stops the pending signature.
 
 After verification, the request transitions to `executing`. Ordinary local browsing requires no proof or login.
 
@@ -257,9 +257,9 @@ If the merge has conflicts, the command exits with a non-zero code. The request 
 - Have the agent resolve conflicts on the feature branch.
 - Retry the request after resolution.
 
-### YubiKey Not Present
+### Approval Key Unavailable
 
-Operator challenge signing has a 60-second limit and can be cancelled. Missing or unavailable credentials leave the request pending. Signed candidate failure leaves the protected checkout unchanged. A request with retained prepared publication state requires receipt recovery or operator inspection; retry cannot erase that state and repeat publication.
+The approval signature has a 60-second limit and can be cancelled. Missing or unavailable credentials leave the request pending. Signed candidate failure leaves the protected checkout unchanged. A request with retained prepared publication state requires receipt recovery or operator inspection; retry cannot erase that state and repeat publication.
 
 ### Daemon Crash During Execution
 

@@ -16,12 +16,12 @@ function helper(reply: string, code = 0): { signer: HelperOperatorSigner; reques
   return { signer: new HelperOperatorSigner(file), request: () => JSON.parse(fs.readFileSync(`${file}.in`, "utf8")), env: () => fs.readFileSync(`${file}.env`, "utf8") };
 }
 
-const request = { key: "/keys/a.key", namespace: "mandible-auth", message: Buffer.from("challenge"), reason: "approve merging x into main" };
+const request = { key: "/keys/a.key", namespace: "git", message: Buffer.from("challenge"), reason: "approve merging x into main" };
 
 it("speaks the helper contract and passes no environment", async () => {
   const h = helper('{"result":"signed","signature":"SIG"}');
   expect(await h.signer.sign(request)).toEqual({ result: "signed", signature: "SIG" });
-  expect(h.request()).toEqual({ op: "sign", key: "/keys/a.key", namespace: "mandible-auth", message: Buffer.from("challenge").toString("base64"), reason: "approve merging x into main" });
+  expect(h.request()).toEqual({ op: "sign", key: "/keys/a.key", namespace: "git", message: Buffer.from("challenge").toString("base64"), reason: "approve merging x into main" });
   expect(h.env()).not.toMatch(/^HOME=/m);
 });
 

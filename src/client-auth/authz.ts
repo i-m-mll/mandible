@@ -115,6 +115,15 @@ export function attributionForRequest(db: Db, req: unknown): AttributionContext 
   return null;
 }
 
+/** The request's attribution or a 403: an action recorded as evidence names how its caller was identified. */
+export function requireAttribution(db: Db, req: unknown): AttributionContext {
+  const attribution = attributionForRequest(db, req);
+  if (!attribution) {
+    throw new ClientAuthzError(403, "attribution_required", "This action is recorded with its caller's evidence, and this caller has no attributable identity.");
+  }
+  return attribution;
+}
+
 /** One target-aware WebSocket authorization path; browser credentials never ride a subprotocol. */
 export function authorizeManagedSessionWebSocket(
   db: Db,

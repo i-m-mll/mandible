@@ -7,6 +7,7 @@ import { listAuthHistorySummaries } from "./ledger-reads/auth-history.js";
 import { forEachInEventLoopSlices } from "./event-loop-slices.js";
 import { assertAuthPublication, bindAuthPublication } from "./auth-publication.js";
 import type { OperatorSigningAuthority } from "./operator-signing/authority.js";
+import { buildMergeCommit, commitTime, defaultMergeMessage, signedCommitObject, writeCommitObject } from "./merge-commit.js";
 import type { EvidenceMethod } from "./users/types.js";
 import { DOMAIN_EVENTS, type AuthResolvedPayload } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -3675,6 +3676,7 @@ export class AuthQueue {
       // unchanged, so the candidate is recomputed against the current base
       // within this approval.
       if (!recompute) throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(null));
+      this.broadcastApprovalPhase(request.id, "updating_candidate");
       request = (await this.recomputeStaleCandidate(request, "approve"));
       observed = this.observationToken(request.id, request);
     }
@@ -3702,7 +3704,36 @@ export class AuthQueue {
   get operatorSigningAuthority(): OperatorSigningAuthority | null {
     return this.operatorSigning;
   }
-  private readonly operatorProofs = new Map<string, { digest: string; evidenceId: string; evidenceMethod: EvidenceMethod; credentialId: string | null; userId: string; expiresAt: number }>();
+  /** In-place progress of a click-to-sheet approval; nothing about it is stored. */
+  private broadcastApprovalPhase(requestId: string, phase: "updating_candidate" | "awaiting_signature"): void {
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_APPROVAL_PHASE, data: { request_id: requestId, phase } });
+  }
+
+  private readonly operatorProofs = new Map<string, { digest: string; evidenceId: string; evidenceMethod: EvidenceMethod; credentialId: string | null; userId: string; expiresAt: number; mergeSha?: string }>();
+
+  /**
+   * The exact merge commit an approval signs: the retained submit-time tree,
+   * the reviewed base and head, the reviewed message, and the time of the click.
+   */
+  private async buildReviewedMergeCommit(request: AuthRequest, at: number): Promise<Buffer> {
+    const { cwd, merge_candidate_tree_sha: tree, merge_preflight_base_sha: base, merge_head_sha: head, head_branch: branch } = request;
+    if (!cwd || !tree || !base || !head || !branch) {
+      throw new AuthQueueError("merge_check_failed", "The request has no retained merge candidate. No protected state changed.");
+    }
+    const [identity, message] = await Promise.all([
+      this.gitCommitIdentity(cwd),
+      request.commit_message_digest ? Promise.resolve(this.reviewedChangeMessage(request)) : defaultMergeMessage(cwd, head, branch),
+    ]);
+    return buildMergeCommit({ tree, parents: [base, head], message, identity, time: commitTime(at) });
+  }
+
+  private reviewedChangeMessage(request: AuthRequest): string {
+    const message = request.commit_message;
+    if (!message || !isCanonicalChangeMessage(message) || changeMessageDigest(message) !== request.commit_message_digest) {
+      throw new AuthQueueError("merge_check_failed", "The reviewed change message does not match its digest; requeue and reapprove. No protected state changed.");
+    }
+    return message;
+  }
   private readonly operatorProofInFlight = new Map<string, AbortController>();
 
   cancelOperatorProof(id: string, userId: string): void {
@@ -3745,20 +3776,24 @@ export class AuthQueue {
         const expiresAt = issuedAt + 60_000;
         if (isAuthMergeCommand(request)) {
           if (!this.operatorSigning) throw new AuthQueueError("invalid_command", "Operator proof approval_key_required: this daemon has no approval signer.");
-          const challenge = JSON.stringify({ namespace: "mandible-auth", request_id: request.id, digest, nonce: randomUUID(), issued_at: issuedAt, expires_at: expiresAt });
-          const proof = await this.operatorSigning.signWithApprovalKey("mandible-auth", challenge,
-            `approve merging ${request.head_branch ?? "this branch"} into ${request.base_branch ?? "the protected branch"}`, controller.signal);
+          const unsigned = await this.buildReviewedMergeCommit(request, issuedAt);
+          this.broadcastApprovalPhase(request.id, "awaiting_signature");
+          const signed = await this.operatorSigning.commitSigner(
+            `approve merging ${request.head_branch} into ${request.base_branch} at ${request.merge_preflight_base_sha!.slice(0, 7)}`,
+          ).sign(unsigned, "git", controller.signal);
           if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new AuthQueueError("invalid_status", "Operator proof was cancelled.");
-          if (!proof.ok) throw new AuthQueueError("invalid_command", `Operator proof ${proof.error.code}: ${proof.error.detail}`);
+          if (!signed.ok) throw new AuthQueueError("invalid_command", `Operator proof ${signed.error.code}: ${signed.error.detail}`);
           if (this.now() >= expiresAt || this.approvalDigest(request) !== digest ||
-            !authorizedMergeSignerLines(this.db, operatorId, proof.value.credential_id).length) {
+            !authorizedMergeSignerLines(this.db, operatorId, signed.value.credential_id).length) {
             throw new AuthQueueError("invalid_status", "Operator proof expired or the reviewed request changed; approve the current request again.");
           }
+          const commitSha = await writeCommitObject(request.cwd!, signedCommitObject(unsigned, signed.value.signature));
           const evidence = addAttributionEvidence(this.db, {
-            evidence_method: "credential_signature", credential_id: proof.value.credential_id,
-            details: { auth_request_id: request.id, signer_user_id: operatorId, authorizer_user_id: operatorId, verified: true, challenge, signature: proof.value.signature, action_digest: digest },
+            evidence_method: "credential_signature", credential_id: signed.value.credential_id,
+            details: { auth_request_id: request.id, signer_user_id: operatorId, authorizer_user_id: operatorId, verified: true,
+              signed_commit_sha: commitSha, signature: signed.value.signature, action_digest: digest },
           }, this.now());
-          this.operatorProofs.set(request.id, { digest, evidenceId: evidence.id, evidenceMethod: "credential_signature", credentialId: proof.value.credential_id, userId: operatorId, expiresAt });
+          this.operatorProofs.set(request.id, { digest, evidenceId: evidence.id, evidenceMethod: "credential_signature", credentialId: signed.value.credential_id, userId: operatorId, expiresAt, mergeSha: commitSha });
         } else {
           const evidence = addAttributionEvidence(this.db, {
             evidence_method: caller.evidence_method, credential_id: caller.credential_id,
@@ -3852,13 +3887,9 @@ export class AuthQueue {
         ...(await this.approveTimePreflightEnv(request)),
       };
       if (atomicEnabled) {
-        const identity = (await this.gitCommitIdentity(request.cwd));
         executionEnv.MANDIBLE_AUTH_ATOMIC = "1";
         executionEnv.MANDIBLE_AUTH_ALLOWED_SIGNERS = signerLines.join("\n");
-        executionEnv.GIT_AUTHOR_NAME = identity.name;
-        executionEnv.GIT_AUTHOR_EMAIL = identity.email;
-        executionEnv.GIT_COMMITTER_NAME = identity.name;
-        executionEnv.GIT_COMMITTER_EMAIL = identity.email;
+        if (operatorProof?.mergeSha) executionEnv.MANDIBLE_AUTH_SIGNED_MERGE_SHA = operatorProof.mergeSha;
       }
       if (isAuthMergeCommand(request)) mergeHookPaths = await this.observedNativeMergeHookPaths(request.cwd);
       await this.assertReviewedCandidateCurrent(request);
@@ -4177,14 +4208,6 @@ export class AuthQueue {
       env.MANDIBLE_AUTH_CANDIDATE_BASE_SHA = request.merge_preflight_base_sha;
       env.MANDIBLE_AUTH_CANDIDATE_HEAD_SHA = request.merge_head_sha;
       env.MANDIBLE_AUTH_CANDIDATE_REF = this.mergeCandidateRef(request.id);
-    }
-    // Issue 7d64d8f — the reviewed change message is a reviewed merge input like
-    // the reviewed head SHA and the retained candidate tree. Passing its digest
-    // lets cli/auth-merge.sh know a canonical message MUST be applied, so a
-    // failed fetch aborts the merge instead of silently falling back to
-    // `git fmt-merge-msg`.
-    if (request.commit_message_digest) {
-      env.MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST = request.commit_message_digest;
     }
     if (
       request.execution_mode !== "remote" &&

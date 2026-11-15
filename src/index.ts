@@ -119,7 +119,7 @@ import { DaemonMemoryDiagnostics, memoryWarningFractionFromEnv } from "./daemon-
 import { EventLoopLagDiagnostics } from "./daemon-event-loop.js";
 import { EventLoopStallIncident } from "./event-loop-stall-incident.js";
 import { OperatorSigningAuthority } from "./operator-signing/authority.js";
-import { HelperOperatorSigner, resolveApprovalHelperPath } from "./operator-signing/signer.js";
+import { HelperOperatorSigner, registerApprovalHelperBundle, resolveApprovalHelperPath } from "./operator-signing/signer.js";
 import {
   RestartAvailabilityStore,
   restartAvailabilityInstanceKey,
@@ -287,7 +287,13 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }, (error: unknown) => {
     logger("warn", "delegated_signer_reconnect_failed", { error: String(error) });
   });
-  const operatorSigning = new OperatorSigningAuthority(db, new HelperOperatorSigner(resolveApprovalHelperPath()), getMandibleConfigPath("approval-keys"));
+  const approvalHelper = resolveApprovalHelperPath();
+  if (approvalHelper && process.platform === "darwin") {
+    void registerApprovalHelperBundle(approvalHelper).then((registered) => {
+      if (!registered.ok) logger("warn", "approval_helper_registration_failed", { detail: registered.detail });
+    });
+  }
+  const operatorSigning = new OperatorSigningAuthority(db, new HelperOperatorSigner(approvalHelper), getMandibleConfigPath("approval-keys"));
   const authQueue = new AuthQueue({
     operatorSigning,
     autoApprover: autoApproveManager,

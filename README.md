@@ -17,7 +17,7 @@ Mandible is an operations manager for AI agents. It consists of:
 
 ## Feature highlights
 
-- **Approval-gated merges**: agents submit merge requests with a change message; you approve with your hardware signing key, the merge commit is signed with that key, and issue closures and post-merge hooks follow.
+- **Approval-gated merges**: agents submit merge requests with a change message; you approve with one Touch ID match, which signs the merge commit with your Secure Enclave approval key, and issue closures and post-merge hooks follow.
 - **Structured issues**: kinds, priorities, typed relationships, checkpoints outside the comment stream, working notes, full revision history, and keyword search.
 - **Umbrella issues** for coordinating lanes of agent work, with a delegation manifest that reports what changed since the coordinator last looked.
 - **Work units** join an issue, a branch, and the agent on it; a stopped agent's work can be taken over, a live agent's never.

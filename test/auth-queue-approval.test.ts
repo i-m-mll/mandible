@@ -22,7 +22,7 @@ import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { createLedgerIssue as createSharedLedgerIssue, createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
 import { advanceMainViaAuthorizedMerge, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createMigratedDb, createNoopHookManager, createQueue, executionEvidenceChain, git, registerTestDelegatedLease, registerWorkRepo, uniqueMissingPath, waitForStatus, writeFile } from "./helpers/auth-queue-fixtures.js";
-import { approveAsFixtureOperator, fixtureOperatorSigning, SoftwareOperatorSigner } from "./helpers/operator-signing-fixtures.js";
+import { approveAsFixtureOperator, fixtureOperatorSigning, operatorCaller, SoftwareOperatorSigner } from "./helpers/operator-signing-fixtures.js";
 
 function createMigratedDbWithAgent() {
   return createSharedMigratedDb({
@@ -71,6 +71,47 @@ describe("auth queue", () => {
     } finally { await queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
   });
 
+  it("signs the exact merge commit with one touch, and a cancelled sheet leaves nothing behind", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    let queue: AuthQueue | undefined;
+    const signer = new SoftwareOperatorSigner();
+    try {
+      commitOnBranch(repo, "feature/one-touch", { "feature.txt": "one touch\n" });
+      registerWorkRepo(db, repo);
+      const signing = configureSigningCredential(db, repo, "ssh_key");
+      git(repo, ["config", "--unset", "user.signingkey"]);
+      queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false,
+        operatorSigning: fixtureOperatorSigning(db, signer), executor: async (options) => publishFixtureExecution(queue!, options) });
+      const request = await queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge", command: "mandible auth merge feature/one-touch --into main",
+        title: "One touch", cwd: repo, repo: path.basename(repo), base_branch: "main", head_branch: "feature/one-touch",
+        merge_head_sha: git(repo, ["rev-parse", "feature/one-touch"]) });
+      const base = git(repo, ["rev-parse", "main"]);
+      const objects = () => git(repo, ["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"]);
+      const evidence = () => db.prepare("SELECT count(*) AS n FROM attribution_evidence").get();
+      const [objectsBefore, evidenceBefore] = [objects(), evidence()];
+
+      signer.next.push({ result: "cancelled" });
+      await expect(queue.approveAsOperator(request.id, operatorCaller(signing.operatorId))).rejects.toThrow("cancelled");
+      expect(await queue.getRequest(request.id)).toMatchObject({ status: "pending", approved_by_user_id: null, execution_evidence_id: null });
+      expect([objects(), evidence(), git(repo, ["rev-parse", "main"])]).toEqual([objectsBefore, evidenceBefore, base]);
+
+      await queue.approveAsOperator(request.id, operatorCaller(signing.operatorId));
+      await waitForStatus(queue, request.id, "completed");
+      expect(signer.touches).toHaveLength(2);
+      const touch = signer.touches[1]!;
+      expect(touch).toMatchObject({ namespace: "git", reason: `approve merging feature/one-touch into main at ${base.slice(0, 7)}` });
+      const tip = git(repo, ["rev-parse", "main"]);
+      const published = git(repo, ["cat-file", "commit", tip]);
+      expect(published.replace(/^gpgsig [^]*?-----END SSH SIGNATURE-----\n/m, "")).toBe(touch.message.toString("utf8").trimEnd());
+      expect(touch.message.toString("utf8")).toMatch(new RegExp(`^tree ${request.merge_candidate_tree_sha}\nparent ${base}\nparent ${request.merge_head_sha}\n`));
+      expect(touch.message.toString("utf8").endsWith(`\n\n${request.commit_message}`)).toBe(true);
+      const signers = path.join(repo, ".git", "approval-signers");
+      fs.writeFileSync(signers, `${signing.credentialId} ${fs.readFileSync(`${signing.keyPath}.pub`, "utf8").trim()}\n`);
+      expect(git(repo, ["-c", "gpg.format=ssh", "-c", `gpg.ssh.allowedSignersFile=${signers}`, "verify-commit", tip])).toBe("");
+    } finally { await queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+  });
+
   it("executes from the re-resolved target root with verified credential-signature evidence", async () => {
     const repo = createAuthCheckRepo();
     const featureWorktree = uniqueMissingPath("mandible-auth-approval");
@@ -82,12 +123,16 @@ describe("auth queue", () => {
       git(featureWorktree, ["commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234"]);
       registerWorkRepo(db, repo);
       const signing = configureSigningCredential(db, repo, "ssh_key");
+      // Ambient git signing names a key Mandible does not know; approval never reads it.
+      git(repo, ["config", "user.signingkey", "/nonexistent/ambient-signing-key"]);
+      git(repo, ["config", "commit.gpgsign", "true"]);
       const queue = new AuthQueue({
         db,
         broadcast: (event) => events.push(event),
         executor: async (options) => {
           cwds.push(options.cwd);
           expect(options.mandibleArgs).toEqual(["auth", "merge", "feature/signed-interactive", "--into", "main"]);
+          expect(options.env?.MANDIBLE_AUTH_SIGNED_MERGE_SHA).toMatch(/^[0-9a-f]{40}$/);
           return publishFixtureExecution(queue, options);
         },
         hookManager: createNoopHookManager(),
@@ -122,6 +167,7 @@ describe("auth queue", () => {
       expect(signatureDetails.commit_sha).toBe(git(repo, ["rev-parse", "main"]));
       expect(signatureDetails.target_head_sha).toBe(signatureDetails.commit_sha);
       expect(chain.authorization.evidence_method).toBe("credential_signature");
+      expect(JSON.parse(chain.authorization.details_json).signed_commit_sha).toBe(signatureDetails.commit_sha);
       expect(queue.getSignatureVerification(request.id)).toMatchObject({
         verified: true,
         credential_id: signing.credentialId,

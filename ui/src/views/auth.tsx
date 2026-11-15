@@ -404,16 +404,23 @@ function getAuthExecutionCallout(status: string, consoleText: string): AuthExecu
   if (text.includes('checking git locks')) {
     return { text: 'Checking git lock state', spinner: true };
   }
-  if (text.includes('checking signing configuration')) {
-    return { text: 'Checking signing configuration', spinner: true };
-  }
-  if (text.includes('creating signed merge commit')) {
-    return { text: 'Creating signed merge commit', spinner: true };
+  if (text.includes('publishing approval-signed merge commit')) {
+    return { text: 'Publishing the signed merge commit', spinner: true };
   }
   if (text.includes('signed merge complete') || text.includes('[hook:')) {
     return { text: 'Signed merge complete; running follow-up actions', spinner: true };
   }
   return { text: 'Preparing auth merge', spinner: true };
+}
+
+type ApprovalPhase = 'updating_candidate' | 'awaiting_signature';
+
+function approvalPhaseLabel(phase: ApprovalPhase | undefined): string {
+  switch (phase) {
+    case 'updating_candidate': return 'Base moved; updating the merge…';
+    case 'awaiting_signature': return 'Touch ID to approve. If the system sheet is not in front, click it.';
+    default: return 'Checking the request…';
+  }
 }
 
 function getStatusLabel(request: AuthRequest): string {
@@ -2371,6 +2378,27 @@ export function AuthQueueView({
     },
     [],
   );
+  // The daemon reports where a click-to-sheet approval stands. It renders in
+  // place: nothing here may raise a window or take focus from the Touch ID sheet,
+  // because the sheet stops matching while it is not frontmost.
+  const [approvalPhases, setApprovalPhases] = useState<Map<string, ApprovalPhase>>(() => new Map());
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<{ request_id?: unknown; phase?: unknown }>).detail;
+      if (typeof detail?.request_id !== 'string' || (detail.phase !== 'updating_candidate' && detail.phase !== 'awaiting_signature')) return;
+      const { request_id: requestId, phase } = detail;
+      if (!inFlightRef.current.has(requestId)) return;
+      setApprovalPhases((prev) => new Map(prev).set(requestId, phase));
+    };
+    window.addEventListener('auth:approval_phase', listener);
+    return () => window.removeEventListener('auth:approval_phase', listener);
+  }, []);
+  useEffect(() => {
+    setApprovalPhases((prev) => {
+      if ([...prev.keys()].every((id) => inFlight.has(id))) return prev;
+      return new Map([...prev].filter(([id]) => inFlight.has(id)));
+    });
+  }, [inFlight]);
   const [actionLists, setActionLists] = useState<Map<string, AuthRequestAction[]>>(() => new Map());
   const [inFlightActionIds, setInFlightActionIds] = useState<Set<string>>(() => new Set());
   const inFlightActionIdsRef = useRef<Set<string>>(new Set());
@@ -3013,7 +3041,7 @@ export function AuthQueueView({
             className="btn btn--success btn--submitting"
             disabled
           >
-            Verify signing key; touch it if prompted…
+            {approvalPhaseLabel(approvalPhases.get(id))}
           </button>
           <button type="button" className="btn btn--ghost" onClick={() => {
             void cancelApprovalProof(id).catch((error) => setActionError(id, error, 'Could not cancel signing.', { kind: 'approve' }));
@@ -3054,7 +3082,7 @@ export function AuthQueueView({
             ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
             : request.publication_blocker?.message ?? (!approvalAllowed ? 'Approval is unavailable in this instance.' : undefined)}
         >
-          {actionDisabled ? 'Verify signing key…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
+          {actionDisabled ? 'Checking the request…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
         </button>
         <button
           type="button"
