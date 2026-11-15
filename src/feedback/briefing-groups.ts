@@ -564,9 +564,10 @@ export type BriefingGroupHumanReviewInput = {
   destinationChanges?: readonly BriefingGroupDestinationChangeInput[];
 };
 
+/** A review disposition is a courtesy action: the evidence is the caller client auth resolved. */
 export type BriefingGroupHumanReviewActor = {
   userId: string;
-  evidenceMethod: "credential_signature";
+  evidenceMethod: "api_token" | "local_default";
   credentialId: string | null;
 };
 

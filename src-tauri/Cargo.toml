@@ -21,7 +21,7 @@ sha2 = "0.10"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSView", "NSWindow", "NSButton", "NSLayoutConstraint"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSView", "NSWindow", "NSButton", "NSLayoutConstraint", "NSAlert"] }
 window-vibrancy = "0.8.1"
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView"] }
 block2 = "0.6.2"

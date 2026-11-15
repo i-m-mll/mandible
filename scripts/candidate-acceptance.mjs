@@ -15,16 +15,20 @@ import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as abortableDelay } from 'node:timers/promises';
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
-import { reconcileGeneratedScratch, recordScratchProcess } from './generated-scratch.mjs';
+import { generatedChildrenIdle, generatedProcessLog, reconcileGeneratedScratch, recordScratchProcess } from './generated-scratch.mjs';
 import { generatedStorage } from './generated-storage.mjs';
 import Database from '../src/sqlite.ts';
 import { readBuildRevision } from './build-revision.mjs';
-import { acceptanceResultPath } from './acceptance-result.mjs';
+import { acceptanceResultPath, compactAcceptanceResult } from './acceptance-result.mjs';
+import { ACCEPTANCE_CERTIFICATE_SCHEMA, ACCEPTANCE_CONTRACT, ACCEPTANCE_RECEIPT_CAPABILITY, acceptanceReceiptSchema, boundedAcceptanceBytes, certifyAcceptance } from './acceptance-certificate.mjs';
+import { ACCEPTED_RELEASE_DIRECTORY, VERSIONED_RELEASE_DIRECTORY } from './accepted-release-storage.mjs';
 import { ACCEPTANCE_CLEANUP_MS, ACCEPTANCE_STAGES, acceptancePhases } from './acceptance-progress.mjs';
-import { acceptanceFailure, compactFailure, describeAcceptanceFailure, sentence } from './acceptance-failure.mjs';
+import { acceptanceFailure, describeAcceptanceFailure, sentence } from './acceptance-failure.mjs';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError, EVENT_LOOP_STALL_BUDGET_MS } from '../src/runtime-health-contract.ts';
 import { gatewayCaddyfile, GATEWAY_GRACE_SECONDS } from './gateway-config.mjs';
 import { resolveAppSigning, requireNativeAppSigning } from './app-signing.mjs';
+import { daemonBuildOutput, desktopAppPath } from './desktop-build-layout.mjs';
+import { acceptanceScratchPath } from './acceptance-workspace.mjs';
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -47,7 +51,7 @@ export function acceptanceApplicationPolicy() {
   }
   return startedAt;
 }
-export const acceptanceOwnedOutputs = ['home', 'build.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' }));
+export const acceptanceOwnedOutputs = ['home', 'build.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile', generatedProcessLog].map(path => ({ path, kind: 'generated' }));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const instant = ms => Number.isFinite(ms) ? new Date(ms).toISOString() : String(ms);
 const exit = child => child.signalCode ? `signal ${child.signalCode}` : `exit code ${child.exitCode}`;
@@ -84,21 +88,7 @@ export function acceptanceSummary(result) {
   return `${result.candidate}: ${result.status}${result.error ? ` — ${result.error}` : ''}; ${phases.join('; ')}`;
 }
 
-export function compactAcceptanceResult(result) {
-  if (JSON.stringify(result).length <= 60 * 1024) return result;
-  const checks = result.checks ?? {};
-  const route = checks.route_cost;
-  return { schema: result.schema, truncated: true, status: result.status, candidate: result.candidate, binding: result.binding, scope: result.scope,
-    timing: result.timing, phases: result.phases, warnings: result.warnings, error: result.error?.slice(0, 1024), failure: compactFailure(result.failure), cleanup_error: result.cleanup_error?.slice(0, 512), receipt: result.receipt,
-    checks: { readiness: checks.readiness, desktop_interaction: checks.desktop_interaction, health_coverage: checks.health_coverage,
-      log_digest: checks.log_digest, log_bytes: checks.log_bytes, cleanup: checks.cleanup,
-      initial_transport_error: checks.initial_transport_error,
-      failure_logs: checks.failure_logs?.map(log => ({ ...log, excerpt: log.excerpt.slice(-1000) })),
-      route_cost: route ? { complete: route.complete, diagnostic: route.diagnostic, error: route.error?.slice(0, 512),
-        progress: route.progress, counts: route.counts, pending_confirmations: route.pending_confirmations?.slice(0, 32),
-        routes_not_run: route.routes_not_run?.slice(0, 32), source_stderr: route.source_stderr?.slice(-1000) } : route,
-    } };
-}
+export { compactAcceptanceResult } from './acceptance-result.mjs';
 
 /**
  * The app's completion time, in whole milliseconds, which must fall within the
@@ -116,7 +106,7 @@ export function createAcceptanceHome(home) {
   fs.mkdirSync(home, { mode: 0o700 });
 }
 
-async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment, home, profile, watch }) {
+async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment, home, profile, watch, signal, onSpawn }) {
   const privateHome = path.join(home, 'updater-entrypoint');
   const journal = path.join(privateHome, 'config/local-sessions/handoff/invalid-request-invalid-execution/journal.json');
   fs.mkdirSync(path.dirname(journal), { recursive: true, mode: 0o700 });
@@ -124,7 +114,7 @@ async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment
     binding: { home: privateHome, requestId: 'invalid-request', executionId: 'invalid-execution' } }), { mode: 0o600 });
   try {
     await runSupervisedCommand('/usr/bin/sandbox-exec', ['-p', profile, runtime, '--no-install', path.join(resources, 'handoff/helper.mjs'), 'worker', journal], {
-      env: { ...environment, MANDIBLE_HOME: privateHome }, cwd: privateHome, capture: true, maxBuffer: 16 * 1024, watch, graceMs: 250,
+      env: { ...environment, MANDIBLE_HOME: privateHome }, cwd: privateHome, capture: true, maxBuffer: 16 * 1024, watch, graceMs: 250, signal, onSpawn,
     });
   } catch (error) {
     if (error.exitCode === 1 && error.processGroupSettled && error.stderr?.trim() === 'Runtime handoff binding is malformed or changed.') {
@@ -137,14 +127,14 @@ async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment
   throw acceptanceFailure('candidate', 'The packaged updater accepted a deliberately invalid handoff journal; it must refuse one.');
 }
 
-export async function verifyPackagedExports({ resources, runtime, environment, home, provenance, watch, onSpawn }) {
+export async function verifyPackagedExports({ resources, runtime, environment, home, provenance, watch, signal, onSpawn }) {
   const fixtureRoot = path.join(home, 'exports');
   fs.mkdirSync(fixtureRoot, { mode: 0o700 });
   let proof;
   try {
     const output = await runSupervisedCommand(runtime, ['--no-install', path.join(root, 'scripts/prove-installed-exports.mjs'), resources, fixtureRoot], {
       env: { ...environment, MANDIBLE_EXPORT_PROOF_SUPERVISED: '1' }, cwd: fixtureRoot,
-      capture: true, maxBuffer: 32 * 1024, watch, graceMs: 250, onSpawn,
+      capture: true, maxBuffer: 32 * 1024, watch, graceMs: 250, signal, onSpawn,
     });
     proof = JSON.parse(output.stdout);
   } catch (error) {
@@ -393,13 +383,13 @@ export async function stopOwned(child, label = 'owned process') {
 }
 
 /** Retain or dispose the package, seal the receipt and delete the run's scratch, within the fixed cleanup allowance. */
-export async function finalizeAcceptance({ metadataFile, result, phases, candidateBinding, testedPackageDigest, pendingPackage, diagnostic, diagnostics, cache, run, ownership }) {
+export async function finalizeAcceptance({ metadataFile, result, phases, candidateBinding, testedPackageDigest, pendingPackage, diagnostic, diagnostics,
+  receiptCapability, acceptance = { record_id: null, request_id: null }, run, ownership }) {
   const phase = phases.begin('finalization');
   const until = Date.now() + ACCEPTANCE_CLEANUP_MS;
   let ownedReceipt;
   let accepted;
   try {
-    let acceptedReference;
     let diagnosticDestination;
     if (diagnostic) {
       for (const name of ['daemon', 'desktop', 'gateway']) {
@@ -410,45 +400,43 @@ export async function finalizeAcceptance({ metadataFile, result, phases, candida
       diagnosticDestination = await retainDiagnosticEvidence(run, ownership);
       result.diagnostic.evidence_root = diagnosticDestination;
     }
-    if (result.status === 'passed' && !diagnostic) {
-      try {
-        const evidence = path.join(cache, '.receipts', `${ownership.runId}-acceptance.json`);
-        accepted = await retainAcceptedRelease({ pending: pendingPackage, candidate: candidateBinding,
-          acceptance: { record_id: process.env.MANDIBLE_ACCEPTANCE_ID || null, request_id: process.env.MANDIBLE_ACCEPTANCE_REQUEST || null },
-          evidence: { receipt: evidence, sha256: sha256(evidence) }, expectedDigest: testedPackageDigest, shipped: result.provenance.shipped });
-        acceptedReference = accepted.reference;
-      } catch (error) { if (error.code === 'PROCESS_LOCK_LOST') throw error; result.status = 'failed'; result.cleanup_error = error.message; }
-    }
-    if (pendingPackage && !accepted) {
-      try {
-        result.checks.package_cleanup = await disposePendingRelease(pendingPackage, testedPackageDigest, 'Candidate acceptance did not pass.');
-        if (result.checks.package_cleanup.action !== 'delete-owned' || result.checks.package_cleanup.remaining?.length) throw new Error('some of its files remain.');
-      } catch (error) {
-        if (error.code === 'PROCESS_LOCK_LOST') throw error;
-        result.status = 'failed';
-        result.cleanup_error = [result.cleanup_error, `The built package could not be fully deleted: ${error.message}`].filter(Boolean).join('; ');
-        result.checks.package_cleanup ??= { action: 'skip', reason: error.message, handle: { root: pendingPackage.root, runId: pendingPackage.runId } };
-      }
-    }
     const final = finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: result.status === 'passed' ? 'assessed' : 'failed',
       ...(diagnosticDestination ? { disposition: 'transferred', destination: diagnosticDestination, transferReference: `diagnostic:${ownership.runId}` } : {}),
       summary: acceptanceSummary(result) });
     const receipt = final.ownership.receipt;
     ownedReceipt = receipt;
-    result.receipt = acceptedReference || receipt;
+    result.receipt = receipt;
     phases.timing();
-    saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
     result.checks.cleanup = cleanupOwnedRun(metadataFile, { apply: true });
     if (result.checks.cleanup.action !== 'delete-owned' || result.checks.cleanup.remaining?.length) result.status = 'failed';
+    if (result.status === 'passed' && !diagnostic && Date.now() < until) {
+      const schema = acceptanceReceiptSchema(receiptCapability);
+      const certification = certifyAcceptance(result);
+      const seal = { pending: pendingPackage, candidate: candidateBinding, acceptance,
+        expectedDigest: testedPackageDigest, shipped: result.provenance.shipped };
+      accepted = await retainAcceptedRelease(schema === ACCEPTANCE_CERTIFICATE_SCHEMA ? { ...seal, certification }
+        : { ...seal, evidence: boundedAcceptanceBytes({ schema: ACCEPTANCE_CONTRACT, status: 'passed', candidate: candidateBinding,
+          acceptance: { ...acceptance, run_id: ownership.runId }, package_sha256: testedPackageDigest, ...certification }) });
+      result.receipt = accepted.reference;
+    }
     if (Date.now() >= until) { result.status = 'failed'; result.cleanup_error = `Cleanup took longer than the ${ACCEPTANCE_CLEANUP_MS / 1000} seconds acceptance allows it.`; }
-    result.receipt = acceptedReference || receipt;
-
   } catch (error) { if (error.code === 'PROCESS_LOCK_LOST') throw error; result.status = 'failed'; result.cleanup_error = error.message; }
-  finally {
-    if (result.checks.cleanup?.action === 'delete-owned' && !result.checks.cleanup.remaining?.length && !result.cleanup_error) phase.pass();
-    else phase.fail(result.cleanup_error ?? 'Acceptance could not delete all of its scratch files.');
-    phases.timing();
-    if (ownedReceipt) saveOwnedMetadata(ownedReceipt, { ...JSON.parse(fs.readFileSync(ownedReceipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
+  if (pendingPackage && !accepted) {
+    try {
+      result.checks.package_cleanup = await disposePendingRelease(pendingPackage, testedPackageDigest, 'Candidate acceptance did not pass.');
+      if (result.checks.package_cleanup.action !== 'delete-owned' || result.checks.package_cleanup.remaining?.length) throw new Error('some of its files remain.');
+    } catch (error) {
+      if (error.code === 'PROCESS_LOCK_LOST') throw error;
+      result.status = 'failed';
+      result.cleanup_error = [result.cleanup_error, `The built package could not be fully deleted: ${error.message}`].filter(Boolean).join('; ');
+      result.checks.package_cleanup ??= { action: 'skip', reason: error.message, handle: { root: pendingPackage.root, runId: pendingPackage.runId } };
+    }
+  }
+  if (result.checks.cleanup?.action === 'delete-owned' && !result.checks.cleanup.remaining?.length && !result.cleanup_error) phase.pass();
+  else phase.fail(result.cleanup_error ?? 'Acceptance could not delete all of its scratch files.');
+  phases.timing();
+  if (ownedReceipt && (diagnostic || !acceptance.record_id)) {
+    saveOwnedMetadata(ownedReceipt, { ...JSON.parse(fs.readFileSync(ownedReceipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
   }
   return result;
 }
@@ -483,8 +471,10 @@ async function main(startedAt) {
   const diagnostic = option('--diagnostic-receipt') || option('--diagnostic-app')
     ? diagnosticReplayPackage(option('--diagnostic-receipt'), option('--diagnostic-app')) : null;
   const diagnosticDuration = Number(option('--duration') ?? 30_000);
+  const receiptCapability = process.env[ACCEPTANCE_RECEIPT_CAPABILITY];
+  const receiptSchema = acceptanceReceiptSchema(receiptCapability);
   if (diagnostic && !(diagnosticDuration > 0 && Number.isFinite(diagnosticDuration))) throw new Error('Diagnostic replay --duration must be a positive number of milliseconds.');
-  if (!diagnostic) requireNativeAppSigning(resolveAppSigning(root));
+  const signing = diagnostic ? null : requireNativeAppSigning(resolveAppSigning(root));
   const candidate = diagnostic?.candidate || command('git', ['rev-parse', 'HEAD']);
   const parents = command('git', ['show', '-s', '--format=%P', candidate]).split(' ');
   const candidateBinding = { pin_sha: candidate, tree_sha: command('git', ['rev-parse', `${candidate}^{tree}`]),
@@ -499,22 +489,24 @@ async function main(startedAt) {
     try { await generatedStorage({ db, home: process.env.MANDIBLE_HOME, cache: path.dirname(cache), apply: true, until: Date.now() + ACCEPTANCE_CLEANUP_MS }); }
     finally { db.close(); }
   } else await reconcileGeneratedScratch(cache, { apply: true, until: Date.now() + ACCEPTANCE_CLEANUP_MS });
-  const run = fs.mkdtempSync(path.join(cache, 'candidate-'));
   const project = option('--project'); const workUnit = option('--work-unit');
-  if (!project || !workUnit) { fs.rmdirSync(run); throw acceptanceFailure('environment', 'Acceptance was started without the project and work unit to record its result under (--project and --work-unit).'); }
+  if (!project || !workUnit) throw acceptanceFailure('environment', 'Acceptance was started without the project and work unit to record its result under (--project and --work-unit).');
+  const recordId = diagnostic ? null : process.env.MANDIBLE_ACCEPTANCE_ID;
+  const run = recordId ? acceptanceScratchPath(cache, recordId) : fs.mkdtempSync(path.join(cache, 'candidate-'));
+  if (recordId) fs.mkdirSync(run, { mode: 0o700 });
   return withOwnedRunLock(run, async () => {
   const nonce = randomBytes(32).toString('hex');
   const instanceId = `acceptance-${nonce.slice(0, 16)}`;
   const outputs = diagnostic ? [...acceptanceOwnedOutputs, { path: 'Mandible.app', kind: 'generated' }, { path: 'diagnostics', kind: 'interactive' }] : acceptanceOwnedOutputs;
   const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs,
-    ...(!diagnostic && process.env.MANDIBLE_ACCEPTANCE_ID ? { runId: process.env.MANDIBLE_ACCEPTANCE_ID } : {}) });
+    ...(recordId ? { runId: recordId } : {}) });
   const metadataFile = path.join(run, 'metadata.json');
   saveOwnedMetadata(metadataFile, { ownership, candidate });
   const home = path.join(run, 'home');
   createAcceptanceHome(home);
   const evidence = acceptanceResultPath(cache, ownership.runId);
   fs.mkdirSync(path.dirname(evidence), { recursive: true });
-  const result = { schema: 'mandible-candidate-acceptance@1', scope: acceptanceScope, status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
+  const result = { schema: ACCEPTANCE_CONTRACT, scope: acceptanceScope, status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
   result.binding = { recordId: ownership.runId, runId: ownership.runId, requestId: process.env.MANDIBLE_ACCEPTANCE_REQUEST ?? null,
     projectId: project, workUnitId: workUnit, ...candidateBinding, started_at: startedAt };
   result.receipt = evidence;
@@ -532,6 +524,9 @@ async function main(startedAt) {
   let passiveHealth, passiveError;
   let interactionCompletedAt = null;
   const interactionController = new AbortController();
+  const recordProcess = (child, group) =>
+    recordScratchProcess(metadataFile, child, group, pendingPackage && path.join(pendingPackage.root, 'metadata.json'));
+  const superviseCheck = { signal: interactionController.signal, onSpawn: child => recordProcess(child, true) };
   const passiveController = new AbortController();
   const interactionWake = new AbortController();
   const diagnostics = path.join(run, 'diagnostics');
@@ -542,7 +537,7 @@ async function main(startedAt) {
   const launch = (binary, args, env, name) => {
     const fd = fs.openSync(path.join(run, `${name}.log`), 'w'); files.push(fd); logs[name] = fd;
     const child = spawn('/usr/bin/sandbox-exec', ['-p', executionProfile, binary, ...args], { cwd: run, env, stdio: ['ignore', fd, fd] });
-    recordScratchProcess(metadataFile, child);
+    recordProcess(child);
     child.on('error', error => { result.checks[`${name}_launch_error`] = error.message; });
     return child;
   };
@@ -553,25 +548,31 @@ async function main(startedAt) {
     let builtApp = diagnostic?.app;
     if (!diagnostic) {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
-    await phases.run('package_build', watch => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, log: buildLog, watch, graceMs: 250, onSpawn: child => recordScratchProcess(metadataFile, child, true) })
+    const processLog = path.join(run, generatedProcessLog);
+    fs.writeFileSync(processLog, '', { flag: 'wx', mode: 0o600 });
+    await phases.run('package_build', watch => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], {
+      cwd: root, env: { ...buildEnv, TMPDIR: home, MANDIBLE_ACCEPTANCE_PROCESS_LOG: processLog }, log: buildLog, watch, graceMs: 3_500, ...superviseCheck,
+    })
       .catch(error => {
-        if (error.code === 'HUNG' || error.exitCode == null) throw error;
+        if (error.code === 'HUNG' || error.aborted || error.exitCode == null) throw error;
         throw acceptanceFailure('either', `Building the signed Mandible.app from the candidate failed with exit code ${error.exitCode}. The end of the build log is kept with the acceptance result (build_failure_excerpt): a compile or bundling error there points at the branch, a missing tool or signing identity at the environment.`);
       }));
     const builtRevision = readBuildRevision(root);
     if (builtRevision !== candidate) throw acceptanceFailure('either', `The build produced a daemon for revision ${builtRevision}, not the candidate ${candidate}, so the package was not built from the candidate.`, { built: builtRevision, candidate });
-    builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
+    builtApp = desktopAppPath(root, { env: buildEnv, product: signing.config.productName });
     }
     const verification = phases.begin('package_verification');
-    if (!diagnostic) pendingPackage = await createPendingRelease({
-      storage: path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases'), ownership });
+    if (!diagnostic) {
+      const storage = path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), ACCEPTED_RELEASE_DIRECTORY);
+      pendingPackage = await createPendingRelease({ storage: receiptSchema === ACCEPTANCE_CERTIFICATE_SCHEMA ? path.join(storage, VERSIONED_RELEASE_DIRECTORY) : storage, ownership });
+    }
     const app = pendingPackage?.app ?? path.join(run, 'Mandible.app');
     fs.cpSync(builtApp, app, { recursive: true, verbatimSymlinks: true });
     verification.watch.advance('the package was copied');
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
     verification.watch.advance('the package signature was verified');
     const resources = path.join(app, 'Contents', 'Resources');
-    const marker = diagnostic?.marker || JSON.parse(fs.readFileSync(path.join(root, 'dist', 'build-revision.json'), 'utf8'));
+    const marker = diagnostic?.marker || JSON.parse(fs.readFileSync(path.join(root, daemonBuildOutput, 'build-revision.json'), 'utf8'));
     const { release: shipped, digest } = verifyApplicationRelease(app);
     if (shipped.provenance.commit !== candidate || shipped.provenance.source_digest !== marker.source_digest) {
       const values = { package_commit: shipped.provenance.commit, package_source_digest: shipped.provenance.source_digest, candidate, candidate_source_digest: marker.source_digest };
@@ -584,10 +585,9 @@ async function main(startedAt) {
     if (diagnostic && testedPackageDigest !== diagnostic.sha256) throw new Error('Diagnostic package changed while copying.');
     executionProfile = installedExecutionProfile({ checkout: root, commonDirectory: command("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), app });
     if (!diagnostic) result.checks.updater_entrypoint = await verifyPackagedUpdaterEntrypoint({ resources, runtime: packagedRuntime,
-      environment: resourceEnv, home, profile: executionProfile, watch: verification.watch });
+      environment: resourceEnv, home, profile: executionProfile, watch: verification.watch, ...superviseCheck });
     result.checks.installed_exports = await verifyPackagedExports({ resources, runtime: packagedRuntime,
-      environment: resourceEnv, home, provenance: shipped.provenance, watch: verification.watch,
-      onSpawn: child => recordScratchProcess(metadataFile, child, true) });
+      environment: resourceEnv, home, provenance: shipped.provenance, watch: verification.watch, ...superviseCheck });
     result.provenance = { marker, daemon_sha256: sha256(releaseFile(resources, shipped.entrypoints.daemon)), native_sha256: sha256(path.join(app, "Contents/MacOS/mandible-app")), harness_sha256: sha256(fileURLToPath(import.meta.url)), package_sha256: testedPackageDigest, shipped };
     verification.pass();
     const readiness = phases.begin('readiness');
@@ -662,7 +662,7 @@ async function main(startedAt) {
         '--pid', String(daemon.pid), '--duration', String(Math.max(1, Math.floor(diagnosticDuration / 1000))), '--sample', '--sample-max', '4', '--out', diagnostics, '--json'],
         { cwd: run, env: buildEnv, stdio: ['ignore', out, err] });
       stallProbe.on('error', error => { result.checks.probe_launch_error = error.message; });
-      recordScratchProcess(metadataFile, stallProbe);
+      recordProcess(stallProbe);
     }
     await new Promise((resolve, reject) => {
       const body = JSON.stringify({ slug: 'candidate-operator', display_name: 'Candidate operator', email: 'candidate@example.invalid' });
@@ -755,7 +755,7 @@ async function main(startedAt) {
       recordFailure(acceptanceFailure('either', `The ${labels[name]} ended with ${exit(child)} instead of exiting cleanly when acceptance stopped it; its log excerpt in the acceptance result shows why.`, { exit_code: child.exitCode, signal: child.signalCode }));
     }
     if (result.status !== 'passed') result.checks.failure_logs = acceptanceFailureLogs(run);
-    if (![stallProbe, daemon, desktop, gateway].every(child => !child || child.exitCode !== null || child.signalCode !== null)) {
+    if (!generatedChildrenIdle(JSON.parse(fs.readFileSync(metadataFile, 'utf8')).ownership)) {
       result.status = 'failed'; result.cleanup_error = 'A process acceptance started was still running after shutdown, so acceptance kept its scratch files instead of deleting them.';
       recordFailure(acceptanceFailure('environment', result.cleanup_error));
     } else {
@@ -764,7 +764,8 @@ async function main(startedAt) {
       saveOwnedMetadata(evidence, result);
       try {
         const finalized = await finalizeAcceptance({ metadataFile, result, phases, candidateBinding, testedPackageDigest, pendingPackage,
-          diagnostic, diagnostics, cache, run, ownership });
+          diagnostic, diagnostics, receiptCapability, run, ownership,
+          acceptance: { record_id: process.env.MANDIBLE_ACCEPTANCE_ID || null, request_id: process.env.MANDIBLE_ACCEPTANCE_REQUEST || null } });
         Object.assign(result, finalized, { checks: { ...result.checks, ...finalized.checks } });
       } catch (error) {
         if (error.code === 'PROCESS_LOCK_LOST') throw error;
@@ -773,23 +774,21 @@ async function main(startedAt) {
         result.checks.finalization_stderr = error.stderr?.slice(-4000);
         const receipt = path.join(cache, '.receipts', `${ownership.runId}.json`);
         if (fs.existsSync(receipt)) result.receipt = receipt;
-        const retainedReceipt = path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases', '.receipts', `${ownership.runId}-accepted-release.json`);
-        if (!fs.existsSync(retainedReceipt)) saveOwnedMetadata(evidence, result);
-        if (fs.existsSync(receipt)) saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: result });
+        saveOwnedMetadata(evidence, result);
+        if (!recordId && fs.existsSync(receipt)) saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: result });
       }
     }
     phases.timing();
     if (result.status === 'failed') {
       recordFailure(new Error(result.cleanup_error || 'acceptance could not delete all of its scratch files.'), 'finalization');
-      const sealed = path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases', '.receipts', ownership.runId + '-accepted-release.json');
-      if (!fs.existsSync(sealed)) saveOwnedMetadata(evidence, compactAcceptanceResult(result));
+      saveOwnedMetadata(evidence, compactAcceptanceResult(result));
     }
     process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt);
   }
   if (diagnostic) {
     Object.assign(result, diagnosticReport(result));
   }
-  process.stdout.write(`${JSON.stringify(compactAcceptanceResult(result), null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify(compactAcceptanceResult(result))}\n`);
   process.exitCode = result.status === 'passed' ? 0 : 1;
   });
 }

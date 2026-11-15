@@ -278,7 +278,7 @@ describe('AuthQueueView deep-linked request outside loaded lists', () => {
     // The fetched request renders in the detail pane; the sidebar row is not
     // promoted over the deep-linked selection.
     expect(await screen.findByText(/Archived merge: feature\/old-branch/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Approve/ })).toBeNull();
   });
 
 });

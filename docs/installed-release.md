@@ -16,7 +16,7 @@ The manifest contains version, target, source commit/digest, commit summary/date
 | `trustSetup` | Narrow local trust setup controller |
 | `service` | Native service launcher, supplied by the lifecycle lane |
 
-Native roles are `bun`, `sqlite`, `caddy`, `claude`, `trustHelper`, and the lifecycle lane's `serviceHelper`. The service roles become part of the assembled release when that lane adds its helper and fixed service descriptors. Additional non-native resource roles use `resources`; for service descriptors outside Resources, the native adapter declares their program root and the assembler includes those roles in the shipped file inventory.
+Native roles are `bun`, `sqlite`, `caddy`, `claude`, `trustHelper`, `approvalHelper`, and the lifecycle lane's `serviceHelper`. The service roles become part of the assembled release when that lane adds its helper and fixed service descriptors. Additional non-native resource roles use `resources`; for service descriptors outside Resources, the native adapter declares their program root and the assembler includes those roles in the shipped file inventory.
 
 `scripts/installed-release.mjs` and its declaration file export:
 
@@ -31,7 +31,7 @@ Native roles are `bun`, `sqlite`, `caddy`, `claude`, `trustHelper`, and the life
 
 ## Assembly and signing
 
-`bun run tauri:build -- --bundles app` builds and finalizes a complete Mac app. Tauri uses its normal resource map, external binaries and framework mechanisms. `scripts/make-dist.sh` selects the qualified runtime, builds TypeScript/UI, builds the trust helper and calls `stageAppPayload(contents)`. It refuses stale compiled output. The assembler copies the production dependency graph, built daemon/worker modules, UI shell/assets, CLI/hooks, command grammar, instruction resources, runtime scripts and lock provenance. Runtime script imports of source modules are mapped to built modules. Source/build workflows continue using the repository's selector and revision validation.
+`bun run tauri:build -- --bundles app` builds and finalizes a complete Mac app. Tauri uses its normal resource map, external binaries and framework mechanisms. `scripts/make-dist.sh` selects the qualified runtime, builds TypeScript/UI, builds the native helpers and calls `stageAppPayload(contents)`. It refuses stale compiled output. The assembler copies the production dependency graph, built daemon/worker modules, UI shell/assets, CLI/hooks, command grammar, instruction resources, runtime scripts and lock provenance. Runtime script imports of source modules are mapped to built modules. Source/build workflows continue using the repository's selector and revision validation.
 
 The Claude SDK's native executable is moved out of the JavaScript dependency directory into `Contents/MacOS`; SDK invocation and provenance select it explicitly. Qualified Bun/Caddy live there too, while SQLite lives in `Contents/Frameworks`. The SQLite staging copy is writable for the bundle's attribute cleanup/signing; its qualified build-store source is untouched.
 

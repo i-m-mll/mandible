@@ -253,8 +253,10 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
         merge_head_sha: dupHead, execution_mode: "daemon",
       }));
       now = 1000;
-      await approveFixtureRequest(queue, completed.id);
-      await waitForStatus(queue, completed.id, "completed");
+      await awaitFixtureResolution(queue, completed.id, async () => {
+        await approveFixtureRequest(queue, completed.id);
+        await waitForStatus(queue, completed.id, "completed");
+      });
       await queue.drainFinalizers();
       expect((await queue.getRequest(sibling.id))).toMatchObject({
         status: "superseded",

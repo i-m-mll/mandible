@@ -99,7 +99,7 @@ export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
     item_count INTEGER NOT NULL CHECK(item_count > 0),
     destination_change_count INTEGER NOT NULL DEFAULT 0 CHECK(destination_change_count >= 0),
     actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','credential_signature')),
+    evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','local_default','credential_signature')),
     credential_id TEXT REFERENCES user_credentials(id) ON DELETE RESTRICT,
     created_at INTEGER NOT NULL,
     UNIQUE(group_id, proposal_bundle_id),

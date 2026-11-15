@@ -9,15 +9,15 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { runtimeEnvironment } from './runtime-environment.mjs';
-import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal, runtimeHandoffBindingDigest } from './runtime-handoff-lock.mjs';
+import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal, runtimeHandoffBindingDigest, readRuntimeHandoffRetirement } from './runtime-handoff-lock.mjs';
 import { RuntimeObservationError, observationPending, runtimeObservationAcceptance } from './runtime-observation.mjs';
 import { withLifecycleLock, withInstallationGatewayLock, inspectLifecycleLock, assertLifecycleLockHeld, processIdentity as lockProcessIdentity } from './lifecycle-lock.mjs';
 import { acceptedInstallPaths, preparedApplicationContext, applicationRootIdentity, prepareAcceptedApplication, installAcceptedApplication } from './accepted-app-install.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions, parseLoadedService } from './service-definitions.mjs';
 import { admitBundleOwner } from './bundle-services.mjs';
 import { installedResourceRoot, installedRuntimeEnvironment, installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
-import { readAcceptedReleaseReceipt, disposeAcceptedRelease } from './accepted-release.mjs';
-import { ownedRunReceipt, inspectRunConsumers } from './owned-run.mjs';
+import { readAcceptedReleaseReceipt, readAcceptedInstalledRelease, readImmutableAcceptedRelease, disposeAcceptedRelease } from './accepted-release.mjs';
+import { inspectRunConsumers } from './owned-run.mjs';
 import SqliteDatabase from '../src/sqlite.ts';
 import { verifyRuntimeHandoffAuthority } from '../src/runtime-handoff-proof.ts';
 import { assertCacheTransitionFileIdentities, cacheFileIdentity, cacheTransitionReceiptPath, incompatibleConversationCachePaths, OBSOLETE_CACHE_SUFFIXES, publishCacheInvalidationReceipt, validateCacheInvalidationReceipt } from '../src/conversations/cache-transition-receipt.ts';
@@ -33,14 +33,14 @@ export function verifyUpdaterClosure(reference) {
   const receipt = readAcceptedReleaseReceipt(reference);
   const app = path.join(receipt.package.handle.root, receipt.package.path);
   const resources = path.join(app, 'Contents/Resources');
-  const release = receipt.shipped;
+  const release = readAcceptedInstalledRelease(receipt, resources);
   for (const relative of new Set(['handoff/helper.mjs', release.native.bun, release.native.sqlite])) {
     const expected = release.files[relative];
     if (!expected) throw new Error(`Updater closure input is not approved: ${relative}`);
     const actual = installedFileIdentity(releaseFile(resources, relative, release.layout));
     if (actual.sha256 !== expected.sha256 || actual.size !== expected.size) throw new Error(`Approved updater closure changed: ${relative}`);
   }
-  return { receipt, app, resources };
+  return { receipt, app, resources, release };
 }
 function withAcceptedClosure(journal, operation) {
   if (acceptedOperations.getStore()?.bindingDigest === journal.bindingDigest) return operation();
@@ -110,8 +110,7 @@ async function disposeSupersededRelease(journal) {
   const b = journal.binding;
   const superseded = b.bundleOwner?.acceptedRelease;
   if (!superseded || superseded === b.acceptedRelease.reference) return;
-  const old = readAcceptedReleaseReceipt(superseded);
-  if (ownedRunReceipt(old.package.handle)?.cleanup === 'completed') return;
+  const old = readImmutableAcceptedRelease(superseded);
   let result;
   try {
     result = await disposeAcceptedRelease(superseded, old.candidate, `Superseded by ${b.acceptedRelease.reference}`,
@@ -120,7 +119,7 @@ async function disposeSupersededRelease(journal) {
     if (error.consumers?.length) throw inUse(`The superseded release ${old.package.handle.root}`, error.consumers);
     throw error;
   }
-  if (result.action !== 'delete-owned' || result.remaining?.length) throw new Error('Superseded package cleanup is incomplete.');
+  if (result.action !== 'delete-owned' || result.remaining?.length) throw new Error(`Superseded package cleanup is incomplete: ${result.reason ?? result.action}`);
 }
 function removeLegacyBridge(journal) {
   const runner = journal.binding.priorBackend.argv[1];
@@ -240,13 +239,10 @@ function validateJournal(journal) {
 function readJournalFile(home, requestId, executionId) {
   const file = path.join(handoffDirectory(home, requestId, executionId), 'journal.json');
   if (!fs.existsSync(file)) return null;
-  const journal = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const retirementFile = path.join(path.dirname(file), 'retirement.json');
-  if (fs.existsSync(retirementFile)) {
-    const retirement = JSON.parse(fs.readFileSync(retirementFile, 'utf8'));
-    if (retirement.bindingDigest !== journal.bindingDigest || retirement.journalSha256 !== fileHash(file)) throw new Error('Retired handoff evidence changed.');
-    return { ...journal, phase: 'retired', retirement };
-  }
+  const bytes = fs.readFileSync(file);
+  const journal = JSON.parse(bytes);
+  const retired = readRuntimeHandoffRetirement(file, bytes, journal);
+  if (retired) return { ...journal, phase: 'retired', retirement: retired.retirement };
   return journal;
 }
 export function readRuntimeHandoff(home, requestId, executionId) {
@@ -360,10 +356,10 @@ async function armRuntimeHandoffOwned(root) {
   let approved;
   try { approved = await freezeRuntimeHandoffPublication(authority, preliminary); } finally { authority.close(); }
   const accepted = verifyUpdaterClosure(approved.acceptedRelease.reference);
-  const runtime = releaseFile(accepted.resources, accepted.receipt.shipped.native.bun);
+  const runtime = releaseFile(accepted.resources, accepted.release.native.bun, accepted.release.layout);
   const dir = handoffDirectory(home, requestId, executionId);
   fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
-  const runtimeHash = accepted.receipt.shipped.files[accepted.receipt.shipped.native.bun].sha256;
+  const runtimeHash = accepted.release.files[accepted.release.native.bun].sha256;
   const preparation = { requestId, executionId, root, runtime, runtimeHash };
   const preparationFile = path.join(dir, 'preparation.json');
   if (fs.existsSync(preparationFile)) {
@@ -378,7 +374,7 @@ async function armRuntimeHandoffOwned(root) {
     mergeBase: process.env.MANDIBLE_AUTH_MERGE_BASE_SHA || undefined, mergeHead: process.env.MANDIBLE_AUTH_MERGE_HEAD_SHA || undefined,
     mergeCommit: process.env.MANDIBLE_AUTH_MERGE_COMMIT_SHA || undefined,
     nativeApp: path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app'), desktopWasRunning: desktopRunning(path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app')),
-    runtime: { path: runtime, version: accepted.receipt.shipped.provenance.bun_revision, sha256: runtimeHash } };
+    runtime: { path: runtime, version: accepted.release.provenance.bun_revision, sha256: runtimeHash } };
   assertNativePredecessor(binding);
   if (binding.bundleOwner) {
     if (!process.env.MANDIBLE_DESKTOP_INSTALL_PATH) binding.nativeApp = binding.bundleOwner.bundleRoot;
@@ -1139,13 +1135,8 @@ export async function retireFailedRuntimeHandoff(home, { bindingDigest: expected
       }
       return retirement;
     };
-    if (fs.existsSync(retirementFile)) {
-      const prior = JSON.parse(fs.readFileSync(retirementFile, 'utf8'));
-      if (prior.schema !== 'mandible-runtime-handoff-retirement@1' || prior.bindingDigest !== expected
-          || prior.requestId !== journal.binding.requestId || prior.executionId !== journal.binding.executionId
-          || prior.journalSha256 !== fileHash(journalPath)) throw new Error('Retirement evidence differs; preserving it.');
-      return finishRetirement(prior);
-    }
+    const prior = readRuntimeHandoffRetirement(journalPath);
+    if (prior) return finishRetirement(prior.retirement);
     // The helper is an exact independently owned job; never bootout a domain.
     const target = `${journal.binding.domain}/${journal.helperLabel}`;
     const loaded = journal.binding.domain && journal.helperLabel ? spawnSync('/bin/launchctl', ['print', target], { encoding: 'utf8', timeout: 2500 }) : { status: 1 };

@@ -14,7 +14,6 @@
 #   auth list [opts]                 List active auth requests
 #   auth action <subcommand>         Manage staged auth request actions
 #   auth check [opts]                Check queued merge independence
-#   auth clearance <subcommand>      Manage scoped protected-merge clearances
 #   auth request [branch] [opts]     Submit an approval request
 #   auth withdraw <id> --reason ... --expected-revision N --expected-custody-generation N
 #   auth candidate-repair inspect|apply <id> [opts]
@@ -115,7 +114,6 @@ case "${1:-}" in
       show)    shift; exec "$MANDIBLE_CLI_DIR/auth-show.sh" "$@" ;;
       action)  shift; exec "$MANDIBLE_CLI_DIR/auth-action.sh" "$@" ;;
       check)   shift; exec "$MANDIBLE_CLI_DIR/auth-check.sh" "$@" ;;
-      clearance) shift; exec "$MANDIBLE_CLI_DIR/auth-clearance.sh" "$@" ;;
       request) shift; exec "$MANDIBLE_CLI_DIR/auth-request.sh" "$@" ;;
       responsibility) shift; exec "$MANDIBLE_CLI_DIR/auth-responsibility.sh" "$@" ;;
       withdraw) shift; exec "$MANDIBLE_CLI_DIR/auth-withdraw.sh" "$@" ;;

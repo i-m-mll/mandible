@@ -1,11 +1,7 @@
 // @vitest-environment node
 /**
- * Issue 2205073 — the protected-merge signing credential is registered by
- * `mandible user setup`, so operators never meet signature_not_trusted on
- * their second queued approval. Review F5: setup registers only a key from
- * GLOBAL git config, because an operator credential is global by construction;
- * the explicit `user credential add --from-git-signingkey` may register a
- * repository-scoped key but must say which scope it came from.
+ * Operator signing trust comes from the approval key, never from git config:
+ * setup registers no credential, and the git-config import is retired.
  */
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -75,75 +71,16 @@ async function daemon(existingCredentials: Array<Record<string, unknown>> = []):
 
 const credentialPosts = (stub: StubDaemon) => stub.requests.filter((request) => request.method === "POST" && request.url.endsWith("/credentials"));
 
-describe("user setup signing credential", () => {
-  it("registers the global signing key, even when the repository overrides user.signingkey", async () => {
-    const box = sandbox();
-    const globalKey = box.key("global", "operator-signing");
-    box.key("local", "repo-agent-signing");
-    const stub = await daemon();
+it("sets up the operator without reading or registering the git signing key", async () => {
+  const box = sandbox();
+  box.key("global");
+  const stub = await daemon();
 
-    const result = await box.run(stub, ["user", "setup", "--json"]);
+  const result = await box.run(stub, ["user", "setup", "--json"]);
 
-    expect(result.status, result.stderr).toBe(0);
-    expect(credentialPosts(stub)).toEqual([expect.objectContaining({
-      url: "/api/users/operator-slug/credentials",
-      body: { type: "ssh_key", fingerprint: globalKey.fingerprint, public_material: globalKey.publicMaterial, label: "git user.signingkey" },
-    })]);
-    expect(JSON.parse(result.stdout).user.slug).toBe("operator-slug");
-  });
-
-  it("adds a fingerprint once while it is active and again after it was revoked", async () => {
-    const [active, revoked] = [sandbox(), sandbox()];
-    const activeKey = active.key("global");
-    const revokedKey = revoked.key("global");
-    const [activeStub, revokedStub] = await Promise.all([
-      daemon([{ id: "existing", type: "ssh_key", status: "active", fingerprint: activeKey.fingerprint, public_material: activeKey.publicMaterial }]),
-      daemon([{ id: "old", type: "ssh_key", status: "revoked", fingerprint: revokedKey.fingerprint }]),
-    ]);
-
-    const results = await Promise.all([active.run(activeStub, ["user", "setup", "--json"]), revoked.run(revokedStub, ["user", "setup", "--json"])]);
-
-    for (const result of results) expect(result.status, result.stderr).toBe(0);
-    expect(credentialPosts(activeStub)).toHaveLength(0);
-    expect(credentialPosts(revokedStub)).toHaveLength(1);
-  });
-
-  it("never promotes a repository-local key, and is quiet when no key is configured", async () => {
-    const [local, none] = [sandbox(), sandbox()];
-    local.key("local");
-    const [localStub, noneStub] = await Promise.all([daemon(), daemon()]);
-
-    const [refused, quiet] = await Promise.all([local.run(localStub, ["user", "setup", "--json"]), none.run(noneStub, ["user", "setup", "--json"])]);
-
-    expect(refused.status, refused.stderr).toBe(0);
-    expect(credentialPosts(localStub)).toHaveLength(0);
-    expect(quiet.status, quiet.stderr).toBe(0);
-    expect(credentialPosts(noneStub)).toHaveLength(0);
-  });
-});
-
-describe("user credential add --from-git-signingkey", () => {
-  it("registers the global key's public material and fingerprint", async () => {
-    const box = sandbox();
-    const { fingerprint, publicMaterial } = box.key("global");
-    const stub = await daemon();
-
-    const result = await box.run(stub, ["user", "credential", "add", "operator", "--from-git-signingkey", "--json"]);
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(credentialPosts(stub).map((request) => request.body)).toEqual([{ type: "ssh_key", fingerprint, public_material: publicMaterial }]);
-  });
-
-  it("registers a repository-scoped key but names the scope, since the credential applies everywhere", async () => {
-    const box = sandbox();
-    const { fingerprint, publicMaterial } = box.key("local");
-    const stub = await daemon();
-
-    const result = await box.run(stub, ["user", "credential", "add", "operator", "--from-git-signingkey", "--json"]);
-
-    expect(result.status, result.stderr).toBe(0);
-    expect(credentialPosts(stub).map((request) => request.body)).toEqual([{ type: "ssh_key", fingerprint, public_material: publicMaterial }]);
-  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout).user.slug).toBe("operator-slug");
+  expect(credentialPosts(stub)).toHaveLength(0);
 });
 
 it("rejects retired project-grant and access arguments before contacting the daemon", async () => {
@@ -154,6 +91,7 @@ it("rejects retired project-grant and access arguments before contacting the dae
     ['grant', 'list', '--resource-type', 'global'],
     ['grant', 'list', '--resource-id', 'project'],
     ['access', 'agent', 'project'],
+    ['credential', 'add', 'operator', '--from-git-signingkey'],
   ]) {
     const result = await box.run(stub, ['user', ...args]);
     expect(result.status, result.stdout).toBe(2);

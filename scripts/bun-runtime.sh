@@ -3,9 +3,12 @@ set -eu
 
 mode=${1:-runtime}
 case "$mode" in
-  --exec) shift ;;
+  --exec)
+    shift
+    # `bun bun` is Bun's alias for `bun build`; a leading `bun` here names the runtime itself.
+    if [ "${1:-}" = bun ]; then shift; fi ;;
   runtime|--bun-only|--archive) ;;
-  *) echo "Usage: bun-runtime.sh [--bun-only|--archive|--exec <bun arguments...>]" >&2; exit 1 ;;
+  *) echo "Usage: bun-runtime.sh [--bun-only|--archive|--exec [bun] <bun arguments...>]" >&2; exit 1 ;;
 esac
 scratch=
 

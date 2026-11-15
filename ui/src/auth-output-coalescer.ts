@@ -2,7 +2,7 @@
  * Coalesces high-frequency `auth:output` SSE chunks into batched reducer
  * dispatches. During a protected-branch merge the executor streams many small
  * output chunks; dispatching each one separately triggers a full app re-render
- * per chunk exactly while the user is waiting on the YubiKey. This buffers
+ * per chunk exactly while the user is watching the merge. This buffers
  * chunks per request and flushes them on a single animation frame (or a short
  * timer fallback), so N chunks collapse into one dispatch per frame.
  *

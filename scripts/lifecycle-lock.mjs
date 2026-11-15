@@ -50,22 +50,22 @@ function removeOwnership(lock, observation) {
   fs.rmdirSync(lock);
 }
 
-async function acquireOwnershipGuard(root, waitMs = 0) {
-  return acquireProcessLock(`${lockPath(root)}.process`, { label: 'Lifecycle ownership lock', waitMs });
+async function acquireOwnershipGuard(lock, { waitMs = 0, deadOwnerGraceMs, existingOnly } = {}) {
+  return acquireProcessLock(`${lock}.process`, { label: 'Lifecycle ownership lock', waitMs, deadOwnerGraceMs, existingOnly });
 }
 
 export async function inspectLifecycleLock(root) {
+  const lock = lockPath(root);
   let guard;
-  try { guard = await acquireOwnershipGuard(root); }
+  try { guard = await acquireOwnershipGuard(lock); }
   catch (error) { if (error.code === 'PROCESS_LOCK_BUSY') return { state: 'held' }; throw error; }
-  try { guard.assertHeld(); return inspectOwnership(lockPath(root)); }
+  try { guard.assertHeld(); return inspectOwnership(lock); }
   finally { await guard.release(); }
 }
 
-export async function withLifecycleLock(root, operation, { recoverStale = false } = {}) {
+export async function withLifecycleLock(root, operation, { recoverStale = false, deadOwnerGraceMs, lock = lockPath(root), reacquireLost = true } = {}) {
   const ancestor = ownershipScope.getStore();
-  const lock = lockPath(root);
-  const guard = await acquireOwnershipGuard(root);
+  const guard = await acquireOwnershipGuard(lock, { deadOwnerGraceMs });
   let published;
   let temporary;
   try {
@@ -88,11 +88,11 @@ export async function withLifecycleLock(root, operation, { recoverStale = false 
     let lost;
     try {
       try { guard.assertHeld(); } catch (error) { lost = error; }
-      if (lost && published) {
-        const cleanup = await acquireOwnershipGuard(root, 5000);
+      if (lost && published && reacquireLost) {
+        const cleanup = await acquireOwnershipGuard(lock, { waitMs: 5000 });
         try { cleanup.assertHeld(); removeOwnership(lock, published); }
         finally { await cleanup.release(); }
-      } else if (published) removeOwnership(lock, published);
+      } else if (!lost && published) removeOwnership(lock, published);
       if (temporary) fs.rmSync(temporary, { recursive: true });
       if (lost) throw lost;
     } finally { try { await guard.release(); } catch (error) { if (!lost) throw error; } }
@@ -100,14 +100,52 @@ export async function withLifecycleLock(root, operation, { recoverStale = false 
 }
 
 export async function recoverLifecycleLock(root) {
-  const guard = await acquireOwnershipGuard(root);
+  const lock = lockPath(root);
+  const guard = await acquireOwnershipGuard(lock);
   try {
     guard.assertHeld();
-    const lock = lockPath(root);
     const prior = inspectOwnership(lock);
     if (prior.state === 'free') return false;
     if (prior.state !== 'stale') throw busy(lock);
     removeOwnership(lock, prior);
+    return true;
+  } finally { await guard.release(); }
+}
+
+function exactLockFile(file) {
+  const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (stat && (!stat.isFile() || stat.nlink !== 1)) throw new Error(`Unexpected lifecycle lock file: ${file}`);
+  return stat;
+}
+
+/** The caller serializes admission to this lock and confirms that future opens are refused. */
+export async function retireLifecycleLock(lock, assertTerminal) {
+  const kernel = `${lock}.process`;
+  const owner = `${kernel}.owner`;
+  const kernelBefore = exactLockFile(kernel);
+  const ownerBefore = exactLockFile(owner);
+  if (!kernelBefore) {
+    if (ownerBefore) throw new Error(`Lifecycle lock owner has no kernel inode: ${owner}`);
+    return false;
+  }
+  const guard = await acquireOwnershipGuard(lock, { existingOnly: true, deadOwnerGraceMs: 0 });
+  try {
+    guard.assertHeld();
+    assertTerminal();
+    for (const [file, before] of [[kernel, kernelBefore], [owner, ownerBefore]]) {
+      const after = exactLockFile(file);
+      if (before?.dev !== after?.dev || before?.ino !== after?.ino) throw busy(lock);
+    }
+    const prior = inspectOwnership(lock);
+    if (prior.state === 'stale') removeOwnership(lock, prior);
+    else if (prior.state !== 'free') throw busy(lock);
+    const fd = fs.openSync(path.dirname(lock), 'r');
+    try {
+      if (ownerBefore) fs.unlinkSync(owner);
+      fs.fsyncSync(fd);
+      fs.unlinkSync(kernel);
+      fs.fsyncSync(fd);
+    } finally { fs.closeSync(fd); }
     return true;
   } finally { await guard.release(); }
 }

@@ -1605,7 +1605,9 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "ref","value": {"type": "string"}},
-          {"kind": "choice","items": [{"kind": "sequence","items": [{"kind": "option","names": ["--type"],"values": [{"kind": "argument","name": "t","value": {"type": "string"}}]},{"kind": "option","names": ["--fingerprint"],"values": [{"kind": "argument","name": "f","value": {"type": "string"}}]},{"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--public-material"],"values": [{"kind": "argument","name": "m","value": {"type": "string"}}]}]}}]},{"kind": "sequence","items": [{"kind": "option","names": ["--from-git-signingkey"],"values": []}]}]},
+          {"kind": "option","names": ["--type"],"values": [{"kind": "argument","name": "t","value": {"type": "string"}}]},
+          {"kind": "option","names": ["--fingerprint"],"values": [{"kind": "argument","name": "f","value": {"type": "string"}}]},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--public-material"],"values": [{"kind": "argument","name": "m","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--label"],"values": [{"kind": "argument","name": "l","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
@@ -1889,62 +1891,6 @@
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--now"],"values": [{"kind": "argument","name": "timestamp","value": {"type": "integer","min": 0}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "count","value": {"type": "integer","min": 1}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--actor"],"values": [{"kind": "argument","name": "actor","value": {"type": "string"}}]}]}}
-        ]
-      }
-    },
-    "auth.clearance.create": {
-      "route": ["auth", "clearance", "create"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "option","names": ["--grantee"],"values": [{"kind": "argument","name": "user","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--request"],"values": [{"kind": "argument","name": "request-id","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--project"],"values": [{"kind": "argument","name": "project","value": {"type": "string"}}]},{"kind": "option","names": ["--base"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--issue"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--head"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--duration-minutes"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--max-uses"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
-        ]
-      }
-    },
-    "auth.clearance.list": {
-      "route": ["auth", "clearance", "list"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--request"],"values": [{"kind": "argument","name": "request-id","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
-        ]
-      }
-    },
-    "auth.clearance.show": {
-      "route": ["auth", "clearance", "show"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "argument","name": "clearance-id","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
-        ]
-      }
-    },
-    "auth.clearance.revoke": {
-      "route": ["auth", "clearance", "revoke"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "argument","name": "clearance-id","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
-        ]
-      }
-    },
-    "auth.clearance.execute": {
-      "route": ["auth", "clearance", "execute"],
-      "grammar": {
-        "kind": "sequence",
-        "items": [
-          {"kind": "argument","name": "request-id","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
     },

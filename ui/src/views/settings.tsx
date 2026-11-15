@@ -16,16 +16,13 @@ import SigningSettings from '../components/settings/SigningSettings';
 import { formatRelativeTime } from '../lib/format';
 import {
   getBackupStatus,
-  getDelegatedSigningStatus,
   getDesktopDaemonStatus,
   getSecureLocalConnectionsStatus,
   isDesktopShell,
   navigateToDesktopBootstrap,
-  removeDelegatedSigning,
   restartDesktopDaemon,
   runBackupNow,
   setDesktopDaemonLaunchMode,
-  setupDelegatedSigning,
   startDesktopDaemon,
   setupSecureLocalConnections,
   stopDesktopDaemon,
@@ -36,7 +33,6 @@ import {
   listCanonicalProjects,
   type BackupStatus,
   type CanonicalProject,
-  type DelegatedSigningStatus,
   type DesktopDaemonLaunchMode,
   type InstructionDeliverySettings,
   type InstructionTarget,
@@ -149,7 +145,7 @@ const SETTINGS_SECTIONS = {
   appearance: { id: 'settings-appearance', title: 'Appearance' },
   auth: { id: 'auth-settings', title: 'Approvals' },
   authHooks: { id: 'settings-auth-hooks', title: 'Approval Hooks' },
-  signing: { id: 'settings-signing', title: 'Signing keys' },
+  signing: { id: 'settings-signing', title: 'Approvals' },
   versionControl: { id: 'settings-version-control', title: 'Version Control' },
   maintenance: { id: 'settings-maintenance', title: 'Maintenance' },
   backup: { id: 'settings-backup', title: 'Backup' },
@@ -845,139 +841,6 @@ function formatBytes(bytes: number): string {
   return `${mb.toFixed(1)} MB`;
 }
 
-export function DelegatedSigningSection({ instance }: { instance?: InstanceInfo | null }): JSX.Element {
-  const [signing, setSigning] = useState<DelegatedSigningStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState(false);
-  const [feedback, setFeedback] = useState<FeedbackState>(null);
-  const readAllowed = canPerformOperation(instance, 'GET', '/api/auth/clearances/signing');
-  const setupAllowed = canPerformOperation(instance, 'POST', '/api/auth/clearances/signing/setup');
-  const removeAllowed = canPerformOperation(instance, 'DELETE', '/api/auth/clearances/signing');
-
-  const load = useCallback(() => {
-    if (!readAllowed) return;
-    getDelegatedSigningStatus()
-      .then(setSigning)
-      .catch((err) => setFeedback({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Failed to load auth status',
-      }));
-  }, [readAllowed]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const handleRemove = useCallback(async () => {
-    if (!removeAllowed) return;
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const removed = await removeDelegatedSigning();
-      setSigning(removed);
-      setConfirmRemove(false);
-      setFeedback({ type: 'success', message: 'Delegated signing material removed' });
-    } catch (err) {
-      setFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Removal failed' });
-    } finally {
-      setBusy(false);
-    }
-  }, [removeAllowed]);
-
-  const handleSetup = useCallback(async () => {
-    if (!setupAllowed) return;
-    setBusy(true);
-    setFeedback(null);
-    try {
-      await setupDelegatedSigning({});
-      load();
-      setFeedback({ type: 'success', message: 'Delegated signing key created' });
-    } catch (err) {
-      setFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Setup failed' });
-    } finally {
-      setBusy(false);
-    }
-  }, [load, setupAllowed]);
-
-  return (
-    <div className="settings-view__delegated-signing">
-      <div className="settings-view__number-row" data-settings-searchable>
-        <div className="settings-view__number-info">
-          <span className="settings-view__number-label">Delegated signing key</span>
-          <span className="settings-view__number-desc">
-            {signing?.configured
-              ? 'Ready to issue scoped protected-merge clearances.'
-              : 'Create a local signing key wrapped by a YubiKey age identity.'}
-          </span>
-        </div>
-        <div className="settings-view__number-controls">
-          <button
-            type="button"
-            className="btn btn--active btn--sm"
-            onClick={handleSetup}
-            disabled={!setupAllowed || busy || signing?.configured === true}
-          >
-            {busy ? 'Setting up...' : signing?.configured ? 'Configured' : 'Set up'}
-          </button>
-          {signing?.configured && (
-            <button
-              type="button"
-              className="btn btn--sm"
-              onClick={() => setConfirmRemove(true)}
-              disabled={!removeAllowed || busy}
-            >
-              Remove
-            </button>
-          )}
-          {signing && signing.missing_tools?.length > 0 && (
-            <span className="settings-view__feedback settings-view__feedback--error">
-              Missing {signing.missing_tools.join(', ')}
-            </span>
-          )}
-        </div>
-      </div>
-      {confirmRemove && (
-        <div className="settings-view__confirm" role="alertdialog" aria-labelledby="delegated-signing-remove-title">
-          <div className="settings-view__confirm-body">
-            <strong id="delegated-signing-remove-title">Remove delegated signing material?</strong>
-            <span>This revokes the runtime signer handles and deletes the local delegated key files. Existing clearance audit rows remain, but cannot execute.</span>
-          </div>
-          <div className="settings-view__confirm-actions">
-            <button type="button" className="btn btn--sm" onClick={() => setConfirmRemove(false)} disabled={busy}>Cancel</button>
-            <button type="button" className="btn btn--active btn--sm" onClick={handleRemove} disabled={!removeAllowed || busy}>
-              {busy ? 'Removing...' : 'Remove key material'}
-            </button>
-          </div>
-        </div>
-      )}
-      {!readAllowed ? (
-        <DetailPaneNotice severity="info" density="compact" title="Credential status unavailable">
-          This instance cannot read delegated signing credentials.
-        </DetailPaneNotice>
-      ) : !setupAllowed || !removeAllowed ? (
-        <DetailPaneNotice severity="info" density="compact" title="Credential changes unavailable">
-          Credential setup and removal are unavailable in this instance.
-        </DetailPaneNotice>
-      ) : null}
-      {readAllowed && signing?.public_key && (
-        <div className="settings-view__field" data-settings-searchable data-settings-search-text="delegated signing public key">
-          <textarea
-            className="settings-view__input settings-view__input--mono"
-            value={signing.public_key}
-            readOnly
-            rows={3}
-          />
-        </div>
-      )}
-      {feedback && (
-        <div data-settings-searchable data-settings-search-text="delegated signing key">
-          <SettingsFeedback feedback={feedback} />
-        </div>
-      )}
-    </div>
-  );
-}
-
 function formatDaemonState(state: DesktopDaemonStatus['state']): string {
   switch (state) {
     case 'running':
@@ -1595,14 +1458,23 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     normalizeIssueDefaultFilter,
     issueFilterInitialized.current,
   );
-  const protectedBranchesSaveState = useDebouncedSettingSave(
-    'protected_branches',
-    protectedBranches,
-    normalizeProtectedBranches(settings.protected_branches ?? '') ?? '',
-    saveSetting,
-    normalizeProtectedBranches,
-    initialized.current,
-  );
+  // The protected-branch list is what the approval gate covers, so a change is a
+  // signed action. It is saved only on an explicit click, because the Touch ID
+  // sheet must follow the operator's click and appear at no other time.
+  const [protectedBranchesSaveState, setProtectedBranchesSaveState] = useState<{ saving: boolean; error: string | null }>({ saving: false, error: null });
+  const normalizedProtectedBranches = normalizeProtectedBranches(protectedBranches);
+  const protectedBranchesChanged = normalizedProtectedBranches != null
+    && normalizedProtectedBranches !== (normalizeProtectedBranches(settings.protected_branches ?? '') ?? '');
+  const saveProtectedBranches = useCallback(async () => {
+    if (normalizedProtectedBranches == null) return;
+    setProtectedBranchesSaveState({ saving: true, error: null });
+    try {
+      await saveSetting('protected_branches', normalizedProtectedBranches);
+      setProtectedBranchesSaveState({ saving: false, error: null });
+    } catch (err) {
+      setProtectedBranchesSaveState({ saving: false, error: err instanceof Error ? err.message : 'Failed to save' });
+    }
+  }, [normalizedProtectedBranches, saveSetting]);
 
   const showFeedback = useCallback((state: FeedbackState) => {
     if (feedbackTimer.current != null) window.clearTimeout(feedbackTimer.current);
@@ -2050,7 +1922,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell key={SETTINGS_SECTIONS.auth.id} section={SETTINGS_SECTIONS.auth}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.auth}
-          description="Approval display, queue retention, and hardware-backed delegated signing."
+          description="Approval display and queue retention."
         />
         <div className="settings-view__section-body">
           <ToggleRow
@@ -2077,7 +1949,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             onSave={saveSetting}
             defaultEnabled
           />
-          <DelegatedSigningSection instance={instance} />
         </div>
       </SettingsSectionShell>,
 
@@ -2096,7 +1967,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell key={SETTINGS_SECTIONS.signing.id} section={SETTINGS_SECTIONS.signing}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.signing}
-          description="Register the public key Git uses to sign commits."
+          description="Protected merges and changes to the signers or protected branches are signed actions: each asks for Touch ID, and the approval key signs it. Every other approval is a courtesy approval: one click, not operator-verified."
         />
         <div className="settings-view__section-body" data-testid="settings-signing-content">
           <SigningSettings instance={instance} />
@@ -2106,7 +1977,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell key={SETTINGS_SECTIONS.versionControl.id} section={SETTINGS_SECTIONS.versionControl}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.versionControl}
-          description="Comma-separated branch names that are pinned in the Work tab and used as the baseline for ahead/behind counts."
+          description="Comma-separated branch names that only signed merges may move. They are pinned in the Work tab and used as the baseline for ahead/behind counts. Changing the list is a signed action."
         />
         <div className="settings-view__field" data-settings-searchable data-settings-search-text="protected branches pinned Work tab baseline counts">
           <input
@@ -2119,9 +1990,18 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             }}
             placeholder="main, develop"
             aria-label="Protected branches"
-            aria-invalid={protectedBranchesSaveState.error != null || normalizeProtectedBranches(protectedBranches) == null}
+            aria-invalid={protectedBranchesSaveState.error != null || normalizedProtectedBranches == null}
           />
-          {protectedBranchesSaveState.saving && <span className="settings-view__text-desc" role="status">Saving</span>}
+          <button
+            type="button"
+            className="btn btn--sm"
+            onClick={() => void saveProtectedBranches()}
+            disabled={!protectedBranchesChanged || protectedBranchesSaveState.saving}
+            title="Signed action: asks for Touch ID."
+          >
+            Save with Touch ID
+          </button>
+          {protectedBranchesSaveState.saving && <span className="settings-view__text-desc" role="status">Waiting for Touch ID</span>}
           {protectedBranchesSaveState.error && <span className="settings-view__warning" role="alert">{protectedBranchesSaveState.error}</span>}
           {!protectedBranchesSaveState.error && normalizeProtectedBranches(protectedBranches) == null && (
             <span className="settings-view__warning" role="status">Complete each branch name between commas.</span>

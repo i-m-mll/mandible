@@ -29,7 +29,6 @@ export const PROJECT_REFERENCE_POLICIES: readonly ProjectReferencePolicy[] = [
   column("ledger_project_checkouts", "project_id", { disposition: "merge", handler: "checkout" }),
   column("ledger_change_feed_state", "project_id", { disposition: "merge", handler: "feed" }),
   column("ledger_change_log", "project_id", { disposition: "merge", handler: "feed" }),
-  pin("auth_clearances", "project_id", "Immutable clearance scope, including expired and revoked clearances"),
   pin("artifact_version", "source_project_id", "Immutable artifact custody"),
   pin("conversation_spawn_requests", "project_id", "Frozen spawn request and replay identity"),
   pin("managed_tasks", "project_id", "Reminder request digest binds the owning project"),

@@ -29,7 +29,7 @@ beforeEach(() => {
   const operator = setupOperator(db, { display_name: "Route test operator" });
   setDb(db);
   router = authenticatedTestRouter(operator);
-  registerProjectRoutes(router);
+  registerProjectRoutes(router, null);
 });
 
 afterEach(() => {
@@ -40,8 +40,8 @@ it("reserves repair reports and mutations to the operator across transports", as
   const project = addProject(db, { project_key: "authority" });
   const agent = createUser(db, { slug: "repair-agent", kind: "agent", display_name: "Agent" });
 
-  const agentRouter = authenticatedTestRouter(agent); registerProjectRoutes(agentRouter);
-  const anonymous = new Router(); registerProjectRoutes(anonymous);
+  const agentRouter = authenticatedTestRouter(agent); registerProjectRoutes(agentRouter, null);
+  const anonymous = new Router(); registerProjectRoutes(anonymous, null);
   for (const body of [{}, { apply: true }]) {
     expect((await anonymous.invoke({ method: "POST", url: "/api/projects/repair", body })).status).toBe(401);
     expect((await agentRouter.invoke({ method: "POST", url: "/api/projects/repair", body, transport: "http" })).status).toBe(403);
@@ -52,7 +52,7 @@ it("reserves repair reports and mutations to the operator across transports", as
   const local = new Router({ clientAuth: {
     authenticate: () => null, mode: () => "strict", recordUnattributedWrite: () => {},
     localSocketIdentity: () => ({ user_id: operator.id, slug: operator.slug, method: "local_socket", credential_id: null, source: "local_socket", effect_ceiling: PRODUCTION_EFFECTS }),
-  } }); registerProjectRoutes(local);
+  } }); registerProjectRoutes(local, null);
   for (const body of [{}, { apply: true }]) {
     expect((await local.invoke({ method: "POST", url: "/api/projects/repair", body, transport: "local-socket" })).status).toBe(200);
     expect((await local.invoke({ method: "POST", url: "/api/projects/repair", body, transport: "local-socket",
@@ -62,7 +62,7 @@ it("reserves repair reports and mutations to the operator across transports", as
     authenticate: () => ({ user_id: operator.id, slug: operator.slug, method: "api_token", credential_id: "operator",
       source: "http_bearer", effect_ceiling: ["ledger:read"] }),
     mode: () => "strict", recordUnattributedWrite: () => {},
-  } }); registerProjectRoutes(readOnly);
+  } }); registerProjectRoutes(readOnly, null);
   expect((await readOnly.invoke({ method: "POST", url: "/api/projects/repair", body: {}, transport: "http" })).status).toBe(200);
   expect((await readOnly.invoke({ method: "POST", url: "/api/projects/repair", body: { apply: true }, transport: "http" })).status).toBe(403);
   const eventsBefore = db.prepare("SELECT COUNT(*) n FROM ledger_events").get();

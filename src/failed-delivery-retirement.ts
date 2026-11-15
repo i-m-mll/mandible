@@ -5,7 +5,7 @@ import type { Db } from './db.js';
 import type { AuthLifecycleActor, AuthRequest } from './types.js';
 import { authRequestSnapshot } from './auth-request-snapshot.js';
 import { appendAuthLifecycleEvent } from './auth-lifecycle.js';
-import { readAcceptedReleaseEvidenceSelection } from './accepted-release-selection.js';
+import { readAcceptedReleaseDispositionSelection } from './accepted-release-selection.js';
 import { findRuntimeDeliveryIntents } from './runtime-handoff-proof.js';
 import { disposeAcceptedRelease, acceptedReleaseFilesystemReferences } from '../scripts/accepted-release.mjs';
 import { acceptedReleaseDatabaseReferences } from '../scripts/accepted-release-retention.mjs';
@@ -45,7 +45,7 @@ export async function retireFailedDelivery(db: Db, request: AuthRequest, reason:
   if (!reason.trim()) fail('a reason is required');
   authorize();
   const initial = binding(db, request);
-  const { receipt } = readAcceptedReleaseEvidenceSelection(db, request, initial.selection);
+  const { receipt } = readAcceptedReleaseDispositionSelection(db, request, initial.selection);
   const root = receipt.package.handle.root;
   const journal = path.join(home, 'config/local-sessions/handoff', `${request.id}-${initial.hook.id}`);
   if (fs.existsSync(journal) && (!fs.lstatSync(journal).isDirectory() || fs.lstatSync(journal).isSymbolicLink() || fs.readdirSync(journal).length)) fail('handoff material exists; use handoff lifecycle');

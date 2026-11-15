@@ -10,8 +10,10 @@ import { RELEASE_SCHEMA, installedFileIdentity } from './installed-release.mjs';
 import { trackedSourceDigest } from './build-revision.mjs';
 import { buildBundleService, stageBundleServices } from './prepare-bundle-services.mjs';
 import { bundleServiceLabel } from './bundle-service-roles.mjs';
+import { daemonBuildOutput, desktopPackageEnvironment, frontendBuildOutput } from './desktop-build-layout.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const packageEnvironment = desktopPackageEnvironment(root, process.env);
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, encoding: 'utf8', timeout: 60_000 }).trim();
 const hash = file => installedFileIdentity(file).sha256;
 const copy = (source, target) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.cpSync(source, target, { recursive: true, dereference: true }); };
@@ -68,11 +70,11 @@ function copyProductionDependencies(resources) {
 
 export async function stageAppPayload(contents) {
   if (`${process.platform}-${process.arch}` !== 'darwin-arm64') throw new Error('Only darwin-arm64 is qualified for installed payloads.');
-  const provenance = JSON.parse(fs.readFileSync(path.join(root, 'dist/build-revision.json'), 'utf8'));
+  const provenance = JSON.parse(fs.readFileSync(path.join(root, daemonBuildOutput, 'build-revision.json'), 'utf8'));
   if (provenance.source_digest !== trackedSourceDigest(root)) throw new Error('Build inputs changed after compilation. Run the source build before staging the app.');
   const resources = path.join(contents, 'Resources');
   fs.mkdirSync(resources, { recursive: true });
-  for (const relative of ['dist', 'ui/dist', 'cli', 'bin', 'config', '.bun-version', 'bun.lock', 'package.json', 'docs/cli-reference.md', 'hooks', 'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg', 'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png']) copy(path.join(root, relative), path.join(resources, relative));
+  for (const relative of [daemonBuildOutput, frontendBuildOutput, 'cli', 'bin', 'config', '.bun-version', 'bun.lock', 'package.json', 'docs/cli-reference.md', 'hooks', 'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg', 'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png']) copy(path.join(root, relative), path.join(resources, relative));
   const packageCount = copyProductionDependencies(resources);
   stageCoworkRuntime(root, resources);
   const scripts = new Set(['local-runtime.mjs', 'bundle-service.mjs', 'local-front-door.mjs', 'local-session-production-runner.mjs', 'runtime-handoff.mjs', 'verify-accepted-release.mjs', 'installed-release.mjs', 'project-db-snapshot.mjs', 'preview-custody.mjs', 'installed-command.mjs', 'generated-owner-observation.mjs']);
@@ -83,7 +85,7 @@ export async function stageAppPayload(contents) {
       else if (entry.name.endsWith('.js')) for (const match of fs.readFileSync(file, 'utf8').matchAll(/(?:\.\.\/)+scripts\/([\w-]+\.mjs)/g)) scripts.add(match[1]);
     }
   };
-  discoverScripts(path.join(root, 'dist'));
+  discoverScripts(path.join(root, daemonBuildOutput));
   for (const name of scripts) {
     const source = fs.readFileSync(path.join(root, 'scripts', name), 'utf8');
     for (const match of source.matchAll(/(?:from\s*|import\s*\()\s*['"]\.\/([^'"]+\.mjs)['"]/g)) scripts.add(match[1]);
@@ -104,7 +106,7 @@ export async function stageAppPayload(contents) {
   const caddy = installPinnedCaddy(path.join(os.homedir(), '.cache/mandible/package-tools'));
   if (hash(caddy) !== '425fb8342d05b06e98f6a438a2964401268df83345ad806103669fdd322bf80c') throw new Error('Caddy differs from the qualified darwin-arm64 release executable.');
   const native = { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy',
-    claude: '../MacOS/mandible-claude', trustHelper: '../MacOS/mandible-trust-helper', serviceHelper: '../MacOS/mandible-service', sqlite: '../Frameworks/libsqlite3.dylib' };
+    claude: '../MacOS/mandible-claude', trustHelper: '../MacOS/mandible-trust-helper', approvalHelper: '../Helpers/MandibleApproval.app/Contents/MacOS/mandible-approval-helper', serviceHelper: '../MacOS/mandible-service', sqlite: '../Frameworks/libsqlite3.dylib' };
   const sdkNative = path.join(resources, `node_modules/@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`);
   const signing = {};
   for (const [role, executable] of Object.entries({ bun: runtime, claude: sdkNative })) {
@@ -115,11 +117,12 @@ export async function stageAppPayload(contents) {
     fs.writeFileSync(path.join(resources, relative), entitlements);
     signing[role] = relative;
   }
-  for (const [name, source] of Object.entries({ bun: runtime, caddy, sqlite, claude: sdkNative, trustHelper: process.env.MANDIBLE_DESKTOP_TRUST_HELPER ?? path.join(root, 'src-tauri/resources/local-ca-trust-helper') })) {
+  for (const [name, source] of Object.entries({ bun: runtime, caddy, sqlite, claude: sdkNative, trustHelper: packageEnvironment.MANDIBLE_DESKTOP_TRUST_HELPER })) {
     const destination = path.resolve(resources, native[name]);
     copy(source, destination);
     fs.chmodSync(destination, name === 'sqlite' ? 0o644 : 0o755);
   }
+  copy(packageEnvironment.MANDIBLE_DESKTOP_APPROVAL_HELPER, path.resolve(resources, native.approvalHelper, '../../..'));
   fs.rmSync(sdkNative);
   fs.writeFileSync(path.join(resources, 'scripts/bun-runtime.sh'), `#!/bin/sh
 set -eu
@@ -135,7 +138,7 @@ esac
 `, { mode: 0o755 });
   const commitInfo = run('git', ['show', '-s', '--format=%s%n%cI', provenance.commit]).split('\n');
   const release = { schema: RELEASE_SCHEMA, handoff_protocol: 2, version: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version,
-    layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', libraries: '../Frameworks', agents: '../Library/LaunchAgents' } },
+    layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', libraries: '../Frameworks', agents: '../Library/LaunchAgents', helpers: '../Helpers' } },
     target: `${process.platform}-${process.arch}`, provenance: { ...provenance, summary: commitInfo[0], date: commitInfo[1], bun_revision: run(runtime, ['--revision']) },
     qualification: { bun_sha256: hash(runtime), sqlite_sha256: hash(sqlite), caddy_sha256: hash(caddy) },
     entrypoints: { daemon: 'dist/index.js', cli: 'bin/mandible', controller: 'scripts/local-runtime.mjs', trustSetup: 'scripts/local-ca-trust.mjs', service: 'scripts/bundle-service.mjs' },
@@ -146,7 +149,7 @@ esac
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const contents = path.resolve(process.argv[2] ?? process.env.MANDIBLE_DESKTOP_PAYLOAD_CONTENTS ?? path.join(root, 'src-tauri/resources/app-payload/Contents'));
+  const contents = path.resolve(process.argv[2] ?? packageEnvironment.MANDIBLE_DESKTOP_PAYLOAD_CONTENTS);
   fs.rmSync(contents, { recursive: true, force: true });
   process.stdout.write(`${JSON.stringify(await stageAppPayload(contents))}\n`);
 }

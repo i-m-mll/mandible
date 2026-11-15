@@ -708,17 +708,17 @@ describe("work-unit resolution on merge", () => {
       db.prepare(`INSERT INTO auth_requests (
         id, type, command, title, repo, base_branch, head_branch, merge_head_sha,
         status, created_at, updated_at, resolved_at, expires_at, exit_code, output,
-        execution_mode, files_changed, additions, deletions, approval_source
+        execution_mode, files_changed, additions, deletions
       ) VALUES ('history', 'merge', 'mandible auth merge feature/reused --into main',
         'Historical completion', 'repo', 'main', 'feature/reused', ?,
-        'completed', 100, 1000, 1000, 10000, 0, 'ok', 'remote', 0, 0, 0, 'manual')`).run(oldHead);
+        'completed', 100, 1000, 1000, 10000, 0, 'ok', 'remote', 0, 0, 0)`).run(oldHead);
       db.prepare(`INSERT INTO auth_requests (
         id, type, command, title, repo, base_branch, head_branch, merge_head_sha,
         status, created_at, updated_at, expires_at, output, execution_mode,
-        files_changed, additions, deletions, approval_source
+        files_changed, additions, deletions
       ) VALUES ('pending', 'merge', 'mandible auth merge feature/reused --into main',
         'Pending sibling', 'repo', 'main', 'feature/reused', ?,
-        'pending', 900, 900, 10000, '', 'remote', 0, 0, 0, 'manual')`).run(pendingHead);
+        'pending', 900, 900, 10000, '', 'remote', 0, 0, 0)`).run(pendingHead);
       const queue = new AuthQueue({ db, now: () => 2000 });
       try {
         await queue.drainFinalizers();

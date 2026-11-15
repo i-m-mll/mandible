@@ -46,10 +46,12 @@ import {
 } from "./ledger-fixtures.js";
 import {
   addCredential,
-  addDelegatedSigningLease,
+  addEnclaveApprovalKey,
   getOperator,
+  listCredentials,
 } from "../../src/users/store.js";
 import { waitUntil } from "./wait-until.js";
+import { approveAsFixtureOperator, fixtureOperatorSigning, installFixtureApprovalKey } from "./operator-signing-fixtures.js";
 
 // --- temp-path custody -----------------------------------------------------
 //
@@ -343,34 +345,12 @@ export function registerWorkRepo(
 
 // --- users, credentials, evidence -----------------------------------------
 
-export function registerTestDelegatedLease(
-  db: InstanceType<typeof SqliteDatabase>,
-  id: string,
-  now = Date.now(),
-): string {
-  const operator = getOperator(db)!;
-  const credential = addCredential(db, operator.id, {
-    type: "delegated_ssh_key",
-    fingerprint: `SHA256:${"A".repeat(43)}`,
-    public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"A".repeat(20)} auth-test`,
-  }, now - 1000);
-  addDelegatedSigningLease(db, {
-    id,
-    credential_id: credential.id,
-    owner_user_id: operator.id,
-    minted_at: now - 1000,
-    expires_at: now + 60_000,
-    mint_method: "fresh_presence",
-  });
-  return operator.id;
-}
-
 export function executionEvidenceChain(
   db: InstanceType<typeof SqliteDatabase>,
   executionEvidenceId: string,
 ): {
   signature: { evidence_method: string; credential_id: string | null; details_json: string };
-  authorization: { evidence_method: string; lease_id: string | null; details_json: string };
+  authorization: { evidence_method: string; details_json: string };
 } {
   const signature = db.prepare(
     "SELECT evidence_method, credential_id, details_json FROM attribution_evidence WHERE id = ?",
@@ -381,38 +361,45 @@ export function executionEvidenceChain(
   };
   const authorizationId = JSON.parse(signature.details_json).authorization_evidence_id as string;
   const authorization = db.prepare(
-    "SELECT evidence_method, lease_id, details_json FROM attribution_evidence WHERE id = ?",
+    "SELECT evidence_method, details_json FROM attribution_evidence WHERE id = ?",
   ).get(authorizationId) as {
     evidence_method: string;
-    lease_id: string | null;
     details_json: string;
   };
   return { signature, authorization };
 }
 
 /**
- * Generates a real keypair inside the repository, exactly as before. The key is
- * deliberately not memoised across repositories. It lives in private Git
+ * Configures the repository's git signer. An `ssh_key` is the operator's
+ * enrolled approval key, signed with by the software signer; one database has
+ * one, shared by every repository it configures. The key lives in private Git
  * metadata so branch switches and broad fixture staging cannot delete or
  * commit its bytes.
  */
 export function configureSigningCredential(
   db: InstanceType<typeof SqliteDatabase>,
   repo: string,
-  type: "ssh_key" | "delegated_ssh_key",
 ): { credentialId: string; keyPath: string; operatorId: string } {
   const keyPath = path.join(git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "mandible-test-signing-key");
-  execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", keyPath]);
+  const operator = getOperator(db)!;
+  // One operator has one approval key: further repositories sign with the same key.
+  const enrolled = listCredentials(db, operator.id).find((credential) => credential.custody === "enclave" && credential.status === "active");
+  if (enrolled) {
+    fs.copyFileSync(fixtureOperatorSigning(db).keyPath(enrolled.fingerprint), keyPath);
+    fs.chmodSync(keyPath, 0o600);
+    fs.writeFileSync(`${keyPath}.pub`, `${enrolled.public_material}\n`);
+    git(repo, ["config", "gpg.format", "ssh"]);
+    git(repo, ["config", "user.signingkey", keyPath]);
+    return { credentialId: enrolled.id, keyPath, operatorId: operator.id };
+  }
+  execFileSync("ssh-keygen", ["-q", "-t", "ecdsa", "-b", "256", "-N", "", "-f", keyPath]);
   const publicMaterial = fs.readFileSync(`${keyPath}.pub`, "utf8").trim();
   const fingerprint = execFileSync("ssh-keygen", ["-lf", `${keyPath}.pub`, "-E", "sha256"], {
     encoding: "utf8",
   }).trim().split(/\s+/)[1]!;
-  const operator = getOperator(db)!;
-  const credential = addCredential(db, operator.id, {
-    type,
-    fingerprint,
-    public_material: publicMaterial,
-  });
+  // The test key is both the enrolled approval key and the repo's git signer.
+  const credential = addEnclaveApprovalKey(db, operator.id, { fingerprint, public_material: publicMaterial });
+  installFixtureApprovalKey(db, fingerprint, keyPath);
   git(repo, ["config", "gpg.format", "ssh"]);
   git(repo, ["config", "user.signingkey", keyPath]);
   return { credentialId: credential.id, keyPath, operatorId: operator.id };
@@ -442,8 +429,8 @@ export function insertSiblingMergeRequest(
     `INSERT INTO auth_requests (
       id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
       merge_head_sha, status, created_at, updated_at, expires_at, output, execution_mode,
-      files_changed, additions, deletions, approval_source, approved_by_user_id
-    ) VALUES (?, NULL, 'merge', ?, ?, ?, ?, 'main', ?, ?, ?, ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual', ?)`
+      files_changed, additions, deletions, approved_by_user_id
+    ) VALUES (?, NULL, 'merge', ?, ?, ?, ?, 'main', ?, ?, ?, ?, ?, ?, '', 'daemon', 0, 0, 0, ?)`
   ).run(
     requestId,
     `mandible auth merge ${sourceBranch} --into main`,
@@ -641,7 +628,7 @@ export async function approveFixtureRequest(queue: AuthQueue, id: string): Promi
       !fs.existsSync(path.join(git(request.cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'mandible-test-signing-key'))) {
     configureSigningCredential(db, request.cwd, 'ssh_key');
   }
-  return queue.approveWithOperatorProof(id, getOperator(db)!.id);
+  return approveAsFixtureOperator(queue, id);
 }
 
 /** Stored historical rows test projections/recovery, never execution authority. */
@@ -663,7 +650,7 @@ export async function seedHistoricalAuthExecution(queue: AuthQueue, id: string):
 /** A real signed exact-candidate receipt from the delivery fixture. */
 export async function publishFixtureExecution(queue: AuthQueue, options: Parameters<NonNullable<ConstructorParameters<typeof AuthQueue>[0]['executor']>>[0]) {
   const { publishTestCandidate } = await import('./auth-delivery-fixtures.js');
-  const { output } = publishTestCandidate(options.cwd!, (await queue.getRequest(options.request_id))!);
+  const { output } = publishTestCandidate((queue as unknown as { db: Db }).db, options.cwd!, (await queue.getRequest(options.request_id))!);
   options.onOutput?.({ request_id: options.request_id, stream: 'stderr', text: output, timestamp: Date.now() });
   return { exit_code: 0, signal: null, stdout: '', stderr: output, output, started_at: Date.now(), finished_at: Date.now() };
 }
@@ -694,7 +681,7 @@ export async function approvePausedFixtureRequest(queue: AuthQueue, id: string):
 export async function completeFixturePublication(queue: AuthQueue, id: string): Promise<void> {
   const request = (await queue.getRequest(id))!;
   const output = request.type === 'merge'
-    ? (await import('./auth-delivery-fixtures.js')).publishTestCandidate(request.cwd!, request).output
+    ? (await import('./auth-delivery-fixtures.js')).publishTestCandidate((queue as unknown as { db: Db }).db, request.cwd!, request).output
     : 'ok';
   const release = pausedFixtureExecutions.get(queue)?.get(id);
   if (!release) throw new Error('Fixture execution was not paused.');

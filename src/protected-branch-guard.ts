@@ -21,9 +21,8 @@ import type { Logger } from "./types.js";
  *   two reads; then one `<git common dir>\t<refs/heads/name>` line per
  *   protected branch of each registered repository. Keying by the resolved Git
  *   common directory makes every worktree of a repository match.
- * - `allowed_signers`: the operator credentials the `ref_update` signing rule
- *   counts (src/protected-branch-signers.ts) in ssh-keygen allowed-signers
- *   format.
+ * - `allowed_signers`: the operator's signing credentials
+ *   (src/protected-branch-signers.ts) in ssh-keygen allowed-signers format.
  *
  * Both are derived from the protection config and the user registry; they are
  * never edited by hand and are not a second source of truth.
@@ -87,7 +86,7 @@ export function buildProtectedBranchGuardProjection(db: Db): ProtectedBranchGuar
   }
   return {
     protectedRefs: [...refs].sort().map((line) => line.split("\t") as [string, string]),
-    allowedSigners: operatorAllowedSignerLines(db, "ref_update"),
+    allowedSigners: operatorAllowedSignerLines(db),
   };
 }
 
@@ -161,7 +160,7 @@ export function startProtectedBranchGuardProjection(options: {
         options.logger("warn", "protected_branch_guard_no_operator_signers", {
           dir,
           detail: "No active operator signing credential is registered, so the Git guard refuses every protected-branch update that is not a fast-forward from its upstream.",
-          fix: "mandible user setup (registers the global git user.signingkey)",
+          fix: "Enroll an approval key in Settings.",
         });
       }
     } catch (error) {

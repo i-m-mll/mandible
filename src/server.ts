@@ -125,7 +125,6 @@ export interface UnattributedWriteRecord {
  * route tests may omit the boundary.
  */
 export interface ClientAuthGate {
-  authorizeProtectedMutation?(request: RequestLike, operation: import("./security/operation-policy.js").Operation): Promise<void>;
   mutationAttribution?(request: RequestLike): import("./ledger/types.js").LedgerAttributionInput | null;
   resolveManagedOrigin?(identity: LocalManagedIdentity): import("./request-origin.js").ManagedRequestOrigin;
   localBrowserIdentity?(): ResolvedClientIdentity | null;
@@ -426,7 +425,6 @@ export class Router implements RouteRegistrar {
   private addRoute(method: string, path: string, handler: RouteHandler, options: RouteOptions): void {
     const operation = options?.operation;
     if (!operation || typeof operation.id !== "string" || !operation.id.trim()
-        || !(operation.operatorPresence === undefined || typeof operation.operatorPresence === "boolean")
         || !(operation.reportingCategory === null || typeof operation.reportingCategory === "string" && operation.reportingCategory.length > 0)
         || !(operation.requestSchema === null || typeof operation.requestSchema?.safeParse === "function")
         || !(typeof operation.effects === "function" || Array.isArray(operation.effects) && operation.effects.every(effect => EFFECTS.includes(effect)))
@@ -746,9 +744,6 @@ export class Router implements RouteRegistrar {
 
       try {
         this.ingress.add(request);
-        if (gate && transport !== "in-process") {
-          await gate.authorizeProtectedMutation?.(request, resolveOperation(route.options.operation, { instanceRole: this.instance.role, instanceEffects: this.instance.allowed_effects, body, params }));
-        }
         const origin = requestOriginForRequest(request, this.options.clientAuth?.resolveManagedOrigin?.bind(this.options.clientAuth));
         await withRequestOrigin(origin, () => withLedgerMutationActor({
           attribution: this.options.clientAuth?.mutationAttribution?.(request) ?? null,

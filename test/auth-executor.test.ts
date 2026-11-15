@@ -1,5 +1,4 @@
 // @vitest-environment node
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -193,17 +192,15 @@ describe("executeAuthCommand", () => {
 
   // The digest-mismatch and unfetchable-message refusals of the loaded
   // message are asserted in auth-canonical-change-message.
-  it("binds canonical merge dispatch to its own CLI despite a stale shim and loads the exact message under strict Bash", async () => {
+  it("binds canonical merge dispatch to its own CLI despite a stale shim and reads the request under strict Bash", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-dispatch-"));
     const socket = path.join(root, "api.sock");
     const cli = path.resolve("cli");
     const seen: string[] = [];
-    const message = "Merge bounded repair\n\nWhy: Qualify the executor read path.\n\nVerification:\nPrivate fixture.\n";
-    const digest = createHash("sha256").update(message).digest("hex");
     const server = http.createServer((req, res) => {
       seen.push(req.url!); expect(req.headers.authorization).toBeUndefined();
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ commit_message: message, commit_message_digest: digest }));
+      res.end(JSON.stringify({ issue_closures: ["e523950"] }));
     });
     try {
       for (const name of ["src", "scripts", "bin", "stale", "old-checkout"]) fs.mkdirSync(path.join(root, name));
@@ -215,7 +212,7 @@ describe("executeAuthCommand", () => {
         'printf "bound-cli=%s bash=%s args=%s\\n" "$0" "$BASH_VERSION" "$*" >&2',
         'export MANDIBLE_CLI_DIR="$QUALIFIED_CLI_DIR" MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1',
         'source "$MANDIBLE_CLI_DIR/auth-merge.sh"',
-        "load_canonical_change_message",
+        "collect_declared_issues >&2",
       ].join("\n") + "\n", { mode: 0o700 });
       await new Promise<void>(resolve => server.listen(socket, resolve));
       const { executeAuthCommand } = await import(/* @vite-ignore */ pathToFileURL(path.join(root, "src/auth-executor.ts")).href);
@@ -226,14 +223,13 @@ describe("executeAuthCommand", () => {
         env: { ...process.env, HOME: root, BASH_ENV: "", QUALIFIED_CLI_DIR: cli,
           PATH: `${root}/stale:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
           MANDIBLE_BASE: "https://app.mandible.localhost:19420", MANDIBLE_TRANSPORT: "",
-          MANDIBLE_SOCKET: socket, MANDIBLE_TOKEN: "must-not-travel-on-ordinary-read",
-          MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: digest },
+          MANDIBLE_SOCKET: socket, MANDIBLE_TOKEN: "must-not-travel-on-ordinary-read" },
       };
       const result = await executeAuthCommand(options);
       expect(result.exit_code, result.stderr).toBe(0);
       expect(result.stderr).toContain(`bound-cli=${root}/bin/mandible`);
       expect(result.stderr).toContain(`args=${args.join(" ")}`);
-      expect(result.stderr).toContain(digest);
+      expect(result.stderr).toContain("e523950");
       expect(result.stderr).not.toContain("stale-shim-selected");
       expect(seen).toEqual(["/api/auth/request/read-only-request"]);
       fs.rmSync(path.join(root, "bin/mandible"));

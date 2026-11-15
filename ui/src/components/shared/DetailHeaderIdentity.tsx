@@ -80,17 +80,20 @@ export function AttributionIdentity({
   user,
   attribution,
   source,
+  evidenceBadge: badgeOverride,
   className = '',
 }: {
   display: string;
   user?: ReadUserIdentity | null;
   attribution?: AttributionReadProjection | null;
   source?: string | null;
+  /** Replaces the badge derived from the evidence method, when the context says more than the method does. */
+  evidenceBadge?: EvidenceBadge;
   className?: string;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const resolvedUser = attribution?.user ?? user ?? null;
-  const evidenceBadge = evidenceBadgeFor(attribution?.evidence_method);
+  const evidenceBadge = badgeOverride ?? evidenceBadgeFor(attribution?.evidence_method);
   const hasProvenance = Boolean(
     resolvedUser || attribution?.evidence_method || attribution?.credential || source,
   );

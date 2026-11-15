@@ -10,17 +10,6 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
-if CommandLine.arguments.count == 4 && CommandLine.arguments[1] == "--result" {
-    NSApplication.shared.setActivationPolicy(.accessory)
-    NSApplication.shared.activate(ignoringOtherApps: true)
-    let alert = NSAlert()
-    alert.messageText = CommandLine.arguments[2]
-    alert.informativeText = CommandLine.arguments[3]
-    alert.addButton(withTitle: "OK")
-    alert.runModal()
-    exit(0)
-}
-
 guard CommandLine.arguments.count == 3 else { fail("expected a certificate snapshot and pinned digest") }
 let snapshot = CommandLine.arguments[1]
 let expectedDigest = CommandLine.arguments[2]

@@ -93,7 +93,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/b", { "b.txt": "b\n" });
       commitOnBranch(repo, "feature/c", { "c.txt": "c\n" });
       registerWorkRepo(db, repo);
-      configureSigningCredential(db, repo, "ssh_key");
+      configureSigningCredential(db, repo);
       const project = createLedgerProject(db, repo);
       const issue = createLedgerIssue(db, project.project.id, "8420a44");
       const operator = getOperator(db)!;
@@ -575,7 +575,7 @@ describe("auth queue", () => {
         commitOnBranch(repo, `feature/${branch}`, { [`${branch}.txt`]: `${branch}\n` });
       }
       registerWorkRepo(db, repo);
-      configureSigningCredential(db, repo, "ssh_key");
+      configureSigningCredential(db, repo);
       const submit = async (branch: string, extra: { depends_on_ids?: string[] } = {}) => (await queue.submit({ ...AUTH_MERGE_REVIEW,
         type: "merge",
         command: `mandible auth merge feature/${branch} --into main`,
@@ -672,10 +672,10 @@ describe("auth queue", () => {
       await completeFixturePublication(queue, sibling.id);
       admission.mockRestore();
       await approveFixtureRequest(queue, execRequest.id); await started;
-      void (queue as unknown as { sweepSuccessfulMergeFinalizers(): Promise<void> }).sweepSuccessfulMergeFinalizers();
+      const sweep = (queue as unknown as { sweepSuccessfulMergeFinalizers(): Promise<void> }).sweepSuccessfulMergeFinalizers();
       expect((await queue.getRequest(pending.id))?.merge_preflight_base_sha).toBe(staleBase);
       await expect(approveFixtureRequest(queue, pending.id)).rejects.toThrow(/Refusal: execution_chain_busy/);
-      releaseExec(); await waitForStatus(queue, execRequest.id, 'failed'); await queue.drainFinalizers();
+      releaseExec(); await waitForStatus(queue, execRequest.id, 'failed'); await sweep; await queue.drainFinalizers();
       expect((await queue.getRequest(pending.id))).toMatchObject({ status: 'pending', merge_preflight_base_sha: git(repo, ['rev-parse', 'main']) });
       expect((await queue.getRequest(pending.id))?.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
     } finally { releaseExec?.(); (await queue.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }

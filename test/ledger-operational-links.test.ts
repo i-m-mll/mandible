@@ -84,10 +84,9 @@ function insertAuthRequest(input: {
 	  `INSERT INTO auth_requests (
 	      id, type, command, title, repo, commit_message,
 	      issue_references, issue_closures, issue_ids, issues,
-	      execution_mode, status, created_at, updated_at, expires_at, output,
-	      approval_source
+	      execution_mode, status, created_at, updated_at, expires_at, output
 	    ) VALUES (?, 'merge', 'git merge feature/x', 'Merge feature/x', ?, ?, ?, ?, ?, ?,
-	      'daemon', 'pending', ?, ?, ?, '', 'manual')`,
+	      'daemon', 'pending', ?, ?, ?, '')`,
 	).run(
 	  input.id,
 	  input.repo,
@@ -343,8 +342,6 @@ describe("ledger operational links", () => {
       repo_ref: project.checkout.root,
       issue_closures: ["done123"],
       merge_output: 'MANDIBLE_MERGE_RESULT {"merge_sha":"abc123def4567890","declared_issues":["done123"],"auto_close_issues":[]}',
-      approval_source: "manual",
-      approval_lease_id: "lease_1",
     });
 
     expect(results).toHaveLength(1);
@@ -404,7 +401,6 @@ describe("ledger operational links", () => {
       auth_request_id: "auth_3",
       repo_ref: project.checkout.root,
       merge_output: 'MANDIBLE_MERGE_RESULT {"merge_sha":"fed456abc1237890","declared_issues":[],"auto_close_issues":["done789"]}',
-      approval_source: "manual",
     });
 
     expect(new LedgerStore(db).getIssue(resolvedIssue.id)).toMatchObject({
@@ -435,7 +431,6 @@ describe("ledger operational links", () => {
       auth_request_id: "auth_replay",
       repo_ref: project.checkout.root,
       issues: ["oldbug1"],
-      approval_source: "manual",
     });
     const resolvedAt = Date.now();
     db.prepare(
@@ -460,7 +455,6 @@ describe("ledger operational links", () => {
       auth_request_id: "auth_replay",
       repo_ref: project.checkout.root,
       issues: ["oldbug1"],
-      approval_source: "manual",
     });
 
     expect(store.getIssue(resolvedIssue.id)).toMatchObject({

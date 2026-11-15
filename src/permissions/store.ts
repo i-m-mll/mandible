@@ -1,6 +1,5 @@
 import { GLOBAL_CAPABILITIES, type GlobalCapability } from "./schema.js";
 export { GLOBAL_CAPABILITIES, type GlobalCapability } from "./schema.js";
-import { operatorPresenceIdentity } from "../client-auth/operator-presence.js";
 import { mutateLedgerRecord } from "../ledger/mutation-history.js";
 import type { Db } from "../db.js";
 import { getClientAuthMode } from "../client-auth/mode.js";
@@ -288,7 +287,7 @@ export function requireGlobalCapability(
   capability: GlobalCapability,
 ): AccessDecision {
   const decision = evaluateGlobalCapability(db, {
-    identity: operatorPresenceIdentity(req) ?? req.client_identity ?? null,
+    identity: req.client_identity ?? null,
     capability,
   });
   if (!decision.allowed) {

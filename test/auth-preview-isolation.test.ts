@@ -8,8 +8,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AuthQueue } from "../src/auth-queue.js";
 import type { AuthHookManager } from "../src/auth-hooks.js";
-import type { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import type { AuthClearanceManager } from "../src/auth-clearance.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
 import { setDb, type Db } from "../src/db.js";
@@ -39,7 +37,7 @@ describe("copied auth preview isolation", () => {
       hookManager: { grantRetry: vi.fn(), runPending: vi.fn(), selfUpdatesRuntime: () => false, runtimeHandoffLock: () => null } as unknown as AuthHookManager,
     });
     const router = new Router();
-    registerAuthRoutes(router, preview, {} as AuthAutoApproveManager, undefined, inlineLedgerReader(() => preview.db));
+    registerAuthRoutes(router, preview, inlineLedgerReader(() => preview.db));
     const fakeBin = trackTempPath(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-preview-bin-")));
     const commandLog = path.join(fakeBin, "commands.log");
     fs.writeFileSync(path.join(fakeBin, "git"), `#!/bin/sh\necho git >> '${commandLog}'\nexit 91\n`, { mode: 0o755 });

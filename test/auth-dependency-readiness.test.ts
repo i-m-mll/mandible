@@ -5,7 +5,6 @@ import { approveFixtureRequest } from "./helpers/auth-queue-fixtures.js";
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
 
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { setDb, type Db } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
@@ -38,7 +37,7 @@ function setup(): { db: Db; queue: AuthQueue; router: Router } {
     }),
   });
   const router = new Router();
-  registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+  registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
   return { db, queue, router };
 }
 

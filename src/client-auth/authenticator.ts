@@ -1,4 +1,3 @@
-import { authorizeProtectedMutation } from "./operator-presence.js";
 import { attributionForRequest } from "./authz.js";
 // Resolve intrinsic local browser identity and explicit agent credentials.
 
@@ -148,10 +147,6 @@ export class ClientAuthenticator implements ClientAuthGate {
         .update(`mandible:local-csrf:${this.clientAuthAuthorityId}:${audience}`)
         .digest("base64url"),
     };
-  }
-
-  async authorizeProtectedMutation(request: import("../server.js").RequestLike, operation: import("../security/operation-policy.js").Operation): Promise<void> {
-    await authorizeProtectedMutation(this.db, request, operation, this.clientAuthAuthorityId, this.instanceId());
   }
 
   mutationAttribution(request: import("../server.js").RequestLike) {

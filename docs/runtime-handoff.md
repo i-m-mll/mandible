@@ -9,6 +9,11 @@ one current attempt, its observed effects, its completion receipt, and cleanup.
 
 Initial publication verifies the approved Git candidate, signature, approval
 snapshot, hook identity, and selected accepted release against the checkout.
+The signature is the approval key's signature on the merge commit, made in the
+Secure Enclave after one Touch ID match ([approvals](approvals.md)). It shows
+that a matching finger touched, not what the operator believed they approved,
+and it does not stop a same-user process that bypasses Mandible; it does make
+any publication without it detectable.
 The installed daemon runs the registered hook command in the request checkout.
 The built-in command, `bash cli/post-merge-build-dist.sh`, resolves that newly
 merged checkout and invokes its `scripts/runtime-handoff.mjs arm` entry point.
@@ -272,10 +277,10 @@ The request must record a successful finalized merge and an unchanged approved
 acceptance selection. Every recorded attempt must be a settled nonzero failure;
 timeout, interruption, missing settlement evidence, an admitted publication,
 handoff/preparation material, live consumers or producers, installed ownership,
-another live selection, and explicit investigations refuse the operation. An
+or another live selection refuse the operation. An
 exactly empty canonical pre-admission directory carries no payload reference.
 
-Retirement preserves exit status, output and attempt history, keeps convergence
+Once an exact handoff retirement is archived, the daemon reconciles the corresponding hook to retired. Retirement preserves exit status, output and attempt history, keeps convergence
 failed and issue closures withheld, and prevents retry or subsequent publication.
 One audited lifecycle revision records the execution, command digest, accepted
 reference, reason, actor and custody. The same guarded transaction releases only

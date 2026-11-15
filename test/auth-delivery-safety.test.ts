@@ -15,6 +15,7 @@ import {
 import { publishTestCandidate } from "./helpers/auth-delivery-fixtures.js";
 import { runtimeObservationAcceptance } from "../scripts/runtime-observation.mjs";
 import { waitUntil } from "./helpers/wait-until.js";
+import { approveAsFixtureOperator, fixtureOperatorSigning, SoftwareOperatorSigner } from "./helpers/operator-signing-fixtures.js";
 
 let repo: string;
 let db: ReturnType<typeof createMigratedDb>;
@@ -26,7 +27,7 @@ let executorCalls: number;
 beforeEach(() => {
   repo = createAuthCheckRepo();
   db = createMigratedDb();
-  operatorId = configureSigningCredential(db, repo, "ssh_key").operatorId;
+  operatorId = configureSigningCredential(db, repo).operatorId;
   fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n.mandible-test-signing-key*\n");
   hookCalls = 0;
   executorCalls = 0;
@@ -59,7 +60,7 @@ function protectedState() {
 
 /** Approve, then wait until the execution reaches its executor: only a running execution posts a result. */
 async function approveToExecutor(id: string) {
-  await queue.approveWithOperatorProof(id, operatorId);
+  await approveAsFixtureOperator(queue, id, operatorId);
   await waitUntil(() => (db.prepare("SELECT last_executed_at FROM auth_requests WHERE id = ?").get(id) as { last_executed_at: number | null }).last_executed_at, "the approved execution to reach its executor");
 }
 
@@ -101,7 +102,7 @@ describe("protected delivery evidence", () => {
     const issue = createLedgerIssue(db, createLedgerProject(db, repo).project.id, "handoff-close");
     const request = await submitMerge([issue.id]);
     await approveToExecutor(request.id);
-    const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
+    const publication = publishTestCandidate(db, repo, (await queue.getRequest(request.id))!);
     const legacyOutput = publication.output.split("\n").find(line => line.startsWith("MANDIBLE_MERGE_RESULT "))!;
     db.prepare("UPDATE auth_requests SET output = ?, merge_candidate_tree_sha = NULL, merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0 WHERE id = ?").run(legacyOutput, request.id);
     let run = hooks.getRun(request.id, "builtin-mandible-rebuild")!;
@@ -233,7 +234,7 @@ describe("protected delivery evidence", () => {
     for (const name of ["post-commit", "post-merge"]) fs.writeFileSync(path.join(repo, ".git", "hooks", name), `#!/bin/sh\nprintf '${name}:%s:%s:%s\\n' "$#" "\${1-}" "$(git rev-parse ORIG_HEAD)" >> .git/native-audit\n`, { mode: 0o755 });
     const request = (await submitMerge());
     await approveToExecutor(request.id);
-    const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
+    const publication = publishTestCandidate(db, repo, (await queue.getRequest(request.id))!);
     (await queue.setResult(request.id, 0, publication.output));
     await hooks.runPending((await queue.getRequest(request.id))!);
     expect(fs.readFileSync(path.join(repo, ".git", "native-audit"), "utf8")).toBe(`post-commit:0::${request.merge_preflight_base_sha}\npost-merge:1:0:${request.merge_preflight_base_sha}\n`);
@@ -241,9 +242,9 @@ describe("protected delivery evidence", () => {
     expect(hooks.listRuns(request.id).every(run => run.state === "complete" && run.attempts === 1)).toBe(true);
     commitOnBranch(repo, "feature/changed-hook", { "other.txt": "next bytes\n" });
     const next = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Changed hook", command: "mandible auth merge feature/changed-hook --into main", cwd: repo, repo: path.basename(repo), base_branch: "main", head_branch: "feature/changed-hook", merge_head_sha: git(repo, ["rev-parse", "feature/changed-hook"]), execution_mode: "local" }));
-    await queue.approveWithOperatorProof(next.id, operatorId);
+    await approveAsFixtureOperator(queue, next.id, operatorId);
     fs.appendFileSync(path.join(repo, ".git", "hooks", "post-merge"), "# changed after review\n");
-    (await queue.setResult(next.id, 0, publishTestCandidate(repo, (await queue.getRequest(next.id))!).output));
+    (await queue.setResult(next.id, 0, publishTestCandidate(db, repo, (await queue.getRequest(next.id))!).output));
     await hooks.runPending((await queue.getRequest(next.id))!);
     expect(hooks.getRun(next.id, "native-git-post-merge")?.exit_code).not.toBe(0);
     expect(hooks.convergence(next.id).state).toBe("pending");
@@ -256,7 +257,7 @@ describe("protected delivery evidence", () => {
     queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: async () => new Promise(() => {}) });
     const request = (await submitMerge());
     await approveToExecutor(request.id);
-    const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
+    const publication = publishTestCandidate(db, repo, (await queue.getRequest(request.id))!);
     const run = hooks.getRun(request.id, "builtin-mandible-rebuild")!;
     const legacyOutput = publication.output.split("\n").find(line => line.startsWith("MANDIBLE_MERGE_RESULT "))!;
     db.prepare("UPDATE auth_requests SET output = ?, merge_preflight_base_sha = NULL, merge_candidate_tree_sha = NULL, merge_candidate_pin_sha = NULL, merge_atomic_enabled = 0 WHERE id = ?").run(legacyOutput, request.id);
@@ -304,7 +305,7 @@ describe("protected delivery evidence", () => {
 
   it.each(["base", "head", "pin", "hook"] as const)("revalidates %s after asynchronous operator signing", async (changed) => {
     const request = (await submitMerge());
-    const approving = queue.approveWithOperatorProof(request.id, operatorId);
+    const approving = approveAsFixtureOperator(queue, request.id, operatorId);
     if (changed === "base") git(repo, ["update-ref", "refs/heads/main", request.merge_head_sha!]);
     if (changed === "head") {
       const moved = git(repo, ["commit-tree", request.merge_candidate_tree_sha!, "-p", request.merge_head_sha!, "-m", "Moved source"]);
@@ -325,7 +326,7 @@ describe("protected delivery evidence", () => {
     const request = (await submitMerge());
     const before = protectedState();
     fs.writeFileSync(path.join(repo, ".git", "hooks", "pre-merge-commit"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow("unsupported native hooks");
+    await expect(approveAsFixtureOperator(queue, request.id, operatorId)).rejects.toThrow("unsupported native hooks");
     expect(protectedState()).toEqual(before);
     expect((await queue.getRequest(request.id))?.status).toBe("pending");
     expect(executorCalls).toBe(0);
@@ -347,10 +348,10 @@ describe("protected delivery evidence", () => {
 
   it("retains applied publication state when its result is missing and completes on exact recovered evidence", async () => {
     const request = (await submitMerge());
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveAsFixtureOperator(queue, request.id, operatorId);
     await waitUntil(() => executorCalls === 1, "the approved executor to start");
     const callsBeforeResult = executorCalls;
-    const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
+    const publication = publishTestCandidate(db, repo, (await queue.getRequest(request.id))!);
     const withoutReceipt = publication.output.split("MANDIBLE_MERGE_RESULT")[0]!;
     const stuck = (await queue.setResult(request.id, 0, withoutReceipt));
     expect(stuck.status).toBe("executing");
@@ -367,10 +368,10 @@ describe("protected delivery evidence", () => {
 
   it("keeps nonzero post-publication result reports recoverable", async () => {
     const request = (await submitMerge());
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveAsFixtureOperator(queue, request.id, operatorId);
     await waitUntil(() => executorCalls === 1, "the approved executor to start");
     const callsBeforeResult = executorCalls;
-    const publication = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
+    const publication = publishTestCandidate(db, repo, (await queue.getRequest(request.id))!);
     const reported = (await queue.setResult(request.id, 75, publication.output.split("MANDIBLE_MERGE_RESULT")[0]!, "checkout cleanup interrupted"));
     expect(reported).toMatchObject({ status: "executing", exit_code: null, merge_atomic_enabled: true });
     await expect((async () => (await queue.retry(request.id))())).rejects.toThrow();
@@ -382,13 +383,13 @@ describe("protected delivery evidence", () => {
 
   it("recovers the original receipt after a later signed publication without changing its checkout", async () => {
     const request = (await submitMerge());
-    await queue.approveWithOperatorProof(request.id, operatorId);
-    const first = publishTestCandidate(repo, (await queue.getRequest(request.id))!);
+    await approveAsFixtureOperator(queue, request.id, operatorId);
+    const first = publishTestCandidate(db, repo, (await queue.getRequest(request.id))!);
     (await queue.setResult(request.id, 75, first.output.split("MANDIBLE_MERGE_RESULT")[0]!));
     commitOnBranch(repo, "feature/later", { "later.txt": "later bytes\n" });
     const later = (await queue.submit({ ...AUTH_MERGE_REVIEW,  type: "merge", title: "Later publication", command: "mandible auth merge feature/later --into main", repo: path.basename(repo), cwd: repo, base_branch: "main", head_branch: "feature/later", merge_head_sha: git(repo, ["rev-parse", "feature/later"]), execution_mode: "local" }));
-    await queue.approveWithOperatorProof(later.id, operatorId);
-    const second = publishTestCandidate(repo, (await queue.getRequest(later.id))!);
+    await approveAsFixtureOperator(queue, later.id, operatorId);
+    const second = publishTestCandidate(db, repo, (await queue.getRequest(later.id))!);
     const before = protectedState();
     const internals = queue as unknown as { inspectStaleMerge(request: unknown): Promise<unknown>; finishRecoveredAtomicMerge(request: unknown, sha: string): Promise<void> };
     expect(await internals.inspectStaleMerge((await queue.getRequest(request.id))!)).toEqual({ outcome: "atomic_applied", mergeSha: first.mergeSha });
@@ -444,15 +445,15 @@ describe('runtime convergence recovery', () => {
 });
 
 describe("consequential non-Git approval", () => {
-  it("keeps missing, cancelled, and drifted proof pending without starting execution", async () => {
+  it("keeps missing, cancelled, and drifted approval pending without starting execution", async () => {
     const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo }));
     const before = protectedState();
-    await expect((async () => (await queue.approve(request.id))())).rejects.toThrow("signing proof");
-    const cancelled = queue.approveWithOperatorProof(request.id, operatorId);
+    await expect((async () => (await queue.approve(request.id))())).rejects.toThrow("fresh operator approval");
+    const cancelled = approveAsFixtureOperator(queue, request.id, operatorId);
     queue.cancelOperatorProof(request.id, operatorId);
     await expect(cancelled).rejects.toThrow("cancelled");
     expect((await queue.getRequest(request.id))?.status).toBe("pending");
-    const drifted = queue.approveWithOperatorProof(request.id, operatorId);
+    const drifted = approveAsFixtureOperator(queue, request.id, operatorId);
     (await queue.update(request.id, { title: "Changed reviewed action" }));
     await expect(drifted).rejects.toMatchObject({ code: "lifecycle_conflict" });
     expect((await queue.getRequest(request.id))?.status).toBe("pending");
@@ -460,15 +461,17 @@ describe("consequential non-Git approval", () => {
     expect(hookCalls).toBe(0);
     expect(protectedState()).toEqual(before);
   });
-  it("records verified action-bound proof for consequential non-Git approval", async () => {
+  it("approves a non-Git request as a courtesy action recording the resolved caller", async () => {
+    const signer = new SoftwareOperatorSigner();
+    (queue as unknown as { operatorSigning: unknown }).operatorSigning = fixtureOperatorSigning(db, signer);
     const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", title: "Change configuration", command: "echo approved", cwd: repo }));
-    const approved = await queue.approveWithOperatorProof(request.id, operatorId);
+    const approved = await approveAsFixtureOperator(queue, request.id, operatorId);
     expect(approved.status).toBe("executing");
+    expect(signer.touches).toEqual([]);
     const evidence = getAttributionEvidence(db, approved.execution_evidence_id!);
-    expect(evidence?.evidence_method).toBe("credential_signature");
-    expect(evidence?.details).toMatchObject({ verified: true, signer_user_id: operatorId, auth_request_id: request.id });
-    expect(JSON.parse(String(evidence?.details.challenge))).toMatchObject({ request_id: request.id });
-    expect(queue.listLifecycleEvents(request.id).find((event) => event.event_type === "approved")?.evidence_method).toBe("credential_signature");
+    expect(evidence?.evidence_method).toBe("local_default");
+    expect(evidence?.details).toMatchObject({ verified: false, auth_request_id: request.id, caller: { user_id: operatorId, method: "local_default" } });
+    expect(evidence?.details).not.toHaveProperty("signature");
   });
 
 });

@@ -17,7 +17,6 @@ import { setupOperator } from "../src/users/store.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
-const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let repo = "";
@@ -49,69 +48,6 @@ function commit(message: string): string {
   return git(["rev-parse", "HEAD"]);
 }
 
-function candidate(base: string, head: string, requestId: string): {
-  tree: string;
-  pin: string;
-  ref: string;
-} {
-  const tree = git(["merge-tree", "--write-tree", base, head]).split(/\s+/)[0]!;
-  const pin = git(
-    ["commit-tree", tree, "-p", base, "-p", head, "-m", `mandible auth candidate pin ${requestId}`],
-    repo,
-    {
-      GIT_AUTHOR_NAME: "Mandible",
-      GIT_AUTHOR_EMAIL: "mandible@localhost",
-      GIT_COMMITTER_NAME: "Mandible",
-      GIT_COMMITTER_EMAIL: "mandible@localhost",
-      GIT_AUTHOR_DATE: "1970-01-01T00:00:00 +0000",
-      GIT_COMMITTER_DATE: "1970-01-01T00:00:00 +0000",
-    },
-  );
-  const ref = `refs/mandible/auth-candidates/${requestId}`;
-  git(["update-ref", ref, pin]);
-  return { tree, pin, ref };
-}
-
-function allowedSigner(): string {
-  return `credential-test ${fs.readFileSync(`${key}.pub`, "utf8").trim()}`;
-}
-
-/** A stub of `GET /api/auth/request/:id` returning one fixed request body. */
-async function serveRequest(
-  body: Record<string, unknown>,
-): Promise<{ port: number; close: () => Promise<void> }> {
-  const server = http.createServer((req, res) => {
-    if (req.method === "GET" && req.url?.startsWith("/api/auth/request/")) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(body));
-      return;
-    }
-    res.statusCode = 404;
-    res.end("not found");
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("stub server did not bind");
-  return {
-    port: address.port,
-    close: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      ),
-  };
-}
-
-interface ProcResult {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-/**
- * Always spawn asynchronously when a test's own HTTP stub must answer: the
- * stub runs on this process's event loop, and spawnSync would block it until
- * the child's request had already timed out.
- */
 function runAsync(
   command: string,
   args: string[],
@@ -131,65 +67,6 @@ function runAsync(
     child.on("error", reject);
     child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
-}
-
-function runMerge(
-  extraEnv: Record<string, string>,
-  atomic: { base: string; head: string; cached: ReturnType<typeof candidate> } | null,
-): Promise<ProcResult> {
-  const snippet = [
-    "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
-    `source ${JSON.stringify(AUTH_MERGE)}`,
-    "prompt_confirm() { printf 'y'; }",
-    "run_merge_preflight() { :; }",
-    "persist_atomic_marker() { printf '%s\\n' \"$1\" >&2; }",
-    "collect_declared_issues() { :; }",
-    "main feature/canonical --into main",
-  ].join("\n");
-  return runAsync("bash", ["-c", snippet], repo, {
-    ...process.env,
-    GIT_OPTIONAL_LOCKS: "0",
-    MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE),
-    MANDIBLE_AUTH_ALLOWED_SIGNERS: allowedSigner(),
-    ...(atomic
-      ? {
-          MANDIBLE_AUTH_ATOMIC: "1",
-          MANDIBLE_AUTH_CANDIDATE_TREE_SHA: atomic.cached.tree,
-          MANDIBLE_AUTH_CANDIDATE_PIN_SHA: atomic.cached.pin,
-          MANDIBLE_AUTH_CANDIDATE_BASE_SHA: atomic.base,
-          MANDIBLE_AUTH_CANDIDATE_HEAD_SHA: atomic.head,
-          MANDIBLE_AUTH_CANDIDATE_REF: atomic.cached.ref,
-        }
-      : {}),
-    ...extraEnv,
-  });
-}
-
-/** Call one helper from auth-merge.sh without running the merge flow. */
-function sourceHelper(snippet: string, env: Record<string, string> = {}, cwd = process.cwd()): string {
-  const result = spawnSync(
-    "bash",
-    [
-      "-c",
-      [
-        "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
-        `source ${JSON.stringify(AUTH_MERGE)}`,
-        snippet,
-      ].join("\n"),
-    ],
-    {
-      cwd,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        GIT_OPTIONAL_LOCKS: "0",
-        MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE),
-        ...env,
-      },
-    },
-  );
-  if (result.status !== 0) throw new Error(`helper failed: ${result.stderr}`);
-  return result.stdout;
 }
 
 afterAll(() => {
@@ -274,30 +151,6 @@ describe("canonical change message bytes", () => {
     expect(isCanonicalChangeMessage("subject\n\n")).toBe(false);
     expect(isCanonicalChangeMessage("subject  \n")).toBe(false);
     expect(isCanonicalChangeMessage("")).toBe(false);
-  });
-
-  it("agrees byte for byte with the bash mirror in cli/auth-merge.sh", () => {
-    const samples = [
-      "Merge feature/x: outcome\n\nWhy:\nBecause.\n\nVerification:\nNot recorded\n\nMandible-Issue: 7d64d8f\n",
-      "trailing spaces   \r\n\r\n\r\nand blank runs\n\n\n",
-      "  leading blank lines\n",
-      "unicode — em dash and ünïcödé\n",
-    ];
-    for (const sample of samples) {
-      const encoded = Buffer.from(sample, "utf8").toString("base64");
-      // Exact-byte digest parity.
-      expect(
-        sourceHelper(
-          `printf '%s' ${JSON.stringify(encoded)} | base64 --decode | change_message_digest`,
-        ).trim(),
-      ).toBe(changeMessageDigest(sample));
-      // Canonicalization parity.
-      expect(
-        sourceHelper(
-          `printf '%s' ${JSON.stringify(encoded)} | base64 --decode | canonicalize_change_message | change_message_digest`,
-        ).trim(),
-      ).toBe(changeMessageDigest(canonicalizeChangeMessage(sample)));
-    }
   });
 });
 
@@ -722,154 +575,6 @@ describe("auth queue canonical message storage", () => {
         .toThrow(/Only pending requests can be revised/);
     } finally {
       db.close();
-    }
-  });
-});
-
-describe("auth merge canonical message consumption", () => {
-  useGitRepo();
-
-  const MESSAGE = [
-    "Merge feature/canonical: agent-authored merge messages",
-    "",
-    "Why:",
-    "A merge commit is the durable record of a delivery.",
-    "",
-    "Verification:",
-    "Focused vitest suites pass.",
-    "",
-    "Mandible-Issue: 7d64d8f",
-    "",
-  ].join("\n");
-
-  const DIGEST = changeMessageDigest(MESSAGE);
-
-  it("commits the exact approved bytes on the atomic commit-tree path", async () => {
-    const base = git(["rev-parse", "main"]);
-    const head = git(["rev-parse", "feature/canonical"]);
-    const cached = candidate(base, head, "canonical-atomic");
-    const server = await serveRequest({
-      id: "canonical-atomic",
-      commit_message: MESSAGE,
-      commit_message_digest: DIGEST,
-    });
-    try {
-      const result = await runMerge(
-        {
-          MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-          MANDIBLE_PORT: String(server.port),
-          MANDIBLE_AUTH_REQUEST_ID: "canonical-atomic",
-          MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: DIGEST,
-        },
-        { base, head, cached },
-      );
-
-      expect(result.status).toBe(0);
-      const merged = git(["rev-parse", "main"]);
-      expect(git(["show", "-s", "--format=%B", merged])).toBe(MESSAGE.trimEnd());
-      expect(result.stderr).toContain("using the approved canonical change message");
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("aborts without touching the repo when the served bytes do not match the digest", async () => {
-    const base = git(["rev-parse", "main"]);
-    const server = await serveRequest({
-      id: "tampered",
-      commit_message: `${MESSAGE}Tampered line\n`,
-      commit_message_digest: DIGEST,
-    });
-    try {
-      const result = await runMerge(
-        {
-          MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-          MANDIBLE_PORT: String(server.port),
-          MANDIBLE_AUTH_REQUEST_ID: "tampered",
-          MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: DIGEST,
-        },
-        { base, head: git(["rev-parse", "feature/canonical"]), cached: candidate(base, git(["rev-parse", "feature/canonical"]), "canonical-message-check") },
-      );
-
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain("digest mismatch");
-      expect(git(["rev-parse", "main"])).toBe(base);
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("aborts when an approved message exists but cannot be fetched", async () => {
-    const base = git(["rev-parse", "main"]);
-    const result = await runMerge(
-      {
-        // Port 9 is the discard port: nothing answers, so the fetch fails.
-        MANDIBLE_BASE: "http://127.0.0.1:9",
-        MANDIBLE_PORT: "9",
-        MANDIBLE_AUTH_REQUEST_ID: "unreachable",
-        MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: DIGEST,
-      },
-      { base, head: git(["rev-parse", "feature/canonical"]), cached: candidate(base, git(["rev-parse", "feature/canonical"]), "canonical-message-check") },
-    );
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("could not be fetched");
-    expect(git(["rev-parse", "main"])).toBe(base);
-  });
-
-  it("aborts when the stored bytes are not in canonical form", async () => {
-    const base = git(["rev-parse", "main"]);
-    // Bytes whose digest is honest but whose shape is not canonical: hashing a
-    // normalized copy would have let this through and then committed something
-    // else.
-    const sloppy = `${MESSAGE}\n`;
-    const server = await serveRequest({
-      id: "sloppy",
-      commit_message: sloppy,
-      commit_message_digest: changeMessageDigest(sloppy),
-    });
-    try {
-      const result = await runMerge(
-        {
-          MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-          MANDIBLE_PORT: String(server.port),
-          MANDIBLE_AUTH_REQUEST_ID: "sloppy",
-          MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: changeMessageDigest(sloppy),
-        },
-        { base, head: git(["rev-parse", "feature/canonical"]), cached: candidate(base, git(["rev-parse", "feature/canonical"]), "canonical-message-check") },
-      );
-
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain("not in canonical form");
-      expect(git(["rev-parse", "main"])).toBe(base);
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("aborts when the approved message is gone from the request", async () => {
-    const base = git(["rev-parse", "main"]);
-    const server = await serveRequest({
-      id: "dropped",
-      commit_message: null,
-      commit_message_digest: null,
-    });
-    try {
-      const result = await runMerge(
-        {
-          MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
-          MANDIBLE_PORT: String(server.port),
-          MANDIBLE_AUTH_REQUEST_ID: "dropped",
-          MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: DIGEST,
-        },
-        { base, head: git(["rev-parse", "feature/canonical"]), cached: candidate(base, git(["rev-parse", "feature/canonical"]), "canonical-message-check") },
-      );
-
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain("no longer carries the approved canonical change message");
-      expect(git(["rev-parse", "main"])).toBe(base);
-    } finally {
-      await server.close();
     }
   });
 });

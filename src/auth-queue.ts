@@ -6,8 +6,11 @@ import { mapRow, parseChangeReport } from "./auth-request-row.js";
 import { listAuthHistorySummaries } from "./ledger-reads/auth-history.js";
 import { forEachInEventLoopSlices } from "./event-loop-slices.js";
 import { assertAuthPublication, bindAuthPublication } from "./auth-publication.js";
-import { operatorGitEnv, signOperatorChallenge } from "./auth-operator-proof.js";
-import { DOMAIN_EVENTS, type AuthResolvedPayload } from "./contracts.js";
+import type { OperatorSigningAuthority } from "./operator-signing/authority.js";
+import { SignedActionRefused } from "./operator-signing/http.js";
+import { buildMergeCommit, commitTime, defaultMergeMessage, signedCommitObject, writeCommitObject } from "./merge-commit.js";
+import type { EvidenceMethod } from "./users/types.js";
+import { DOMAIN_EVENTS, OPERATOR_PROOF_WINDOW_MS, type AuthResolvedPayload } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { childOutput } from "./child-observation.js";
@@ -20,11 +23,10 @@ import SqliteDatabase from "./sqlite.js";
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
 import {
   authorizedMergeSignerLines,
-  authorizedOperatorSignerLines,
   extractSuccessfulMergeCommitSha,
   extractAtomicMergeState,
   isValidCommitSha,
-  verifyAuthorizedMergeCommitSignature,
+  verifyApprovedMerge,
   type MergeSignatureVerification,
 } from "./auth-signature-verification.js";
 import {
@@ -40,8 +42,6 @@ import {
 } from "./auth-actions.js";
 import { authExecutionStatus, computeAuthRequestOutcome, isAuthDependencyReady } from "./contracts.js";
 import { assertNever } from "./exhaustive.js";
-import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
-import type { AuthClearanceManager, ClearanceConsumption } from "./auth-clearance.js";
 import {
   AuthExecutionContextError,
   authGitEnv,
@@ -133,7 +133,6 @@ import {
 import {
   addAttributionEvidence,
   getAttributionEvidence,
-  getDelegatedSigningLease,
   getOperator,
   getUserById,
 } from "./users/store.js";
@@ -147,7 +146,9 @@ import { holdsResponsibility, recordResponsibilityTransfer, type ResponsibilityA
 import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incidents.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
+import { authRequestHasRetryableStatus, authRequestCanRepeatExecution } from "./auth-retry.js";
 import { acceptedReleaseSelection, bindAcceptedRelease } from "./accepted-release-selection.js";
+import { LegacyAcceptanceEvidenceMissing } from "../scripts/accepted-release.mjs";
 import { GeneratedStorageMaintenance } from './generated-storage.js';
 import { retireFailedDelivery } from './failed-delivery-retirement.js';
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
@@ -181,7 +182,7 @@ const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
  */
 const RETURN_TO_PENDING_ASSIGNMENTS =
   "status = 'pending', resolved_at = NULL, approved_at = NULL, approved_by_user_id = NULL, " +
-  "execution_evidence_id = NULL, approval_source = 'manual', approval_lease_id = NULL, " +
+  "execution_evidence_id = NULL, " +
   "exit_code = NULL, error = NULL, output = '', " +
   "expires_at = ?, updated_at = ?";
 
@@ -424,8 +425,6 @@ export interface AuthQueueOptions {
   broadcast?: (event: SseEvent) => void;
   executor?: typeof executeAuthCommand;
   hookManager?: AuthHookManager;
-  autoApprover?: AuthAutoApprover;
-  clearanceManager?: AuthClearanceManager;
   // Issue 93d978e — override the abandoned-work-unit merge-scan retention
   // window (default 30 days) so tests can exercise the retirement sweep.
   workUnitAbandonedScanRetentionMs?: number;
@@ -445,6 +444,26 @@ export interface AuthQueueOptions {
   // Issue 1d44a37 — the report settlement notices are rendered from. Without
   // one, no notices are raised.
   outcomeReporter?: OutcomeReporter | null;
+  // Issue 9b7b2ca — the operator's approval key; merge approvals sign through it.
+  operatorSigning?: OperatorSigningAuthority | null;
+}
+
+/** The caller client auth resolved for an operator approval, recorded on courtesy evidence. */
+export interface ApprovalCaller {
+  user_id: string;
+  evidence_method: EvidenceMethod;
+  identity_method: string;
+  source: string;
+  credential_id: string | null;
+}
+
+/** Git environment for reading a checkout's own configuration: injected overrides removed. */
+function checkoutGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" } as NodeJS.ProcessEnv;
+  for (const name of Object.keys(env)) {
+    if (name.startsWith("GIT_CONFIG_") || ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG"].includes(name)) delete env[name];
+  }
+  return env;
 }
 
 const GIT_OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
@@ -603,13 +622,7 @@ export class AuthQueue {
   private readonly executor: typeof executeAuthCommand;
   private readonly hookManager: AuthHookManager;
   readonly notices: NoticeLog | null;
-  private readonly autoApprover?: AuthAutoApprover;
-  private clearanceManager?: AuthClearanceManager;
-  private readonly clearanceSettlementFailures = new Set<unknown>();
-  private readonly pendingClearanceSettlements = new Map<() => Promise<void>, unknown>();
-  private readonly clearanceExecutions = new Set<Promise<void>>();
   private readonly uncertainRepoExecutions = new Map<string, string>();
-  private clearanceFailure = completionSignal();
   private disposing: Promise<void> | null = null;
   // Issue 93d978e — abandoned work units older than this window are retired
   // from merge-side ancestry scans (reversible tombstone, not deletion).
@@ -696,8 +709,7 @@ export class AuthQueue {
       return request ? { ...this.requestResponsibility(request), work_unit_id: request.custody_work_unit_id ?? null } : null;
     }, this.now) : null;
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
-    this.autoApprover = options.autoApprover;
-    this.clearanceManager = options.clearanceManager;
+    this.operatorSigning = options.operatorSigning ?? null;
     this.workUnitAbandonedScanRetentionMs =
       options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
     this.restartFn = options.restartFn ?? (() => process.exit(0));
@@ -912,8 +924,8 @@ export class AuthQueue {
    * refreshPendingCandidates; `mandible auth acceptance run` calls it through
    * runCandidateAcceptance. A candidate the base moved past is re-pinned
    * first, which starts its run. A run of the current candidate that is open
-   * or passed is kept; otherwise a new run starts. Null when acceptance does
-   * not apply.
+   * or still has its passing evidence is kept. A lost legacy proof requires a
+   * new run for the exact candidate. Null when acceptance does not apply.
    */
   private async ensureCandidateAcceptance(request: AuthRequest, serialized = false): Promise<CandidateAcceptanceProjection | null> {
     if (!this.candidateAcceptanceApplies(request)) return null;
@@ -935,7 +947,14 @@ export class AuthQueue {
     this.assertObservation(request.id, observed);
     const acceptance = this.candidateAcceptanceForRequest(request)!;
     if (acceptance.state === "running") return acceptance;
-    if (acceptance.state === "passed") return acceptance;
+    if (acceptance.state === "passed") {
+      try {
+        acceptedReleaseSelection(this.db, request, listAuthRequestActions(this.db, request.id), false);
+        return acceptance;
+      } catch (error) {
+        if (!(error instanceof LegacyAcceptanceEvidenceMissing)) return acceptance;
+      }
+    }
     authLog("info", "auth_candidate_acceptance_started", { subsystem: "auth", auth_request_id: request.id, pin_sha: candidate.pin_sha });
     runs.enqueue(request.id, candidate, () => this.acceptanceInput(this.requireRequest(request.id), candidate.pin_sha));
     return this.candidateAcceptanceForRequest(request)!;
@@ -1135,49 +1154,6 @@ export class AuthQueue {
     return this.allowExternalEffects;
   }
 
-  registerClearanceAuthority(manager: AuthClearanceManager): void {
-    if (this.clearanceManager && this.clearanceManager !== manager) {
-      throw new Error("Auth queue already owns a different clearance authority.");
-    }
-    if (this.disposed) throw new Error("Auth queue is disposing.");
-    this.clearanceManager = manager;
-  }
-
-  get clearanceAuthority(): AuthClearanceManager | undefined {
-    return this.clearanceManager;
-  }
-
-  async closeClearanceAuthority(): Promise<void> {
-    for (const [settle] of this.pendingClearanceSettlements) {
-      try { await settle(); this.pendingClearanceSettlements.delete(settle); }
-      catch (error) { this.pendingClearanceSettlements.set(settle, error); }
-    }
-    if (this.clearanceSettlementFailures.size || this.pendingClearanceSettlements.size) {
-      throw new AggregateError([...this.clearanceSettlementFailures, ...this.pendingClearanceSettlements.values()], "Clearance settlement failed; authority remains owned.");
-    }
-    this.clearanceFailure = completionSignal();
-    await Promise.race([this.clearanceManager?.close(), this.clearanceFailure.promise]);
-    if (this.clearanceSettlementFailures.size || this.pendingClearanceSettlements.size) {
-      throw new AggregateError([...this.clearanceSettlementFailures, ...this.pendingClearanceSettlements.values()], "Clearance settlement failed; authority remains owned.");
-    }
-  }
-
-  private retainClearanceFailure(error: unknown, settle?: () => Promise<void>): void {
-    if (settle) this.pendingClearanceSettlements.set(settle, error);
-    else this.clearanceSettlementFailures.add(error);
-    this.clearanceFailure.resolve();
-    authLog("error", "auth_clearance_settlement_failed", { subsystem: "auth", error: String(error) });
-  }
-
-  private async settleClearanceOwnership(settle: () => Promise<void>, primary?: { error: unknown }): Promise<void> {
-    try { await settle(); }
-    catch (cleanup) {
-      this.retainClearanceFailure(cleanup, settle);
-      if (primary) throw new AggregateError([primary.error, cleanup], "Auth operation and clearance settlement failed.");
-      throw cleanup;
-    }
-  }
-
   private requireExternalEffects(operation: string): void {
     if (!this.allowExternalEffects) {
       throw new AuthQueueError(
@@ -1289,16 +1265,10 @@ export class AuthQueue {
     this.operatorProofs.clear();
     this.stopExpiryTimer();
     this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
-    const authority = this.closeClearanceAuthority();
-    const operations = Promise.allSettled([
+    await Promise.allSettled([
       this.startupRecovery, this.expiryReconciliation, ...this.phaseRuns, ...this.observations, ...this.queuedAdmissions,
       this.finalizerQueue.drain(), this.acceptanceRuns?.stop(), this.generatedStorage?.stop(), ...this.previewTeardowns.values(),
     ]);
-    const scopedExecutions = async () => {
-      await operations;
-      while (this.clearanceExecutions.size) await Promise.allSettled([...this.clearanceExecutions]);
-    };
-    await Promise.all([scopedExecutions(), authority]);
   }
 
   private stopExpiryTimer(): void {
@@ -1695,19 +1665,7 @@ export class AuthQueue {
     if (parents.length !== 2 || parents[0] !== baseSha || parents[1] !== expectedHead || targetTree !== candidateTree) {
       return { outcome: "failed", detail: "target ref does not match the pinned atomic merge commit" };
     }
-    const lease = request.approval_lease_id
-      ? getDelegatedSigningLease(this.db, request.approval_lease_id)
-      : null;
-    const credentialId = lease?.owner_user_id === request.approved_by_user_id
-      ? lease.credential_id
-      : null;
-    const signature = (await verifyAuthorizedMergeCommitSignature(
-      this.db,
-      cwd,
-      prepared.merge_sha,
-      request.approved_by_user_id,
-      credentialId,
-    ));
+    const signature = (await verifyApprovedMerge(this.db, cwd, request, prepared.merge_sha));
     if (!signature.verified) {
       return { outcome: "failed", detail: `atomic merge signature is not authorized: ${signature.reason}` };
     }
@@ -2064,9 +2022,6 @@ export class AuthQueue {
         output: "",
         error: null,
         target_repo_root: payload.target_repo_root ?? null,
-        approval_source: "manual",
-        approval_lease_id: null,
-        clearance_use_id: null,
         supersedes_request_id: predecessor?.id ?? null,
         superseded_by_request_id: null,
         custody_work_unit_id: custody?.id ?? null,
@@ -2125,9 +2080,6 @@ export class AuthQueue {
         output,
         error,
         target_repo_root,
-        approval_source,
-        approval_lease_id,
-        clearance_use_id,
         supersedes_request_id,
         superseded_by_request_id
         ,custody_work_unit_id
@@ -2183,9 +2135,6 @@ export class AuthQueue {
         @output,
         @error,
         @target_repo_root,
-        @approval_source,
-        @approval_lease_id,
-        @clearance_use_id,
         @supersedes_request_id,
         @superseded_by_request_id
         ,@custody_work_unit_id
@@ -3417,7 +3366,7 @@ export class AuthQueue {
     try {
       await this.expireStale();
       const request = this.requireRequest(id);
-      if (!this.isFailedLike(request)) {
+      if (!authRequestHasRetryableStatus(request)) {
         throw new AuthQueueError(
           "invalid_status",
           `Request is ${request.status}, cannot retry.`,
@@ -3425,7 +3374,7 @@ export class AuthQueue {
         );
       }
 
-      if (extractAtomicMergeState(request.output).prepared || this.hookManager.runtimeHandoffOwnsRequest(request.id)) {
+      if (!authRequestCanRepeatExecution(request, this.hookManager.runtimeHandoffOwnsRequest(request.id))) {
         throw new AuthQueueError("invalid_status", "Prepared publication state is retained for recovery; this request cannot repeat execution.");
       }
       const now = this.now();
@@ -3459,7 +3408,7 @@ export class AuthQueue {
     try {
       await this.expireStale();
       const request = this.requireRequest(id);
-      if (!this.isFailedLike(request)) {
+      if (!authRequestHasRetryableStatus(request)) {
         throw new AuthQueueError(
           "invalid_status",
           `Request is ${request.status}, cannot requeue.`,
@@ -3467,7 +3416,7 @@ export class AuthQueue {
         );
       }
 
-      if (extractAtomicMergeState(request.output).prepared || this.hookManager.runtimeHandoffOwnsRequest(request.id)) {
+      if (!authRequestCanRepeatExecution(request, this.hookManager.runtimeHandoffOwnsRequest(request.id))) {
         throw new AuthQueueError("invalid_status", "Prepared publication state is retained for recovery; this request cannot repeat execution.");
       }
       const now = this.now();
@@ -3562,6 +3511,12 @@ export class AuthQueue {
     } finally { finishObservation(); }
   }
 
+  /** The request's latest lifecycle revision. */
+  lifecycleRevision(id: string): number | null {
+    const row = this.db.prepare("SELECT MAX(revision) AS revision FROM auth_request_lifecycle_events WHERE auth_request_id = ?").get(this.requireRequest(id).id) as { revision: number | null };
+    return row.revision;
+  }
+
   listLifecycleEvents(id: string) {
     const request = this.requireRequest(id);
     return listAuthLifecycleEvents(this.db, request.id);
@@ -3617,11 +3572,9 @@ export class AuthQueue {
    * will be approved: its execution context recorded, a merge's candidate
    * exact for the current base (recomputed when `recompute` allows), and,
    * for a runtime self-update, the handoff lock free and acceptance of exactly
-   * that candidate passed. `unattended` marks an approval no human reviewed
-   * (a clearance or a delegated lease), which the base audit holds to a
-   * stricter bar.
+   * that candidate passed.
    */
-  private async prepareMergeApproval(request: AuthRequest, recompute: boolean, unattended: boolean): Promise<AuthRequest> {
+  private async prepareMergeApproval(request: AuthRequest, recompute: boolean): Promise<AuthRequest> {
     let observed = this.observationToken(request.id, request);
     const shownBaseAudit = loadProtectedBaseAudit(this.db, request.id);
     this.assertPublication(request);
@@ -3654,14 +3607,14 @@ export class AuthQueue {
       // unchanged, so the candidate is recomputed against the current base
       // within this approval.
       if (!recompute) throw new AuthQueueError("merge_check_failed", this.describeRecomputeRefusal(null));
+      this.broadcastApprovalPhase(request.id, "updating_candidate");
       request = (await this.recomputeStaleCandidate(request, "approve"));
       observed = this.observationToken(request.id, request);
     }
     this.assertObservation(request.id, observed);
     request = (await this.ensureOriginalMergeRangeForApproval(request));
     observed = this.observationToken(request.id, request);
-    if (unattended) (await this.assertBaseAuditClean(request, shownBaseAudit));
-    else (await this.assertBaseAuditShown(request, shownBaseAudit));
+    (await this.assertBaseAuditShown(request, shownBaseAudit));
     this.assertObservation(request.id, observed);
     const publicationBlocker = await this.publicationBlockerForRequest(request);
     this.assertObservation(request.id, observed);
@@ -3676,7 +3629,39 @@ export class AuthQueue {
     return request;
   }
 
-  private readonly operatorProofs = new Map<string, { digest: string; evidenceId: string; credentialId: string; userId: string; expiresAt: number }>();
+  private readonly operatorSigning: OperatorSigningAuthority | null;
+
+  get operatorSigningAuthority(): OperatorSigningAuthority | null {
+    return this.operatorSigning;
+  }
+  /** In-place progress of a click-to-sheet approval; nothing about it is stored. */
+  private broadcastApprovalPhase(requestId: string, phase: "updating_candidate" | "awaiting_signature"): void {
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_APPROVAL_PHASE, data: { request_id: requestId, phase } });
+  }
+
+  private readonly operatorProofs = new Map<string, { digest: string; evidenceId: string; evidenceMethod: EvidenceMethod; credentialId: string | null; userId: string; expiresAt: number; mergeSha?: string }>();
+
+  /**
+   * The exact merge commit an approval signs: the retained submit-time tree,
+   * the reviewed base and head, the reviewed message, and the time of the click.
+   */
+  private async buildReviewedMergeCommit(request: AuthRequest, at: number): Promise<Buffer> {
+    const { cwd, merge_candidate_tree_sha: tree, merge_preflight_base_sha: base, merge_head_sha: head, head_branch: branch } = request;
+    if (!cwd || !tree || !base || !head || !branch) {
+      throw new AuthQueueError("merge_check_failed", "The request has no retained merge candidate. No protected state changed.");
+    }
+    const identity = this.operatorCommitIdentity();
+    const message = request.commit_message_digest ? this.reviewedChangeMessage(request) : await defaultMergeMessage(cwd, head, branch);
+    return buildMergeCommit({ tree, parents: [base, head], message, identity, time: commitTime(at) });
+  }
+
+  private reviewedChangeMessage(request: AuthRequest): string {
+    const message = request.commit_message;
+    if (!message || !isCanonicalChangeMessage(message) || changeMessageDigest(message) !== request.commit_message_digest) {
+      throw new AuthQueueError("merge_check_failed", "The reviewed change message does not match its digest; requeue and reapprove. No protected state changed.");
+    }
+    return message;
+  }
   private readonly operatorProofInFlight = new Map<string, AbortController>();
 
   cancelOperatorProof(id: string, userId: string): void {
@@ -3685,46 +3670,75 @@ export class AuthQueue {
     this.operatorProofInFlight.get(request.id)?.abort();
   }
 
-  async approveWithOperatorProof(id: string, userId: string): Promise<AuthRequest> {
+  /**
+   * The operator's manual approval of the request at `reviewedRevision`, the
+   * lifecycle revision the approver was shown; any other revision is refused
+   * before signing. A protected merge is a signed action: the enrolled
+   * approval key signs the reviewed merge commit itself, with one touch,
+   * inside this request. Every other approval is a courtesy action: it needs
+   * no proof and its evidence records the caller client auth resolved.
+   */
+  async approveAsOperator(id: string, caller: ApprovalCaller, reviewedRevision: number): Promise<AuthRequest> {
     const finishObservation = this.beginObservation();
     try {
-      this.requireExternalEffects("Operator approval proof");
+      this.requireExternalEffects("Operator approval");
       let request = this.requireRequest(id);
       if (request.type === "custody-transfer") throw new AuthQueueError("invalid_command", "Custody-transfer approval is retired; explicitly assume responsibility instead.");
       if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
       if (this.operatorProofInFlight.has(request.id)) throw new AuthQueueError("invalid_status", "Operator signing is already in progress.");
+      if (this.lifecycleRevision(request.id) !== reviewedRevision) {
+        throw new AuthQueueError("lifecycle_conflict", "The request changed since it was shown; review it again before approving.");
+      }
       const controller = new AbortController();
       this.operatorProofInFlight.set(request.id, controller);
       try {
         const admission = this.observationToken(request.id, request);
         await this.assertRequestRepoExecutionCertain(request);
-        if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new AuthQueueError("invalid_status", "Operator proof was cancelled.");
+        if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new SignedActionRefused({ code: "cancelled", detail: "Signing was cancelled." });
         this.assertObservation(request.id, admission);
         request = this.requireRequest(id);
         if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
-        request = (await this.prepareMergeApproval(request, true, false));
+        request = (await this.prepareMergeApproval(request, true));
         if (isAuthMergeCommand(request) && (request.execution_mode === "remote" || (await this.hasNativeMergeHooks(request.cwd)))) {
-        throw new AuthQueueError("merge_check_failed", "Protected candidate publication requires a local checkout without unsupported native hooks. No protected state changed.");
-      }
-      (await this.planApprovalHooks(request));
-      const operatorId = this.resolveApproverUserId(userId);
-      const digest = this.approvalDigest(request);
-      const issuedAt = this.now();
-      const expiresAt = issuedAt + 60_000;
-      const challenge = JSON.stringify({ namespace: "mandible-auth", request_id: request.id, digest, nonce: randomUUID(), issued_at: issuedAt, expires_at: expiresAt });
-        const proof = await signOperatorChallenge(request.cwd, challenge, authorizedOperatorSignerLines(this.db, operatorId), controller.signal);
-        if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new AuthQueueError("invalid_status", "Operator proof was cancelled.");
-        if (!proof.ok) throw new AuthQueueError("invalid_command", `Operator proof ${proof.reason}: ${proof.detail}`);
-        if (this.now() >= expiresAt || this.approvalDigest(request) !== digest ||
-          !authorizedOperatorSignerLines(this.db, operatorId).some((line) => line.startsWith(`${proof.credentialId} `))) {
-          throw new AuthQueueError("invalid_status", "Operator proof expired or the reviewed request changed; approve the current request again.");
+          throw new AuthQueueError("merge_check_failed", "Protected candidate publication requires a local checkout without unsupported native hooks. No protected state changed.");
         }
-        const evidence = addAttributionEvidence(this.db, {
-          evidence_method: "credential_signature", credential_id: proof.credentialId,
-          details: { auth_request_id: request.id, signer_user_id: operatorId, authorizer_user_id: operatorId, verified: true, challenge, signature: proof.signature, action_digest: digest },
-        }, this.now());
-        this.operatorProofs.set(request.id, { digest, evidenceId: evidence.id, credentialId: proof.credentialId, userId: operatorId, expiresAt });
-        return (await this.approve(request.id, undefined, operatorId));
+        (await this.planApprovalHooks(request));
+        const operatorId = this.resolveApproverUserId(caller.user_id);
+        const digest = this.approvalDigest(request);
+        const issuedAt = this.now();
+        const expiresAt = issuedAt + OPERATOR_PROOF_WINDOW_MS;
+        if (isAuthMergeCommand(request)) {
+          if (!this.operatorSigning) throw new SignedActionRefused({ code: "approval_key_required", detail: "This daemon has no approval signer." });
+          const unsigned = await this.buildReviewedMergeCommit(request, issuedAt);
+          this.broadcastApprovalPhase(request.id, "awaiting_signature");
+          let expired = false;
+          const expiry = setTimeout(() => { expired = true; controller.abort(); }, OPERATOR_PROOF_WINDOW_MS);
+          const signed = await this.operatorSigning.commitSigner(
+            `approve merging ${request.head_branch} into ${request.base_branch} of ${request.repo ?? request.cwd} at ${request.merge_preflight_base_sha!.slice(0, 7)} (request ${request.id.slice(0, 8)})`,
+          ).sign(unsigned, "git", controller.signal).finally(() => clearTimeout(expiry));
+          if (expired) throw new AuthQueueError("invalid_status", "The approval window closed before Touch ID; approve again.");
+          if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new SignedActionRefused({ code: "cancelled", detail: "Signing was cancelled." });
+          if (!signed.ok) throw new SignedActionRefused(signed.error);
+          if (this.now() >= expiresAt || this.approvalDigest(request) !== digest ||
+            !authorizedMergeSignerLines(this.db, operatorId, signed.value.credential_id).length) {
+            throw new AuthQueueError("invalid_status", "Operator proof expired or the reviewed request changed; approve the current request again.");
+          }
+          const commitSha = await writeCommitObject(request.cwd!, signedCommitObject(unsigned, signed.value.signature));
+          const evidence = addAttributionEvidence(this.db, {
+            evidence_method: "credential_signature", credential_id: signed.value.credential_id,
+            details: { auth_request_id: request.id, signer_user_id: operatorId, authorizer_user_id: operatorId, verified: true,
+              signed_commit_sha: commitSha, signature: signed.value.signature, action_digest: digest },
+          }, this.now());
+          this.operatorProofs.set(request.id, { digest, evidenceId: evidence.id, evidenceMethod: "credential_signature", credentialId: signed.value.credential_id, userId: operatorId, expiresAt, mergeSha: commitSha });
+        } else {
+          const evidence = addAttributionEvidence(this.db, {
+            evidence_method: caller.evidence_method, credential_id: caller.credential_id,
+            details: { auth_request_id: request.id, authorizer_user_id: operatorId, verified: false, action_digest: digest,
+              caller: { user_id: caller.user_id, method: caller.identity_method, source: caller.source, credential_id: caller.credential_id } },
+          }, this.now());
+          this.operatorProofs.set(request.id, { digest, evidenceId: evidence.id, evidenceMethod: caller.evidence_method, credentialId: null, userId: operatorId, expiresAt });
+        }
+        return (await this.approve(request.id, operatorId));
       } finally {
         this.operatorProofInFlight.delete(request.id);
         this.operatorProofs.delete(request.id);
@@ -3732,7 +3746,7 @@ export class AuthQueue {
     } finally { finishObservation(); }
   }
 
-  async approve(id: string, approval?: AuthApprovalContext, approvedByUserId?: string): Promise<AuthRequest> {
+  async approve(id: string, approvedByUserId?: string): Promise<AuthRequest> {
     const finishObservation = this.beginObservation();
     try {
       await this.expireStale();
@@ -3749,46 +3763,21 @@ export class AuthQueue {
       if (this.inFlight.has(request.id)) throw new AuthQueueError("invalid_status", "An earlier execution of this request is still settling.");
       const admission = this.observationToken(request.id, request);
       await this.assertRequestRepoExecutionCertain(request);
-      if (!approval && this.operatorProofInFlight.get(request.id)?.signal.aborted) throw new AuthQueueError("invalid_status", "Operator proof was cancelled.");
+      if (this.operatorProofInFlight.get(request.id)?.signal.aborted) throw new SignedActionRefused({ code: "cancelled", detail: "Signing was cancelled." });
       this.assertObservation(request.id, admission);
       const operatorProof = this.operatorProofs.get(request.id);
       this.operatorProofs.delete(request.id);
-      if (!approval && (!operatorProof || operatorProof.userId !== approvedByUserId || this.now() >= operatorProof.expiresAt ||
+      if ((!operatorProof || operatorProof.userId !== approvedByUserId || this.now() >= operatorProof.expiresAt ||
         operatorProof.digest !== this.approvalDigest(request))) {
-        throw new AuthQueueError("invalid_status", "Fresh action-bound operator signing proof is required before approval.");
+        throw new AuthQueueError("invalid_status", "A fresh operator approval is required.");
       }
       const now = this.now();
-      // Manual approval is always the direct interactive signing path. Automated
-      // callers pass their delegated approval context explicitly.
-      const effectiveApproval = approval;
-      const approverUserId = this.resolveApproverUserId(
-        effectiveApproval?.approverUserId ?? approvedByUserId,
-      );
-      const approvalLease = effectiveApproval?.leaseId
-        ? getDelegatedSigningLease(this.db, effectiveApproval.leaseId)
-        : null;
-      if (effectiveApproval) {
-        if (!approvalLease) {
-          throw new AuthQueueError("invalid_command", "Delegated approval lease is missing.");
-        }
-        if (approvalLease.owner_user_id !== approverUserId) {
-          throw new AuthQueueError("invalid_command", "Delegated approval lease is owned by another approver.");
-        }
-        if (now < approvalLease.minted_at || now >= approvalLease.expires_at) {
-          throw new AuthQueueError("invalid_command", "Delegated approval lease is not currently valid.");
-        }
-      }
-      const exactCredentialId = approvalLease?.credential_id ?? operatorProof?.credentialId ?? null;
+      const approverUserId = this.resolveApproverUserId(approvedByUserId);
+      const exactCredentialId = operatorProof!.credentialId;
       const signerLines = authorizedMergeSignerLines(this.db, approverUserId, exactCredentialId);
-      if (effectiveApproval && isAuthMergeCommand(request) && signerLines.length === 0) {
-        throw new AuthQueueError(
-          "invalid_command",
-          "Delegated approval lease has no active authorized signing credential.",
-        );
-      }
-      // An operator proof signed the candidate as approveWithOperatorProof
-      // prepared it, so this approval must not recompute it.
-      request = (await this.prepareMergeApproval(request, !operatorProof, Boolean(effectiveApproval)));
+      // The operator proof signed the candidate approveAsOperator prepared,
+      // so this approval must not recompute it.
+      request = (await this.prepareMergeApproval(request, false));
       const observed = this.observationToken(request.id, request);
       // Issue 060c9c8 — no hierarchical gate here: enforceCanonicalMergeCommand
       // already refused every non-canonical (including hierarchical-shaped)
@@ -3803,50 +3792,36 @@ export class AuthQueue {
       if (isAuthMergeCommand(request) && !atomicEnabled) {
         throw new AuthQueueError("merge_check_failed", "Protected merges require a local exact candidate, an authorized signer, and no unsupported native merge hooks. No protected state changed.");
       }
-      if (effectiveApproval) (await this.planApprovalHooks(request));
-      const executionEnv = {
-        ...(effectiveApproval?.env ?? {}),
-        ...(await this.approveTimePreflightEnv(request)),
-      };
+      const executionEnv = await this.approveTimePreflightEnv(request);
       if (atomicEnabled) {
-        const identity = (await this.gitCommitIdentity(request.cwd));
         executionEnv.MANDIBLE_AUTH_ATOMIC = "1";
         executionEnv.MANDIBLE_AUTH_ALLOWED_SIGNERS = signerLines.join("\n");
-        executionEnv.GIT_AUTHOR_NAME = identity.name;
-        executionEnv.GIT_AUTHOR_EMAIL = identity.email;
-        executionEnv.GIT_COMMITTER_NAME = identity.name;
-        executionEnv.GIT_COMMITTER_EMAIL = identity.email;
+        if (operatorProof?.mergeSha) executionEnv.MANDIBLE_AUTH_SIGNED_MERGE_SHA = operatorProof.mergeSha;
       }
       if (isAuthMergeCommand(request)) mergeHookPaths = await this.observedNativeMergeHookPaths(request.cwd);
       await this.assertReviewedCandidateCurrent(request);
       if (isAuthMergeCommand(request) && this.nativeMergeHooksPresent(mergeHookPaths)) throw new AuthQueueError("merge_check_failed", "Unsupported native merge hooks changed during approval.");
       this.assertObservation(request.id, observed);
-      if (operatorProof && (this.now() >= operatorProof.expiresAt || operatorProof.digest !== this.approvalDigest(request))) throw new AuthQueueError("invalid_status", "Operator proof expired or the reviewed request changed.");
+      if ((this.now() >= operatorProof!.expiresAt || operatorProof!.digest !== this.approvalDigest(request))) throw new AuthQueueError("invalid_status", "Operator proof expired or the reviewed request changed.");
       if (signerLines.join("\n") !== authorizedMergeSignerLines(this.db, approverUserId, exactCredentialId).join("\n")) throw new AuthQueueError("invalid_status", "Signing authority changed during approval.");
-      if (approvalLease) {
-        const live = getDelegatedSigningLease(this.db, approvalLease.id);
-        if (!live || live.owner_user_id !== approverUserId || live.credential_id !== exactCredentialId || this.now() < live.minted_at || this.now() >= live.expires_at) throw new AuthQueueError("invalid_status", "Approval lease changed or expired during observation.");
-      }
       this.db.transaction(() => {
         this.enforceDependencyReadiness(request);
         this.writeResolvedRequest(
           request,
-          "UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ?, approved_by_user_id = ?, execution_evidence_id = NULL, merge_atomic_enabled = ? WHERE id = ?",
+          "UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?, approved_by_user_id = ?, execution_evidence_id = NULL, merge_atomic_enabled = ? WHERE id = ?",
           [
             now,
             now,
-            effectiveApproval?.source ?? "manual",
-            effectiveApproval?.leaseId ?? null,
             approverUserId,
             atomicEnabled ? 1 : 0,
           ]
         );
-        if (operatorProof) this.db.prepare("UPDATE auth_requests SET execution_evidence_id = ? WHERE id = ?").run(operatorProof.evidenceId, request.id);
+        this.db.prepare("UPDATE auth_requests SET execution_evidence_id = ? WHERE id = ?").run(operatorProof!.evidenceId, request.id);
         const approvalActor: AuthLifecycleActor = {
           user_id: approverUserId,
-          evidence_method: effectiveApproval ? "delegated_credential" : "credential_signature",
-          evidence_id: operatorProof?.evidenceId,
-          credential_id: exactCredentialId ?? operatorProof?.credentialId,
+          evidence_method: operatorProof!.evidenceMethod,
+          evidence_id: operatorProof!.evidenceId,
+          credential_id: exactCredentialId,
         };
         this.appendLifecycleEvent({
           requestId: request.id, eventType: "approved", priorStatus: "pending",
@@ -3872,139 +3847,6 @@ export class AuthQueue {
       this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: executing } });
       (await this.executeInBackground(executing));
       return executing;
-    } finally { finishObservation(); }
-  }
-
-  /** Consume one exact scoped clearance and begin the protected merge. */
-  async approveWithClearance(id: string, actor: AuthLifecycleActor): Promise<AuthRequest> {
-    const finishObservation = this.beginObservation();
-    try {
-      await this.expireStale();
-      this.requireExternalEffects("Clearance approval and execution");
-      if (!this.clearanceManager) {
-        throw new AuthQueueError("invalid_command", "Scoped merge clearance is unavailable in this runtime.");
-      }
-      let request = this.requireRequest(id);
-      if (request.status !== "pending") {
-        throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot use clearance.`, request.status);
-      }
-      this.requestCustodyForActor(request, actor);
-      const responsibility = this.requestResponsibility(request);
-      const assertResponsibility = () => {
-        const current = this.requireRequest(request.id);
-        this.requestCustodyForActor(current, actor);
-        if (this.requestResponsibility(current).custody_generation !== responsibility.custody_generation) {
-          throw new AuthQueueError("custody_required", "Request responsibility changed during clearance observation.");
-        }
-      };
-      const admission = this.observationToken(request.id, request);
-      await this.assertRequestRepoExecutionCertain(request);
-      this.assertObservation(request.id, admission);
-      request = (await this.prepareMergeApproval(request, true, true));
-      const observed = this.observationToken(request.id, request);
-      let nativeHookPaths = await this.observedNativeMergeHookPaths(request.cwd);
-      const identity = await this.gitCommitIdentity(request.cwd);
-      const preflightEnv = await this.approveTimePreflightEnv(request);
-      await this.planApprovalHooks(request);
-      const requestId = request.id;
-      let consumed: ClearanceConsumption;
-      try {
-        consumed = (await this.clearanceManager.consume(requestId, actor, (authorization) => {
-          this.assertObservation(requestId, observed);
-          assertResponsibility();
-          const now = this.now();
-          const lease = getDelegatedSigningLease(this.db, authorization.approval.leaseId);
-          if (!lease || lease.owner_user_id !== authorization.clearance.issuer_user_id) {
-            throw new AuthQueueError("invalid_command", "Clearance delegated signing lease is invalid.");
-          }
-          const signerLines = authorizedMergeSignerLines(
-            this.db,
-            authorization.clearance.issuer_user_id,
-            lease.credential_id,
-          );
-          if (signerLines.length === 0) {
-            throw new AuthQueueError("invalid_command", "Clearance has no active authorized signing credential.");
-          }
-          const atomicEnabled = Boolean(
-            request.execution_mode !== "remote" && isAuthMergeCommand(request) &&
-            !this.nativeMergeHooksPresent(nativeHookPaths) && signerLines.length > 0
-          );
-          if (!atomicEnabled) throw new AuthQueueError("merge_check_failed", "Clearance execution requires an exact local signed candidate without unsupported native hooks.");
-          this.enforceDependencyReadiness(request);
-          const update = this.db.prepare(
-            `UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?,
-           approval_source = 'clearance', approval_lease_id = ?, approved_by_user_id = ?,
-           execution_evidence_id = ?, clearance_use_id = ?, merge_atomic_enabled = ?
-           WHERE id = ? AND status = 'pending' AND clearance_use_id IS NULL`,
-          ).run(
-            now, now, authorization.approval.leaseId, authorization.clearance.issuer_user_id,
-            authorization.use.evidence_id, authorization.use.id, atomicEnabled ? 1 : 0, requestId,
-          );
-          if (update.changes !== 1) {
-            throw new AuthQueueError("invalid_status", "Auth request changed before clearance execution began.");
-          }
-          const clearanceActor: AuthLifecycleActor = {
-            user_id: authorization.clearance.issuer_user_id,
-            evidence_method: "clearance",
-            evidence_id: authorization.use.evidence_id,
-            credential_id: lease.credential_id,
-          };
-          this.appendLifecycleEvent({
-            requestId, eventType: "approved", priorStatus: "pending", nextStatus: "approved",
-            actor: clearanceActor, occurredAt: now,
-          });
-          this.db.prepare(
-            "UPDATE auth_requests SET status = 'executing', updated_at = ? WHERE id = ? AND status = 'approved'",
-          ).run(now, requestId);
-          this.appendLifecycleEvent({
-            requestId, eventType: "executing", priorStatus: "approved", nextStatus: "executing",
-            actor: clearanceActor, occurredAt: now,
-          });
-          this.executionEnvs.set(requestId, {
-            ...authorization.approval.env,
-            ...preflightEnv,
-            ...(atomicEnabled ? {
-              MANDIBLE_AUTH_ATOMIC: "1",
-              MANDIBLE_AUTH_ALLOWED_SIGNERS: signerLines.join("\n"),
-              GIT_AUTHOR_NAME: identity.name,
-              GIT_AUTHOR_EMAIL: identity.email,
-              GIT_COMMITTER_NAME: identity.name,
-              GIT_COMMITTER_EMAIL: identity.email,
-            } : {}),
-          });
-        }, async () => { nativeHookPaths = await this.observedNativeMergeHookPaths(request.cwd); await this.assertReviewedCandidateCurrent(request); }));
-      } catch (error) {
-        if (error instanceof AuthQueueError) throw error;
-        throw new AuthQueueError(
-          "invalid_command",
-          error instanceof Error ? error.message : "Clearance execution was refused.",
-        );
-      }
-      let transferred = false;
-      let primary: { error: unknown } | undefined;
-      try {
-        const executing = this.requireRequest(requestId);
-        this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: executing, clearance_use_id: consumed.use.id } });
-        this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
-          request_id: executing.id, lifecycle: "executing", clearance_use_id: consumed.use.id,
-        } });
-        const settle = consumed.settle;
-        let settled = false;
-        const settleOnce = async () => {
-          if (settled) return;
-          await settle();
-          settled = true;
-        };
-        const admission = this.executeInBackground(executing, settleOnce);
-        transferred = true;
-        await admission;
-        return executing;
-      } catch (error) {
-        primary = { error };
-        throw error;
-      } finally {
-        if (!transferred) await this.settleClearanceOwnership(consumed.settle, primary);
-      }
     } finally { finishObservation(); }
   }
 
@@ -4135,14 +3977,6 @@ export class AuthQueue {
       env.MANDIBLE_AUTH_CANDIDATE_HEAD_SHA = request.merge_head_sha;
       env.MANDIBLE_AUTH_CANDIDATE_REF = this.mergeCandidateRef(request.id);
     }
-    // Issue 7d64d8f — the reviewed change message is a reviewed merge input like
-    // the reviewed head SHA and the retained candidate tree. Passing its digest
-    // lets cli/auth-merge.sh know a canonical message MUST be applied, so a
-    // failed fetch aborts the merge instead of silently falling back to
-    // `git fmt-merge-msg`.
-    if (request.commit_message_digest) {
-      env.MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST = request.commit_message_digest;
-    }
     if (
       request.execution_mode !== "remote" &&
       isAuthMergeCommand(request) &&
@@ -4264,7 +4098,7 @@ export class AuthQueue {
 
   private async nativeHookPaths(cwd: string, names: readonly string[]): Promise<string[]> {
     const directory = (await childOutput("git", ["rev-parse", "--path-format=absolute", "--git-path", "hooks"], {
-      cwd, encoding: "utf8", timeout: 5_000, env: operatorGitEnv(),
+      cwd, encoding: "utf8", timeout: 5_000, env: checkoutGitEnv(),
     })).replace(/\n$/, "");
     return names.map(name => join(directory, name));
   }
@@ -4291,19 +4125,13 @@ export class AuthQueue {
     return this.nativeMergeHooksPresent(await this.observedNativeMergeHookPaths(cwd));
   }
 
-  private async gitCommitIdentity(cwd: string | null): Promise<{ name: string; email: string }> {
-    if (!cwd) throw new AuthQueueError("invalid_command", "Atomic merge repository path is unavailable.");
-    const read = async (key: string): Promise<string> => (await childOutput("git", ["config", "--get", key], {
-      cwd,
-      encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-    })).trim();
-    const name = (await read("user.name"));
-    const email = (await read("user.email"));
-    if (!name || !email) {
-      throw new AuthQueueError("invalid_command", "Atomic merge requires configured Git author identity.");
+  /** The merge commit's author and committer: the operator as Mandible records them, never Git configuration. */
+  private operatorCommitIdentity(): { name: string; email: string } {
+    const operator = getOperator(this.db);
+    if (!operator?.email?.trim()) {
+      throw new AuthQueueError("invalid_command", "Set the operator's email in Settings; it is the author of every protected merge. No protected state changed.");
     }
-    return { name, email };
+    return { name: operator.display_name, email: operator.email.trim() };
   }
 
   private async cacheMergeCandidate(request: AuthRequest): Promise<string | null> {
@@ -4611,10 +4439,9 @@ export class AuthQueue {
    *     with duplicate SHA claims across requests refused as reuse — and the
    *     commit's second parent is exactly that request's reviewed
    *     `merge_head_sha`.
-   *  3. Every commit on that chain carries a trusted SSH signature that
-   *     verifies specifically against an active signing credential of that
-   *     request's approving user (`git verify-commit` against the user
-   *     registry via verifyAuthorizedMergeCommitSignature).
+   *  3. Every commit on that chain is the approved merge of that request
+   *     (verifyApprovedMerge): the commit its approval signed, verifying
+   *     against the approving credential.
    *
    * Anything else — non-descendant rewrites, direct commits to the protected
    * branch, unsigned or unrecorded merges (including legacy multi-source
@@ -4715,12 +4542,7 @@ export class AuthQueue {
           recorded_request_id: record.id,
         });
       }
-      const signature = (await verifyAuthorizedMergeCommitSignature(
-        this.db,
-        cwd,
-        commit,
-        record.approved_by_user_id,
-      ));
+      const signature = (await verifyApprovedMerge(this.db, cwd, record, commit));
       if (!signature.verified) {
         return refuse("signature_not_authorized", {
           commit,
@@ -4807,6 +4629,7 @@ export class AuthQueue {
     );
     const audit = (await auditProtectedBase(this.db, {
       cwd: request.cwd, baseSha: request.merge_preflight_base_sha, recordedMerges, now: this.now(),
+      isApprovedMerge: async (sha) => (await verifyApprovedMerge(this.db, request.cwd, evidence.recorded.get(sha)!, sha)).verified,
     }));
     this.assertObservation(request.id, observed);
     evidence.assertCurrent();
@@ -4839,54 +4662,14 @@ export class AuthQueue {
     if (unseen.unexpected.length === 0 && unseen.missing_merges.length === 0) return;
     throw new AuthQueueError(
       "merge_check_failed",
-      `Protected ${request.base_branch} has history that is neither a recorded Mandible merge nor signed with an operator hardware key, ` +
+      `Protected ${request.base_branch} has history that is neither a recorded Mandible merge nor signed by an operator signer, ` +
         `and this approval had not shown it:\n${describeBaseAuditFindings(unseen)}\n` +
         "It is now listed on the request. Review it and approve again to proceed. No protected state changed.",
     );
   }
 
-  /**
-   * Issue 117ba80 — an approval no human reviewed (a clearance or a delegated
-   * lease) never merges onto a base whose audit is not clean: nobody saw the
-   * findings, so a warning on the request protects nothing. It refuses when
-   * the audit lists unexpected commits or rewritten history, and when the
-   * audit could not run. A stored audit is reused only when it ran and covers
-   * the base this approval merges onto; otherwise the base is audited now.
-   */
-  private async assertBaseAuditClean(request: AuthRequest, shown: ProtectedBaseAudit | null): Promise<void> {
-    const audit = shown && shown.status !== "error" && shown.base_sha === request.merge_preflight_base_sha
-      ? shown
-      : (await this.refreshBaseAudit(request));
-    if (!audit) return;
-    if (audit.status === "error") {
-      throw new AuthQueueError(
-        "merge_check_failed",
-        `The protected ${request.base_branch} history check could not run (${audit.error}), and an approval without a human ` +
-          "reviewer cannot proceed without it. Approve it yourself to proceed. No protected state changed.",
-      );
-    }
-    if (audit.status === "unexpected") {
-      throw new AuthQueueError(
-        "merge_check_failed",
-        `Protected ${request.base_branch} has history that is neither a recorded Mandible merge nor signed with an operator hardware key, ` +
-          `and an approval without a human reviewer cannot accept it:\n${describeBaseAuditFindings(audit)}\n` +
-          "It is listed on the request. Review it and approve it yourself to proceed. No protected state changed.",
-      );
-    }
-  }
-
-  /**
-   * Issue 2205073 — the operator ref used in the credential-registration hint
-   * of an approval refusal message.
-   */
   private describeRecomputeRefusal(refusal: RecomputeRefusal | null): string {
-    let operatorRef: string | null = null;
-    try {
-      operatorRef = getOperator(this.db)?.slug ?? null;
-    } catch {
-      operatorRef = null;
-    }
-    return describeRecomputeRefusal(refusal, { operatorRef });
+    return describeRecomputeRefusal(refusal);
   }
 
   /**
@@ -5075,105 +4858,6 @@ export class AuthQueue {
     return run;
   }
 
-  private async prepareAuthExecution(request: AuthRequest, expectedExecution: string): Promise<string> {
-    const finishObservation = this.beginObservation();
-    try {
-      this.assertExecution(request.id, expectedExecution);
-      if (!this.needsPresenceChallenge(request)) {
-        return expectedExecution;
-      }
-      this.handleOutput({
-        request_id: request.id,
-        stream: "stderr",
-        text: "Auth phase: waiting for YubiKey touch for delegated signing...\n",
-        timestamp: Date.now(),
-      });
-      const approval = await this.autoApprover!.presenceChallenge!(60, this.phaseAbort.signal);
-      this.assertExecution(request.id, expectedExecution);
-      const refreshed = this.requireRequest(request.id);
-      if (!refreshed.approved_by_user_id || approval.approverUserId !== refreshed.approved_by_user_id) {
-        throw new Error("Refreshed delegated signing approver does not match the approved request.");
-      }
-      const lease = getDelegatedSigningLease(this.db, approval.leaseId);
-      const now = this.now();
-      if (
-        !lease || lease.owner_user_id !== refreshed.approved_by_user_id ||
-        now < lease.minted_at || now >= lease.expires_at
-      ) {
-        throw new Error("Refreshed delegated signing lease is not valid for the approved request.");
-      }
-      const signerLines = refreshed.merge_atomic_enabled
-        ? authorizedMergeSignerLines(
-            this.db,
-            refreshed.approved_by_user_id,
-            lease.credential_id,
-          )
-        : [];
-      if (refreshed.merge_atomic_enabled && signerLines.length === 0) {
-        throw new Error("Delegated signing lease has no active authorized credential for atomic merge.");
-      }
-      this.db
-        .prepare("UPDATE auth_requests SET approval_source = ?, approval_lease_id = ?, updated_at = ? WHERE id = ?")
-        .run(approval.source, approval.leaseId, now, request.id);
-      this.executionEnvs.set(request.id, {
-        ...(this.executionEnvs.get(request.id) ?? {}),
-        ...approval.env,
-        ...(refreshed.merge_atomic_enabled
-          ? { MANDIBLE_AUTH_ALLOWED_SIGNERS: signerLines.join("\n") }
-          : {}),
-      });
-      this.handleOutput({
-        request_id: request.id,
-        stream: "stderr",
-        text: "Auth phase: delegated signing key ready; starting git work...\n",
-        timestamp: Date.now(),
-      });
-      return this.executionToken(request.id);
-    } finally { finishObservation(); }
-  }
-
-  private attachDelegatedExecutionEvidence(
-    requestId: string,
-    approval: AuthApprovalContext,
-    verifiedAt: number = this.now(),
-  ): AuthRequest {
-    const request = this.requireRequest(requestId);
-    if (request.execution_evidence_id) return request;
-    if (!request.approved_by_user_id || request.approved_by_user_id !== approval.approverUserId) {
-      throw new Error("Auth execution evidence approver does not match the approved request.");
-    }
-    const lease = getDelegatedSigningLease(this.db, approval.leaseId);
-    if (!lease) {
-      throw new Error(`Delegated signing lease '${approval.leaseId}' is not registered.`);
-    }
-    if (
-      lease.owner_user_id !== request.approved_by_user_id ||
-      verifiedAt < lease.minted_at ||
-      verifiedAt > lease.expires_at
-    ) {
-      throw new Error("Delegated signing lease is not valid for this approver and execution time.");
-    }
-    const evidenceMethod = approval.source === "auto_lease"
-      ? "delegated_lease"
-      : "hardware_presence";
-    assertEvidenceMethod(evidenceMethod);
-    const evidence = addAttributionEvidence(this.db, {
-      evidence_method: evidenceMethod,
-      credential_id: lease.credential_id,
-      lease_id: lease.id,
-      details: {
-        auth_request_id: request.id,
-        authorizer_user_id: request.approved_by_user_id,
-        executor_user_id: systemAction().user_id,
-        approval_source: approval.source,
-      },
-    }, verifiedAt);
-    this.db.prepare(
-      "UPDATE auth_requests SET execution_evidence_id = ?, updated_at = ? WHERE id = ? AND execution_evidence_id IS NULL",
-    ).run(evidence.id, verifiedAt, request.id);
-    return this.requireRequest(request.id);
-  }
-
   private ensureSuccessfulExecutionEvidence(request: AuthRequest): AuthRequest {
     if (!isAuthMergeCommand(request) || request.execution_evidence_id) return request;
     // Rows predating v109 remain untouched and retain their legacy system-only
@@ -5182,25 +4866,7 @@ export class AuthQueue {
     if (!request.approved_by_user_id) {
       throw new Error("Attributed auth merge completed without an approving user.");
     }
-    if (
-      request.approval_lease_id &&
-      (request.approval_source === "auto_lease" || request.approval_source === "presence_challenge")
-    ) {
-      return this.attachDelegatedExecutionEvidence(
-        request.id,
-        {
-          source: request.approval_source,
-          leaseId: request.approval_lease_id,
-          approverUserId: request.approved_by_user_id,
-          env: {},
-        },
-        request.last_executed_at ?? request.resolved_at ?? this.now(),
-      );
-    }
-    if (request.approval_source !== "manual") {
-      throw new Error(`Unsupported attributed auth approval source '${request.approval_source}'.`);
-    }
-    throw new Error("Manual execution requires retained action-bound operator proof.");
+    throw new Error("Manual execution requires the approval's retained signature evidence.");
   }
 
   private finalizationAttribution(request: AuthRequest): AttributionContext {
@@ -5229,12 +4895,6 @@ export class AuthQueue {
       evidence_id: evidence.id,
       authorizer_user_id: request.approved_by_user_id,
     };
-  }
-
-  private needsPresenceChallenge(request: AuthRequest): boolean {
-    return request.approval_source === "presence_challenge" &&
-      !this.executionEnvs.get(request.id)?.SSH_AUTH_SOCK &&
-      Boolean(this.autoApprover?.presenceChallenge);
   }
 
   async reject(id: string, reason = "Rejected by operator.", actor?: AuthLifecycleActor): Promise<AuthRequest> {
@@ -5344,16 +5004,13 @@ export class AuthQueue {
     if (request.type !== "merge") return null;
     const mergeSha = extractSuccessfulMergeCommitSha(request.output);
     if (!mergeSha) return "Missing or malformed merge publication receipt.";
-    const retainedEvidence = request.execution_evidence_id ? getAttributionEvidence(this.db, request.execution_evidence_id) : null;
-    if (retainedEvidence?.evidence_method === "credential_signature" && retainedEvidence.details.publication_verified === true && retainedEvidence.details.verified === true && retainedEvidence.details.commit_sha === mergeSha && retainedEvidence.details.signer_user_id === request.approved_by_user_id) return null;
     if (!request.approved_by_user_id || !request.merge_preflight_base_sha || !request.merge_head_sha || !request.merge_candidate_tree_sha) return "Merge publication has no exact reviewed candidate or approving user.";
     const state = extractAtomicMergeState(request.output);
     if (state.invalid || !state.prepared || state.prepared.merge_sha !== mergeSha || state.prepared.base_sha !== request.merge_preflight_base_sha ||
       state.prepared.head_sha !== request.merge_head_sha || state.prepared.tree_sha !== request.merge_candidate_tree_sha) return "Merge publication receipt does not match the prepared reviewed candidate.";
     const cwd = request.target_repo_root ?? request.cwd;
     if (!cwd) return "Merge publication repository is unavailable.";
-    const lease = request.approval_lease_id ? getDelegatedSigningLease(this.db, request.approval_lease_id) : null;
-    const signature = (await verifyAuthorizedMergeCommitSignature(this.db, cwd, mergeSha, request.approved_by_user_id, lease?.credential_id));
+    const signature = (await verifyApprovedMerge(this.db, cwd, request, mergeSha));
     if (!signature.verified) return `Merge publication signature is not authorized: ${signature.reason}.`;
     try {
       const options = { timeout: 5_000, env: authGitEnv() };
@@ -5542,30 +5199,13 @@ export class AuthQueue {
     }
   }
 
-  private executeInBackground(request: AuthRequest, settleClearance?: () => Promise<void>): Promise<void> {
+  private executeInBackground(request: AuthRequest): Promise<void> {
     return withLedgerMutationActor({ actor_type: "system", attribution: systemAction() },
       () => withRequestOrigin(authRequestInitiatingOrigin(this.db, request.id),
-        () => this.executeOriginBoundRequest(request, settleClearance)));
+        () => this.admitOriginBoundRequest(request)));
   }
 
-  private async executeOriginBoundRequest(request: AuthRequest, settleClearance?: () => Promise<void>): Promise<void> {
-    let transferred = false;
-    let primary: { error: unknown } | undefined;
-    try {
-      await this.admitOriginBoundRequest(request, settleClearance, () => { transferred = true; });
-    } catch (error) {
-      primary = { error };
-      throw error;
-    } finally {
-      if (!transferred && settleClearance) await this.settleClearanceOwnership(settleClearance, primary);
-    }
-  }
-
-  private async admitOriginBoundRequest(
-    request: AuthRequest,
-    settleClearance: (() => Promise<void>) | undefined,
-    transfer: () => void,
-  ): Promise<void> {
+  private async admitOriginBoundRequest(request: AuthRequest): Promise<void> {
     // Remote-mode requests are executed by an external process — the daemon
     // only manages state transitions. Do not spawn a local executor.
     if (request.execution_mode === "remote") {
@@ -5624,7 +5264,6 @@ export class AuthQueue {
                 (await this.parkExecutionForRestart(request, queuedPublicationBlocker?.message));
                 return;
               }
-              execution = await this.prepareAuthExecution(request, admitted);
               executionEnv = this.executionEnvs.get(request.id);
               if (!this.executionIsCurrent(request.id, execution)) return;
               const executedAt = Date.now();
@@ -5681,14 +5320,12 @@ export class AuthQueue {
               if (this.disposed || !this.isDbOpen()) return;
               const completed = this.requireRequest(request.id);
               if (completed.status !== "completed") return;
-              if (settleClearance) await settleClearance();
               await this.afterConvergenceHook(completed);
             } catch (error) {
               if (error != null && typeof error === "object"
                   && "processGroupSettled" in error && error.processGroupSettled === false) {
                 settlementSafe = false;
                 this.uncertainRepoExecutions.set(chainKey, request.id);
-                this.retainClearanceFailure(error);
                 if (this.isDbOpen()) {
                   this.db.prepare("UPDATE auth_requests SET error = ?, updated_at = ? WHERE id = ?")
                     .run(`Execution termination is unproven; repository execution remains fenced: ${errorMessage(error) ?? String(error)}`, this.now(), request.id);
@@ -5709,12 +5346,7 @@ export class AuthQueue {
             } finally {
               // No terminal-proof handle exists; the unresolved run keeps the repository fenced.
               if (!settlementSafe) await new Promise<never>(() => undefined);
-              if (settleClearance && settlementSafe) {
-                try { await settleClearance(); }
-                catch (error) { this.retainClearanceFailure(error, settleClearance); }
-              }
               this.queuedAdmissions.delete(runPromise);
-              this.clearanceExecutions.delete(runPromise);
               if (this.inFlight.get(request.id) === runPromise) this.inFlight.delete(request.id);
               if (this.executionEnvs.get(request.id) === executionEnv) this.executionEnvs.delete(request.id);
             }
@@ -5723,8 +5355,6 @@ export class AuthQueue {
         this.executionChains.set(chainKey, tail);
         this.inFlight.set(request.id, runPromise);
         this.queuedAdmissions.add(runPromise);
-        if (settleClearance) this.clearanceExecutions.add(runPromise);
-        transfer();
         // Bound map growth: drop the chain entry once this settles, but only if no
         // later request has already chained onto it (chain installation is synchronous, so
         // the stored tail is authoritative at this microtask).
@@ -6055,8 +5685,6 @@ export class AuthQueue {
         auth_request_id: current.id,
         repo_ref: current.repo ?? current.cwd ?? current.target_repo_root ?? null,
         merge_output: current.output,
-        approval_source: current.approval_source,
-        approval_lease_id: current.approval_lease_id,
         approved_by_user_id: current.approved_by_user_id,
         execution_evidence_id: current.execution_evidence_id,
       }, () => this.assertExecution(current.id, execution));
@@ -6176,6 +5804,7 @@ export class AuthQueue {
           "Convergence retry applies only to a successfully executed request.",
         );
       }
+      if (!hookId || hookId === MANDIBLE_REBUILD_HOOK_ID) this.hookManager.reconcileRuntimeRetirement?.(request.id);
       if (this.hookManager.listRuns(request.id).some(run => run.state === 'retired' && (!hookId || run.hook_id === hookId))) {
         throw new AuthQueueError('invalid_status', 'Retired delivery cannot be retried.');
       }
@@ -6320,7 +5949,6 @@ export class AuthQueue {
       return;
     }
     this.restartAvailability?.markShutdownStarted(selfRequestId);
-    await this.closeClearanceAuthority();
     this.failedConvergenceDrain = null;
     this._rebuildFailure = null;
     this.restartFn();
@@ -6350,7 +5978,7 @@ export class AuthQueue {
       const now = this.now();
       // Bug: f690657 — when result is null (executor threw before the child
       // process exited), use exit_code=1 rather than null. exit_code=null is
-      // treated by isFailedLike as "no exit code yet" which makes completed+null
+      // treated as "no exit code yet" which makes completed+null
       // look like a successful completion, hiding the failure from the user.
       let exitCode = result != null ? (result.exit_code ?? 1) : 1;
       const prior = this.requireRequest(id);
@@ -6875,7 +6503,7 @@ export class AuthQueue {
     const custody = this.custodyAuthority(request);
     return JSON.stringify([request.id, request.status, request.approved_at, request.last_executed_at,
       request.command, request.commit_message, request.commit_message_digest, request.approved_by_user_id,
-      request.approval_source, request.approval_lease_id, request.clearance_use_id, request.execution_evidence_id,
+      request.execution_evidence_id,
       request.cwd, request.target_repo_root, request.base_branch, request.head_branch,
       request.merge_preflight_base_sha, request.merge_head_sha, request.merge_candidate_tree_sha, request.merge_candidate_pin_sha, custody]);
   }
@@ -6906,13 +6534,6 @@ export class AuthQueue {
     if (!request.approved_by_user_id || !credentialId || authorizedMergeSignerLines(this.db, request.approved_by_user_id, credentialId).length === 0) {
       throw new AuthQueueError("invalid_status", "Publication signer is no longer authorized.");
     }
-    if (request.approval_lease_id) {
-      const lease = getDelegatedSigningLease(this.db, request.approval_lease_id);
-      const now = this.now();
-      if (!lease || lease.owner_user_id !== request.approved_by_user_id || lease.credential_id !== credentialId || now < lease.minted_at || now >= lease.expires_at) {
-        throw new AuthQueueError("invalid_status", "Publication approval lease is no longer valid.");
-      }
-    }
   }
 
   private async attachSuccessfulSignatureEvidence(request: AuthRequest): Promise<AuthRequest> {
@@ -6924,11 +6545,6 @@ export class AuthQueue {
 
   private async prepareSuccessfulSignatureEvidence(request: AuthRequest): Promise<(stored: AuthRequest) => AuthRequest> {
     if (!isAuthMergeCommand(request) || !request.requested_by_user_id) return stored => stored;
-
-    const authorizationEvidence = request.execution_evidence_id
-      ? getAttributionEvidence(this.db, request.execution_evidence_id)
-      : null;
-    if (authorizationEvidence?.evidence_method === "credential_signature" && authorizationEvidence.details.commit_sha) return stored => stored;
 
     const commitSha = extractSuccessfulMergeCommitSha(request.output);
     const cwd = request.target_repo_root ?? request.cwd;
@@ -6942,9 +6558,8 @@ export class AuthQueue {
     }
     let verification: MergeSignatureVerification;
     try {
-      const lease = request.approval_lease_id ? getDelegatedSigningLease(this.db, request.approval_lease_id) : null;
       verification = cwd && commitSha && request.approved_by_user_id
-        ? (await verifyAuthorizedMergeCommitSignature(this.db, cwd, commitSha, request.approved_by_user_id, lease?.credential_id))
+        ? (await verifyApprovedMerge(this.db, cwd, request, commitSha))
         : { verified: false, commit_sha: commitSha, fingerprint: null, credential_id: null, user_id: null, reason: "missing_publication_identity" };
     } catch {
       verification = {
@@ -6962,6 +6577,10 @@ export class AuthQueue {
     return (stored) => this.db.transaction(() => {
       this.assertPublicationAuthority(stored, verification.credential_id);
       const authorizationEvidence = stored.execution_evidence_id ? getAttributionEvidence(this.db, stored.execution_evidence_id) : null;
+      if (authorizationEvidence?.details.publication_verified === true) {
+        if (authorizationEvidence.details.commit_sha !== verification.commit_sha) throw new Error("Recorded publication differs from the verified merge.");
+        return stored;
+      }
       const verifiedAt = stored.resolved_at ?? this.now();
       const current = this.readRequestByExactId(request.id);
       if (!current) throw new Error(`Auth request '${request.id}' disappeared during finalization.`);
@@ -6980,7 +6599,6 @@ export class AuthQueue {
           auth_request_id: request.id,
           authorizer_user_id: request.approved_by_user_id,
           executor_user_id: systemAction().user_id,
-          approval_source: request.approval_source,
           verified: verification.verified,
           publication_verified: true,
           commit_sha: verification.commit_sha,
@@ -7327,8 +6945,6 @@ export class AuthQueue {
         issues: null,
         commit_message: request.commit_message,
         merge_output: request.output,
-        approval_source: request.approval_source,
-        approval_lease_id: request.approval_lease_id,
         approved_by_user_id: request.approved_by_user_id,
         execution_evidence_id: request.execution_evidence_id,
       }, () => this.assertExecution(request.id, execution));
@@ -7491,8 +7107,6 @@ export class AuthQueue {
           issue_closures: [action.target_issue_ref],
           closure_issue_ids: [issueId],
           merge_output: request.output,
-          approval_source: request.approval_source,
-          approval_lease_id: request.approval_lease_id,
           approved_by_user_id: request.approved_by_user_id,
           execution_evidence_id: request.execution_evidence_id,
         });
@@ -8561,13 +8175,9 @@ export class AuthQueue {
     };
   }
 
-  private isFailedLike(request: AuthRequest): boolean {
-    return request.status === "failed" || request.status === "expired" || request.status === "needs_rebase";
-  }
-
   private requireActionEditableRequest(id: string): AuthRequest {
     const request = this.requireRequest(id);
-    if (request.status !== "pending" && !this.isFailedLike(request)) {
+    if (request.status !== "pending" && !authRequestHasRetryableStatus(request)) {
       throw new AuthQueueError(
         "invalid_status",
         `Request is ${request.status}, cannot modify staged actions.`,

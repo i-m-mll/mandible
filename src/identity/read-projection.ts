@@ -1,4 +1,5 @@
 import type { Db } from "../db.js";
+import { isAuthMergeCommand } from "../auth-context.js";
 
 import type {
   ReadUserIdentity,
@@ -35,6 +36,11 @@ export class AttributionReadResolver {
   private readonly credentials = new Map<string, ReadCredentialIdentity | null>();
 
   constructor(private readonly db: Db) {}
+
+  lifecycleRevision(requestId: string): number | null {
+    return (this.db.prepare("SELECT MAX(revision) AS revision FROM auth_request_lifecycle_events WHERE auth_request_id = ?")
+      .get(requestId) as { revision: number | null }).revision;
+  }
 
   user(userId: string | null | undefined): ReadUserIdentity | null {
     if (!userId) return null;
@@ -134,9 +140,11 @@ export function resolvedActorDisplay(
 export function authAttributionReadFields(
   resolver: AttributionReadResolver,
   request: {
+    id: string;
     requested_by_user_id?: string | null;
     approved_by_user_id?: string | null;
     execution_evidence_id?: string | null;
+    command?: string | null;
   },
 ): AuthAttributionReadFields {
   const executionEvidence = resolver.attribution({ evidence_id: request.execution_evidence_id });
@@ -147,5 +155,7 @@ export function authAttributionReadFields(
     // Derived from the recorded verification RESULT, not from the evidence
     // method name. Those disagree whenever verification failed.
     merge_signature: resolver.mergeSignatureClaim(request.execution_evidence_id),
+    approval_tier: isAuthMergeCommand(request) ? "signed" : "courtesy",
+    lifecycle_revision: resolver.lifecycleRevision(request.id),
   };
 }

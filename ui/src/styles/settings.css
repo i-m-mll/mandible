@@ -297,12 +297,6 @@
   font-size: 12px;
 }
 
-.settings-view__delegated-signing {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
 .settings-view__warning {
   margin: 4px 0 0;
   font-size: 12px;

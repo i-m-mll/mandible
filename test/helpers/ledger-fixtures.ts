@@ -38,6 +38,8 @@ export const SYSTEM_ACTOR = { attribution: systemAction() };
 export interface OperatorSeed {
   slug: string;
   display_name?: string;
+  /** Defaults to `<slug>@localhost`; protected merges are authored by it. */
+  email?: string;
 }
 
 export interface AgentSeed {
@@ -82,6 +84,7 @@ function seedUsers(db: Db, options: CreateMigratedDbOptions): MigratedDbSeeds {
     const input = {
       slug: options.operator.slug,
       display_name: options.operator.display_name ?? options.operator.slug,
+      email: options.operator.email ?? `${options.operator.slug}@localhost`,
     };
     seeds.operator = options.now === undefined
       ? setupOperator(db, input)

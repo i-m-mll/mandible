@@ -411,7 +411,7 @@ it('shares ledger surfaces between two active local agent sessions without proje
   registerProviderRoutes(router, reader);
   registerSpacesRoutes(router);
   registerBriefingRoutes(router, db, reader);
-  registerProjectRoutes(router);
+  registerProjectRoutes(router, null);
   const project = addProject(db, { project_key: 'shared-ledger' });
   const other = addProject(db, { project_key: 'other-ledger' });
   const agents = [

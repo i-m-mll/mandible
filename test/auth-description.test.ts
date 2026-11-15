@@ -1,14 +1,12 @@
 // @vitest-environment node
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { describe, expect, it, vi } from "vitest";
-import { createQueue, createMigratedDb, createAuthCheckRepo, configureSigningCredential, AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
+import { createQueue, createMigratedDb, createAuthCheckRepo, AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import type { AuthRequestInput } from "../src/types.js";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { addCredential } from "../src/users/store.js";
 import { setDb } from "../src/db.js";
-import * as operatorProof from "../src/auth-operator-proof.js";
 import { getOperator } from "../src/users/store.js";
 import { authRequestSnapshot } from "../src/auth-request-snapshot.js";
 
@@ -48,7 +46,7 @@ describe("approval Description", () => {
     const credential = addCredential(db,operator.id,{ type: "api_token", fingerprint: "description-api" });
     const router = authenticatedTestRouter(operator,{ credentialId: credential.id });
     const queue = createQueue({ db, backgroundMaintenance: false });
-    registerAuthRoutes(router,queue,new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
     try {
       for (const [type, code] of [["merge", "change_message_required"], ["config-change", "description_required"]] as const) {
         const result = await router.invoke({ method: "POST", url: "/api/auth/v2/request",
@@ -75,35 +73,6 @@ describe("approval Description", () => {
     expect(request.commit_message).toBe(AUTH_MERGE_REVIEW.commit_message);
     expect(request.commit_message_digest).toMatch(/^[a-f0-9]{64}$/);
     (await queue.dispose());
-  });
-
-  it("refuses an actual signed proof when Description changes while signing is held", async () => {
-    const db = createMigratedDb();
-    const repo = createAuthCheckRepo();
-    configureSigningCredential(db, repo, "ssh_key");
-    const queue = createQueue({ db, backgroundMaintenance: false });
-    const request = (await queue.submit({ type: "config-change", command: "echo private", cwd: repo,
-      title: "Private configuration", ...AUTH_COMMAND_REVIEW, execution_mode: "remote" }));
-    let hold!: () => void;
-    let observed!: () => void;
-    const released = new Promise<void>(resolve => { hold = resolve; });
-    const signed = new Promise<void>(resolve => { observed = resolve; });
-    const original = operatorProof.signOperatorChallenge;
-    const signer = vi.spyOn(operatorProof, "signOperatorChallenge").mockImplementation(async (...args) => {
-      const result = await original(...args);
-      expect(result.ok).toBe(true);
-      observed();
-      await released;
-      return result;
-    });
-    const approval = queue.approveWithOperatorProof(request.id, getOperator(db)!.id);
-    try {
-      await signed;
-      (await queue.update(request.id, { commit_message: "Apply the separately reviewed fixture configuration." }));
-      hold();
-      await expect(approval).rejects.toThrow(/changed|proof|signing/i);
-      expect((await queue.getRequest(request.id))?.status).toBe("pending");
-    } finally { hold(); signer.mockRestore(); (await queue.dispose()); }
   });
 
   it("leaves historical pending, approved and terminal snapshots byte-identical on reads", async () => {

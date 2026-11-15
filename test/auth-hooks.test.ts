@@ -1,4 +1,3 @@
-import * as operatorProof from "../src/auth-operator-proof.js";
 import { AUTH_COMMAND_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, createAuthCheckRepo } from "./helpers/auth-queue-fixtures.js";
@@ -532,7 +531,7 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
 });
 
 describe("hook registration authority (issue 27241e6)", () => {
-  it("requires fresh operator presence for hook configuration even with a settings grant", async () => {
+  it("keeps hook configuration behind authentication and the settings grant", async () => {
     const db = migratedMemoryDb();
     const dir = tempDir("mandible-hook-authority-");
     try {
@@ -583,23 +582,12 @@ describe("hook registration authority (issue 27241e6)", () => {
       });
       expect(read.status).toBe(200);
 
-      // A standing settings grant still cannot authorize a protected hook change.
+      // A hook change is a courtesy action: the settings grant is the whole authorization.
       addGrant(db, {
         subject_type: "user",
         subject: agent.id,
         permission: "change_settings",
       });
-      const granted = await router.invoke({
-        method: "POST",
-        url: "/api/auth/hooks",
-        body,
-        credential: token,
-        transport: "http",
-      });
-      expect(granted).toMatchObject({ status: 403, body: { code: "operator_presence_required" } });
-      const signingCredential = addCredential(db, operator.id, { type: "ssh_key", fingerprint: `SHA256:${"H".repeat(43)}`,
-        public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"H".repeat(20)}` });
-      vi.spyOn(operatorProof, "signOperatorChallenge").mockResolvedValue({ ok: true, credentialId: signingCredential.id, signature: "verified-operator-proof" });
       const approved = await router.invoke({ method: "POST", url: "/api/auth/hooks", body, credential: token, transport: "http" });
       expect(approved.status).toBe(201);
       const created = approved.body as { id: string; required: boolean };

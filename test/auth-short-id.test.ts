@@ -11,7 +11,6 @@ import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fix
 // database, never on the response body.
 import { afterEach, describe, expect, it } from "vitest";
 
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { appendAuthLifecycleEvent } from "../src/auth-lifecycle.js";
 import { authRequestSnapshot } from "../src/auth-request-snapshot.js";
 import { AuthQueue } from "../src/auth-queue.js";
@@ -41,7 +40,7 @@ function setup(): { router: Router; queue: AuthQueue; db: Db; events: SseEvent[]
   const router = authenticatedTestRouter(operator, { credentialId: credential.id });
   const events: SseEvent[] = [];
   const queue = new AuthQueue({ db, broadcast: (event) => { events.push(event); } });
-  registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+  registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
   return { router, queue, db, events };
 }
 
@@ -101,7 +100,7 @@ describe("auth request short ids", () => {
     try {
       const response = await router.invoke({
         method: "GET",
-        url: `/api/auth/clearances?request_id=${prefix}`,
+        url: `/api/auth/request/${prefix}`,
       });
       expect(response.status, JSON.stringify(response.body)).toBe(200);
     } finally {

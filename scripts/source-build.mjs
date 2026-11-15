@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { writeBuildRevision } from './build-revision.mjs';
 import { typeScriptCompiler } from './run-tsc.js';
+import { daemonBuildOutput } from './desktop-build-layout.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -12,7 +13,7 @@ export async function sourceBuild(directory, mode = 'build', { timeout = 60_000 
   if (!['build', 'typecheck', 'server'].includes(mode)) throw new Error(`Unknown source build mode: ${mode}`);
   const checking = mode === 'typecheck';
   const projects = mode === 'server' ? ['backend'] : ['backend', 'ui'];
-  if (!checking) await fs.rm(path.join(directory, 'dist'), { recursive: true, force: true });
+  if (!checking) await fs.rm(path.join(directory, daemonBuildOutput), { recursive: true, force: true });
   await fs.mkdir(path.join(directory, '.cache/typescript'), { recursive: true });
   const compiler = typeScriptCompiler(directory);
   const commands = projects.map(project => {

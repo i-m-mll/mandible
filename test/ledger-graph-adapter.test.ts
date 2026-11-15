@@ -77,10 +77,9 @@ function insertAuthRequest(id: string, repo: string): void {
   db.prepare(
     `INSERT INTO auth_requests (
       id, type, command, title, repo, commit_message, issue_ids, issues,
-      execution_mode, status, created_at, updated_at, expires_at, output,
-      approval_source
+      execution_mode, status, created_at, updated_at, expires_at, output
     ) VALUES (?, 'merge', 'git merge feature/x', 'Merge feature/x', ?, NULL, NULL, NULL,
-      'daemon', 'completed', ?, ?, ?, '', 'manual')`,
+      'daemon', 'completed', ?, ?, ?, '')`,
   ).run(id, repo, now, now, now + 60_000);
 }
 
