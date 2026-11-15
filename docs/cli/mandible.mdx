@@ -355,12 +355,13 @@ instructs the caller to rebase and retry. Unknown statuses never report success.
 If the final status read is still in flight after SSE closes, the command
 reports that state and exits 1 without claiming delivery.
 
-**Fallback on submission interruption:**
+**Submission interruption:**
 
 `mandible auth request` requires the daemon-owned preflight. If the daemon
-becomes unreachable after preflight but before request submission completes,
-the CLI can still print or spawn the equivalent `mandible auth merge` command
-for manual recovery.
+becomes unreachable after preflight but before submission is confirmed, the CLI
+exits 1 without executing anything and says to inspect the queue
+(`mandible auth list`) before retrying. There is no manual merge path:
+`mandible auth merge` refuses without an approved signed candidate.
 
 ### mandible auth merge
 
