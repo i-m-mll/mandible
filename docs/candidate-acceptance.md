@@ -146,6 +146,8 @@ reason)`, which explicitly finalizes the retained run with a discard disposition
 and uses ordinary owned-run cleanup. Pending approval never
 expires retained bytes. The immutable accepted-release receipt and compact cleanup records stay outside the package cleanup root, so receipt references and digests survive disposal.
 
+Release operations acquire a permanent namespace guard before opening a run lock. Negotiated v2 runs use the hidden `accepted-releases/.v2` namespace, a versioned owner record, and lock filenames outside the legacy lifecycle convention. Once the root is absent and its compact outcome records completed cleanup, later operations cannot open a new per-run lock. Retirement checks those facts under the namespace guard, takes the existing child lock exclusively, and removes the verified lock and PID files. Maintenance retries interrupted retirement. Legacy pairs remain until a cutover can drain older installed runtimes, retained helpers, and source scripts and fence their future invocations against the authority home.
+
 The command reports missing platform or candidate prerequisites as `unavailable`, and execution, interaction, log or cleanup failures as `failed`; the daemon records either as a failed run with the reason. Only `passed` exits successfully. An incomplete health observation never passes
 this finite gate. Event-loop stalls, lag warnings, memory warnings, concrete
 errors and non-HTTP event storms retain their acceptance policy. Aggregate HTTP

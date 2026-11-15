@@ -7,6 +7,8 @@ import { parseArgs } from 'node:util';
 import Database from '../src/sqlite.ts';
 import { reconcileGeneratedScratch, scratchCursors, restoreScratchCursors } from './generated-scratch.mjs';
 import { reconcileAcceptedReleases, releaseCursors, restoreReleaseCursors } from './accepted-release-retention.mjs';
+import { withAcceptedReleaseRunLock } from './accepted-release-lock.mjs';
+import { ACCEPTED_RELEASE_DIRECTORY, isVersionedReleaseStorage } from './accepted-release-storage.mjs';
 import { withOwnedRunLock, finalizeOwnedRun, saveOwnedMetadata, ownedRunIdentityMatches } from './owned-run.mjs';
 
 export async function generatedStorage({ home, cache, db, apply = false, limit = 8, cursors, until = Date.now() + 5000 }) {
@@ -30,7 +32,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (values.retain || values.release) {
     if (!values.apply || !values.reason?.trim() || values.retain && values.release) throw new Error('Investigation changes require --apply, one --retain/--release metadata path and --reason.');
     const file = path.resolve(values.retain || values.release);
-    const result = await withOwnedRunLock(path.dirname(file), () => {
+    const root = path.dirname(file);
+    const storage = fs.realpathSync(path.dirname(root));
+    const withRunLock = path.basename(storage) === ACCEPTED_RELEASE_DIRECTORY || isVersionedReleaseStorage(storage)
+      ? withAcceptedReleaseRunLock : withOwnedRunLock;
+    const result = await withRunLock(root, () => {
       const metadata = JSON.parse(fs.readFileSync(file, 'utf8'));
       const { ownership } = metadata;
       if (values.release && ownership.state !== 'investigating') throw new Error('Only an explicitly retained investigation can be released.');
