@@ -3641,10 +3641,8 @@ export class AuthQueue {
     if (!cwd || !tree || !base || !head || !branch) {
       throw new AuthQueueError("merge_check_failed", "The request has no retained merge candidate. No protected state changed.");
     }
-    const [identity, message] = await Promise.all([
-      this.gitCommitIdentity(cwd),
-      request.commit_message_digest ? Promise.resolve(this.reviewedChangeMessage(request)) : defaultMergeMessage(cwd, head, branch),
-    ]);
+    const identity = this.operatorCommitIdentity();
+    const message = request.commit_message_digest ? this.reviewedChangeMessage(request) : await defaultMergeMessage(cwd, head, branch);
     return buildMergeCommit({ tree, parents: [base, head], message, identity, time: commitTime(at) });
   }
 
@@ -4118,19 +4116,13 @@ export class AuthQueue {
     return this.nativeMergeHooksPresent(await this.observedNativeMergeHookPaths(cwd));
   }
 
-  private async gitCommitIdentity(cwd: string | null): Promise<{ name: string; email: string }> {
-    if (!cwd) throw new AuthQueueError("invalid_command", "Atomic merge repository path is unavailable.");
-    const read = async (key: string): Promise<string> => (await childOutput("git", ["config", "--get", key], {
-      cwd,
-      encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-    })).trim();
-    const name = (await read("user.name"));
-    const email = (await read("user.email"));
-    if (!name || !email) {
-      throw new AuthQueueError("invalid_command", "Atomic merge requires configured Git author identity.");
+  /** The merge commit's author and committer: the operator as Mandible records them, never Git configuration. */
+  private operatorCommitIdentity(): { name: string; email: string } {
+    const operator = getOperator(this.db);
+    if (!operator?.email?.trim()) {
+      throw new AuthQueueError("invalid_command", "Set the operator's email in Settings; it is the author of every protected merge. No protected state changed.");
     }
-    return { name, email };
+    return { name: operator.display_name, email: operator.email.trim() };
   }
 
   private async cacheMergeCandidate(request: AuthRequest): Promise<string | null> {
