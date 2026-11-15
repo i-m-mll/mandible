@@ -36,6 +36,8 @@ import { authRequestChangesBuildInputs, MANDIBLE_REBUILD_HOOK_ID } from "./runti
 import { observationPending, runtimeObservationAcceptance, runtimeHandoffDisposition, runtimeReceiptAcceptanceMarker } from "../scripts/runtime-observation.mjs";
 
 import { extractSuccessfulMergeCommitSha } from "./auth-signature-verification.js";
+import { appendAuthLifecycleEvent } from "./auth-lifecycle.js";
+import { systemAction } from "./identity/resolver.js";
 import { getDb } from "./db.js";
 import { getMandibleHome } from "./platform-paths.js";
 import { raiseUserNotification } from "./notices/user-notifications.js";
@@ -428,9 +430,17 @@ export class AuthHookManager {
           || JSON.stringify(binding.acceptedRelease ?? null) !== JSON.stringify(intent.publication.acceptedRelease ?? null))) {
       throw new Error('Retired runtime handoff differs from its hook execution.');
     }
-    const result = this.db.prepare("UPDATE auth_hook_executions SET state = 'retired' WHERE id = ? AND state IN ('pending', 'running', 'failed')").run(run.id);
-    if (result.changes) this.cleanupEpoch += 1;
-    return !!result.changes;
+    const changed = this.db.transaction(() => {
+      const result = this.db.prepare("UPDATE auth_hook_executions SET state = 'retired' WHERE id = ? AND state IN ('pending', 'running', 'failed')").run(run.id);
+      if (!result.changes) return false;
+      const request = this.db.prepare('SELECT status FROM auth_requests WHERE id = ?').get(run.auth_request_id) as Pick<AuthRequest, 'status'>;
+      appendAuthLifecycleEvent(this.db, { requestId: run.auth_request_id, eventType: 'revised',
+        priorStatus: request.status, nextStatus: request.status, actor: { ...systemAction(), authority_path: 'system' },
+        reason: `Reconciled retired runtime handoff for execution ${run.id} from its exact retirement record.`, occurredAt: Date.now() });
+      return true;
+    }).immediate();
+    if (changed) this.cleanupEpoch += 1;
+    return changed;
   }
 
   reconcileRuntimeRetirement(requestId: string): void {

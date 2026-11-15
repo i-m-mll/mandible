@@ -22,10 +22,21 @@ function producerAuthority(producer) {
 }
 
 function producerOwners(metadata) {
-  return metadata.pendingAcceptance ? [
-    { run: metadata.ownership, reason: 'acceptance producer lifetime live or uncertain' },
-    { run: producerAuthority(metadata.pendingAcceptance), reason: 'acceptance consumers live or uncertain' },
-  ] : [];
+  const { ownership, pendingAcceptance } = metadata;
+  const owners = [];
+  if (pendingAcceptance || ownership?.processOwner || ownership?.processes?.length) {
+    owners.push({ run: ownership, reason: 'acceptance producer lifetime live or uncertain' });
+  }
+  // A seal is published only after acceptance's child processes have settled.
+  // A missing scratch root supplies no additional consumer to observe.
+  if (pendingAcceptance) {
+    const root = pendingAcceptance.scratchRoot;
+    if (!path.isAbsolute(root ?? '')) throw new Error('Acceptance scratch locator is invalid.');
+    const entry = fs.lstatSync(root, { throwIfNoEntry: false });
+    if (entry) owners.push({ run: entry.isDirectory() ? producerAuthority(pendingAcceptance) : null,
+      reason: 'acceptance consumers live or uncertain' });
+  }
+  return owners;
 }
 
 export function acceptedReleaseProducerReferences(metadata) {
@@ -221,10 +232,7 @@ export async function reconcileAcceptedReleases(db, home, { apply = false, limit
       const metadata = JSON.parse(fs.readFileSync(path.join(root, 'metadata.json'), 'utf8'));
       const run = metadata.ownership;
       const reasons = [...acceptedReleaseFilesystemReferences(home, reference), ...acceptedReleaseDatabaseReferences(db, reference, receipt)];
-      if (run.state !== 'terminal') {
-        if ((run.processOwner || run.processes?.length) && !generatedOwnerIdle(run)) reasons.push('acceptance producer lifetime active or uncertain');
-        reasons.push(...acceptedReleaseProducerReferences(metadata));
-      }
+      if (run.state !== 'terminal') reasons.push(...acceptedReleaseProducerReferences(metadata));
       if (reasons.length) { results.push({ reference, action: 'retain', reasons }); continue; }
       if (!apply) { results.push({ reference, action: 'dispose', reason: 'no operational references' }); continue; }
       const claim = mark => claimAcceptedReleaseDisposal(db, reference, receipt, mark);

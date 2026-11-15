@@ -222,10 +222,10 @@ export async function disposeAcceptedRelease(reference, expectedCandidate, reaso
       throw new Error('Accepted release owner changed or is absent without a disposition.');
     }
     if (!outcome && ownership.state === 'terminal') throw new Error('Terminal release lacks its exact disposition.');
-    if (hasRoot && [ownership, outcome?.generatedRecovery].some(run => (run?.processOwner || run?.processes?.length) && !generatedOwnerIdle(run, root))) {
+    if (hasRoot && outcome && [ownership, outcome.generatedRecovery].some(run => (run?.processOwner || run?.processes?.length) && !generatedOwnerIdle(run, root))) {
       throw new Error('Accepted release is retained: acceptance producer lifetime live or uncertain');
     }
-    if (hasRoot && !outcome && metadata.pendingAcceptance) {
+    if (hasRoot && !outcome) {
       const { acceptedReleaseProducerReferences, acceptedReleaseProducerReferencesAsync } = await import('./accepted-release-retention.mjs');
       const producers = deferCleanup ? await acceptedReleaseProducerReferencesAsync(metadata) : acceptedReleaseProducerReferences(metadata);
       if (producers.length) throw new Error(`Accepted release is retained: ${producers.join(', ')}`);

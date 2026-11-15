@@ -181,10 +181,14 @@ it('retires exact archived handoffs without rewriting attempts or settling withh
     await expect(hooks.reconcileRuntimeHandoffs(adoption, failed)).resolves.toEqual([]);
     expect(f.hook()).toEqual({ ...failure, state: 'retired' });
     expect(f.read()).toEqual(request);
-    expect(listAuthLifecycleEvents(f.db, f.id)).toEqual(events);
+    const reconciled = listAuthLifecycleEvents(f.db, f.id);
+    expect(reconciled.slice(0, -1)).toEqual(events);
+    expect(reconciled.at(-1)).toMatchObject({ event_type: 'revised', authority_path: 'system',
+      reason: expect.stringContaining(f.execution) });
     expect(adoption).not.toHaveBeenCalled();
     expect(failed).not.toHaveBeenCalled();
     expect(() => hooks.grantRetry(f.id)).toThrow('cannot be retried');
+    expect(listAuthLifecycleEvents(f.db, f.id)).toEqual(reconciled);
     await reconcileAcceptedReleases(f.db, f.home, { apply: true });
     expect(fs.existsSync(f.accepted.app)).toBe(false);
   } finally { vi.unstubAllEnvs(); f.close(); }

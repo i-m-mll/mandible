@@ -240,7 +240,8 @@ it('verifies the sealed app after losing the acceptance cache and refuses change
     saveOwnedMetadata(metadataFile, { ...originalMetadata, ownership: { ...originalMetadata.ownership, state: 'terminal' } });
     expect(() => resolveAcceptedRelease(reference, candidate)).toThrow('claimed for disposal');
     expect(readAcceptedReleaseReceipt(reference, candidate).candidate).toEqual(candidate);
-    fs.writeFileSync(metadataFile, metadataBytes);
+    saveOwnedMetadata(metadataFile, { ...originalMetadata, ownership: { ...originalMetadata.ownership,
+      processOwner: { pid: process.pid, identity: 'settled acceptance fixture lifetime' } } });
     const receiptFile = Buffer.from(reference.split(':')[2], 'base64url').toString('utf8');
     const receiptBytes = fs.readFileSync(receiptFile);
     fs.writeFileSync(receiptFile, '{}');

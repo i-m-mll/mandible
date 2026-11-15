@@ -145,7 +145,7 @@ function dispositionAuthority(db, reference, receipt, outcome) {
 }
 
 function checkReferences(db, home, reference, receipt) {
-  const reasons = [...acceptedReleaseFilesystemReferences(home, reference), ...acceptedReleaseDatabaseReferences(db, reference, receipt, home)];
+  const reasons = [...acceptedReleaseFilesystemReferences(home, reference), ...acceptedReleaseDatabaseReferences(db, reference, receipt)];
   if (reasons.length) throw new Error(reasons.join('; '));
 }
 
