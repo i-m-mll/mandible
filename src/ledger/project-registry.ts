@@ -653,6 +653,19 @@ export interface AddOrUpdateCheckoutInput {
   remote_url?: string | null;
 }
 
+/**
+ * The change to a registered checkout's default branch that writing
+ * `input` would make, or null. A checkout's default branch is protected, so
+ * this change is a change to what the gate covers.
+ */
+export function checkoutDefaultBranchChange(db: Db, input: AddOrUpdateCheckoutInput): { root: string; from: string; to: string } | null {
+  const trimmedRoot = input.root?.trim() ?? "";
+  if (!trimmedRoot || input.default_branch === undefined) return null;
+  const root = path.resolve(trimmedRoot);
+  const existing = db.prepare("SELECT default_branch FROM ledger_project_checkouts WHERE root = ?").get(root) as { default_branch: string } | undefined;
+  return existing && existing.default_branch !== input.default_branch ? { root, from: existing.default_branch, to: input.default_branch } : null;
+}
+
 /** Intentionally register or update a checkout for a project. */
 export function addOrUpdateCheckout(
   db: Db,

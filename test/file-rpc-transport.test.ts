@@ -399,7 +399,7 @@ describe("file RPC transport", () => {
 
   it("denies routes outside the file transport allowlist", async () => {
     const router = new Router();
-    registerProjectRoutes(router);
+    registerProjectRoutes(router, null);
     router.post("/api/auth/request/:id/approve", (_req, res) => {
       res.json({ ok: true });
     }, { operation: { id: "fixture:post:/api/auth/request/:id/approve", effects: ["ledger:write"], requestSchema: null, reportingCategory: "data-write" }, fileRpc: "deny" });
@@ -439,7 +439,7 @@ describe("file RPC transport", () => {
       });
 
       const router = new Router();
-      registerProjectRoutes(router);
+      registerProjectRoutes(router, null);
       expect(router.resolveFileRpcPolicy("GET", "/api/projects")).toBe(true);
 
       const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });

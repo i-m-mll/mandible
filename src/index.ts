@@ -377,7 +377,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Issue e257e5c — bounded, attributable, first-party reminder mutations.
   registerManagedReminderRoutes(router, db);
   // Issue: 3d85f43 — canonical project registry CLI/API
-  registerProjectRoutes(router);
+  registerProjectRoutes(router, operatorSigning);
   // Issue: e89c2b0 — user registry core (users, credentials, bindings, evidence)
   registerUserRoutes(router, operatorSigning);
   // Issue: 708dc4c — client-auth token mint/list, mode toggle, and telemetry.

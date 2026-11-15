@@ -96,6 +96,51 @@ function inTrustSet(db: ReturnType<typeof getDb>, userId: string, type: string):
   return type === "ssh_key" && getOperator(db)?.id === userId;
 }
 
+/** File-RPC callers are agents; they never change the operator's credentials or status. */
+function notTheOperator({ params }: { params: Record<string, string> }): boolean {
+  const db = getDb();
+  const operatorId = getOperator(db)?.id;
+  if (!operatorId) return true;
+  try {
+    return resolveUserOrThrow(db, params.ref ?? "").id !== operatorId;
+  } catch {
+    return true;
+  }
+}
+
+function notAnOperatorSigner({ params }: { params: Record<string, string> }): boolean {
+  const db = getDb();
+  const credential = db.prepare("SELECT user_id, type FROM user_credentials WHERE id = ?").get(params.id ?? "") as { user_id: string; type: string } | undefined;
+  return !credential || !inTrustSet(db, credential.user_id, credential.type);
+}
+
+/**
+ * Trust an external public key as an operator signer. The fingerprint is
+ * derived from the key itself, so the key the sheet names is the key trusted.
+ */
+async function addOperatorSigner(db: ReturnType<typeof getDb>, signing: OperatorSigningAuthority, operatorId: string,
+  publicKey: string, label: string, signal: AbortSignal | undefined, claimedFingerprint?: string): Promise<{ credential: UserCredential; unchanged: boolean }> {
+  const resolved = await resolveOpenSshPublicKey(publicKey);
+  if (!resolved.ok) {
+    throw new UserRegistryError("invalid", resolved.reason === "expected_one_openssh_public_key_line"
+      ? "Provide exactly one OpenSSH public-key line."
+      : "The selected value is not a readable OpenSSH public key.");
+  }
+  if (claimedFingerprint && claimedFingerprint.trim() !== resolved.value.fingerprint) {
+    throw new UserRegistryError("invalid", `${claimedFingerprint.trim()} is not the fingerprint of the given key (${resolved.value.fingerprint}).`);
+  }
+  const existing = listCredentials(db, operatorId).find((credential) =>
+    credential.fingerprint === resolved.value.fingerprint && credential.type === "ssh_key");
+  if (existing) return { credential: existing, unchanged: true };
+  const input = { type: "ssh_key", fingerprint: resolved.value.fingerprint, public_material: resolved.value.material, label };
+  validateCredentialInput(db, operatorId, input);
+  const { value: credential } = signedOrThrow(await signing.authorizeTrustChange("signer_add",
+    { type: "ssh_key", custody: "external", fingerprint: resolved.value.fingerprint, public_key: resolved.value.material },
+    `trust the signing key ${resolved.value.fingerprint}`, signal,
+    () => addCredential(db, operatorId, input)));
+  return { credential, unchanged: false };
+}
+
 function signerSummary(credential: UserCredential) {
   const { id, type, fingerprint, label, custody, public_material } = credential;
   return { id, type, fingerprint, label, custody, public_material };
@@ -148,30 +193,8 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
       if (!operator) throw new UserRegistryError("not_found", "The local operator is not set up.");
       const publicKey = optionalString(bodyRecord(req), "public_key");
       if (!publicKey) throw new UserRegistryError("invalid", "Paste or upload an OpenSSH public key.");
-      const resolved = await resolveOpenSshPublicKey(publicKey);
-      if (!resolved.ok) {
-        throw new UserRegistryError("invalid", resolved.reason === "expected_one_openssh_public_key_line"
-          ? "Provide exactly one OpenSSH public-key line."
-          : "The selected value is not a readable OpenSSH public key.");
-      }
-      const existing = listCredentials(db, operator.id).find((credential) =>
-        credential.fingerprint === resolved.value.fingerprint && credential.type === "ssh_key");
-      if (existing) {
-        sendJson(res, 200, { credential: existing, unchanged: true });
-        return;
-      }
-      const input = {
-        type: "ssh_key",
-        fingerprint: resolved.value.fingerprint,
-        public_material: resolved.value.material,
-        label: "Settings public-key import",
-      };
-      validateCredentialInput(db, operator.id, input);
-      const { value: credential } = signedOrThrow(await signing().authorizeTrustChange("signer_add",
-        { type: "ssh_key", custody: "external", fingerprint: resolved.value.fingerprint, public_key: resolved.value.material },
-        `trust the signing key ${resolved.value.fingerprint}`, req.signal,
-        () => addCredential(db, operator.id, input)));
-      sendJson(res, 201, { credential, unchanged: false });
+      const added = await addOperatorSigner(db, signing(), operator.id, publicKey, "Settings public-key import", req.signal);
+      sendJson(res, added.unchanged ? 200 : 201, added);
     } catch (error) {
       handleError(res, error);
     }
@@ -238,7 +261,7 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/users/credentials/:id/revoke", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow",
+  }, { operation: { id: "post:/api/users/credentials/:id/revoke", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: { allowWhen: notAnOperatorSigner },
     refs: { params: { id: entityRefs.credential } } });
 
   // Issue b3e4a09 — retroactive credential redaction.
@@ -486,6 +509,13 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
       const type = optionalString(body, "type");
       const fingerprint = optionalString(body, "fingerprint");
       if (!type) throw new UserRegistryError("invalid", "type is required.");
+      if (inTrustSet(db, target.id, type)) {
+        const publicKey = optionalString(body, "public_material");
+        if (!publicKey) throw new UserRegistryError("invalid", "public_material is required for an operator signer.");
+        const added = await addOperatorSigner(db, signing(), target.id, publicKey, optionalString(body, "label") ?? "Public-key import", req.signal, fingerprint);
+        sendJson(res, added.unchanged ? 200 : 201, { credential: added.credential });
+        return;
+      }
       if (!fingerprint) throw new UserRegistryError("invalid", "fingerprint is required.");
       const input = {
         type,
@@ -497,17 +527,11 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
         metadata: optionalMetadata(body),
       };
       validateCredentialInput(db, target.id, input);
-      const add = () => addCredential(db, target.id, input);
-      const credential = inTrustSet(db, target.id, type)
-        ? signedOrThrow(await signing().authorizeTrustChange("signer_add",
-          { type, custody: "external", fingerprint: input.fingerprint.trim(), public_key: input.public_material },
-          `trust the signing key ${input.fingerprint.trim()}`, req.signal, add)).value
-        : add();
-      sendJson(res, 201, { credential });
+      sendJson(res, 201, { credential: addCredential(db, target.id, input) });
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/users/:ref/credentials", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/:ref/credentials", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: { allowWhen: notTheOperator } });
 
   router.get("/api/users/:ref/bindings", (req, res) => {
     try {
@@ -557,7 +581,11 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
       // Lifecycle status is an operator-owned credential boundary. In
       // particular, a retired account must never use one lingering client
       // identity to make itself active again.
-      if ("status" in body) requireOperator(db, req);
+      if ("status" in body) {
+        requireOperator(db, req);
+        // Retiring the operator would empty the gate's trust set without a signature.
+        if (target.id === getOperator(db)?.id) throw new UserRegistryError("invalid", "The configured operator's status cannot be changed.");
+      }
       const user = updateUser(db, target.id, {
         display_name: optionalString(body, "display_name"),
         email: "email" in body ? (optionalString(body, "email") ?? null) : undefined,

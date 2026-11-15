@@ -135,7 +135,7 @@ it("refuses a malformed or duplicate signer before asking for a touch", async ()
   const addSigner = (body: Record<string, unknown>) => asOperator("POST", "/api/users/operator/credentials", body);
   expect((await addSigner({ type: "ssh_key", fingerprint: "not-a-fingerprint" })).status).toBe(400);
   const existing = enclaveKey();
-  expect((await addSigner({ type: "ssh_key", fingerprint: existing.fingerprint, public_material: existing.public_material })).status).toBe(409);
+  expect((await addSigner({ type: "ssh_key", fingerprint: existing.fingerprint, public_material: existing.public_material })).status).toBe(200);
   expect(signer.touches).toHaveLength(touches);
   expect(listTrustChanges(db).map((entry) => entry.kind)).toEqual(["approval_key_enrollment"]);
 });

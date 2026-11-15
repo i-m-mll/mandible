@@ -756,7 +756,13 @@ export function setupOperator(
     const slug = normalizeSlug(deriveOperatorSlug(input));
     const existingId = getOperatorId(db);
     let user = existingId ? getUserById(db, existingId) : null;
-    if (!user) user = getUserBySlug(db, slug);
+    if (!user) {
+      user = getUserBySlug(db, slug);
+      // Its signing keys would join the gate's trust set with no signature.
+      if (user && listCredentials(db, user.id).some((credential) => credential.type === "ssh_key")) {
+        throw new UserRegistryError("conflict", `User '${user.slug}' has signing keys; it cannot become the operator. Choose another slug.`);
+      }
+    }
 
     if (user) {
       if (user.kind !== "human") {
