@@ -15,9 +15,9 @@ const cursors = new Map();
 export const scratchCursors = () => Object.fromEntries(cursors);
 export const restoreScratchCursors = state => { for (const [key, value] of Object.entries(state ?? {})) if (Number.isSafeInteger(value) && value >= 0) cursors.set(key, value); };
 
-export function generatedOwnerIdle(run) {
-  if (!run.processOwner?.identity) return false;
-  for (const record of [run.processOwner, ...(run.processes ?? [])]) {
+function processesIdle(records) {
+  for (const record of records) {
+    if (!Number.isSafeInteger(record.pid) || record.pid <= 1) return false;
     const observed = processIdentity(record.pid);
     if (observed !== null && (!record.identity || observed === record.identity)) return false;
     if (record.group) {
@@ -28,7 +28,56 @@ export function generatedOwnerIdle(run) {
   }
   return true;
 }
+
+export const generatedProcessLog = 'process-groups.jsonl';
+
+export function recordScratchProcessGroup(file, child) {
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW);
+  try { fs.writeSync(fd, `${JSON.stringify({ pid: child.pid, identity: processIdentity(child.pid), group: true })}\n`); }
+  finally { fs.closeSync(fd); }
+}
+
+export function generatedChildrenIdle(run) {
+  const groups = [];
+  if (run.outputs.some(output => output.path === generatedProcessLog)) {
+    const file = path.join(run.root, generatedProcessLog);
+    const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (stat && !stat.isFile()) return false;
+    if (stat) groups.push(...fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)));
+  }
+  return processesIdle([...(run.processes ?? []), ...groups]);
+}
+
+export function generatedOwnerIdle(run) {
+  return Boolean(run.processOwner?.identity) && processesIdle([run.processOwner]) && generatedChildrenIdle(run);
+}
 const ownerIdle = generatedOwnerIdle;
+
+/** Reclaim one exact generated run after its producer has exited. */
+export async function reconcileGeneratedRun(root, { runId, apply = false, inspect = inspectRunConsumers } = {}) {
+  const file = path.join(root, 'metadata.json');
+  const reconcile = () => {
+    if (!fs.existsSync(root)) return { root, action: 'absent' };
+    if (!fs.lstatSync(root).isDirectory() || !fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) {
+      return { root, action: 'skip', reason: 'unmarked entry' };
+    }
+    const run = JSON.parse(fs.readFileSync(file, 'utf8')).ownership;
+    if ((runId && run?.runId !== runId) || !ownedRunIdentityMatches(root, run) || !run.disposable
+        || !run.outputs.every(output => output.kind === 'generated') || run.state === 'investigating') {
+      return { root, action: 'skip', reason: 'retained or unknown ownership' };
+    }
+    if (!ownerIdle(run)) return { root, action: 'skip', reason: 'live or uncertain process lifetime' };
+    const consumers = inspect(root);
+    if (!consumers.idle) return { root, action: 'skip', reason: consumers.reason };
+    if (!apply) return { root, action: 'delete-owned', reason: 'dead disposable process owner' };
+    if (run.state !== 'terminal') finalizeOwnedRun(file, { expectedRevision: run.revision, outcome: 'failed', summary: 'Interrupted generated run; owner lifetime ended before finalization.' }, { inspect });
+    return { root, ...cleanupOwnedRun(file, { apply: true, inspect }) };
+  };
+  if (!fs.existsSync(root)) return { root, action: 'absent' };
+  if (!fs.existsSync(file)) return { root, action: 'skip', reason: 'unmarked entry' };
+  try { return apply ? await withOwnedRunLock(root, reconcile, { recoverStale: true }) : reconcile(); }
+  catch (error) { return { root, action: 'skip', reason: String(error) }; }
+}
 
 /** Only explicitly disposable generated runs with a proven dead lifetime can be recovered. */
 export async function reconcileGeneratedScratch(parent, { apply = false, limit = 8, until = Date.now() + 5000, inspect = inspectRunConsumers } = {}) {
@@ -52,23 +101,7 @@ export async function reconcileGeneratedScratch(parent, { apply = false, limit =
       } catch (error) { results.push({ file: job.file, action: 'cleanup-pending', reason: String(error) }); }
       continue;
     }
-    const root = job.root;
-    const file = path.join(root, 'metadata.json');
-    if (!fs.existsSync(file)) { results.push({ root, action: 'skip', reason: 'unmarked entry' }); continue; }
-    const reconcile = () => {
-      const metadata = JSON.parse(fs.readFileSync(file, 'utf8'));
-      const run = metadata.ownership;
-      if (!ownedRunIdentityMatches(root, run) || !run.disposable || !run.outputs.every(output => output.kind === 'generated')
-          || run.state === 'investigating') return { root, action: 'skip', reason: 'retained or unknown ownership' };
-      if (!ownerIdle(run)) return { root, action: 'skip', reason: 'live or uncertain process lifetime' };
-      const consumers = inspect(root);
-      if (!consumers.idle) return { root, action: 'skip', reason: consumers.reason };
-      if (!apply) return { root, action: 'delete-owned', reason: 'dead disposable process owner' };
-      if (run.state !== 'terminal') finalizeOwnedRun(file, { expectedRevision: run.revision, outcome: 'failed', summary: 'Interrupted generated run; owner lifetime ended before finalization.' }, { inspect });
-      return { root, ...cleanupOwnedRun(file, { apply: true, inspect }) };
-    };
-    try { results.push(apply ? await withOwnedRunLock(root, reconcile, { recoverStale: true }) : reconcile()); }
-    catch (error) { results.push({ root, action: 'skip', reason: String(error) }); }
+    results.push(await reconcileGeneratedRun(job.root, { apply, inspect }));
   }
   return results;
 }

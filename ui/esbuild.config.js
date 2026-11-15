@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { build, context } from 'esbuild';
+import { frontendBuildOutput } from '../scripts/desktop-build-layout.mjs';
 
 const isWatch = process.argv.includes('--watch');
-const outdir = outdirArgument(process.argv) ?? 'ui/dist';
+const outdir = outdirArgument(process.argv) ?? frontendBuildOutput;
 
 function outdirArgument(argv) {
   const flag = argv.indexOf('--outdir');

@@ -10,8 +10,10 @@ import { RELEASE_SCHEMA, installedFileIdentity } from './installed-release.mjs';
 import { trackedSourceDigest } from './build-revision.mjs';
 import { buildBundleService, stageBundleServices } from './prepare-bundle-services.mjs';
 import { bundleServiceLabel } from './bundle-service-roles.mjs';
+import { daemonBuildOutput, desktopPackageEnvironment, frontendBuildOutput } from './desktop-build-layout.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const packageEnvironment = desktopPackageEnvironment(root, process.env);
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, encoding: 'utf8', timeout: 60_000 }).trim();
 const hash = file => installedFileIdentity(file).sha256;
 const copy = (source, target) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.cpSync(source, target, { recursive: true, dereference: true }); };
@@ -68,11 +70,11 @@ function copyProductionDependencies(resources) {
 
 export async function stageAppPayload(contents) {
   if (`${process.platform}-${process.arch}` !== 'darwin-arm64') throw new Error('Only darwin-arm64 is qualified for installed payloads.');
-  const provenance = JSON.parse(fs.readFileSync(path.join(root, 'dist/build-revision.json'), 'utf8'));
+  const provenance = JSON.parse(fs.readFileSync(path.join(root, daemonBuildOutput, 'build-revision.json'), 'utf8'));
   if (provenance.source_digest !== trackedSourceDigest(root)) throw new Error('Build inputs changed after compilation. Run the source build before staging the app.');
   const resources = path.join(contents, 'Resources');
   fs.mkdirSync(resources, { recursive: true });
-  for (const relative of ['dist', 'ui/dist', 'cli', 'bin', 'config', '.bun-version', 'bun.lock', 'package.json', 'docs/cli-reference.md', 'hooks', 'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg', 'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png']) copy(path.join(root, relative), path.join(resources, relative));
+  for (const relative of [daemonBuildOutput, frontendBuildOutput, 'cli', 'bin', 'config', '.bun-version', 'bun.lock', 'package.json', 'docs/cli-reference.md', 'hooks', 'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg', 'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png']) copy(path.join(root, relative), path.join(resources, relative));
   const packageCount = copyProductionDependencies(resources);
   stageCoworkRuntime(root, resources);
   const scripts = new Set(['local-runtime.mjs', 'bundle-service.mjs', 'local-front-door.mjs', 'local-session-production-runner.mjs', 'runtime-handoff.mjs', 'verify-accepted-release.mjs', 'installed-release.mjs', 'project-db-snapshot.mjs', 'preview-custody.mjs', 'installed-command.mjs', 'generated-owner-observation.mjs']);
@@ -83,7 +85,7 @@ export async function stageAppPayload(contents) {
       else if (entry.name.endsWith('.js')) for (const match of fs.readFileSync(file, 'utf8').matchAll(/(?:\.\.\/)+scripts\/([\w-]+\.mjs)/g)) scripts.add(match[1]);
     }
   };
-  discoverScripts(path.join(root, 'dist'));
+  discoverScripts(path.join(root, daemonBuildOutput));
   for (const name of scripts) {
     const source = fs.readFileSync(path.join(root, 'scripts', name), 'utf8');
     for (const match of source.matchAll(/(?:from\s*|import\s*\()\s*['"]\.\/([^'"]+\.mjs)['"]/g)) scripts.add(match[1]);
@@ -115,7 +117,7 @@ export async function stageAppPayload(contents) {
     fs.writeFileSync(path.join(resources, relative), entitlements);
     signing[role] = relative;
   }
-  for (const [name, source] of Object.entries({ bun: runtime, caddy, sqlite, claude: sdkNative, trustHelper: process.env.MANDIBLE_DESKTOP_TRUST_HELPER ?? path.join(root, 'src-tauri/resources/local-ca-trust-helper') })) {
+  for (const [name, source] of Object.entries({ bun: runtime, caddy, sqlite, claude: sdkNative, trustHelper: packageEnvironment.MANDIBLE_DESKTOP_TRUST_HELPER })) {
     const destination = path.resolve(resources, native[name]);
     copy(source, destination);
     fs.chmodSync(destination, name === 'sqlite' ? 0o644 : 0o755);
@@ -146,7 +148,7 @@ esac
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const contents = path.resolve(process.argv[2] ?? process.env.MANDIBLE_DESKTOP_PAYLOAD_CONTENTS ?? path.join(root, 'src-tauri/resources/app-payload/Contents'));
+  const contents = path.resolve(process.argv[2] ?? packageEnvironment.MANDIBLE_DESKTOP_PAYLOAD_CONTENTS);
   fs.rmSync(contents, { recursive: true, force: true });
   process.stdout.write(`${JSON.stringify(await stageAppPayload(contents))}\n`);
 }

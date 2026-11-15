@@ -4,12 +4,13 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { desktopPackageEnvironment } from './desktop-build-layout.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const selector = path.join(root, 'scripts/bun-runtime.sh');
 const archive = execFileSync('/bin/sh', [selector, '--archive'], { encoding: 'utf8' }).trim();
 const runtime = execFileSync('/bin/sh', [selector], { encoding: 'utf8' }).trim();
-const directory = process.env.MANDIBLE_DESKTOP_RUNTIME_DIR ?? path.join(root, 'src-tauri/resources/bun-runtime');
+const directory = desktopPackageEnvironment(root, process.env).MANDIBLE_DESKTOP_RUNTIME_DIR;
 fs.mkdirSync(directory, { recursive: true });
 const target = path.join(directory, 'bun.zip');
 const bytes = fs.readFileSync(archive);
