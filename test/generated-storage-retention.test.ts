@@ -7,8 +7,9 @@ import Database from '../src/sqlite.ts';
 import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun, withOwnedRunLock, recoverGeneratedReceipt } from '../scripts/owned-run.mjs';
 import { processIdentity, withInstallationGatewayLock } from '../scripts/lifecycle-lock.mjs';
 import { reconcileGeneratedScratch } from '../scripts/generated-scratch.mjs';
-import { createPendingRelease, retainAcceptedRelease, applicationIdentity, assertAcceptedReleaseAvailable, disposeAcceptedRelease, acceptedReleaseFilesystemReferences } from '../scripts/accepted-release.mjs';
+import { createPendingRelease, disposePendingRelease, retainAcceptedRelease, applicationIdentity, assertAcceptedReleaseAvailable, disposeAcceptedRelease, acceptedReleaseFilesystemReferences } from '../scripts/accepted-release.mjs';
 import { reconcileAcceptedReleases, acceptedReleaseDatabaseReferences } from '../scripts/accepted-release-retention.mjs';
+import { retireAcceptedReleaseRunLock, withAcceptedReleaseRunLock } from '../scripts/accepted-release-lock.mjs';
 import { installedFileIdentity } from '../scripts/installed-release.mjs';
 import { addAuthRequestAction, updateAuthRequestAction, setAuthRequestActionVeto } from '../src/auth-actions.js';
 import { createMigratedDb } from './helpers/ledger-fixtures.js';
@@ -112,7 +113,11 @@ it('retains operational roots and evidence while reclaiming abandoned payloads i
     expect(JSON.parse(inventory.stdout).releases.filter((row: { action: string }) => row.action === 'dispose')).toHaveLength(1);
     expect(fs.readFileSync(packages.get('abandoned')!.metadataFile)).toEqual(beforeInventory);
     await reconcileAcceptedReleases(db, home, { apply: true, limit: 100 });
-    await reconcileAcceptedReleases(db, home, { apply: true, limit: 100 });
+    const retiredPair = ['process', 'process.owner'].map(suffix => path.join(home, 'accepted-releases', `.abandoned.lock.${suffix}`));
+    for (const file of retiredPair) fs.unlinkSync(file);
+    const completed = await reconcileAcceptedReleases(db, home, { apply: true, limit: 100 });
+    expect(completed).toContainEqual(expect.objectContaining({ reference: packages.get('abandoned')!.reference, action: 'disposed' }));
+    expect(retiredPair.some(file => fs.existsSync(file))).toBe(false);
     for (const [id, pkg] of packages) expect(fs.existsSync(pkg.root)).toBe(id !== 'abandoned');
     expect(fs.readFileSync(Buffer.from(packages.get('abandoned')!.reference.split(':')[2], 'base64url').toString())).toEqual(auditBytes);
     expect(fs.existsSync(packages.get('abandoned')!.evidence)).toBe(true);
@@ -149,7 +154,13 @@ it('retains operational roots and evidence while reclaiming abandoned payloads i
     fs.unlinkSync(unsealedFile);
     await reconcileAcceptedReleases(db, home, { apply: true, limit: 100 });
     expect(fs.existsSync(unsealed.root)).toBe(false);
-    expect(JSON.parse(fs.readFileSync(path.join(home, 'accepted-releases/.receipts/unsealed.json'), 'utf8')).cleanup).toBe('completed');
+    const unsealedOutcome = path.join(home, 'accepted-releases/.receipts/unsealed.json');
+    const outcome = JSON.parse(fs.readFileSync(unsealedOutcome, 'utf8'));
+    expect(outcome.cleanup).toBe('completed');
+    // Recover a crash after the root disappeared while the external receipt still says pending.
+    saveOwnedMetadata(unsealedOutcome, { ...outcome, cleanup: 'pending' });
+    await reconcileAcceptedReleases(db, home, { apply: true, limit: 100 });
+    expect(JSON.parse(fs.readFileSync(unsealedOutcome, 'utf8')).cleanup).toBe('completed');
     fs.writeFileSync(path.join(runtime, 'handoff-active.json'), '{');
     expect(acceptedReleaseFilesystemReferences(home, 'unreferenced')).toContain('unreadable handoff ownership');
   } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
@@ -202,5 +213,82 @@ it('serializes reference acquisition with disposal and protects sealed/running a
     await disposeAcceptedRelease(pkg.reference, candidate, 'Final operational reference released', { home, claim });
     expect(fs.existsSync(pkg.root)).toBe(false);
     expect(() => assertAcceptedReleaseAvailable(pkg.reference)).toThrow();
+  } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+it('shares active accepted-release locks with legacy callers and refuses reuse of a terminal run ID', async () => {
+  const home = temporary();
+  const storage = path.join(home, 'accepted-releases');
+  const ownership = { runId: 'retained', instanceId: 'fixture', project: 'project', workUnit: 'unit' };
+  try {
+    const pending = await createPendingRelease({ storage, ownership });
+    const processLock = path.join(storage, '.retained.lock.process');
+    const original = fs.statSync(processLock);
+    await withOwnedRunLock(pending.root, async () => {
+      await expect(disposePendingRelease(pending, null, 'Abandoned fixture')).rejects.toMatchObject({ code: 'PROCESS_LOCK_BUSY' });
+    });
+    await withAcceptedReleaseRunLock(pending.root, async () => {
+      await expect(withOwnedRunLock(pending.root, () => undefined)).rejects.toMatchObject({ code: 'PROCESS_LOCK_BUSY' });
+      const independent = await createPendingRelease({ storage, ownership: { ...ownership, runId: 'independent' } });
+      expect(fs.existsSync(path.join(independent.root, 'metadata.json'))).toBe(true);
+    });
+    expect(await disposePendingRelease(pending, null, 'Abandoned fixture')).toMatchObject({ action: 'delete-owned', remaining: [] });
+    expect(fs.existsSync(pending.root)).toBe(false);
+    expect(fs.statSync(processLock).ino).toBe(original.ino);
+    expect(fs.existsSync(`${processLock}.owner`)).toBe(true);
+    await expect(createPendingRelease({ storage, ownership })).rejects.toThrow('run ID already has custody or disposition');
+    await expect(withAcceptedReleaseRunLock(pending.root, () => undefined, { mode: 'recover' })).rejects.toThrow('cleanup is complete');
+    expect(fs.existsSync(pending.root)).toBe(false);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+it('retires terminal v2 locks only after the live child releases and refuses to reopen them', async () => {
+  const home = temporary();
+  const storage = path.join(home, 'accepted-releases', '.v2');
+  const ownership = { runId: 'negotiated', instanceId: 'fixture', project: 'project', workUnit: 'unit' };
+  try {
+    const pending = await createPendingRelease({ storage, ownership });
+    const processLock = path.join(storage, '.run-locks', 'negotiated.process');
+    const legacyLock = path.join(storage, '.negotiated.lock.process');
+    expect(fs.existsSync(processLock)).toBe(true);
+    expect(fs.existsSync(legacyLock)).toBe(false);
+    expect(pending.ownership.schema).not.toBe('mandible-owned-run@1');
+    expect(await retireAcceptedReleaseRunLock(pending.root)).toBe(false);
+    await withAcceptedReleaseRunLock(pending.root, async () => {
+      const metadata = path.join(pending.root, 'metadata.json');
+      finalizeOwnedRun(metadata, { expectedRevision: 1, outcome: 'failed', summary: 'Completed fixture disposition' }, idle);
+      expect(cleanupOwnedRun(metadata, { apply: true, ...idle }).action).toBe('delete-owned');
+      await expect(retireAcceptedReleaseRunLock(pending.root)).rejects.toMatchObject({ code: 'PROCESS_LOCK_BUSY' });
+      expect(fs.existsSync(processLock)).toBe(true);
+      await expect(withAcceptedReleaseRunLock(pending.root, () => undefined, { mode: 'recover' })).rejects.toThrow('cleanup is complete');
+    });
+    expect(fs.existsSync(processLock)).toBe(false);
+    expect(fs.existsSync(`${processLock}.owner`)).toBe(false);
+    await expect(createPendingRelease({ storage, ownership })).rejects.toThrow('run ID already has custody or disposition');
+    await withOwnedRunLock(pending.root, () => undefined);
+    expect(fs.existsSync(legacyLock)).toBe(true);
+    expect(fs.existsSync(processLock)).toBe(false);
+    expect(await retireAcceptedReleaseRunLock(pending.root)).toBe(false);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+it('retries interrupted lock retirement from the v2 compact outcome', async () => {
+  const home = temporary();
+  const db = retentionDb(path.join(home, 'db'));
+  const storage = path.join(home, 'accepted-releases', '.v2');
+  const ownership = { runId: 'interrupted', instanceId: 'fixture', project: 'project', workUnit: 'unit' };
+  try {
+    const pending = await createPendingRelease({ storage, ownership });
+    const lock = path.join(storage, '.run-locks', 'interrupted');
+    await withOwnedRunLock(pending.root, () => {
+      const metadata = path.join(pending.root, 'metadata.json');
+      finalizeOwnedRun(metadata, { expectedRevision: 1, outcome: 'failed', summary: 'Completed fixture disposition' }, idle);
+      expect(cleanupOwnedRun(metadata, { apply: true, ...idle }).action).toBe('delete-owned');
+    }, { lock });
+    fs.unlinkSync(`${lock}.process.owner`);
+    expect(fs.existsSync(`${lock}.process`)).toBe(true);
+    expect(await reconcileAcceptedReleases(db, home, { apply: true })).toContainEqual({ root: pending.root, action: 'retired-lock' });
+    expect(fs.existsSync(`${lock}.process`)).toBe(false);
+    expect(await reconcileAcceptedReleases(db, home, { apply: true })).toEqual([]);
   } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });

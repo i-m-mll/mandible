@@ -7,6 +7,8 @@ import { runSupervisedCommand } from './process-group-supervisor.mjs';
 export { processIdentity, recoverLifecycleLock } from './lifecycle-lock.mjs';
 
 export const OWNED_RUN_SCHEMA = 'mandible-owned-run@1';
+export const ACCEPTED_RELEASE_RUN_SCHEMA = 'mandible-accepted-release-run@2';
+const isOwnedRunSchema = schema => schema === OWNED_RUN_SCHEMA || schema === ACCEPTED_RELEASE_RUN_SCHEMA;
 
 export function processLifetimeMatches(record, observed) {
   const recorded = record.birth ?? record.processIdentity ?? record.identity;
@@ -25,16 +27,17 @@ export async function withOwnedRunLock(root, operation, options) {
   return withLifecycleLock(root, operation, options);
 }
 
-export function createOwnedRun({ root, instanceId, project, workUnit, outputs, disposable = false, runId = randomUUID(), processOwned = false }) {
+export function createOwnedRun({ root, instanceId, project, workUnit, outputs, disposable = false, runId = randomUUID(), processOwned = false, schema = OWNED_RUN_SCHEMA }) {
   if (!instanceId || (!project || !workUnit) && !(processOwned && disposable && outputs.every(output => output.kind === 'generated'))) throw new Error('Owned run requires canonical delivery identities or disposable process ownership');
   if (!/^[a-zA-Z0-9-]+$/.test(runId)) throw new Error('Invalid owned run ID');
+  if (!isOwnedRunSchema(schema)) throw new Error('Invalid owned run schema');
   const stat = fs.lstatSync(root);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Owned run root must be a canonical directory');
   for (const output of outputs) contained(root, output.path);
   const paths = outputs.map(output => output.path);
   if (new Set(paths).size !== paths.length || paths.some(a => paths.some(b => a !== b && a.startsWith(`${b}${path.sep}`)))) throw new Error('Owned outputs must not overlap');
   return {
-    schema: OWNED_RUN_SCHEMA, runId, revision: 1,
+    schema, runId, revision: 1,
     root: fs.realpathSync(root), rootIdentity: { dev: stat.dev, ino: stat.ino },
     instanceId, project, workUnit, state: 'creating', disposable,
     processOwner: { pid: process.pid, identity: processIdentity(process.pid) },
@@ -106,7 +109,7 @@ function contained(root, relative, allowLeafLink = false) {
 export function ownedRunIdentityMatches(root, run) {
   if (!run) return false;
   const stat = fs.lstatSync(root);
-  return run.schema === OWNED_RUN_SCHEMA && run.root === fs.realpathSync(root)
+  return isOwnedRunSchema(run.schema) && run.root === fs.realpathSync(root)
     && !stat.isSymbolicLink() && fs.realpathSync(root) === run.root
     && stat.dev === run.rootIdentity?.dev && stat.ino === run.rootIdentity?.ino;
 }
@@ -152,7 +155,7 @@ export function validateOwnedRunFinalization(root, run) {
     return { ok: false, reason: 'compact outcome path is outside owner receipts' };
   }
   const receipt = readOwnedMetadata(run.receipt);
-  if (receipt.runId !== run.runId || receipt.outcome !== run.outcome || receipt.manifestDigest !== outputDigest(run.outputs)) {
+  if (receipt.schema !== run.schema || receipt.runId !== run.runId || receipt.outcome !== run.outcome || receipt.manifestDigest !== outputDigest(run.outputs)) {
     return { ok: false, reason: 'compact outcome does not match owner' };
   }
   return { ok: true, receipt };
@@ -206,7 +209,7 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
   });
   const receiptDir = receiptDirectory(root);
   const receipt = path.join(receiptDir, `${run.runId}.json`);
-  const result = { schema: OWNED_RUN_SCHEMA, runId: run.runId, instanceId: run.instanceId,
+  const result = { schema: run.schema, runId: run.runId, instanceId: run.instanceId,
     root: run.root, rootIdentity: run.rootIdentity, branch: metadata.branch, worktree: metadata.worktree,
     lifecycle: run.lifecycle, consumers: run.consumers, acquisition: run.acquisition, source: run.source,
     project: run.project, workUnit: run.workUnit, outcome, converged, disposition: disposition ?? 'disposable-fixture',
@@ -224,7 +227,7 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
 /** Resume deletion after metadata was unlinked, using the immutable root identity in the external outcome. */
 export function recoverGeneratedReceipt(file, { apply = false, inspect = inspectRunConsumers } = {}) {
   const receipt = readOwnedMetadata(file);
-  if (receipt.schema !== OWNED_RUN_SCHEMA || !receipt.generatedRecovery || !receipt.root
+  if (!isOwnedRunSchema(receipt.schema) || !receipt.generatedRecovery || !receipt.root
       || file !== path.join(path.dirname(receipt.root), '.receipts', `${receipt.runId}.json`)) return { action: 'skip', reason: 'no generated recovery authority' };
   if (!fs.existsSync(receipt.root)) {
     if (apply && receipt.cleanup !== 'completed') saveOwnedMetadata(file, { ...receipt, cleanup: 'completed', remaining: [] });
@@ -232,7 +235,7 @@ export function recoverGeneratedReceipt(file, { apply = false, inspect = inspect
   }
   const root = receipt.root;
   if (fs.existsSync(path.join(root, 'metadata.json'))) return { action: 'skip', reason: 'metadata owns recovery' };
-  const run = { schema: OWNED_RUN_SCHEMA, root, rootIdentity: receipt.rootIdentity };
+  const run = { schema: receipt.schema, root, rootIdentity: receipt.rootIdentity };
   if (!identityMatches(root, run)) return { action: 'skip', reason: 'root identity changed' };
   const consumers = inspect(root);
   if (!consumers.idle) return { action: 'skip', reason: consumers.reason };

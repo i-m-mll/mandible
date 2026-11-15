@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { readAcceptedReleaseReceipt, acceptedReleaseFilesystemReferences, disposeAcceptedRelease } from './accepted-release.mjs';
-import { ownedRunReceipt, recoverGeneratedReceipt, withOwnedRunLock, ownedRunIdentityMatches, inspectRunConsumers, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
+import { ownedRunReceipt, recoverGeneratedReceipt, ownedRunIdentityMatches, inspectRunConsumers, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
 import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
+import { retireAcceptedReleaseRunLock, withAcceptedReleaseRunLock } from './accepted-release-lock.mjs';
+import { ACCEPTED_RELEASE_DIRECTORY, VERSIONED_RELEASE_DIRECTORY } from './accepted-release-storage.mjs';
 import { generatedOwnerIdle } from './generated-scratch.mjs';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { fileURLToPath } from 'node:url';
@@ -70,7 +72,7 @@ async function reconcilePending(db, home, root, apply) {
     }).immediate();
     return { root, ...cleanupOwnedRun(file, { apply: true }) };
   };
-  return apply ? withInstallationGatewayLock(home, () => withOwnedRunLock(root, collect, { recoverStale: true })) : collect();
+  return apply ? withInstallationGatewayLock(home, () => withAcceptedReleaseRunLock(root, collect, { recoverStale: true })) : collect();
 }
 
 /** Historical actions/receipts are evidence; only current operational roots retain payloads. */
@@ -99,6 +101,13 @@ export function acceptedReleaseDatabaseReferences(db, reference, receipt) {
   return reasons;
 }
 
+async function reconcileOutcome(outcome, apply) {
+  const recover = () => recoverGeneratedReceipt(outcome.receipt, { apply });
+  return apply ? withAcceptedReleaseRunLock(outcome.root, recover, { mode: 'recover', recoverStale: true,
+    onUnavailable: (state, reason) => ({ action: state === 'completed' ? 'disposed' : 'skip', reason }),
+  }) : recover();
+}
+
 const cursors = new Map();
 export function claimAcceptedReleaseDisposal(db, reference, receipt, mark) {
   return db.transaction(() => {
@@ -109,10 +118,9 @@ export function claimAcceptedReleaseDisposal(db, reference, receipt, mark) {
 }
 export const releaseCursors = () => Object.fromEntries(cursors);
 export const restoreReleaseCursors = state => { for (const [key, value] of Object.entries(state ?? {})) if (Number.isSafeInteger(value) && value >= 0) cursors.set(key, value); };
-export async function reconcileAcceptedReleases(db, home, { apply = false, limit = 8, until = Date.now() + 5000 } = {}) {
-  const storage = path.join(home, 'accepted-releases');
+
+function releaseEntries(storage) {
   const directory = path.join(storage, '.receipts');
-  if (!fs.existsSync(storage)) return [];
   const files = fs.existsSync(directory) ? fs.readdirSync(directory).filter(name => name.endsWith('-accepted-release.json')).sort().map(name => ({ file: path.join(directory, name) })) : [];
   if (fs.existsSync(directory)) for (const name of fs.readdirSync(directory)) {
     if (name.endsWith('.json') && !name.endsWith('-accepted-release.json')) files.push({ recovery: path.join(directory, name) });
@@ -121,24 +129,39 @@ export async function reconcileAcceptedReleases(db, home, { apply = false, limit
     if (!entry.isDirectory() || entry.name.startsWith('.') || fs.existsSync(path.join(directory, `${entry.name}-accepted-release.json`))) continue;
     files.push({ root: path.join(storage, entry.name) });
   }
+  return files.map(entry => ({ ...entry, storage }));
+}
+
+export async function reconcileAcceptedReleases(db, home, { apply = false, limit = 8, until = Date.now() + 5000 } = {}) {
+  const location = path.join(home, ACCEPTED_RELEASE_DIRECTORY);
+  if (!fs.existsSync(location)) return [];
+  const storage = fs.realpathSync(location);
+  const versioned = path.join(storage, VERSIONED_RELEASE_DIRECTORY);
+  const versionedEntry = fs.lstatSync(versioned, { throwIfNoEntry: false });
+  if (versionedEntry && !versionedEntry.isDirectory()) throw new Error('Versioned accepted release storage is not canonical.');
+  const files = [...releaseEntries(storage), ...(versionedEntry ? releaseEntries(versioned) : [])];
+  const directory = path.join(storage, '.receipts');
   const start = cursors.get(directory) ?? 0;
   const results = [];
   for (let index = 0; index < files.length && results.length < limit && Date.now() < until; index++) {
-    const { file, root: pendingRoot, recovery } = files[(start + index) % files.length];
+    const { file, root: pendingRoot, recovery, storage: entryStorage } = files[(start + index) % files.length];
     cursors.set(directory, (start + index + 1) % files.length);
     try {
       if (recovery) {
-        const outcome = JSON.parse(fs.readFileSync(recovery, 'utf8'));
-        if (!outcome.generatedRecovery || outcome.cleanup === 'completed' && !fs.existsSync(outcome.root) || !generatedOwnerIdle(outcome.generatedRecovery)) continue;
-        const recover = () => recoverGeneratedReceipt(recovery, { apply });
-        results.push(apply ? await withOwnedRunLock(outcome.root, recover, { recoverStale: true }) : recover()); continue;
+        const runId = path.basename(recovery, '.json');
+        const outcome = ownedRunReceipt({ root: path.join(entryStorage, runId), runId });
+        if (outcome?.cleanup === 'completed' && !fs.lstatSync(outcome.root, { throwIfNoEntry: false })) {
+          if (apply && await retireAcceptedReleaseRunLock(outcome.root)) results.push({ root: outcome.root, action: 'retired-lock' });
+          continue;
+        }
+        if (!outcome?.generatedRecovery || !generatedOwnerIdle(outcome.generatedRecovery)) continue;
+        results.push(await reconcileOutcome(outcome, apply)); continue;
       }
       if (pendingRoot) {
         if (!fs.existsSync(path.join(pendingRoot, 'metadata.json'))) {
           const outcome = ownedRunReceipt({ root: pendingRoot, runId: path.basename(pendingRoot) });
           if (outcome?.generatedRecovery && generatedOwnerIdle(outcome.generatedRecovery)) {
-            const recover = () => recoverGeneratedReceipt(outcome.receipt, { apply });
-            results.push(apply ? await withOwnedRunLock(pendingRoot, recover, { recoverStale: true }) : recover()); continue;
+            results.push(await reconcileOutcome(outcome, apply)); continue;
           }
         }
         results.push(await reconcilePending(db, home, pendingRoot, apply)); continue;
@@ -148,11 +171,12 @@ export async function reconcileAcceptedReleases(db, home, { apply = false, limit
       const receipt = readAcceptedReleaseReceipt(reference);
       const root = receipt.package.handle.root;
       const outcome = ownedRunReceipt(receipt.package.handle);
-      if (outcome?.generatedRecovery && (!fs.existsSync(root) || !fs.existsSync(path.join(root, 'metadata.json')))) {
-        const reconcile = () => recoverGeneratedReceipt(outcome.receipt, { apply });
-        results.push({ reference, ...(apply ? await withOwnedRunLock(root, reconcile, { recoverStale: true }) : reconcile()) }); continue;
+      const rootExists = fs.lstatSync(root, { throwIfNoEntry: false });
+      if (outcome?.generatedRecovery && (rootExists || outcome.cleanup !== 'completed')
+          && !fs.existsSync(path.join(root, 'metadata.json'))) {
+        results.push({ reference, ...await reconcileOutcome(outcome, apply) }); continue;
       }
-      if (!fs.existsSync(root)) { results.push({ reference, action: outcome ? 'disposed' : 'skip', reason: outcome ? `payload removed; cleanup ${outcome.cleanup}` : 'missing payload without cleanup evidence' }); continue; }
+      if (!rootExists) { results.push({ reference, action: outcome ? 'disposed' : 'skip', reason: outcome ? `payload removed; cleanup ${outcome.cleanup}` : 'missing payload without cleanup evidence' }); continue; }
       const metadata = JSON.parse(fs.readFileSync(path.join(root, 'metadata.json'), 'utf8'));
       const run = metadata.ownership;
       const reasons = [...acceptedReleaseFilesystemReferences(home, reference), ...acceptedReleaseDatabaseReferences(db, reference, receipt)];

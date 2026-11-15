@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { applicationIdentity, installedFileIdentity, readInstalledRelease } from './installed-release.mjs';
-import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers } from './owned-run.mjs';
+import { createOwnedRun, saveOwnedMetadata, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers } from './owned-run.mjs';
 import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
+import { acceptedReleaseHome, releaseRunSchema, withAcceptedReleaseRunLock } from './accepted-release-lock.mjs';
 import { readBundleOwner } from './bundle-services.mjs';
 import { readRuntimeHandoffLock, runtimeHandoffSettled } from './runtime-handoff-lock.mjs';
 
@@ -133,11 +134,10 @@ export async function disposeAcceptedRelease(reference, expectedCandidate, reaso
   if (!reason?.trim()) throw new Error('Accepted release disposal requires an owner reason.');
   const receipt = readAcceptedReleaseReceipt(reference, expectedCandidate);
   const root = receipt.package.handle.root;
-  home ??= path.dirname(path.dirname(root));
+  home ??= acceptedReleaseHome(root);
   if (!assertHeld) return withInstallationGatewayLock(home, (_token, held) => disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld: held, claim, database, deferCleanup, inspect }));
   assertHeld();
-  if (!fs.existsSync(root)) return { action: 'delete-owned', reason: 'payload already removed', remaining: [] };
-  return withOwnedRunLock(root, async () => {
+  return withAcceptedReleaseRunLock(root, async () => {
     const exact = readAcceptedReleaseReceipt(reference, expectedCandidate);
     const references = acceptedReleaseFilesystemReferences(home, reference);
     if (references.length) throw new Error(`Accepted release is retained: ${references.join(', ')}`);
@@ -171,7 +171,7 @@ export async function disposeAcceptedRelease(reference, expectedCandidate, reaso
     assertHeld();
     if (deferCleanup) return { action: 'cleanup-pending', reason: 'Disposal claimed; ordinary generated-storage maintenance owns cleanup.' };
     return cleanupOwnedRun(metadataFile, { apply: true });
-  }, { recoverStale: true });
+  }, { recoverStale: true, onUnavailable: () => ({ action: 'delete-owned', reason: 'payload already removed', remaining: [] }) });
 }
 
 /** Durable custody precedes exercise; only an accepted receipt grants acceptance. */
@@ -179,16 +179,17 @@ export async function createPendingRelease({ storage, ownership }) {
   if (!/^[a-zA-Z0-9-]+$/.test(ownership.runId) || !ownership.instanceId || !ownership.project || !ownership.workUnit) throw new Error('Pending release requires an exact owner.');
   fs.mkdirSync(storage, { recursive: true, mode: 0o700 });
   const retained = path.join(fs.realpathSync(storage), ownership.runId);
-  fs.mkdirSync(retained, { mode: 0o700 });
-  return withOwnedRunLock(retained, async () => {
+  return withAcceptedReleaseRunLock(retained, async () => {
+    fs.mkdirSync(retained, { mode: 0o700 });
     const owner = createOwnedRun({ root: retained, runId: ownership.runId, instanceId: ownership.instanceId,
-      project: ownership.project, workUnit: ownership.workUnit, outputs: [{ path: 'Mandible.app', kind: 'interactive' }] });
+      project: ownership.project, workUnit: ownership.workUnit, schema: releaseRunSchema(path.dirname(retained)),
+      outputs: [{ path: 'Mandible.app', kind: 'interactive' }] });
     saveOwnedMetadata(path.join(retained, 'metadata.json'), { ownership: owner,
       ...(process.env.MANDIBLE_ACCEPTANCE_ID ? { pendingAcceptance: { recordId: process.env.MANDIBLE_ACCEPTANCE_ID, requestId: process.env.MANDIBLE_ACCEPTANCE_REQUEST,
         scratchRoot: ownership.root, runId: ownership.runId } } : {}) });
     const app = path.join(retained, 'Mandible.app');
     return { root: retained, runId: owner.runId, ownership: owner, app, resources: path.join(app, 'Contents/Resources') };
-  });
+  }, { mode: 'create' });
 }
 
 function pendingOwner(pending) {
@@ -207,7 +208,7 @@ function pendingOwner(pending) {
 /** Seal the exercised app in place; the result is valid only for this operation. */
 export async function retainAcceptedRelease({ pending, candidate, acceptance, evidence, expectedDigest, shipped }) {
   validateCandidate(candidate);
-  return withOwnedRunLock(pending.root, async () => {
+  return withAcceptedReleaseRunLock(pending.root, async () => {
     const { receiptFile, ownership } = pendingOwner(pending);
     if (fs.readdirSync(pending.root).some(name => !['Mandible.app', 'metadata.json'].includes(name))) throw new Error('Pending release contains unknown entries.');
     const consumers = inspectRunConsumers(pending.root);
@@ -226,7 +227,7 @@ export async function retainAcceptedRelease({ pending, candidate, acceptance, ev
 }
 
 export async function disposePendingRelease(pending, expectedDigest, reason) {
-  return withOwnedRunLock(pending.root, async () => {
+  return withAcceptedReleaseRunLock(pending.root, async () => {
     const { metadataFile, ownership } = pendingOwner(pending);
     if (expectedDigest && applicationIdentity(pending.app) !== expectedDigest) throw new Error('Pending application changed; preserving owned material.');
     finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: 'failed', disposition: 'discard', summary: reason });

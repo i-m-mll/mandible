@@ -18,10 +18,11 @@ function ownerDead(file) {
   catch (error) { return error.code === 'ESRCH'; }
 }
 
-async function startLockHolder(lockFile, label) {
+async function startLockHolder(lockFile, label, existingOnly) {
   const source = "printf 'LOCKED\\n'; while IFS= read -r line; do :; done";
   // Workload group cancellation must leave the lease alive until its owner closes stdin.
-  const holder = spawn('/usr/bin/lockf', ['-t', '0', '-k', lockFile, '/bin/sh', '-c', source], { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const flags = existingOnly ? ['-n'] : [];
+  const holder = spawn('/usr/bin/lockf', ['-t', '0', '-k', ...flags, lockFile, '/bin/sh', '-c', source], { detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
   let diagnostic = '';
   holder.stderr.on('data', chunk => { diagnostic = `${diagnostic}${chunk}`.slice(-4000); });
   const busy = await new Promise((resolve, reject) => {
@@ -39,23 +40,23 @@ async function startLockHolder(lockFile, label) {
 }
 
 /** Kernel ownership follows the holder's stdin lifetime; the stable lock inode is never removed. */
-export async function acquireProcessLock(lockFile, { ownerFile = `${lockFile}.owner`, label = 'Process-lifetime lock', deadOwnerGraceMs = 2000, waitMs = 0 } = {}) {
+export async function acquireProcessLock(lockFile, { ownerFile = `${lockFile}.owner`, label = 'Process-lifetime lock', deadOwnerGraceMs = 2000, waitMs = 0, existingOnly = false } = {}) {
   if (process.platform !== 'darwin') throw new Error(`${label} requires macOS.`);
-  fs.mkdirSync(path.dirname(lockFile), { recursive: true, mode: 0o700 });
+  if (!existingOnly) fs.mkdirSync(path.dirname(lockFile), { recursive: true, mode: 0o700 });
   try {
     const stat = fs.lstatSync(lockFile);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`${label} is not a regular file: ${lockFile}`);
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const started = Date.now();
-  let attempt = await startLockHolder(lockFile, label);
-  while (attempt.busy && (Date.now() - started < waitMs || ownerDead(ownerFile) && Date.now() - started < deadOwnerGraceMs)) {
+  let attempt = await startLockHolder(lockFile, label, existingOnly);
+  while (attempt.busy && (Date.now() - started < waitMs || Date.now() - started < deadOwnerGraceMs && ownerDead(ownerFile))) {
     await new Promise(resolve => setTimeout(resolve, 50));
-    attempt = await startLockHolder(lockFile, label);
+    attempt = await startLockHolder(lockFile, label, existingOnly);
   }
   if (attempt.busy) throw new ProcessLockBusyError(`${label} is already in progress or the macOS lock failed: ${attempt.diagnostic().trim()}`);
   const { holder, diagnostic } = attempt;
   try {
-    fs.writeFileSync(ownerFile, String(process.pid), { mode: 0o600 });
+    if (!existingOnly) fs.writeFileSync(ownerFile, String(process.pid), { mode: 0o600 });
     return {
       holderPid: holder.pid,
       assertHeld: () => { if (holder.exitCode !== null || holder.signalCode !== null) throw new ProcessLockLostError(`${label} was lost; stopping effects.`); },
