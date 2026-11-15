@@ -16,7 +16,11 @@ applied per repository. Repositories Mandible does not know are never checked.
 ## Signer rule
 
 A protected branch may point only at a commit signed by an active `ssh_key`
-credential of the configured operator. Agent users hold none.
+credential of the configured operator: the enrolled approval key, which signs
+each approved merge after a Touch ID match, or an external signer that
+Mandible only verifies. Agent users hold none. Adding or removing a signer, and
+changing which branches are protected, are themselves signed actions; see
+[Approvals and the Touch ID gate](approvals.md).
 
 The rule lives in
 [`src/protected-branch-signers.ts`](../src/protected-branch-signers.ts), the one
@@ -93,3 +97,11 @@ same-user process that overrides `core.hooksPath`, and Git's files backend
 creates the target of `git branch -m <old> <new>` without a ref transaction, so
 renaming a branch onto a missing protected name is not seen. The guard stops
 mistakes; the protected-history check makes bypasses visible.
+
+The same holds for the files the guard reads. A same-user process can rewrite
+`allowed_signers` or `protected-refs`, or the hook itself, and no local
+mechanism stops it. What it cannot do is produce the approval key's signature,
+so a commit it places on a protected branch fails the protected-history check
+and `git verify-commit` against the approval key. The Touch ID gate proves that
+a matching finger touched, not what the operator meant to approve; an
+unexpected Touch ID prompt should be cancelled.

@@ -364,13 +364,7 @@ for manual recovery.
 
 ### mandible auth merge
 
-Interactive merge command for protected branches. Requires user authentication via YubiKey.
-
-When the approved request carries a canonical change message, the merge fetches
-it, verifies its SHA-256, and uses those exact bytes as the merge commit message
-on the `git merge` path, the atomic `git commit-tree` path, and a resumed
-`git merge --continue`. A fetch failure, a missing message, or a digest mismatch
-aborts before any ref or worktree changes.
+Publishes an approved protected merge. The daemon runs it after the operator approves the request with Touch ID; run by hand without an approved signed candidate, it refuses before any change.
 
 ```
 mandible auth merge <source-branch>
@@ -385,18 +379,15 @@ mandible auth merge <source-branch> --into <target>
 
 **Behavior:**
 
-1. Strips agent git config overrides (merges use user's YubiKey, not agent key).
-2. Detects and resumes in-progress merges (`MERGE_HEAD`).
-3. Runs Mandible's shared auth check for tracked dirtiness and conflict detection.
-4. Shows a summary box with diff stats for the source branch.
-5. Prompts for confirmation (reads from `/dev/tty`).
-6. Performs `git merge --no-ff --no-edit -S` (signed merge).
-7. Auto-resolves conflicts in generated dist files (takes `--theirs`).
-8. Verifies the merge is not empty (tree differs from parent).
-9. Applies explicitly authorized structured issue closure actions.
-10. Closes issues declared in the auth request's `issue_closures` field.
-11. Cleans up merged branches and their worktrees through the trash service
-    (`mandible trash create --merged-into <target>`), which removes a branch
+1. Refuses unless the daemon supplied a reviewed signed candidate (`MANDIBLE_AUTH_ATOMIC=1` and `MANDIBLE_AUTH_SIGNED_MERGE_SHA`), and refuses interrupted legacy merge state.
+2. Checks git locks and that the protected checkout has no tracked changes.
+3. Checks that the signed commit's tree is the retained candidate tree and its parents are the reviewed base and head, and that the merge is not empty.
+4. Verifies the commit's signature against the approving key. It never invokes a signer and reads no git signing configuration; the approval key signed the commit, message included, at approval.
+5. Moves the target branch to the signed commit by compare-and-swap and synchronizes the checkout without overwriting untracked collisions.
+6. Applies explicitly authorized structured issue closure actions.
+7. Closes issues declared in the auth request's `issue_closures` field.
+8. Cleans up merged branches and their worktrees through the trash service
+   (`mandible trash create --merged-into <target>`), which removes a branch
     with no unique local bytes outright and keeps anything else in reversible
     trash custody. See [trash custody](../trash-custody.md).
 

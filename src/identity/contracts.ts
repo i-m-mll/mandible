@@ -39,10 +39,19 @@ export type MergeSignatureClaim =
   /** Evidence attached and verification did not succeed. `reason` is the recorded cause. */
   | { state: "unverified"; reason: string | null };
 
+/**
+ * How an auth request is approved. A protected merge is `signed`: the approval
+ * key signs the merge commit after a Touch ID match. Every other request is a
+ * `courtesy` approval: one click, recorded as an interface action and never as
+ * operator-verified, because any process running as the operator can perform it.
+ */
+export type ApprovalTier = "signed" | "courtesy";
+
 export interface AuthAttributionReadFields {
   requester: ReadUserIdentity | null;
   approver: ReadUserIdentity | null;
   execution_evidence: AttributionReadProjection | null;
   merge_signature: MergeSignatureClaim;
+  approval_tier: ApprovalTier;
 }
 

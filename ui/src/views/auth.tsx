@@ -25,7 +25,8 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { IconTabList, type IconTab } from '../components/shared/IconTabList';
 
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
-import { entityHref } from '../routing';
+import { entityHref, viewHref } from '../routing';
+import { approvalRefusal, approveLabel, approveTitle } from './auth-approval';
 import { formatRelativeTime } from '../lib/format';
 import { createCoalescedRefresh } from '../lib/coalesced-refresh';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
@@ -49,6 +50,8 @@ import {
   type AuthHook,
   type AttributionReadProjection,
   type MergeSignatureClaim,
+  type ApprovalTier,
+  ApiError,
   type InstanceInfo,
   type ReadUserIdentity,
 } from '../api';
@@ -82,6 +85,7 @@ type AuthActionRetry =
 
 type AuthActionError = {
   message: string;
+  code: string | null;
   retry: AuthActionRetry;
 };
 
@@ -166,6 +170,7 @@ export type AuthRequest = {
   approver?: ReadUserIdentity | null;
   execution_evidence?: AttributionReadProjection | null;
   merge_signature?: MergeSignatureClaim;
+  approval_tier?: ApprovalTier;
   // Issue 7d83fe5 — runtime self-update acceptance of the current candidate.
   candidate_acceptance?: CandidateAcceptanceProjection | null;
   publication_blocker?: AuthPublicationBlocker | null;
@@ -283,6 +288,17 @@ function getAuthStatus(request: AuthRequest): string {
 function getAuthType(request: AuthRequest): AuthRequestType {
   return request.type ?? 'merge';
 }
+
+/** A request the daemon did not classify is shown as a courtesy approval, which claims nothing. */
+function getApprovalTier(request: AuthRequest): ApprovalTier {
+  return request.approval_tier ?? 'courtesy';
+}
+
+const COURTESY_APPROVER_BADGE = {
+  strength: 'claimed',
+  label: 'courtesy',
+  title: 'Courtesy approval: recorded as an interface action, not operator-verified',
+} as const;
 
 
 const AUTH_DIFF_VIEW_CLASS_NAMES: DiffViewClassNames = {
@@ -1301,8 +1317,19 @@ function AuthRequestDetail({
                         user={approver}
                         attribution={request.execution_evidence}
                         source="auth_queue"
+                        evidenceBadge={getApprovalTier(request) === 'courtesy' ? COURTESY_APPROVER_BADGE : undefined}
                       />
                     </div>
+                  )}
+                  {signatureClaim.state === 'verified' && (
+                    <span className="auth-detail__verified-signature" title="The approval key signed this merge after a Touch ID match.">
+                      Signed with Touch ID
+                    </span>
+                  )}
+                  {approver && getApprovalTier(request) === 'courtesy' && (
+                    <span className="auth-detail__courtesy-approval" title="Any process running as you can perform a courtesy approval through Mandible's local API.">
+                      Courtesy approval, not operator-verified
+                    </span>
                   )}
                   {signatureClaim.state === 'unverified' && (
                     <span className="auth-detail__unverified-signature">
@@ -1394,7 +1421,7 @@ function AuthRequestDetail({
             ) : (
               <>
                 <p className="auth-failure__summary">
-                  These commits on the base are neither recorded Mandible merges nor signed with an operator hardware key.
+                  These commits on the base are neither recorded Mandible merges nor signed by an operator signer.
                 </p>
                 {baseAudit.unexpected.map((commit) => (
                   <p key={commit.sha} className="auth-failure__summary">
@@ -1415,11 +1442,11 @@ function AuthRequestDetail({
         )}
 
         {executionCallout && (
-          <div className="auth-yubikey-warning">
+          <div className="auth-execution-callout">
             {executionCallout.spinner && (
-              <span className="auth-yubikey-warning__spinner" aria-hidden="true" />
+              <span className="auth-execution-callout__spinner" aria-hidden="true" />
             )}
-            <span className="auth-yubikey-warning__text">
+            <span className="auth-execution-callout__text">
               {executionCallout.text}
             </span>
           </div>
@@ -2439,9 +2466,10 @@ export function AuthQueueView({
     retry: AuthActionRetry,
   ) => {
     const message = error instanceof Error ? error.message : fallback;
+    const code = error instanceof ApiError ? error.code : null;
     setActionErrors((prev) => {
       const next = new Map(prev);
-      next.set(requestId, { message, retry });
+      next.set(requestId, { message, code, retry });
       return next;
     });
   }, []);
@@ -3031,9 +3059,11 @@ export function AuthQueueView({
           >
             {approvalPhaseLabel(approvalPhases.get(id))}
           </button>
-          <button type="button" className="btn btn--ghost" onClick={() => {
-            void cancelApprovalProof(id).catch((error) => setActionError(id, error, 'Could not cancel signing.', { kind: 'approve' }));
-          }}>Cancel signing</button>
+          {getApprovalTier(request) === 'signed' && (
+            <button type="button" className="btn btn--ghost" onClick={() => {
+              void cancelApprovalProof(id).catch((error) => setActionError(id, error, 'Could not cancel signing.', { kind: 'approve' }));
+            }}>Cancel signing</button>
+          )}
         </div>
       );
     }
@@ -3068,9 +3098,9 @@ export function AuthQueueView({
           disabled={actionDisabled || !approvalAllowed || dependencyBlocked}
           title={dependencyBlocked
             ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
-            : request.publication_blocker?.message ?? (!approvalAllowed ? 'Approval is unavailable in this instance.' : undefined)}
+            : request.publication_blocker?.message ?? (!approvalAllowed ? 'Approval is unavailable in this instance.' : approveTitle(getApprovalTier(request)))}
         >
-          {actionDisabled ? 'Checking the request…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
+          {actionDisabled ? 'Checking the request…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : approveLabel(getApprovalTier(request))}
         </button>
         <button
           type="button"
@@ -3324,9 +3354,9 @@ export function AuthQueueView({
               executionOutput={outputs[id]}
               notice={actionError ? (
                 <DetailPaneNotice
-                  severity="error"
+                  severity={approvalRefusal(actionError.code)?.severity ?? 'error'}
                   density="compact"
-                  title="Approval action failed"
+                  title={approvalRefusal(actionError.code)?.title ?? 'Approval action failed'}
                   actions={(
                     <>
                       <button
@@ -3346,7 +3376,10 @@ export function AuthQueueView({
                     </>
                   )}
                 >
-                  {actionError.message}
+                  {approvalRefusal(actionError.code)?.body ?? actionError.message}
+                  {approvalRefusal(actionError.code)?.reenroll && (
+                    <>{' '}<a href={viewHref('settings', { section: 'settings-signing' })}>Open approval settings</a></>
+                  )}
                 </DetailPaneNotice>
               ) : null}
               actionBundle={(

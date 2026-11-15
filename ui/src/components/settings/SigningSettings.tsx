@@ -10,18 +10,26 @@ import {
   type OperatorSigningKeyStatus,
 } from '../../api';
 import { DetailPaneNotice } from '../shared/DetailPaneNotice';
+import { CopyRefButton } from '../shared/DetailHeaderIdentity';
 
 type Props = { instance?: InstanceInfo | null };
 
 const STATE_LABEL: Record<string, string> = {
   usable: 'Ready',
-  key_missing: 'Key file missing',
-  key_invalidated: 'Fingerprints changed',
+  key_missing: 'Needs re-enrollment',
+  key_invalidated: 'Needs re-enrollment',
   biometry_unavailable: 'Touch ID unavailable',
   biometry_locked_out: 'Touch ID locked',
   no_interactive_session: 'No login session',
   failed: 'Failed',
 };
+
+const REENROLL_REASON: Partial<Record<string, string>> = {
+  key_missing: 'The approval key file is missing.',
+  key_invalidated: 'The enrolled fingerprints changed, so the Secure Enclave will not use this key again.',
+};
+
+const SIGNED_ACTION = 'Signed action: asks for Touch ID.';
 
 const CHANGE_LABEL: Record<string, string> = {
   approval_key_enrollment: 'Approval key enrolled',
@@ -125,28 +133,58 @@ export default function SigningSettings({ instance }: Props): JSX.Element {
       >
         <div className="settings-view__number-info">
           <span className="settings-view__number-label">Approval key</span>
-          {approvalKey && <span className="settings-view__number-desc"><code>{approvalKey.fingerprint}</code></span>}
+          {approvalKey ? (
+            <span className="settings-view__number-desc"><code>{approvalKey.fingerprint}</code></span>
+          ) : (
+            <span className="settings-view__number-desc">Held in this Mac's Secure Enclave and used only after a Touch ID match.</span>
+          )}
         </div>
         <div className="settings-view__number-controls">
           {approvalKey && <span className="settings-view__badge" title={approvalKey.detail ?? undefined}>{STATE_LABEL[approvalKey.state] ?? approvalKey.state}</span>}
           {enrollAllowed && (
-            <button type="button" className="btn btn--sm" onClick={() => void enroll(false)} disabled={busy}>
-              {approvalKey ? 'Replace' : 'Enroll'}
+            <button type="button" className="btn btn--sm" onClick={() => void enroll(false)} disabled={busy} title={SIGNED_ACTION}>
+              {approvalKey ? 'Replace with Touch ID' : 'Enroll with Touch ID'}
             </button>
           )}
         </div>
       </div>
 
+      {approvalKey?.public_material && (
+        <div
+          className="settings-view__field"
+          data-settings-searchable
+          data-settings-search-text="Approval public key GitHub signing key"
+        >
+          <span className="settings-view__field-label">
+            Public key{' '}
+            <CopyRefButton value={approvalKey.public_material} label="Copy public key" />
+          </span>
+          <code className="settings-view__input--mono">{approvalKey.public_material}</code>
+          <span className="settings-view__number-desc">
+            GitHub accepts this line as a Signing key; add it there to show protected merges as Verified.
+          </span>
+        </div>
+      )}
+
+      {approvalKey && REENROLL_REASON[approvalKey.state] && (
+        <div data-settings-searchable data-settings-search-text="Approval key needs re-enrollment">
+          <DetailPaneNotice severity="warning" density="compact" title="Approval key needs re-enrollment">
+            {REENROLL_REASON[approvalKey.state]} Protected merges cannot be approved until you enroll a new key. With no usable key, the replacement is recorded as a bootstrap enrollment.
+          </DetailPaneNotice>
+        </div>
+      )}
+
       {bootstrapOffer && (
         <div data-settings-searchable data-settings-search-text={`Approval key bootstrap ${bootstrapOffer}`}>
-          <DetailPaneNotice severity="warning" density="compact" title="Replace without the current key">{bootstrapOffer}</DetailPaneNotice>
-          <button type="button" className="btn btn--active btn--sm" onClick={() => void enroll(true)} disabled={busy}>Replace</button>
+          <DetailPaneNotice severity="warning" density="compact" title="Replace without the current key">{bootstrapOffer} The replacement is recorded as a bootstrap enrollment.</DetailPaneNotice>
+          <button type="button" className="btn btn--active btn--sm" onClick={() => void enroll(true)} disabled={busy} title={SIGNED_ACTION}>Replace with Touch ID</button>
         </div>
       )}
 
       <div className="settings-view__number-row" data-settings-searchable data-settings-search-text="External signers">
         <div className="settings-view__number-info">
           <span className="settings-view__number-label">External signers</span>
+          <span className="settings-view__number-desc">Mandible verifies these signatures on protected branches and never signs with them.</span>
         </div>
         <div className="settings-view__number-controls">
           {importAllowed && (
@@ -154,7 +192,7 @@ export default function SigningSettings({ instance }: Props): JSX.Element {
               type="button"
               className="btn btn--sm"
               aria-label={formOpen ? 'Cancel' : 'Add signer'}
-              title={formOpen ? 'Cancel' : 'Add signer'}
+              title={formOpen ? 'Cancel' : `Add signer. ${SIGNED_ACTION}`}
               onClick={() => setFormOpen((open) => !open)}
               disabled={busy}
             >
@@ -217,8 +255,8 @@ export default function SigningSettings({ instance }: Props): JSX.Element {
             disabled={busy}
           />
           <input id="signing-public-key-file" type="file" accept=".pub,text/plain" onChange={(event) => void handleFile(event)} disabled={busy} />
-          <button type="button" className="btn btn--active btn--sm" onClick={() => void register()} disabled={!publicKey.trim() || busy}>
-            Add signer
+          <button type="button" className="btn btn--active btn--sm" onClick={() => void register()} disabled={!publicKey.trim() || busy} title={SIGNED_ACTION}>
+            Add signer with Touch ID
           </button>
         </div>
       )}

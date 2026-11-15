@@ -30,6 +30,7 @@ import {
   authAttributionReadFields,
 } from "../identity/read-projection.js";
 import { ClientAuthzError, requireAttribution, requireIdentity, requireOperator } from "../client-auth/authz.js";
+import { SignedActionRefused, sendSigningRefusal } from "../operator-signing/http.js";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { readBody } from "./http.js";
@@ -1256,6 +1257,10 @@ function isHttpError(error: unknown): error is { status: number; message: string
 }
 
 function handleQueueError(error: unknown, res: ResponseLike): void {
+  if (error instanceof SignedActionRefused) {
+    sendSigningRefusal(res, error.refusal);
+    return;
+  }
   if (error instanceof ClientAuthzError) {
     res.status(error.status).json({ error: error.message, code: error.code });
     return;

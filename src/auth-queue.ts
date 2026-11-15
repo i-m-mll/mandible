@@ -7,6 +7,7 @@ import { listAuthHistorySummaries } from "./ledger-reads/auth-history.js";
 import { forEachInEventLoopSlices } from "./event-loop-slices.js";
 import { assertAuthPublication, bindAuthPublication } from "./auth-publication.js";
 import type { OperatorSigningAuthority } from "./operator-signing/authority.js";
+import { SignedActionRefused } from "./operator-signing/http.js";
 import { buildMergeCommit, commitTime, defaultMergeMessage, signedCommitObject, writeCommitObject } from "./merge-commit.js";
 import type { EvidenceMethod } from "./users/types.js";
 import { DOMAIN_EVENTS, type AuthResolvedPayload } from "./contracts.js";
@@ -3680,7 +3681,7 @@ export class AuthQueue {
       try {
         const admission = this.observationToken(request.id, request);
         await this.assertRequestRepoExecutionCertain(request);
-        if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new AuthQueueError("invalid_status", "Operator proof was cancelled.");
+        if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new SignedActionRefused({ code: "cancelled", detail: "Signing was cancelled." });
         this.assertObservation(request.id, admission);
         request = this.requireRequest(id);
         if (request.status !== "pending") throw new AuthQueueError("invalid_status", "Only pending requests can be approved.");
@@ -3694,14 +3695,14 @@ export class AuthQueue {
         const issuedAt = this.now();
         const expiresAt = issuedAt + 60_000;
         if (isAuthMergeCommand(request)) {
-          if (!this.operatorSigning) throw new AuthQueueError("invalid_command", "Operator proof approval_key_required: this daemon has no approval signer.");
+          if (!this.operatorSigning) throw new SignedActionRefused({ code: "approval_key_required", detail: "This daemon has no approval signer." });
           const unsigned = await this.buildReviewedMergeCommit(request, issuedAt);
           this.broadcastApprovalPhase(request.id, "awaiting_signature");
           const signed = await this.operatorSigning.commitSigner(
             `approve merging ${request.head_branch} into ${request.base_branch} at ${request.merge_preflight_base_sha!.slice(0, 7)}`,
           ).sign(unsigned, "git", controller.signal);
-          if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new AuthQueueError("invalid_status", "Operator proof was cancelled.");
-          if (!signed.ok) throw new AuthQueueError("invalid_command", `Operator proof ${signed.error.code}: ${signed.error.detail}`);
+          if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new SignedActionRefused({ code: "cancelled", detail: "Signing was cancelled." });
+          if (!signed.ok) throw new SignedActionRefused(signed.error);
           if (this.now() >= expiresAt || this.approvalDigest(request) !== digest ||
             !authorizedMergeSignerLines(this.db, operatorId, signed.value.credential_id).length) {
             throw new AuthQueueError("invalid_status", "Operator proof expired or the reviewed request changed; approve the current request again.");
@@ -3746,7 +3747,7 @@ export class AuthQueue {
       if (this.inFlight.has(request.id)) throw new AuthQueueError("invalid_status", "An earlier execution of this request is still settling.");
       const admission = this.observationToken(request.id, request);
       await this.assertRequestRepoExecutionCertain(request);
-      if (this.operatorProofInFlight.get(request.id)?.signal.aborted) throw new AuthQueueError("invalid_status", "Operator proof was cancelled.");
+      if (this.operatorProofInFlight.get(request.id)?.signal.aborted) throw new SignedActionRefused({ code: "cancelled", detail: "Signing was cancelled." });
       this.assertObservation(request.id, admission);
       const operatorProof = this.operatorProofs.get(request.id);
       this.operatorProofs.delete(request.id);
@@ -4656,7 +4657,7 @@ export class AuthQueue {
     if (unseen.unexpected.length === 0 && unseen.missing_merges.length === 0) return;
     throw new AuthQueueError(
       "merge_check_failed",
-      `Protected ${request.base_branch} has history that is neither a recorded Mandible merge nor signed with an operator hardware key, ` +
+      `Protected ${request.base_branch} has history that is neither a recorded Mandible merge nor signed by an operator signer, ` +
         `and this approval had not shown it:\n${describeBaseAuditFindings(unseen)}\n` +
         "It is now listed on the request. Review it and approve again to proceed. No protected state changed.",
     );

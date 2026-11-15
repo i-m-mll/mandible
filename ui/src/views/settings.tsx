@@ -145,7 +145,7 @@ const SETTINGS_SECTIONS = {
   appearance: { id: 'settings-appearance', title: 'Appearance' },
   auth: { id: 'auth-settings', title: 'Approvals' },
   authHooks: { id: 'settings-auth-hooks', title: 'Approval Hooks' },
-  signing: { id: 'settings-signing', title: 'Signing keys' },
+  signing: { id: 'settings-signing', title: 'Approvals' },
   versionControl: { id: 'settings-version-control', title: 'Version Control' },
   maintenance: { id: 'settings-maintenance', title: 'Maintenance' },
   backup: { id: 'settings-backup', title: 'Backup' },
@@ -1458,14 +1458,23 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
     normalizeIssueDefaultFilter,
     issueFilterInitialized.current,
   );
-  const protectedBranchesSaveState = useDebouncedSettingSave(
-    'protected_branches',
-    protectedBranches,
-    normalizeProtectedBranches(settings.protected_branches ?? '') ?? '',
-    saveSetting,
-    normalizeProtectedBranches,
-    initialized.current,
-  );
+  // The protected-branch list is what the approval gate covers, so a change is a
+  // signed action. It is saved only on an explicit click, because the Touch ID
+  // sheet must follow the operator's click and appear at no other time.
+  const [protectedBranchesSaveState, setProtectedBranchesSaveState] = useState<{ saving: boolean; error: string | null }>({ saving: false, error: null });
+  const normalizedProtectedBranches = normalizeProtectedBranches(protectedBranches);
+  const protectedBranchesChanged = normalizedProtectedBranches != null
+    && normalizedProtectedBranches !== (normalizeProtectedBranches(settings.protected_branches ?? '') ?? '');
+  const saveProtectedBranches = useCallback(async () => {
+    if (normalizedProtectedBranches == null) return;
+    setProtectedBranchesSaveState({ saving: true, error: null });
+    try {
+      await saveSetting('protected_branches', normalizedProtectedBranches);
+      setProtectedBranchesSaveState({ saving: false, error: null });
+    } catch (err) {
+      setProtectedBranchesSaveState({ saving: false, error: err instanceof Error ? err.message : 'Failed to save' });
+    }
+  }, [normalizedProtectedBranches, saveSetting]);
 
   const showFeedback = useCallback((state: FeedbackState) => {
     if (feedbackTimer.current != null) window.clearTimeout(feedbackTimer.current);
@@ -1958,7 +1967,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell key={SETTINGS_SECTIONS.signing.id} section={SETTINGS_SECTIONS.signing}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.signing}
-          description="Register the public key Git uses to sign commits."
+          description="Protected merges and changes to the signers or protected branches are signed actions: each asks for Touch ID, and the approval key signs it. Every other approval is a courtesy approval: one click, not operator-verified."
         />
         <div className="settings-view__section-body" data-testid="settings-signing-content">
           <SigningSettings instance={instance} />
@@ -1968,7 +1977,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell key={SETTINGS_SECTIONS.versionControl.id} section={SETTINGS_SECTIONS.versionControl}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.versionControl}
-          description="Comma-separated branch names that are pinned in the Work tab and used as the baseline for ahead/behind counts."
+          description="Comma-separated branch names that only signed merges may move. They are pinned in the Work tab and used as the baseline for ahead/behind counts. Changing the list is a signed action."
         />
         <div className="settings-view__field" data-settings-searchable data-settings-search-text="protected branches pinned Work tab baseline counts">
           <input
@@ -1981,9 +1990,18 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             }}
             placeholder="main, develop"
             aria-label="Protected branches"
-            aria-invalid={protectedBranchesSaveState.error != null || normalizeProtectedBranches(protectedBranches) == null}
+            aria-invalid={protectedBranchesSaveState.error != null || normalizedProtectedBranches == null}
           />
-          {protectedBranchesSaveState.saving && <span className="settings-view__text-desc" role="status">Saving</span>}
+          <button
+            type="button"
+            className="btn btn--sm"
+            onClick={() => void saveProtectedBranches()}
+            disabled={!protectedBranchesChanged || protectedBranchesSaveState.saving}
+            title="Signed action: asks for Touch ID."
+          >
+            Save with Touch ID
+          </button>
+          {protectedBranchesSaveState.saving && <span className="settings-view__text-desc" role="status">Waiting for Touch ID</span>}
           {protectedBranchesSaveState.error && <span className="settings-view__warning" role="alert">{protectedBranchesSaveState.error}</span>}
           {!protectedBranchesSaveState.error && normalizeProtectedBranches(protectedBranches) == null && (
             <span className="settings-view__warning" role="status">Complete each branch name between commas.</span>

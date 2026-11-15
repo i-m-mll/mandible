@@ -25,10 +25,13 @@ export const OPERATOR_STATEMENT_NAMESPACE = "mandible-operator";
 
 export type TrustChangeKind = (typeof OPERATOR_TRUST_CHANGE_KINDS)[number];
 
+/** Why the helper could not sign, as it reported it; the interface shows each one differently. */
+export type ApprovalKeyUnavailable = Exclude<KeyState, "usable" | "failed">;
+
 export type SigningRefusalCode =
   | "operator_required"
   | "approval_key_required"
-  | "approval_key_unavailable"
+  | ApprovalKeyUnavailable
   | "bootstrap_confirmation_required"
   | "cancelled"
   | "signing_failed"
@@ -83,11 +86,15 @@ export function statementBytes(operatorId: string, statement: OperatorStatement,
   });
 }
 
+function isTransientKeyState(state: KeyState): state is "biometry_unavailable" | "biometry_locked_out" | "no_interactive_session" {
+  return state === "biometry_unavailable" || state === "biometry_locked_out" || state === "no_interactive_session";
+}
+
 function signOutcomeRefusal(outcome: Exclude<SignOutcome, { result: "signed" }>): { ok: false; error: SigningRefusal } {
   switch (outcome.result) {
     case "cancelled": return refuse("cancelled", "Signing was cancelled.");
     case "failed": return refuse("signing_failed", outcome.detail);
-    default: return refuse("approval_key_unavailable", `The approval key cannot sign: ${outcome.result}.`);
+    default: return refuse(outcome.result, `The approval key cannot sign: ${outcome.result}.`);
   }
 }
 
@@ -238,8 +245,8 @@ export class OperatorSigningAuthority {
     const statuses = await this.approvalKeyStatus();
     const usable = statuses.find((status) => status.state === "usable");
     if (!usable) {
-      const transient = statuses.find((status) => !["key_missing", "key_invalidated", "failed"].includes(status.state));
-      if (transient) return refuse("approval_key_unavailable", `The enrolled approval key cannot sign now: ${transient.state}. Try again.`);
+      const transient = statuses.map((status) => status.state).find(isTransientKeyState);
+      if (transient) return refuse(transient, `The enrolled approval key cannot sign now: ${transient}. Try again.`);
       const unclassified = statuses.find((status) => status.state === "failed");
       if (unclassified && !options.confirmBootstrap) {
         return refuse("bootstrap_confirmation_required", `The enrolled approval key failed: ${unclassified.detail ?? "no detail"}. Confirm to replace it without its signature.`);
@@ -252,7 +259,7 @@ export class OperatorSigningAuthority {
     const created = await this.signer.create(pending);
     if (created.result !== "created") {
       rmSync(pending, { force: true });
-      return created.result === "failed" ? refuse("signing_failed", created.detail) : refuse("approval_key_unavailable", `Cannot create an approval key: ${created.result}.`);
+      return created.result === "failed" ? refuse("signing_failed", created.detail) : refuse(created.result, `Cannot create an approval key: ${created.result}.`);
     }
     const resolved = await resolveOpenSshPublicKey(created.public_key);
     if (!resolved.ok || !resolved.value.material.startsWith("ecdsa-sha2-nistp256 ")) {

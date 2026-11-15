@@ -90,14 +90,16 @@ describe("auth queue", () => {
       const evidence = () => db.prepare("SELECT count(*) AS n FROM attribution_evidence").get();
       const [objectsBefore, evidenceBefore] = [objects(), evidence()];
 
-      signer.next.push({ result: "cancelled" });
-      await expect(queue.approveAsOperator(request.id, operatorCaller(signing.operatorId))).rejects.toThrow("cancelled");
-      expect(await queue.getRequest(request.id)).toMatchObject({ status: "pending", approved_by_user_id: null, execution_evidence_id: null });
-      expect([objects(), evidence(), git(repo, ["rev-parse", "main"])]).toEqual([objectsBefore, evidenceBefore, base]);
+      for (const result of ["cancelled", "biometry_unavailable", "key_invalidated"] as const) {
+        signer.next.push({ result });
+        await expect(queue.approveAsOperator(request.id, operatorCaller(signing.operatorId))).rejects.toMatchObject({ refusal: { code: result } });
+        expect(await queue.getRequest(request.id)).toMatchObject({ status: "pending", approved_by_user_id: null, execution_evidence_id: null });
+        expect([objects(), evidence(), git(repo, ["rev-parse", "main"])]).toEqual([objectsBefore, evidenceBefore, base]);
+      }
 
       await queue.approveAsOperator(request.id, operatorCaller(signing.operatorId));
       await waitForStatus(queue, request.id, "completed");
-      expect(signer.touches).toHaveLength(2);
+      expect(signer.touches).toHaveLength(4);
       const touch = signer.touches[1]!;
       expect(touch).toMatchObject({ namespace: "git", reason: `approve merging feature/one-touch into main at ${base.slice(0, 7)}` });
       const tip = git(repo, ["rev-parse", "main"]);

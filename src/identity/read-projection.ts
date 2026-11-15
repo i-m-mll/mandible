@@ -1,4 +1,5 @@
 import type { Db } from "../db.js";
+import { isAuthMergeCommand } from "../auth-context.js";
 
 import type {
   ReadUserIdentity,
@@ -137,6 +138,7 @@ export function authAttributionReadFields(
     requested_by_user_id?: string | null;
     approved_by_user_id?: string | null;
     execution_evidence_id?: string | null;
+    command?: string | null;
   },
 ): AuthAttributionReadFields {
   const executionEvidence = resolver.attribution({ evidence_id: request.execution_evidence_id });
@@ -147,5 +149,6 @@ export function authAttributionReadFields(
     // Derived from the recorded verification RESULT, not from the evidence
     // method name. Those disagree whenever verification failed.
     merge_signature: resolver.mergeSignatureClaim(request.execution_evidence_id),
+    approval_tier: isAuthMergeCommand(request) ? "signed" : "courtesy",
   };
 }

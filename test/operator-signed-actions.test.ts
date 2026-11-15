@@ -118,7 +118,7 @@ it("bootstraps automatically for a missing key, asks first for an unclassified f
   const key = signing.keyPath(enclaveKey().fingerprint);
 
   signer.states.set(key, { state: "biometry_locked_out" });
-  expect(await enroll()).toMatchObject({ status: 409, body: { code: "operator_signature_approval_key_unavailable" } });
+  expect(await enroll()).toMatchObject({ status: 409, body: { code: "operator_signature_biometry_locked_out" } });
   signer.states.set(key, { state: "failed", detail: "unreadable wrapped key" });
   expect(await enroll()).toMatchObject({ status: 409, body: { code: "operator_signature_bootstrap_confirmation_required" } });
   expect(listTrustChanges(db)).toHaveLength(1);

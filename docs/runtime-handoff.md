@@ -9,6 +9,11 @@ one current attempt, its observed effects, its completion receipt, and cleanup.
 
 Initial publication verifies the approved Git candidate, signature, approval
 snapshot, hook identity, and selected accepted release against the checkout.
+The signature is the approval key's signature on the merge commit, made in the
+Secure Enclave after one Touch ID match ([approvals](approvals.md)). It shows
+that a matching finger touched, not what the operator believed they approved,
+and it does not stop a same-user process that bypasses Mandible; it does make
+any publication without it detectable.
 The installed daemon runs the registered hook command in the request checkout.
 The built-in command, `bash cli/post-merge-build-dist.sh`, resolves that newly
 merged checkout and invokes its `scripts/runtime-handoff.mjs arm` entry point.

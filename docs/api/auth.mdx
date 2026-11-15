@@ -239,7 +239,7 @@ curl http://localhost:19420/api/auth/history?limit=10
 
 ### POST /api/auth/request/:id/approve
 
-Approve a pending request. For a protected merge, Mandible builds the exact merge commit from the retained candidate (tree, base and head parents, reviewed message, operator identity, and the time of the click) and the operator's approval key signs it with one Touch ID match. That signature is the merge commit's signature; the executor publishes the signed commit and never invokes a signer. A cancelled, failed, or expired signature, or a request that changed while the sheet was up, leaves the request pending with nothing written. Any other approval is a courtesy approval and needs no signature. Success transitions to `executing`. A caller with no attributable identity is refused with `403 attribution_required`. Protected merges require local isolated candidate publication; unsupported native preparation hooks fail before effects; native post hooks use the frozen convergence plan.
+Approve a pending request. For a protected merge, Mandible builds the exact merge commit from the retained candidate (tree, base and head parents, reviewed message, operator identity, and the time of the click) and the operator's approval key signs it with one Touch ID match. That signature is the merge commit's signature; the executor publishes the signed commit and never invokes a signer. A cancelled, failed, or expired signature, or a request that changed while the sheet was up, leaves the request pending with nothing written. Any other approval is a courtesy approval: it needs no signature, its evidence records the caller with `verified: false`, and the dashboard labels it "Courtesy approval, not operator-verified". A refused signature returns `409` (`403` for `untrusted_signature`, `502` for `signing_failed`) with `code` set to `operator_signature_<reason>`, where the reason is what the approval helper reported: `cancelled`, `biometry_unavailable`, `biometry_locked_out`, `no_interactive_session`, `key_invalidated`, or `key_missing`; or `approval_key_required` when no key is enrolled. Every auth request carries `approval_tier`, `signed` or `courtesy`. Success transitions to `executing`. A caller with no attributable identity is refused with `403 attribution_required`. Protected merges require local isolated candidate publication; unsupported native preparation hooks fail before effects; native post hooks use the frozen convergence plan.
 
 **Response:** `202 Accepted`
 
@@ -250,20 +250,6 @@ Approve a pending request. For a protected merge, Mandible builds the exact merg
 ### POST /api/auth/request/:id/cancel-proof
 
 Cancel the configured operator's in-flight merge-commit signature. Requires `approve_auth`; unavailable through file RPC. Returns `200` with `{ "cancelled": true }`. It does not reject or withdraw the pending request, and cannot undo an already verified approval.
-
-```json
-{
-  "request_id": "optional-auth-request-id",
-  "grantee": "agent-user-or-slug",
-  "project": "canonical-project-key",
-  "base": "main",
-  "action": "merge",
-  "issue": "exact-issue-ref",
-  "head": "feature/exact-head",
-  "duration_minutes": 60,
-  "max_uses": 1
-}
-```
 
 ### POST /api/auth/request/:id/reject
 

@@ -1107,14 +1107,16 @@ export async function approveAuthRequest(requestId: string): Promise<void> {
 
   if (!response.ok) {
     let message = `POST ${path} failed: ${response.status}`;
+    let code: string | null = null;
     try {
-      const body = await response.json() as { error?: string; message?: string };
+      const body = await response.json() as { error?: string; message?: string; code?: string };
+      code = body.code ?? null;
       if (body.error) message = body.error;
       else if (body.message) message = body.message;
     } catch {
       // ignore parse errors — keep the generic message
     }
-    throw new Error(message);
+    throw new ApiError(message, response.status, code);
   }
 }
 
@@ -1450,6 +1452,7 @@ export type { LedgerActorType } from '../../src/ledger/types';
 export type {
   ReadUserIdentity,
   MergeSignatureClaim,
+  ApprovalTier,
   AttributionReadProjection,
 } from '../../src/identity/contracts';
 export type { WorkUnitLiveness as LedgerIssueDetailLiveness } from '../../src/contracts';

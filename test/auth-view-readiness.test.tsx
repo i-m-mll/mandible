@@ -16,7 +16,7 @@ import { CollapsiblePanel, type CollapsiblePanelAvailability } from '../ui/src/c
 import { usePersistedViewState } from '../ui/src/hooks/usePersistedViewState';
 import { AuthChangeBreakdown } from '../ui/src/views/AuthChangeBreakdown';
 import type { AuthChangeReport } from '../src/contracts';
-import type { AuthRequestAction, InstanceInfo } from '../ui/src/api';
+import { ApiError, type AuthRequestAction, type InstanceInfo } from '../ui/src/api';
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 import { rememberEntityRoute } from '../ui/src/query/entityRoute';
 
@@ -152,12 +152,12 @@ describe('AuthQueueView daemon readiness gate', () => {
     const blocker = screen.getByRole('status');
     expect(within(blocker).getByText('Checkout state blocks approval')).toBeTruthy();
     expect(within(blocker).queryByRole('button')).toBeNull();
-    expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(refresh).toHaveBeenCalledOnce();
     expect(screen.getByText('Checkout state blocks approval')).toBeTruthy();
     window.dispatchEvent(new Event('focus'));
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
-    expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement).disabled).toBe(false);
     expect(refresh).toHaveBeenCalledTimes(2);
     expect(screen.queryByText('Checkout state blocks approval')).toBeNull();
     vi.useRealTimers();
@@ -191,7 +191,7 @@ describe('AuthQueueView daemon readiness gate', () => {
       ...blockedRequest,
       dependencies: [{ ...blockedRequest.dependencies![0], state: 'ready', merge_finalized_at: 10 }],
     }]} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Approve/ }));
     expect(onApprove).toHaveBeenCalledWith('req-1');
   });
 
@@ -199,7 +199,7 @@ describe('AuthQueueView daemon readiness gate', () => {
     const onApprove = vi.fn();
     renderView(false, onApprove);
 
-    const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
+    const approve = screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);
 
     fireEvent.click(approve);
@@ -210,7 +210,7 @@ describe('AuthQueueView daemon readiness gate', () => {
     const onApprove = vi.fn();
     renderView(true, onApprove);
 
-    const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
+    const approve = screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement;
     expect(approve.disabled).toBe(false);
 
     fireEvent.click(approve);
@@ -218,10 +218,55 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(onApprove).toHaveBeenCalledWith('req-1');
   });
 
+  it('asks for Touch ID on a signed approval and shows the state the helper refused with', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError('The approval key cannot sign: key_invalidated.', 409, 'operator_signature_key_invalidated')));
+    render(
+      <AuthQueueView
+        queue={[{ ...pendingRequest, approval_tier: 'signed' }]}
+        historyQueue={[]}
+        outputs={{}}
+        selectedAuthId="req-1"
+        daemonReady
+        instance={authMainInstance}
+        onApprove={onApprove}
+        onReject={() => undefined}
+        onRetry={() => undefined}
+        onDismiss={() => undefined}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Approve with Touch ID' }));
+    expect(await screen.findByText('Approval key needs re-enrollment')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Open approval settings' })).toBeTruthy();
+  });
+
+  it('labels a courtesy approval as one and never as verified', () => {
+    render(
+      <AuthQueueView
+        queue={[]}
+        historyQueue={[{
+          ...pendingRequest, type: 'config-change', status: 'completed', approval_tier: 'courtesy',
+          approver: { id: 'operator', display_name: 'Operator', kind: 'human' },
+          execution_evidence: { user: null, evidence_method: 'api_token', evidence_id: 'ev-1', credential: null },
+        }]}
+        outputs={{}}
+        selectedAuthId="req-1"
+        daemonReady
+        instance={authMainInstance}
+        onApprove={() => undefined}
+        onReject={() => undefined}
+        onRetry={() => undefined}
+        onDismiss={() => undefined}
+      />,
+    );
+    const attribution = screen.getByLabelText('Approval attribution');
+    expect(within(attribution).getByText('Courtesy approval, not operator-verified')).toBeTruthy();
+    expect(within(attribution).queryByText('verified')).toBeNull();
+  });
+
   it('shows copied Description as read-only while keeping approval disabled', () => {
     const onApprove = vi.fn();
     renderView(true, onApprove, previewInstance);
-    const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
+    const approve = screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByRole('textbox', { name: 'Description' })).toBeNull();
@@ -637,7 +682,7 @@ for (const history of [false, true]) {
     view.rerender(<AuthQueueView {...props} queue={history ? [] : [updated]} historyQueue={history ? [updated] : []} />);
     expect(onSelectAuth).not.toHaveBeenCalled();
     expect(prerequisites().getAllByText('ready')).toHaveLength(5);
-    if (!history) expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(false);
+    if (!history) expect((screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(prerequisites().getByRole('link', { name: 'auth:source' }));
     expect(onSelectAuth).toHaveBeenCalledWith('source');
     expect(onNavigateRequest).toHaveBeenCalledWith('source');

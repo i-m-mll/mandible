@@ -123,7 +123,7 @@ export function unseenBaseAuditFindings(
 export function describeBaseAuditFindings(findings: Pick<ProtectedBaseAudit, "unexpected" | "missing_merges">): string {
   return [
     ...findings.unexpected.map((commit) =>
-      `${commit.sha.slice(0, 10)} ${commit.subject} (${commit.signer ? `signed by ${commit.signer}, not an operator hardware key` : "unsigned"})`),
+      `${commit.sha.slice(0, 10)} ${commit.subject} (${commit.signer ? `signed by ${commit.signer}, not an operator signer` : "unsigned"})`),
     ...findings.missing_merges.map((sha) => `${sha.slice(0, 10)} recorded Mandible merge is no longer in the branch history`),
   ].join("\n");
 }
