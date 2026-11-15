@@ -14,7 +14,7 @@ import {
   addEnclaveApprovalKey,
   getOperator,
   listCredentials,
-  retireEnclaveCustody,
+  revokeCredential,
 } from "../users/store.js";
 import type { AttributionEvidence, UserCredential } from "../users/types.js";
 import type { OPERATOR_TRUST_CHANGE_KINDS } from "./schema.js";
@@ -72,6 +72,8 @@ export interface OperatorStatement {
   kind: "trust_change";
   content: Record<string, unknown>;
 }
+
+const NOT_SET_UP = "Touch ID is not set up: enroll in Settings → Approvals.";
 
 const refuse = (code: SigningRefusalCode, detail: string): { ok: false; error: SigningRefusal } => ({ ok: false, error: { code, detail } });
 
@@ -168,6 +170,26 @@ export class OperatorSigningAuthority {
     });
   }
 
+  /**
+   * Whether a signed action can ask for Touch ID now. A caller runs this before
+   * any work a signature would authorize, so an operator without a usable
+   * approval key learns that first.
+   */
+  async readyToSign(): Promise<Signed<ApprovalKeyStatus>> {
+    const operatorId = this.operatorId();
+    if (!operatorId.ok) return operatorId;
+    const [status, ...others] = await this.approvalKeyStatus();
+    if (!status) return refuse("approval_key_required", NOT_SET_UP);
+    if (others.length > 0) return refuse("signing_failed", "More than one approval key is enrolled.");
+    switch (status.state) {
+      case "usable": return { ok: true, value: status };
+      case "failed": return refuse("signing_failed", status.detail ?? "The approval helper could not check the approval key.");
+      case "key_missing": return refuse("key_missing", `${NOT_SET_UP} The approval key file is missing.`);
+      case "key_invalidated": return refuse("key_invalidated", `${NOT_SET_UP} The enrolled fingerprints changed, so the Secure Enclave will not use the approval key again.`);
+      default: return refuse(status.state, `The approval key cannot sign now: ${status.state}.`);
+    }
+  }
+
   /** Run one signed action; a second while one is in flight is refused at once, without a sheet. */
   private async exclusive<T>(action: () => Promise<Signed<T>>): Promise<Signed<T>> {
     if (this.signing) return refuse("signing_in_progress", "Another signed action is waiting for Touch ID; finish or cancel it first.");
@@ -188,7 +210,7 @@ export class OperatorSigningAuthority {
     const operatorId = this.operatorId();
     if (!operatorId.ok) return operatorId;
     const [key, ...others] = this.enclaveKeys(operatorId.value);
-    if (!key) return refuse("approval_key_required", "Enroll an approval key in Settings before performing this action.");
+    if (!key) return refuse("approval_key_required", NOT_SET_UP);
     if (others.length > 0) return refuse("signing_failed", "More than one approval key is enrolled.");
     return this.signWith(key, namespace, message, reason, signal);
   }
@@ -256,7 +278,7 @@ export class OperatorSigningAuthority {
    * and with the operator's confirmation when a key fails for a reason the
    * helper cannot classify. A key that cannot sign only for now (cancelled,
    * biometry unavailable or locked out, no session) refuses enrollment. A
-   * replaced key stays as a verify-only signer.
+   * replaced key is revoked; merges it signed before then still verify.
    */
   enroll(signal?: AbortSignal, options: { confirmBootstrap?: boolean } = {}): Promise<Signed<{ credential: UserCredential; change: TrustChange }>> {
     return this.exclusive(() => this.enrollExclusively(signal, options));
@@ -325,7 +347,7 @@ export class OperatorSigningAuthority {
         if (!this.stillEnrolled(operatorId.value, replaced.map((credential) => credential.id))) {
           throw new StaleEnrollment();
         }
-        for (const credential of replaced) retireEnclaveCustody(this.db, credential.id);
+        for (const credential of replaced) revokeCredential(this.db, credential.id, this.now());
         const credential = addEnclaveApprovalKey(this.db, operatorId.value, { fingerprint, public_material: material, label: "Approval key" }, this.now());
         signatures[0]!.credential_id = credential.id;
         const change = this.recordTrustChange("approval_key_enrollment", authorization, bytes, signatures);

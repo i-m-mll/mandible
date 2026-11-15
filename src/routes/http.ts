@@ -1,3 +1,4 @@
+import { getDaemonLogger } from "../daemon-log.js";
 import type { RequestLike } from "../server.js";
 
 export function readBody<T>(req: RequestLike): T {
@@ -58,4 +59,15 @@ export function bodyRecord(req: RequestLike): Record<string, unknown> {
   return req.body && typeof req.body === "object" && !Array.isArray(req.body)
     ? (req.body as Record<string, unknown>)
     : {};
+}
+
+/**
+ * A failure no route handler anticipated is a defect: it is logged with its
+ * stack, and the caller sees its message, so the operator can act on it or
+ * report it.
+ */
+export function sendUnexpectedError(res: unknown, error: unknown, route: string): void {
+  const failure = error instanceof Error ? error : new Error(String(error));
+  getDaemonLogger()("error", "route_unexpected_error", { route, error: failure.message, stack: failure.stack ?? null });
+  sendJson(res, 500, { error: failure.message || "The daemon failed without a message.", code: "unexpected_error" });
 }

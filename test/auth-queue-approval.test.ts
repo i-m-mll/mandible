@@ -465,6 +465,7 @@ describe("auth queue", () => {
       command: "mandible auth merge feature/no-context --into main",
       title: "No context",
     }));
+    configureSigningCredential((queue as unknown as { db: Parameters<typeof configureSigningCredential>[0] }).db, createAuthCheckRepo());
 
     await expect(approveFixtureRequest(queue, request.id)).rejects.toThrow(AuthQueueError);
     expect((await queue.getRequest(request.id))?.status).toBe("pending");

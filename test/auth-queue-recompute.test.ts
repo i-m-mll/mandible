@@ -528,7 +528,7 @@ describe("auth queue", () => {
           expect(message).toContain("Refusal: base_transition_unaccounted");
           expect(message).toContain("signature");
           expect(message).toContain(unregisteredFingerprint);
-          expect(message).toContain("add its public key as an external signer in Settings");
+          expect(message).toContain("verify how that commit reached the branch");
           expect((await queue.getRequest(request.id))?.status).toBe("pending");
           expect(calls).toHaveLength(0);
         } finally {

@@ -2,11 +2,12 @@ import { BRIEFING_GROUP_SCHEMA_SQL } from "../feedback/schema.js";
 import { ledgerOriginColumnSql } from "../ledger-origin-schema.js";
 
 /**
- * Operator signing custody. An `ssh_key` credential states whether Mandible can
+ * Signing-key custody. An `ssh_key` credential states whether Mandible can
  * invoke it here (`enclave`: an approval key held in this Mac's Secure Enclave,
  * whose wrapped-key file lives at a path derived from its fingerprint) or only
- * verify it (`external`: public material of a key held elsewhere, such as a
- * YubiKey, or a replaced approval key). Other credential types carry none.
+ * holds its public material (`external`). The operator's active signing keys
+ * are enclave approval keys only; `external` rows of the operator are revoked
+ * history. Other credential types carry none.
  */
 export const USER_CREDENTIALS_TABLE_SQL = `CREATE TABLE user_credentials (
         id              TEXT PRIMARY KEY,
@@ -87,4 +88,22 @@ export const OPERATOR_SIGNING_CUSTODY_MIGRATION_SQL: string[] = [
   ...USER_CREDENTIALS_INDEX_SQL,
   ...OPERATOR_TRUST_CHANGES_SCHEMA_SQL,
   ...COURTESY_REVIEW_DISPOSITION_MIGRATION_SQL(),
+];
+
+const NOW_MS = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
+const NAME_BEFORE_EMAIL = "trim(substr(display_name, 1, instr(display_name, '<') - 1))";
+
+/**
+ * Mandible approvals are Touch ID only. The operator's external signers (keys
+ * held elsewhere, such as YubiKeys, and approval keys an enrollment replaced)
+ * are revoked; shrinking the trust set needs no signature, and merges they
+ * signed before now still verify. A display name of the form `Name <email>`,
+ * which cannot author a Git commit, becomes `Name`.
+ */
+export const TOUCH_ID_ONLY_OPERATOR_MIGRATION_SQL: readonly string[] = [
+  `UPDATE user_credentials SET status = 'revoked', revoked_at = ${NOW_MS}
+     WHERE type = 'ssh_key' AND custody = 'external' AND status = 'active'
+       AND user_id = (SELECT value FROM settings WHERE key = 'user.operator_id')`,
+  `UPDATE users SET display_name = ${NAME_BEFORE_EMAIL}, updated_at = ${NOW_MS}
+     WHERE display_name LIKE '%<%>' AND ${NAME_BEFORE_EMAIL} <> '' AND ${NAME_BEFORE_EMAIL} NOT GLOB '*[<>]*'`,
 ];

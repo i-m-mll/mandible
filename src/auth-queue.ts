@@ -3692,6 +3692,11 @@ export class AuthQueue {
       const controller = new AbortController();
       this.operatorProofInFlight.set(request.id, controller);
       try {
+        if (isAuthMergeCommand(request)) {
+          if (!this.operatorSigning) throw new SignedActionRefused({ code: "approval_key_required", detail: "This daemon has no approval signer." });
+          const ready = await this.operatorSigning.readyToSign();
+          if (!ready.ok) throw new SignedActionRefused(ready.error);
+        }
         const admission = this.observationToken(request.id, request);
         await this.assertRequestRepoExecutionCertain(request);
         if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new SignedActionRefused({ code: "cancelled", detail: "Signing was cancelled." });
@@ -4532,9 +4537,9 @@ export class AuthQueue {
           recorded_request_id: record.id,
         });
       }
-      // Review F1 — the signature must verify specifically against an active
-      // signing credential of the user who approved the matched request, not
-      // any registered credential. A recorded merge without an approving user
+      // Review F1 — the signature must verify specifically against a signing
+      // credential of the user who approved the matched request that counted
+      // when the merge was recorded, not any registered credential. A recorded merge without an approving user
       // cannot qualify.
       if (!record.approved_by_user_id) {
         return refuse("recorded_merge_missing_approver", {
@@ -4542,7 +4547,7 @@ export class AuthQueue {
           recorded_request_id: record.id,
         });
       }
-      const signature = (await verifyApprovedMerge(this.db, cwd, record, commit));
+      const signature = (await verifyApprovedMerge(this.db, cwd, record, commit, record.resolved_at ?? null));
       if (!signature.verified) {
         return refuse("signature_not_authorized", {
           commit,
@@ -4629,7 +4634,10 @@ export class AuthQueue {
     );
     const audit = (await auditProtectedBase(this.db, {
       cwd: request.cwd, baseSha: request.merge_preflight_base_sha, recordedMerges, now: this.now(),
-      isApprovedMerge: async (sha) => (await verifyApprovedMerge(this.db, request.cwd, evidence.recorded.get(sha)!, sha)).verified,
+      isApprovedMerge: async (sha) => {
+        const record = evidence.recorded.get(sha)!;
+        return (await verifyApprovedMerge(this.db, request.cwd, record, sha, record.resolved_at ?? null)).verified;
+      },
     }));
     this.assertObservation(request.id, observed);
     evidence.assertCurrent();

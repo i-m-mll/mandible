@@ -10,7 +10,7 @@ import { isProtectedIdentitySettingKey } from "../settings-key-policy.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import type { RouteRegistrar } from "../server.js";
 import type { InstanceRole } from "../types.js";
-import { readBody, sendJson } from "./http.js";
+import { readBody, sendJson, sendUnexpectedError } from "./http.js";
 import { notifyProtectionInputsChanged } from "../protection-inputs.js";
 import type { OperatorSigningAuthority } from "../operator-signing/authority.js";
 import { sendSigningRefusal } from "../operator-signing/http.js";
@@ -413,9 +413,15 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
     if (key === "protected_branches") {
       // The protected-branch list is what the gate covers: changing it is a signed action.
       if (!operatorSigning) { sendJson(res, 409, { error: "This instance has no approval signer.", code: "operator_signature_signing_failed" }); return; }
-      const signed = await operatorSigning.authorizeTrustChange("protected_branches",
-        { from: readProtectedBranchSetting(db), to: parseProtectedBranchSetting(value) },
-        "change which branches Mandible protects", req.signal, write);
+      let signed;
+      try {
+        signed = await operatorSigning.authorizeTrustChange("protected_branches",
+          { from: readProtectedBranchSetting(db), to: parseProtectedBranchSetting(value) },
+          "change which branches Mandible protects", req.signal, write);
+      } catch (error) {
+        sendUnexpectedError(res, error, "settings");
+        return;
+      }
       if (!signed.ok) { sendSigningRefusal(res, signed.error); return; }
       notifyProtectionInputsChanged("setting:protected_branches");
     } else {

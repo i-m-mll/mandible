@@ -365,10 +365,25 @@ export function listUsers(db: Db, filter: ListUsersFilter = {}): User[] {
 
 // --- user mutations ---
 
+/**
+ * A name or email becomes part of a Git identity line (`Name <email>`) when the
+ * operator authors a protected merge, so it may not contain the characters that
+ * delimit that line.
+ */
+function assertIdentityText(value: string, field: "display_name" | "email"): void {
+  if (/[<>\r\n]/.test(value)) {
+    throw new UserRegistryError("invalid", field === "display_name"
+      ? "The name may not contain <, > or a line break; enter the email separately."
+      : "The email may not contain <, > or a line break.");
+  }
+}
+
 export function createUser(db: Db, input: CreateUserInput, now: number = Date.now()): User {
   const slug = normalizeSlug(input.slug);
   const display = input.display_name.trim();
   if (!display) throw new UserRegistryError("invalid", "display_name is required.");
+  assertIdentityText(display, "display_name");
+  if (input.email) assertIdentityText(input.email, "email");
   if (getUserBySlug(db, slug)) {
     throw new UserRegistryError("conflict", `A user with slug '${slug}' already exists.`);
   }
@@ -415,10 +430,12 @@ export function updateUser(
   if (patch.display_name !== undefined) {
     const display = patch.display_name.trim();
     if (!display) throw new UserRegistryError("invalid", "display_name cannot be empty.");
+    assertIdentityText(display, "display_name");
     fields.push("display_name = ?");
     params.push(display);
   }
   if (patch.email !== undefined) {
+    if (patch.email) assertIdentityText(patch.email, "email");
     fields.push("email = ?");
     params.push(patch.email);
   }
@@ -463,8 +480,7 @@ export function listCredentials(
 
 /**
  * Register a credential from caller-supplied public material. An `ssh_key`
- * registered this way is always verify-only: no caller can supply key material
- * for a key Mandible will invoke (see `addEnclaveApprovalKey`).
+ * registered this way is never one Mandible invokes (see `addEnclaveApprovalKey`).
  */
 export function addCredential(
   db: Db,
@@ -483,18 +499,6 @@ export function addEnclaveApprovalKey(
   now: number = Date.now(),
 ): UserCredential {
   return insertCredential(db, userId, { type: "ssh_key", ...input }, "enclave", now);
-}
-
-/** A replaced approval key stays active as a verify-only signer so history still verifies. */
-export function retireEnclaveCustody(db: Db, credentialId: string): void {
-  mutateLedgerRecord(db, {
-    entity_type: "credential",
-    entity_id: credentialId,
-    snapshot: () => db.prepare("SELECT id, user_id, status, custody FROM user_credentials WHERE id = ?").get(credentialId) ?? null,
-  }, () => {
-    const changed = db.prepare("UPDATE user_credentials SET custody = 'external' WHERE id = ? AND custody = 'enclave'").run(credentialId);
-    if (changed.changes !== 1) throw new UserRegistryError("conflict", `Credential '${credentialId}' is not an enclave approval key.`);
-  });
 }
 
 /**

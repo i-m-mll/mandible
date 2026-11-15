@@ -3,10 +3,18 @@ import type { ApprovalTier } from '../api';
 
 export type ApprovalRefusal = {
   title: string;
-  body: string;
+  /** Null when the daemon's own message is the explanation. */
+  body: string | null;
   severity: 'info' | 'warning' | 'error';
-  /** The approval key cannot be used again; the operator enrolls a new one in Settings. */
-  reenroll: boolean;
+  /** No usable approval key: the operator enrolls in Settings → Approvals. */
+  setUp: boolean;
+};
+
+const NOT_SET_UP: ApprovalRefusal = {
+  title: 'Touch ID is not set up',
+  body: 'Protected merges are signed with Touch ID. Enroll in Settings, then approve again.',
+  severity: 'warning',
+  setUp: true,
 };
 
 const REFUSALS: Record<SigningRefusalCode, ApprovalRefusal> = {
@@ -14,83 +22,71 @@ const REFUSALS: Record<SigningRefusalCode, ApprovalRefusal> = {
     title: 'Approval cancelled',
     body: 'Nothing was signed or changed. The request is still pending.',
     severity: 'info',
-    reenroll: false,
+    setUp: false,
   },
   biometry_unavailable: {
     title: 'Touch ID unavailable',
     body: 'Touch ID cannot be used right now, for example with the lid closed and no Touch ID keyboard. There is no password approval; approve again once Touch ID is available.',
     severity: 'warning',
-    reenroll: false,
+    setUp: false,
   },
   biometry_locked_out: {
     title: 'Touch ID locked',
     body: 'macOS locked Touch ID after too many failed matches. Unlock the Mac with your account password to re-enable it, then approve again.',
     severity: 'warning',
-    reenroll: false,
+    setUp: false,
   },
   no_interactive_session: {
     title: 'No login session',
     body: 'The approval helper cannot show the Touch ID sheet without a logged-in macOS session. Log in to this Mac, then approve again.',
     severity: 'warning',
-    reenroll: false,
+    setUp: false,
   },
-  key_invalidated: {
-    title: 'Approval key needs re-enrollment',
-    body: 'The enrolled fingerprints changed, so the Secure Enclave will not use this approval key again. Enroll a new key in Settings; the replacement is recorded as a bootstrap enrollment.',
-    severity: 'error',
-    reenroll: true,
-  },
-  key_missing: {
-    title: 'Approval key needs re-enrollment',
-    body: 'The approval key file is missing. Enroll a new key in Settings; the replacement is recorded as a bootstrap enrollment.',
-    severity: 'error',
-    reenroll: true,
-  },
-  approval_key_required: {
-    title: 'No approval key',
-    body: 'Enroll an approval key in Settings before approving a protected merge.',
-    severity: 'error',
-    reenroll: true,
-  },
+  key_invalidated: NOT_SET_UP,
+  key_missing: NOT_SET_UP,
+  approval_key_required: NOT_SET_UP,
   operator_required: {
     title: 'No operator',
     body: 'Configure the local operator before approving a protected merge.',
     severity: 'error',
-    reenroll: false,
+    setUp: false,
   },
   bootstrap_confirmation_required: {
     title: 'Approval key failed',
-    body: 'The approval key failed for a reason the helper could not classify. Replace it in Settings.',
+    body: 'The approval key failed for a reason the helper could not classify. Enroll again in Settings.',
     severity: 'error',
-    reenroll: true,
+    setUp: true,
   },
   untrusted_signature: {
     title: 'Signature rejected',
     body: 'The signature did not verify against the enrolled approval key, so nothing was approved. If you did not expect a Touch ID sheet, report it.',
     severity: 'error',
-    reenroll: false,
+    setUp: false,
   },
   signing_in_progress: {
     title: 'Another approval is waiting',
     body: 'A Touch ID sheet for another signed action is already open. One click opens one sheet: finish or cancel that one, then approve again.',
     severity: 'warning',
-    reenroll: false,
+    setUp: false,
   },
   signing_failed: {
     title: 'Signing failed',
-    body: 'The approval helper could not sign. Nothing was approved.',
+    body: null,
     severity: 'error',
-    reenroll: false,
+    setUp: false,
   },
   stale: {
     title: 'Request changed',
     body: 'The request changed while it was being signed. Nothing was approved; review it and approve again.',
     severity: 'warning',
-    reenroll: false,
+    setUp: false,
   },
 };
 
 const PREFIX = 'operator_signature_';
+
+/** The Settings section where Touch ID is enrolled. */
+export const APPROVAL_SETTINGS_SECTION = 'settings-approvals';
 
 /** The state an approval ended in, from the code the daemon gives a refused signature. */
 export function approvalRefusal(code: string | null): ApprovalRefusal | null {
@@ -98,12 +94,8 @@ export function approvalRefusal(code: string | null): ApprovalRefusal | null {
   return REFUSALS[code.slice(PREFIX.length) as SigningRefusalCode] ?? null;
 }
 
-export function approveLabel(tier: ApprovalTier): string {
-  return tier === 'signed' ? 'Approve with Touch ID' : 'Approve as courtesy';
-}
-
 export function approveTitle(tier: ApprovalTier): string {
   return tier === 'signed'
     ? 'Signs the merge commit with your approval key. macOS shows a Touch ID sheet right after this click and at no other time; cancel any sheet you did not expect.'
-    : 'Courtesy approval: one click, recorded as an interface action. It is not operator-verified, because any process running as you can perform it.';
+    : 'One click, recorded as an interface action. It is not operator-verified, because any process running as you can perform it.';
 }

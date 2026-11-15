@@ -17,9 +17,9 @@ applied per repository. Repositories Mandible does not know are never checked.
 
 A protected branch may point only at a commit signed by an active `ssh_key`
 credential of the configured operator: the enrolled approval key, which signs
-each approved merge after a Touch ID match, or an external signer that
-Mandible only verifies. Agent users hold none. Adding or removing a signer, and
-changing which branches are protected, are themselves signed actions; see
+each approved merge after a Touch ID match. Agent users hold none. Enrolling
+the key and changing which branches are protected are themselves signed
+actions; see
 [Approvals and the Touch ID gate](approvals.md).
 
 The rule lives in

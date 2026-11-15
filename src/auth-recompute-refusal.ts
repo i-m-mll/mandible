@@ -119,8 +119,8 @@ function explainBaseTransition(detail: Record<string, unknown>): string {
       if (UNREGISTERED_KEY_REASONS.has(signatureReason)) {
         return (
           `${range}: merge commit ${commit} on the base is signed by ${key}, which is not an active ` +
-          `registered signing credential (${signatureReason}). If it is your key, add its public key as an ` +
-          `external signer in Settings, then approve again.`
+          `registered signing credential (${signatureReason}). Mandible trusts only the Touch ID approval key; ` +
+          `verify how that commit reached the branch before re-approving.`
         );
       }
       if (signatureReason === "not_the_signed_merge" || signatureReason === "signer_is_not_approving_credential") {
@@ -137,8 +137,7 @@ function explainBaseTransition(detail: Record<string, unknown>): string {
       }
       return (
         `${range}: the signature on merge commit ${commit} (${key}) did not verify against the approving ` +
-        `user's active credentials (${signatureReason}). If it is your key, add its public key as an ` +
-        "external signer in Settings."
+        `user's signing credentials (${signatureReason}). Verify how that commit reached the branch before re-approving.`
       );
     }
     case "commit_not_a_recorded_queue_merge":

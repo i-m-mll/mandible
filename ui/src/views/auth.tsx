@@ -26,7 +26,7 @@ import { IconTabList, type IconTab } from '../components/shared/IconTabList';
 
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { entityHref, viewHref } from '../routing';
-import { approvalRefusal, approveLabel, approveTitle } from './auth-approval';
+import { APPROVAL_SETTINGS_SECTION, approvalRefusal, approveTitle } from './auth-approval';
 import { formatRelativeTime } from '../lib/format';
 import { createCoalescedRefresh } from '../lib/coalesced-refresh';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
@@ -1325,12 +1325,12 @@ function AuthRequestDetail({
                   )}
                   {signatureClaim.state === 'verified' && (
                     <span className="auth-detail__verified-signature" title="The approval key signed this merge after a Touch ID match.">
-                      Signed with Touch ID
+                      Signed
                     </span>
                   )}
                   {approver && getApprovalTier(request) === 'courtesy' && (
-                    <span className="auth-detail__courtesy-approval" title="Any process running as you can perform a courtesy approval through Mandible's local API.">
-                      Courtesy approval, not operator-verified
+                    <span className="auth-detail__courtesy-approval" title="Not operator-verified: any process running as you can perform a courtesy approval through Mandible's local API.">
+                      Courtesy approval
                     </span>
                   )}
                   {signatureClaim.state === 'unverified' && (
@@ -3102,7 +3102,7 @@ export function AuthQueueView({
             ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
             : request.publication_blocker?.message ?? (!approvalAllowed ? 'Approval is unavailable in this instance.' : approveTitle(getApprovalTier(request)))}
         >
-          {actionDisabled ? 'Checking the request…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : approveLabel(getApprovalTier(request))}
+          {actionDisabled ? 'Checking the request…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
         </button>
         <button
           type="button"
@@ -3379,8 +3379,8 @@ export function AuthQueueView({
                   )}
                 >
                   {approvalRefusal(actionError.code)?.body ?? actionError.message}
-                  {approvalRefusal(actionError.code)?.reenroll && (
-                    <>{' '}<a href={viewHref('settings', { section: 'settings-signing' })}>Open approval settings</a></>
+                  {approvalRefusal(actionError.code)?.setUp && (
+                    <>{' '}<a href={viewHref('settings', { section: APPROVAL_SETTINGS_SECTION })}>Set up Touch ID</a></>
                   )}
                 </DetailPaneNotice>
               ) : null}

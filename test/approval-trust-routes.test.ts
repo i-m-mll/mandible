@@ -49,19 +49,15 @@ afterEach(() => { db.close(); fs.rmSync(root, { recursive: true, force: true });
 const asOperator = (method: string, url: string, body: unknown = {}) => router.invoke({ method, url, body, credential: operatorToken, transport: "http" });
 const trusts = (pub: string) => operatorAllowedSignerLines(db).some((line) => line.includes(pub.split(" ")[1]!));
 
-it("an operator signer is the key given, never a fingerprint the caller names", async () => {
-  const shown = softKey("shown.key");
+it("the operator signs with Touch ID only: no route adds another signing key to the operator", async () => {
   const given = softKey("given.key");
-  const mismatched = await asOperator("POST", `/api/users/${operatorId}/credentials`, { type: "ssh_key", fingerprint: shown.fingerprint, public_material: given.pub });
-  expect(mismatched.status).toBe(400);
+  const before = operatorAllowedSignerLines(db);
+  const added = await asOperator("POST", `/api/users/${operatorId}/credentials`, { type: "ssh_key", fingerprint: given.fingerprint, public_material: given.pub });
+  expect(added.status).toBe(400);
   expect(signer.touches).toHaveLength(0);
   expect(trusts(given.pub)).toBe(false);
-
-  const added = await asOperator("POST", `/api/users/${operatorId}/credentials`, { type: "ssh_key", public_material: given.pub });
-  expect(added.status).toBe(201);
-  expect(signer.touches.map((touch) => touch.reason)).toEqual([`trust the signing key ${given.fingerprint}`]);
-  expect((added.body as { credential: { fingerprint: string } }).credential.fingerprint).toBe(given.fingerprint);
-  expect(trusts(given.pub)).toBe(true);
+  expect(operatorAllowedSignerLines(db)).toEqual(before);
+  expect((await asOperator("POST", "/api/users/operator/signing-key", { public_key: given.pub })).status).toBe(404);
 
   expect(router.resolveFileRpcPolicy("POST", `/api/users/${operatorId}/credentials`)).toBe(false);
   expect(router.resolveFileRpcPolicy("POST", "/api/users/agent/credentials")).toBe(true);

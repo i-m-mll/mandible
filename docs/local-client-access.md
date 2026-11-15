@@ -22,7 +22,7 @@ takes precedence over an inherited same-provider `CODEX_SESSION_ID`.
 Local socket calls ignore bearer tokens, including inherited `MANDIBLE_TOKEN`.
 A session claim is not human proof. Responsibility changes require an explicit
 operation with a reason and observed generation or checkpoint. Signed actions
-(protected merges and changes to the approval key, external signers, or
+(protected merges and changes to the approval key or
 protected branches) require a signature from the operator's approval key, which
 the Secure Enclave makes only after a Touch ID match. Every other operator
 action is a courtesy action: any caller this page describes, including a

@@ -1157,19 +1157,12 @@ export type OperatorTrustChange = {
 export type OperatorSigningKeyStatus = {
   operator_slug: string | null;
   approval_keys: Array<OperatorSigningCredential & { state: ApprovalKeyState; detail: string | null }>;
-  credentials: OperatorSigningCredential[];
   trust_changes: OperatorTrustChange[];
 };
 
 export async function getOperatorSigningKeyStatus(): Promise<OperatorSigningKeyStatus> {
   const response = await apiGet('/api/users/operator/signing-key');
   return (await parseMaybeJson(response)) as OperatorSigningKeyStatus;
-}
-
-/** Add a verify-only external signer; the approval key signs the change. */
-export async function registerOperatorSigningKey(publicKey: string): Promise<{ credential: OperatorSigningCredential; unchanged: boolean }> {
-  const response = await apiPost('/api/users/operator/signing-key', { public_key: publicKey });
-  return (await parseMaybeJson(response)) as { credential: OperatorSigningCredential; unchanged: boolean };
 }
 
 /** Create and enroll a new approval key through the approval helper. */

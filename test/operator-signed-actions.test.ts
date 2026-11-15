@@ -95,7 +95,7 @@ it("refuses forged, foreign, cancelled and failed helper output without changing
   expect(listTrustChanges(db).map((entry) => entry.kind)).toEqual(["approval_key_enrollment"]);
 });
 
-it("replaces a usable key with both signatures and keeps the old key verify-only so history still verifies", async () => {
+it("replaces a usable key with both signatures and revokes the old key", async () => {
   expect((await enroll()).status).toBe(201);
   expect((await setBranches('["main"]')).status).toBe(200);
   const first = enclaveKey();
@@ -105,8 +105,8 @@ it("replaces a usable key with both signatures and keeps the old key verify-only
   expect(replaced.status, JSON.stringify(replaced.body)).toBe(201);
   expect(replaced.body).toMatchObject({ trust_change: { authorization: "signed", signatures: [{ role: "new_key" }, { role: "approval_key", credential_id: first.id }] } });
   expect(signer.touches.map((touch) => touch.reason).slice(-2)).toEqual(["enroll a new Mandible approval key", "authorize replacing your Mandible approval key"]);
-  const old = listCredentials(db, operatorId).find((credential) => credential.id === first.id)!;
-  expect(old).toMatchObject({ status: "active", custody: "external" });
+  const old = listCredentials(db, operatorId, { includeRevoked: true }).find((credential) => credential.id === first.id)!;
+  expect(old).toMatchObject({ status: "revoked", custody: "enclave" });
   expect(enclaveKey().id).not.toBe(first.id);
   expect(await verifySshSignature(old.public_material!, OPERATOR_STATEMENT_NAMESPACE, signedChange.statement, signedChange.signatures[0]!.signature)).toBe(true);
   expect((await setBranches("[]")).status).toBe(200);
@@ -129,13 +129,3 @@ it("bootstraps automatically for a missing key, asks first for an unclassified f
   expect(listCredentials(db, operatorId).filter((credential) => credential.custody === "enclave")).toHaveLength(1);
 });
 
-it("refuses a malformed or duplicate signer before asking for a touch", async () => {
-  expect((await enroll()).status).toBe(201);
-  const touches = signer.touches.length;
-  const addSigner = (body: Record<string, unknown>) => asOperator("POST", "/api/users/operator/credentials", body);
-  expect((await addSigner({ type: "ssh_key", fingerprint: "not-a-fingerprint" })).status).toBe(400);
-  const existing = enclaveKey();
-  expect((await addSigner({ type: "ssh_key", fingerprint: existing.fingerprint, public_material: existing.public_material })).status).toBe(200);
-  expect(signer.touches).toHaveLength(touches);
-  expect(listTrustChanges(db).map((entry) => entry.kind)).toEqual(["approval_key_enrollment"]);
-});
