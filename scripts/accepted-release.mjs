@@ -127,8 +127,16 @@ function validateAcceptedReleaseReceipt(receipt, file, expectedCandidate) {
   return receipt;
 }
 
+export class LegacyAcceptanceEvidenceMissing extends Error {}
+
 function verifyAcceptedReleaseEvidence(evidence) {
-  if (installedFileIdentity(evidence.receipt).sha256 !== evidence.sha256) throw new Error('Accepted release evidence bytes changed.');
+  let identity;
+  try { identity = installedFileIdentity(evidence.receipt); }
+  catch (error) {
+    if (error.code === 'ENOENT') throw new LegacyAcceptanceEvidenceMissing('Legacy acceptance evidence is missing. Requalify the exact candidate.', { cause: error });
+    throw error;
+  }
+  if (identity.sha256 !== evidence.sha256) throw new Error('Accepted release evidence bytes changed.');
 }
 
 /** Immutable evidence remains readable after intentional payload disposal. */

@@ -95,7 +95,7 @@ isolated installation. Inventory opens the ledger read-only and changes no files
 `disposed` reports intentional payload removal with its durable cleanup outcome.
 `cleanup-pending` retains the reason and is retried by maintenance.
 
-When a recorded discard leaves an accepted release on disk, inspect one exact run UUID with the recovery command. It verifies the sealed application and terminal disposition, and reports current installation, handoff, ledger and consumer holds. It can classify historical disposition when the original acceptance evidence was in excluded scratch storage.
+Inspect one exact restored run UUID with the recovery command. It verifies the sealed application and either a recorded discard or the ledger's exact supersession of an unpublished selection. It checks current installation, handoff, ledger and consumer holds. This works even when historical acceptance proof was in deleted scratch storage. Pending requests with missing legacy evidence run fresh acceptance for their exact candidate at daemon startup or when acceptance is retried.
 
 ```bash
 scripts/bun-runtime.sh --exec scripts/recover-restored-accepted-release.mjs <run-uuid>

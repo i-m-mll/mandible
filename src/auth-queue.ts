@@ -148,6 +148,7 @@ import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incide
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
 import { acceptedReleaseSelection, bindAcceptedRelease } from "./accepted-release-selection.js";
+import { LegacyAcceptanceEvidenceMissing } from "../scripts/accepted-release.mjs";
 import { GeneratedStorageMaintenance } from './generated-storage.js';
 import { retireFailedDelivery } from './failed-delivery-retirement.js';
 import { authPublicationSnapshot, authRequestSnapshot, authSnapshotDigest } from "./auth-request-snapshot.js";
@@ -912,8 +913,8 @@ export class AuthQueue {
    * refreshPendingCandidates; `mandible auth acceptance run` calls it through
    * runCandidateAcceptance. A candidate the base moved past is re-pinned
    * first, which starts its run. A run of the current candidate that is open
-   * or passed is kept; otherwise a new run starts. Null when acceptance does
-   * not apply.
+   * or still has its passing evidence is kept. A lost legacy proof requires a
+   * new run for the exact candidate. Null when acceptance does not apply.
    */
   private async ensureCandidateAcceptance(request: AuthRequest, serialized = false): Promise<CandidateAcceptanceProjection | null> {
     if (!this.candidateAcceptanceApplies(request)) return null;
@@ -935,7 +936,14 @@ export class AuthQueue {
     this.assertObservation(request.id, observed);
     const acceptance = this.candidateAcceptanceForRequest(request)!;
     if (acceptance.state === "running") return acceptance;
-    if (acceptance.state === "passed") return acceptance;
+    if (acceptance.state === "passed") {
+      try {
+        acceptedReleaseSelection(this.db, request, listAuthRequestActions(this.db, request.id), false);
+        return acceptance;
+      } catch (error) {
+        if (!(error instanceof LegacyAcceptanceEvidenceMissing)) return acceptance;
+      }
+    }
     authLog("info", "auth_candidate_acceptance_started", { subsystem: "auth", auth_request_id: request.id, pin_sha: candidate.pin_sha });
     runs.enqueue(request.id, candidate, () => this.acceptanceInput(this.requireRequest(request.id), candidate.pin_sha));
     return this.candidateAcceptanceForRequest(request)!;

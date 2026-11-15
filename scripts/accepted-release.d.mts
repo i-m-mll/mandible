@@ -23,6 +23,7 @@ export interface AcceptedReleaseCertificate extends AcceptedReleaseIdentity, Acc
 }
 export type AcceptedReleaseReceipt = LegacyAcceptedReleaseReceipt | AcceptedReleaseCertificate;
 export const ACCEPTED_RELEASE_SCHEMA: LegacyAcceptedReleaseReceipt['schema'];
+export class LegacyAcceptanceEvidenceMissing extends Error {}
 export function applicationIdentity(app: string): string;
 export function assertAcceptedReleaseAvailable(reference: string): void;
 export function handoffRetainedReleases(journal: { phase?: string; helperFencedAt?: number; cleanup?: { state?: string }; attempt?: { fence?: unknown }; mutationFence?: unknown; binding?: { acceptedRelease?: { reference?: string }; bundleOwner?: { acceptedRelease?: string } } }): string[];
