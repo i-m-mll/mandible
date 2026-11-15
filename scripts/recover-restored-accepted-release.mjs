@@ -50,7 +50,8 @@ function onlyApp(outputs) {
 
 function readDisposition(handle, receipt) {
   const outcome = ownedRunReceipt(handle);
-  if (!outcome || outcome.schema !== OWNED_RUN_SCHEMA || outcome.outcome !== 'abandoned'
+  if (!outcome) return null;
+  if (outcome.schema !== OWNED_RUN_SCHEMA || outcome.outcome !== 'abandoned'
       || outcome.disposition !== 'discard' || !['pending', 'completed'].includes(outcome.cleanup)
       || outcome.cleanup === 'completed' && (!Array.isArray(outcome.remaining) || outcome.remaining.length)
       || !outcome.summary?.trim()
@@ -70,24 +71,30 @@ function readRestoredOwner(location, outcome, receipt) {
   const { stat, bytes } = ownedFile(file);
   const metadata = JSON.parse(bytes);
   const run = metadata.ownership;
-  if (run?.schema !== OWNED_RUN_SCHEMA || run.root !== outcome.root || run.runId !== outcome.runId
-      || run.instanceId !== outcome.instanceId || run.project !== outcome.project || run.workUnit !== outcome.workUnit
-      || run.rootIdentity?.dev !== outcome.rootIdentity.dev || run.rootIdentity?.ino !== outcome.rootIdentity.ino) {
+  if (run?.schema !== OWNED_RUN_SCHEMA || run.root !== receipt.package.handle.root || run.runId !== receipt.package.handle.runId
+      || !run.instanceId || run.project !== receipt.retention.project || run.workUnit !== receipt.retention.work_unit
+      || !Number.isSafeInteger(run.rootIdentity?.dev) || !Number.isSafeInteger(run.rootIdentity?.ino)
+      || outcome && (run.instanceId !== outcome.instanceId
+        || run.rootIdentity.dev !== outcome.rootIdentity.dev || run.rootIdentity.ino !== outcome.rootIdentity.ino)) {
     throw new Error('Restored metadata does not name the original release owner and root identity.');
   }
   const output = run.outputs?.length === 1 ? run.outputs[0] : null;
-  const stale = run.state === 'creating' && run.disposable === false && run.cleanup?.state === 'pending'
-    && stat.mtimeMs < Date.parse(outcome.finalizedAt) && output?.kind === 'interactive' && output?.disposition === 'pending';
-  const terminal = run.state === 'terminal' && run.outcome === outcome.outcome && run.receipt === outcome.receipt
+  const creating = run.state === 'creating' && run.disposable === false && run.cleanup?.state === 'pending'
+    && (!outcome || stat.mtimeMs < Date.parse(outcome.finalizedAt))
+    && output?.kind === 'interactive' && output?.disposition === 'pending';
+  const terminal = outcome && run.state === 'terminal' && run.outcome === outcome.outcome && run.receipt === outcome.receipt
     && output?.disposition === 'disposable' && digest(JSON.stringify(run.outputs)) === outcome.manifestDigest;
-  if (output?.path !== receipt.package.path || !(stale || terminal)) {
+  if (output?.path !== receipt.package.path || !(creating || terminal)) {
     throw new Error('Release metadata does not match the prior disposition or its creating owner.');
   }
-  if (!outcome.generatedRecovery && (!terminal || !Array.isArray(output.manifest)
+  if (terminal && !outcome.generatedRecovery && (!Array.isArray(output.manifest)
       || !output.manifest.some(entry => entry.path === receipt.package.path && entry.kind === 'directory'))) {
     throw new Error('Inventoried disposition requires its exact terminal output inventory.');
   }
   const producer = metadata.pendingAcceptance;
+  if (!outcome && (!producer || !run.processOwner?.identity)) {
+    throw new Error('Superseded release must bind its original acceptance producer.');
+  }
   if (producer && (producer.runId !== run.runId || producer.recordId !== receipt.acceptance.record_id
       || producer.requestId !== receipt.acceptance.request_id || !path.isAbsolute(producer.scratchRoot ?? ''))) {
     throw new Error('Restored metadata names conflicting acceptance producer custody.');
@@ -96,7 +103,7 @@ function readRestoredOwner(location, outcome, receipt) {
 }
 
 function dispositionAuthority(db, reference, receipt, outcome) {
-  if (outcome.generatedRecovery && (!onlyApp(outcome.generatedRecovery.outputs) || outcome.manifestDigest !== generatedDiscardManifestDigest)) {
+  if (outcome?.generatedRecovery && (!onlyApp(outcome.generatedRecovery.outputs) || outcome.manifestDigest !== generatedDiscardManifestDigest)) {
     throw new Error('Generated outcome does not prove discard of exactly Mandible.app.');
   }
   const locator = reference.slice(reference.lastIndexOf(':'));
@@ -106,11 +113,12 @@ function dispositionAuthority(db, reference, receipt, outcome) {
     throw new Error('Sealed release has incomplete acceptance identity.');
   }
   const rows = db.prepare(`SELECT a.id, a.auth_request_id, a.status, a.pin_sha, a.tree_sha, a.base_sha, a.head_sha,
-    json_extract(a.result_json, '$.receipt') AS reference, r.custody_work_unit_id, r.id AS request_exists
+    json_extract(a.result_json, '$.receipt') AS reference, r.custody_work_unit_id, r.id AS request_exists,
+    r.status AS request_status, r.superseded_by_request_id, r.merge_finalized_at
     FROM auth_candidate_acceptances a LEFT JOIN auth_requests r ON r.id = a.auth_request_id
     WHERE a.id = ? OR substr(json_extract(a.result_json, '$.receipt'), -length(?)) = ?`).all(record_id, locator, locator);
-  const selections = db.prepare(`SELECT auth_request_id, json_extract(payload, '$.payload.acceptanceId') AS acceptance_id,
-    json_extract(payload, '$.payload.reference') AS reference FROM auth_request_actions
+  const selections = db.prepare(`SELECT id, state, replacement_action_id, auth_request_id,
+    json_extract(payload, '$.payload.acceptanceId') AS acceptance_id, json_extract(payload, '$.payload.reference') AS reference FROM auth_request_actions
     WHERE kind = 'checkpoint_add' AND json_extract(payload, '$.kind') = 'accepted-release'
     AND substr(json_extract(payload, '$.payload.reference'), -length(?)) = ?`).all(locator, locator);
   const row = rows[0];
@@ -120,20 +128,30 @@ function dispositionAuthority(db, reference, receipt, outcome) {
       && Object.entries(receipt.candidate).every(([key, value]) => row[key] === value)
       && selections.length && selections.every(selection => selection.reference === reference && selection.acceptance_id === row.id)
       && selections.some(selection => selection.auth_request_id === row.auth_request_id)) {
-    return { kind: 'ledger', acceptanceId: row.id, requestId: row.auth_request_id };
+    if (outcome) return { kind: 'ledger', acceptanceId: row.id, requestId: row.auth_request_id };
+    const selection = selections.length === 1 ? selections[0] : null;
+    const replacement = selection?.replacement_action_id && db.prepare('SELECT auth_request_id FROM auth_request_actions WHERE id = ?')
+      .get(selection.replacement_action_id);
+    const startedDelivery = db.prepare('SELECT 1 FROM auth_hook_executions WHERE auth_request_id = ? AND attempts > 0 LIMIT 1').get(row.auth_request_id);
+    if (!legacy && row.request_status === 'superseded' && row.superseded_by_request_id && row.merge_finalized_at === null
+        && selection?.state === 'vetoed' && replacement?.auth_request_id === row.superseded_by_request_id && !startedDelivery) {
+      return { kind: 'superseded', acceptanceId: row.id, requestId: row.auth_request_id, selectionId: selection.id,
+        replacementId: row.superseded_by_request_id, replacementActionId: selection.replacement_action_id };
+    }
+    throw new Error('Release has neither a recorded discard nor an exact supersession of its unpublished selection.');
   }
-  if (legacy && !rows.length && !selections.length) return { kind: 'prior-discard' };
+  if (outcome && legacy && !rows.length && !selections.length) return { kind: 'prior-discard' };
   throw new Error('Exact ledger acceptance and selection could not be established.');
 }
 
 function checkReferences(db, home, reference, receipt) {
-  const reasons = [...acceptedReleaseFilesystemReferences(home, reference), ...acceptedReleaseDatabaseReferences(db, reference, receipt)];
+  const reasons = [...acceptedReleaseFilesystemReferences(home, reference), ...acceptedReleaseDatabaseReferences(db, reference, receipt, home)];
   if (reasons.length) throw new Error(reasons.join('; '));
 }
 
 function checkProducers(metadata, outcome) {
-  for (const owner of [metadata.ownership, outcome.generatedRecovery].filter(Boolean)) {
-    if ((owner.processOwner || owner.processes?.length) && !generatedOwnerIdle(owner)) {
+  for (const owner of [metadata.ownership, outcome?.generatedRecovery].filter(Boolean)) {
+    if ((owner.processOwner || owner.processes?.length) && !generatedOwnerIdle(owner, metadata.ownership.root ?? outcome?.root)) {
       throw new Error('Acceptance producer lifetime is live or uncertain.');
     }
   }
@@ -158,6 +176,7 @@ function checkQuarantine(directory, volume) {
 }
 
 function dispositionDigest(file, schema) {
+  if (!statIfPresent(file)) return null;
   const bytes = ownedFile(file).bytes;
   if (schema === historicalRecoverySchema) return digest(bytes);
   const { cleanup, remaining, reason, unlinkedApparentBytes, physicalRecovery, ...disposition } = JSON.parse(bytes);

@@ -38,7 +38,7 @@ async function restoredFixture({ legacy = false, survivor = false, reason = lega
     fs.writeFileSync(evidence, '{}');
     const accepted = await retainAcceptedRelease({ pending, candidate, shipped,
       acceptance: { record_id: legacy ? null : runId, request_id: legacy ? null : requestId },
-      evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 }, expectedDigest: applicationIdentity(pending.app) });
+      evidence: fs.readFileSync(evidence), expectedDigest: applicationIdentity(pending.app) });
     // Simulate the historical seal even when the current writer copies proof into durable custody.
     const sealed = path.join(storage, '.receipts', `${runId}-accepted-release.json`);
     saveOwnedMetadata(sealed, { ...accepted.receipt, evidence: { ...accepted.receipt.evidence, receipt: evidence } });
@@ -153,6 +153,9 @@ it('requires completed legacy discard and rejects changed payload or custody', a
   const f = await restoredFixture({ legacy: true });
   const unsupported = await restoredFixture({ legacy: true });
   try {
+    const oldOutcome = JSON.parse(fs.readFileSync(f.outcome, 'utf8'));
+    delete oldOutcome.generatedRecovery;
+    fs.writeFileSync(f.outcome, JSON.stringify(oldOutcome));
     const invalidOutcome = JSON.parse(fs.readFileSync(unsupported.outcome, 'utf8'));
     fs.writeFileSync(unsupported.outcome, JSON.stringify({ ...invalidOutcome, disposition: 'transferred' }));
     expect(await unsupported.recover()).toMatchObject({ action: 'preserve', reason: expect.stringContaining('Recorded discard outcome') });
@@ -166,6 +169,39 @@ it('requires completed legacy discard and rejects changed payload or custody', a
     expect(await f.recover(plan.applyToken)).toMatchObject({ action: 'preserve', reason: expect.stringContaining('sealed whole-app digest') });
     expect(fs.existsSync(f.root)).toBe(true);
   } finally { f.db.close(); unsupported.db.close(); }
+});
+
+it('clears a restored selection disposed by supersession without inventing an old outcome', async () => {
+  const f = await restoredFixture();
+  try {
+    fs.unlinkSync(f.outcome);
+    const metadataFile = path.join(f.root, 'metadata.json');
+    const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+    metadata.ownership.processOwner = { pid: process.pid, identity: 'prior process lifetime' };
+    fs.writeFileSync(metadataFile, JSON.stringify(metadata));
+    expect(await f.recover()).toMatchObject({ action: 'preserve', reason: expect.stringContaining('neither a recorded discard') });
+    const replacementId = randomUUID();
+    const replacementActionId = randomUUID();
+    f.db.prepare("INSERT INTO auth_requests (id, status, command, title, created_at, updated_at, expires_at) VALUES (?, 'pending', 'true', 'replacement', 1, 2, 100)")
+      .run(replacementId);
+    f.db.prepare("INSERT INTO auth_request_actions (id, auth_request_id, ordinal, kind, target_issue_ref, payload, staged_at, updated_at) VALUES (?, ?, 1, 'issue_close', 'fixture', '{}', 1, 2)")
+      .run(replacementActionId, replacementId);
+    f.db.prepare("UPDATE auth_requests SET status = 'superseded', superseded_by_request_id = ? WHERE id = ?").run(replacementId, f.requestId);
+    f.db.prepare("UPDATE auth_request_actions SET state = 'vetoed', replacement_action_id = ? WHERE id = ?")
+      .run(replacementActionId, f.runId);
+    const plan = await f.recover();
+    if (plan.action !== 'quarantine') throw new Error(JSON.stringify(plan));
+    expect(plan.authority).toMatchObject({ kind: 'superseded', requestId: f.requestId, replacementId });
+    f.db.prepare("UPDATE auth_request_actions SET replacement_action_id = NULL WHERE id = ?").run(f.runId);
+    expect(await f.recover(plan.applyToken)).toMatchObject({ action: 'preserve' });
+    f.db.prepare('UPDATE auth_request_actions SET replacement_action_id = ? WHERE id = ?').run(replacementActionId, f.runId);
+    expect(await f.recover(plan.applyToken)).toMatchObject({ action: 'quarantined' });
+    const purge = await recoverRestoredAcceptedRelease(f.db, f.home, f.runId, { purge: true });
+    if (purge.action !== 'purge') throw new Error(JSON.stringify(purge));
+    expect(await recoverRestoredAcceptedRelease(f.db, f.home, f.runId, { purge: true, applyToken: purge.applyToken }))
+      .toMatchObject({ action: 'purged' });
+    expect(fs.existsSync(f.outcome)).toBe(false);
+  } finally { f.db.close(); }
 });
 
 it('purges only matching quarantined bytes and resumes partial or rootless deletion', async () => {

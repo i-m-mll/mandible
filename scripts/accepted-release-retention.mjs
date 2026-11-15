@@ -12,8 +12,9 @@ import { fileURLToPath } from 'node:url';
 
 function producerAuthority(producer) {
   const file = path.join(producer.scratchRoot, 'metadata.json');
-  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).ownership
-    : ownedRunReceipt({ root: producer.scratchRoot, runId: producer.runId })?.generatedRecovery;
+  if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8')).ownership;
+  const recovery = ownedRunReceipt({ root: producer.scratchRoot, runId: producer.runId })?.generatedRecovery;
+  return recovery && { ...recovery, root: producer.scratchRoot };
 }
 
 function producerOwners(metadata) {
@@ -28,7 +29,9 @@ export function acceptedReleaseProducerReferences(metadata) {
 }
 
 export async function acceptedReleaseProducerReferencesAsync(metadata) {
-  const input = { pendingAcceptance: metadata.pendingAcceptance, ownership: { processOwner: metadata.ownership.processOwner, processes: metadata.ownership.processes } };
+  const { root, processOwner, processes, outputs } = metadata.ownership;
+  const input = { pendingAcceptance: metadata.pendingAcceptance, ownership: { root, processOwner, processes,
+    outputs: outputs?.map(output => output.path) } };
   const { stdout, stdoutTruncated } = await runSupervisedCommand(process.execPath, ['--no-install',
     fileURLToPath(new URL('./generated-owner-observation.mjs', import.meta.url)), JSON.stringify(input)], { capture: true, timeout: 5000, graceMs: 100 });
   if (stdoutTruncated) throw new Error('Producer lifetime observation truncated');
@@ -157,7 +160,7 @@ export async function reconcileAcceptedReleases(db, home, { apply = false, limit
           if (fs.lstatSync(path.join(entryStorage, '.receipts', `${runId}-accepted-release.json`), { throwIfNoEntry: false })) {
             return { root: recovery, action: 'retain', reasons: ['sealed package belongs to accepted reconciliation'] };
           }
-          if (hasRoot() && outcome.generatedRecovery?.processOwner && !generatedOwnerIdle(outcome.generatedRecovery)) {
+          if (hasRoot() && outcome.generatedRecovery?.processOwner && !generatedOwnerIdle(outcome.generatedRecovery, recovery)) {
             return { root: recovery, action: 'retain', reasons: ['acceptance producer lifetime live or uncertain'] };
           }
           return { root: recovery, ...recoverOwnedRunDisposition(outcome.receipt, { apply }) };

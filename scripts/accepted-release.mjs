@@ -219,7 +219,7 @@ export async function disposeAcceptedRelease(reference, expectedCandidate, reaso
     }
     if (ownership?.state === 'investigating') throw new Error('Explicit investigation retains these bytes until released.');
     if (!outcome && ownership.state === 'terminal') throw new Error('Terminal release lacks its exact disposition.');
-    if (hasRoot && outcome && [ownership, outcome.generatedRecovery].some(run => (run?.processOwner || run?.processes?.length) && !generatedOwnerIdle(run))) {
+    if (hasRoot && outcome && [ownership, outcome.generatedRecovery].some(run => (run?.processOwner || run?.processes?.length) && !generatedOwnerIdle(run, root))) {
       throw new Error('Accepted release is retained: acceptance producer lifetime live or uncertain');
     }
     if (hasRoot && !outcome && metadata.pendingAcceptance) {

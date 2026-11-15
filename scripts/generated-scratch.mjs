@@ -37,10 +37,12 @@ export function recordScratchProcessGroup(file, child) {
   finally { fs.closeSync(fd); }
 }
 
-export function generatedChildrenIdle(run) {
+export function generatedChildrenIdle(run, root = run.root) {
+  if (!Array.isArray(run.outputs)) return false;
   const groups = [];
-  if (run.outputs.some(output => output.path === generatedProcessLog)) {
-    const file = path.join(run.root, generatedProcessLog);
+  if (run.outputs.some(output => (typeof output === 'string' ? output : output.path) === generatedProcessLog)) {
+    if (!path.isAbsolute(root ?? '')) return false;
+    const file = path.join(root, generatedProcessLog);
     const stat = fs.lstatSync(file, { throwIfNoEntry: false });
     if (stat && !stat.isFile()) return false;
     if (stat) groups.push(...fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)));
@@ -48,8 +50,8 @@ export function generatedChildrenIdle(run) {
   return processesIdle([...(run.processes ?? []), ...groups]);
 }
 
-export function generatedOwnerIdle(run) {
-  return Boolean(run.processOwner?.identity) && processesIdle([run.processOwner]) && generatedChildrenIdle(run);
+export function generatedOwnerIdle(run, root = run.root) {
+  return Boolean(run.processOwner?.identity) && processesIdle([run.processOwner]) && generatedChildrenIdle(run, root);
 }
 const ownerIdle = generatedOwnerIdle;
 
