@@ -80,7 +80,8 @@ export function stageNativeBuild({ worktree, root, candidate }) {
   config.bundle = { ...config.bundle, resources, targets: ['app'],
     externalBin: config.bundle.externalBin.map(file => path.join(binaries, path.basename(file))),
     macOS: { ...config.bundle.macOS, signingIdentity: '-', frameworks: [sqliteLibrary],
-      files: { ...config.bundle.macOS.files, 'Library/LaunchAgents': path.join(payload, 'Library/LaunchAgents') } } };
+      files: { ...config.bundle.macOS.files, 'Library/LaunchAgents': path.join(payload, 'Library/LaunchAgents'),
+        'Helpers/MandibleApproval.app': path.join(payload, 'Helpers/MandibleApproval.app') } } };
   fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
   const bun = command('/bin/sh', [path.join(worktree, 'scripts/bun-runtime.sh')], worktree);
   const temporary = path.join(buildRoot, 'tmp'); fs.mkdirSync(temporary, { recursive: true });

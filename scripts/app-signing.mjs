@@ -88,6 +88,12 @@ export function nativeSigningIdentifier(appIdentifier, role) {
   return `${appIdentifier}.${suffix}`;
 }
 
+/** An executable of an app nested in `app` is signed and verified as that bundle, which seals its Info.plist and resources. */
+export function nativeSigningTarget(app, file) {
+  const bundle = path.resolve(file, '../../..');
+  return bundle !== path.resolve(app) && bundle.endsWith('.app') && path.basename(path.dirname(file)) === 'MacOS' ? bundle : file;
+}
+
 export function verifyNativeAppSignatures(app, signer, release) {
   if (signer.identity === '-') return;
   if (!/^[a-fA-F0-9]{40}$/.test(signer.identity)) throw new Error('Native signature verification requires the resolved signing certificate.');
@@ -96,7 +102,9 @@ export function verifyNativeAppSignatures(app, signer, release) {
   const identifier = /^Identifier=([A-Za-z0-9.-]+)$/m.exec(evidence)?.[1];
   if (!team || !identifier || !release.native.serviceHelper) throw new Error('Native package has no verifiable app/helper signing identity.');
   const identity = `anchor apple generic and certificate leaf = H"${signer.identity}" and certificate leaf[subject.OU] = "${team}"`;
-  for (const [file, id] of [[app, identifier], [path.resolve(app, 'Contents/Resources', release.native.serviceHelper), nativeSigningIdentifier(identifier, 'serviceHelper')]]) {
+  const helpers = Object.entries(release.native).filter(([role]) => nativeSigningIdentifier(identifier, role))
+    .map(([role, relative]) => [nativeSigningTarget(app, path.resolve(app, 'Contents/Resources', relative)), nativeSigningIdentifier(identifier, role)]);
+  for (const [file, id] of [[app, identifier], ...helpers]) {
     signer.run('/usr/bin/codesign', ['--verify', '--strict', '-R', `=${identity} and identifier "${id}"`, file]);
   }
 }
