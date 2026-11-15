@@ -7,7 +7,7 @@ import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
 import { acceptedReleaseHome, releaseRunSchema, retireAcceptedReleaseRunLock, withAcceptedReleaseRunLock } from './accepted-release-lock.mjs';
 import { readBundleOwner } from './bundle-services.mjs';
 import { generatedOwnerIdle } from './generated-scratch.mjs';
-import { readRuntimeHandoffLock, runtimeHandoffSettled } from './runtime-handoff-lock.mjs';
+import { readRuntimeHandoffLock, runtimeHandoffSettled, readRuntimeHandoffRetirement } from './runtime-handoff-lock.mjs';
 import { LEGACY_ACCEPTED_RELEASE_SCHEMA, ACCEPTANCE_CERTIFICATE_SCHEMA, ACCEPTANCE_CERTIFICATE_LIMIT, ACCEPTANCE_CONTRACT,
   boundedAcceptanceBytes, validateAcceptanceCertificate } from './acceptance-certificate.mjs';
 import { isVersionedReleaseStorage } from './accepted-release-storage.mjs';
@@ -84,11 +84,7 @@ export function acceptedReleaseFilesystemReferences(home, reference) {
     const bytes = fs.readFileSync(file);
     const journal = JSON.parse(bytes);
     if (journal.schema !== 'mandible-runtime-handoff@1' || !journal.binding || typeof journal.phase !== 'string') { reasons.push(`unclassified handoff journal ${entry.name}`); continue; }
-    const retirement = path.join(path.dirname(file), 'retirement.json');
-    if (fs.existsSync(retirement)) {
-      const retired = JSON.parse(fs.readFileSync(retirement, 'utf8'));
-      if (retired.bindingDigest === journal.bindingDigest && retired.journalSha256 === hash(bytes)) continue;
-    }
+    if (readRuntimeHandoffRetirement(file, bytes, journal) && active?.journalPath !== file) continue;
     const references = handoffRetainedReleases(journal);
     if (references.some(reference => typeof reference !== 'string')) reasons.push(`unclassified handoff journal ${entry.name}`);
     else if (references.some(retains)) reasons.push(`unresolved handoff ${entry.name}`);
@@ -225,9 +221,8 @@ export async function disposeAcceptedRelease(reference, expectedCandidate, reaso
         || ownership.project !== exact.retention.project || ownership.workUnit !== exact.retention.work_unit)) {
       throw new Error('Accepted release owner changed or is absent without a disposition.');
     }
-    if (ownership?.state === 'investigating') throw new Error('Explicit investigation retains these bytes until released.');
     if (!outcome && ownership.state === 'terminal') throw new Error('Terminal release lacks its exact disposition.');
-    if (hasRoot && outcome && [ownership, outcome.generatedRecovery].some(run => (run?.processOwner || run?.processes?.length) && !generatedOwnerIdle(run, root))) {
+    if (hasRoot && [ownership, outcome?.generatedRecovery].some(run => (run?.processOwner || run?.processes?.length) && !generatedOwnerIdle(run, root))) {
       throw new Error('Accepted release is retained: acceptance producer lifetime live or uncertain');
     }
     if (hasRoot && !outcome && metadata.pendingAcceptance) {
@@ -327,7 +322,7 @@ export async function retainAcceptedRelease({ pending, candidate, acceptance, ev
     const receipt = certification
       ? { ...certification, schema: ACCEPTANCE_CERTIFICATE_SCHEMA, ...base, contract: ACCEPTANCE_CONTRACT, manifest_sha256: manifest.sha256 }
       : { schema: ACCEPTED_RELEASE_SCHEMA, ...base, shipped,
-        retention: { ...base.retention, policy: 'Explicit owner disposal after delivery or abandonment; not cache material.' },
+        retention: { ...base.retention, policy: 'Retain while installed or selected by an executable or retryable request.' },
         evidence: retainAcceptanceEvidence(evidence, receiptFile, ownership.runId) };
     validateAcceptedReleaseReceipt(receipt, receiptFile, candidate);
     if (receipt.schema === ACCEPTANCE_CERTIFICATE_SCHEMA) {

@@ -117,7 +117,7 @@ it('plans without touching the restore, retries an interrupted move, and retains
   } finally { f.db.close(); }
 });
 
-it('rechecks filesystem, consumers and database holds upon apply', async () => {
+it('rechecks active ownership and consumers upon apply despite unrelated failed hooks', async () => {
   const f = await restoredFixture();
   try {
     const plan = await f.recover();
@@ -143,9 +143,9 @@ it('rechecks filesystem, consumers and database holds upon apply', async () => {
         .run(randomUUID(), f.requestId, '0'.repeat(64));
       return { idle: true } as const;
     };
-    expect(await f.recover(plan.applyToken, hold)).toMatchObject({ action: 'preserve', reason: 'unresolved delivery hook' });
-    expect(fs.existsSync(f.root)).toBe(true);
-    expect(fs.existsSync(plan.recoveryReceipt)).toBe(false);
+    expect(await f.recover(plan.applyToken, hold)).toMatchObject({ action: 'quarantined' });
+    expect(fs.existsSync(f.root)).toBe(false);
+    expect(fs.existsSync(plan.recoveryReceipt)).toBe(true);
   } finally { f.db.close(); }
 });
 

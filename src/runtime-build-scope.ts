@@ -1,6 +1,8 @@
 import { isBuildSourcePath } from "../scripts/build-revision.mjs";
 import type { AuthRequest } from "./types.js";
 
+export const MANDIBLE_REBUILD_HOOK_ID = "builtin-mandible-rebuild";
+
 export function authRequestChangesBuildInputs(request: Pick<AuthRequest, "merge_head_sha" | "change_report">): boolean {
   const report = request.change_report;
   if (!report || report.comparison.head_sha !== request.merge_head_sha) return true;

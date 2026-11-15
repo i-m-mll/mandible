@@ -272,10 +272,10 @@ The request must record a successful finalized merge and an unchanged approved
 acceptance selection. Every recorded attempt must be a settled nonzero failure;
 timeout, interruption, missing settlement evidence, an admitted publication,
 handoff/preparation material, live consumers or producers, installed ownership,
-another live selection, and explicit investigations refuse the operation. An
+or another live selection refuse the operation. An
 exactly empty canonical pre-admission directory carries no payload reference.
 
-Retirement preserves exit status, output and attempt history, keeps convergence
+Once an exact handoff retirement is archived, the daemon reconciles the corresponding hook to retired. Retirement preserves exit status, output and attempt history, keeps convergence
 failed and issue closures withheld, and prevents retry or subsequent publication.
 One audited lifecycle revision records the execution, command digest, accepted
 reference, reason, actor and custody. The same guarded transaction releases only

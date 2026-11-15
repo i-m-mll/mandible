@@ -9,7 +9,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { runtimeEnvironment } from './runtime-environment.mjs';
-import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal, runtimeHandoffBindingDigest } from './runtime-handoff-lock.mjs';
+import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal, runtimeHandoffBindingDigest, readRuntimeHandoffRetirement } from './runtime-handoff-lock.mjs';
 import { RuntimeObservationError, observationPending, runtimeObservationAcceptance } from './runtime-observation.mjs';
 import { withLifecycleLock, withInstallationGatewayLock, inspectLifecycleLock, assertLifecycleLockHeld, processIdentity as lockProcessIdentity } from './lifecycle-lock.mjs';
 import { acceptedInstallPaths, preparedApplicationContext, applicationRootIdentity, prepareAcceptedApplication, installAcceptedApplication } from './accepted-app-install.mjs';
@@ -239,13 +239,10 @@ function validateJournal(journal) {
 function readJournalFile(home, requestId, executionId) {
   const file = path.join(handoffDirectory(home, requestId, executionId), 'journal.json');
   if (!fs.existsSync(file)) return null;
-  const journal = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const retirementFile = path.join(path.dirname(file), 'retirement.json');
-  if (fs.existsSync(retirementFile)) {
-    const retirement = JSON.parse(fs.readFileSync(retirementFile, 'utf8'));
-    if (retirement.bindingDigest !== journal.bindingDigest || retirement.journalSha256 !== fileHash(file)) throw new Error('Retired handoff evidence changed.');
-    return { ...journal, phase: 'retired', retirement };
-  }
+  const bytes = fs.readFileSync(file);
+  const journal = JSON.parse(bytes);
+  const retired = readRuntimeHandoffRetirement(file, bytes, journal);
+  if (retired) return { ...journal, phase: 'retired', retirement: retired.retirement };
   return journal;
 }
 export function readRuntimeHandoff(home, requestId, executionId) {
@@ -1138,13 +1135,8 @@ export async function retireFailedRuntimeHandoff(home, { bindingDigest: expected
       }
       return retirement;
     };
-    if (fs.existsSync(retirementFile)) {
-      const prior = JSON.parse(fs.readFileSync(retirementFile, 'utf8'));
-      if (prior.schema !== 'mandible-runtime-handoff-retirement@1' || prior.bindingDigest !== expected
-          || prior.requestId !== journal.binding.requestId || prior.executionId !== journal.binding.executionId
-          || prior.journalSha256 !== fileHash(journalPath)) throw new Error('Retirement evidence differs; preserving it.');
-      return finishRetirement(prior);
-    }
+    const prior = readRuntimeHandoffRetirement(journalPath);
+    if (prior) return finishRetirement(prior.retirement);
     // The helper is an exact independently owned job; never bootout a domain.
     const target = `${journal.binding.domain}/${journal.helperLabel}`;
     const loaded = journal.binding.domain && journal.helperLabel ? spawnSync('/bin/launchctl', ['print', target], { encoding: 'utf8', timeout: 2500 }) : { status: 1 };
