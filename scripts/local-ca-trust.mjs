@@ -305,7 +305,7 @@ function nativeTrustHelper() {
     path.join(scriptDir, "..", "src-tauri", "resources", "local-ca-trust-helper"), // source checkout
   ];
   const helper = candidates.find((candidate) => existsEntry(candidate));
-  if (!helper) throw new Error("Native macOS trust helper is missing; rebuild the desktop app or run scripts/build-local-ca-trust-helper.sh in the source checkout.");
+  if (!helper) throw new Error("Native macOS trust helper is missing; rebuild the desktop app or run scripts/build-native-helpers.sh in the source checkout.");
   const stat = fs.lstatSync(helper);
   if (!stat.isFile() || stat.isSymbolicLink() || !(stat.mode & 0o111)) throw new Error("Native macOS trust helper is not an executable regular file.");
   return helper;

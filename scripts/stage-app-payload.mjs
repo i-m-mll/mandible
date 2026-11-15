@@ -104,7 +104,7 @@ export async function stageAppPayload(contents) {
   const caddy = installPinnedCaddy(path.join(os.homedir(), '.cache/mandible/package-tools'));
   if (hash(caddy) !== '425fb8342d05b06e98f6a438a2964401268df83345ad806103669fdd322bf80c') throw new Error('Caddy differs from the qualified darwin-arm64 release executable.');
   const native = { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy',
-    claude: '../MacOS/mandible-claude', trustHelper: '../MacOS/mandible-trust-helper', serviceHelper: '../MacOS/mandible-service', sqlite: '../Frameworks/libsqlite3.dylib' };
+    claude: '../MacOS/mandible-claude', trustHelper: '../MacOS/mandible-trust-helper', approvalHelper: '../MacOS/mandible-approval-helper', serviceHelper: '../MacOS/mandible-service', sqlite: '../Frameworks/libsqlite3.dylib' };
   const sdkNative = path.join(resources, `node_modules/@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`);
   const signing = {};
   for (const [role, executable] of Object.entries({ bun: runtime, claude: sdkNative })) {
@@ -115,7 +115,8 @@ export async function stageAppPayload(contents) {
     fs.writeFileSync(path.join(resources, relative), entitlements);
     signing[role] = relative;
   }
-  for (const [name, source] of Object.entries({ bun: runtime, caddy, sqlite, claude: sdkNative, trustHelper: process.env.MANDIBLE_DESKTOP_TRUST_HELPER ?? path.join(root, 'src-tauri/resources/local-ca-trust-helper') })) {
+  const helpers = process.env.MANDIBLE_DESKTOP_HELPERS ?? path.join(root, 'src-tauri/resources');
+  for (const [name, source] of Object.entries({ bun: runtime, caddy, sqlite, claude: sdkNative, trustHelper: path.join(helpers, 'local-ca-trust-helper'), approvalHelper: path.join(helpers, 'approval-helper') })) {
     const destination = path.resolve(resources, native[name]);
     copy(source, destination);
     fs.chmodSync(destination, name === 'sqlite' ? 0o644 : 0o755);

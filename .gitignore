@@ -8,6 +8,7 @@ vendor/
 target/
 src-tauri/gen/
 src-tauri/resources/local-ca-trust-helper
+src-tauri/resources/approval-helper
 src-tauri/resources/bun-runtime/
 worktrees/
 coverage/

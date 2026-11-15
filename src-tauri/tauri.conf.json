@@ -69,6 +69,7 @@
       "binaries/mandible-caddy",
       "binaries/mandible-claude",
       "binaries/mandible-trust-helper",
+      "binaries/mandible-approval-helper",
       "binaries/mandible-service"
     ]
   }
