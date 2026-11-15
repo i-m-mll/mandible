@@ -5,7 +5,6 @@ import type { ResponseLike, RouteRegistrar } from "../server.js";
 import {
   addBinding,
   addCredential,
-  validateCredentialInput,
   createUser,
   getOperator,
   listBindings,
@@ -30,7 +29,7 @@ import {
   requireOperator,
   requireSelfOrOperator,
 } from "../client-auth/authz.js";
-import { bodyRecord, sendJson } from "./http.js";
+import { bodyRecord, sendJson, sendUnexpectedError } from "./http.js";
 import {
   addGrant,
   addGroup,
@@ -40,12 +39,12 @@ import {
   listGrants,
   listGroupMembers,
   listGroups,
+  PermissionError,
   removeGrant,
   removeGroup,
   removeGroupMember,
   type PermissionSubjectType,
 } from "../permissions/store.js";
-import { resolveOpenSshPublicKey } from "../operator-signing/public-key.js";
 import { listTrustChanges, type OperatorSigningAuthority } from "../operator-signing/authority.js";
 import { SignedActionRefused, sendSigningRefusal, signedOrThrow } from "../operator-signing/http.js";
 import type { UserCredential } from "../users/types.js";
@@ -78,8 +77,11 @@ function handleError(res: ResponseLike, error: unknown): void {
     sendJson(res, status, { error: error.message, code: error.code });
     return;
   }
-  const message = error instanceof Error ? error.message : String(error);
-  sendJson(res, 400, { error: message });
+  if (error instanceof PermissionError) {
+    sendJson(res, error.status, { error: error.message, code: error.code });
+    return;
+  }
+  sendUnexpectedError(res, error, "users");
 }
 
 function userView(db: ReturnType<typeof getDb>, ref: string) {
@@ -114,33 +116,6 @@ function notAnOperatorSigner({ params }: { params: Record<string, string> }): bo
   return !credential || !inTrustSet(db, credential.user_id, credential.type);
 }
 
-/**
- * Trust an external public key as an operator signer. The fingerprint is
- * derived from the key itself, so the key the sheet names is the key trusted.
- */
-async function addOperatorSigner(db: ReturnType<typeof getDb>, signing: OperatorSigningAuthority, operatorId: string,
-  publicKey: string, label: string, signal: AbortSignal | undefined, claimedFingerprint?: string): Promise<{ credential: UserCredential; unchanged: boolean }> {
-  const resolved = await resolveOpenSshPublicKey(publicKey);
-  if (!resolved.ok) {
-    throw new UserRegistryError("invalid", resolved.reason === "expected_one_openssh_public_key_line"
-      ? "Provide exactly one OpenSSH public-key line."
-      : "The selected value is not a readable OpenSSH public key.");
-  }
-  if (claimedFingerprint && claimedFingerprint.trim() !== resolved.value.fingerprint) {
-    throw new UserRegistryError("invalid", `${claimedFingerprint.trim()} is not the fingerprint of the given key (${resolved.value.fingerprint}).`);
-  }
-  const existing = listCredentials(db, operatorId).find((credential) =>
-    credential.fingerprint === resolved.value.fingerprint && credential.type === "ssh_key");
-  if (existing) return { credential: existing, unchanged: true };
-  const input = { type: "ssh_key", fingerprint: resolved.value.fingerprint, public_material: resolved.value.material, label };
-  validateCredentialInput(db, operatorId, input);
-  const { value: credential } = signedOrThrow(await signing.authorizeTrustChange("signer_add",
-    { type: "ssh_key", custody: "external", fingerprint: resolved.value.fingerprint, public_key: resolved.value.material },
-    `trust the signing key ${resolved.value.fingerprint}`, signal,
-    () => addCredential(db, operatorId, input)));
-  return { credential, unchanged: false };
-}
-
 function signerSummary(credential: UserCredential) {
   const { id, type, fingerprint, label, custody, public_material } = credential;
   return { id, type, fingerprint, label, custody, public_material };
@@ -168,37 +143,16 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
       const db = getDb();
       requireOperator(db, req);
       const operator = getOperator(db);
-      const credentials = operator
-        ? listCredentials(db, operator.id).filter((credential) => credential.type === "ssh_key").map(signerSummary)
-        : [];
       const approvalKeys = operatorSigning ? await operatorSigning.approvalKeyStatus() : [];
       sendJson(res, 200, {
         operator_slug: operator?.slug ?? null,
         approval_keys: approvalKeys.map(({ credential, state, detail }) => ({ ...signerSummary(credential), state, detail })),
-        credentials,
         trust_changes: listTrustChanges(db),
       });
     } catch (error) {
       handleError(res, error);
     }
   }, { operation: { id: "get:/api/users/operator/signing-key", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
-
-  // An external signer is a public key Mandible only verifies, such as a
-  // YubiKey's; adding one changes whom the gate trusts, so the approval key signs it.
-  router.post("/api/users/operator/signing-key", async (req, res) => {
-    try {
-      const db = getDb();
-      requireOperator(db, req);
-      const operator = getOperator(db);
-      if (!operator) throw new UserRegistryError("not_found", "The local operator is not set up.");
-      const publicKey = optionalString(bodyRecord(req), "public_key");
-      if (!publicKey) throw new UserRegistryError("invalid", "Paste or upload an OpenSSH public key.");
-      const added = await addOperatorSigner(db, signing(), operator.id, publicKey, "Settings public-key import", req.signal);
-      sendJson(res, added.unchanged ? 200 : 201, added);
-    } catch (error) {
-      handleError(res, error);
-    }
-  }, { operation: { id: "post:/api/users/operator/signing-key", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "deny" });
 
   // Mandible creates the approval key through the approval helper; no caller
   // supplies key material for a key Mandible will invoke.
@@ -500,7 +454,7 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
     }
   }, { operation: { id: "get:/api/users/:ref/credentials", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  router.post("/api/users/:ref/credentials", async (req, res) => {
+  router.post("/api/users/:ref/credentials", (req, res) => {
     try {
       const db = getDb();
       const target = resolveUserOrThrow(db, req.params.ref);
@@ -510,11 +464,7 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
       const fingerprint = optionalString(body, "fingerprint");
       if (!type) throw new UserRegistryError("invalid", "type is required.");
       if (inTrustSet(db, target.id, type)) {
-        const publicKey = optionalString(body, "public_material");
-        if (!publicKey) throw new UserRegistryError("invalid", "public_material is required for an operator signer.");
-        const added = await addOperatorSigner(db, signing(), target.id, publicKey, optionalString(body, "label") ?? "Public-key import", req.signal, fingerprint);
-        sendJson(res, added.unchanged ? 200 : 201, { credential: added.credential });
-        return;
+        throw new UserRegistryError("invalid", "The operator signs with Touch ID only; enroll it in Settings → Approvals.");
       }
       if (!fingerprint) throw new UserRegistryError("invalid", "fingerprint is required.");
       const input = {
@@ -526,7 +476,6 @@ export function registerUserRoutes(router: RouteRegistrar, operatorSigning: Oper
         label: optionalString(body, "label") ?? null,
         metadata: optionalMetadata(body),
       };
-      validateCredentialInput(db, target.id, input);
       sendJson(res, 201, { credential: addCredential(db, target.id, input) });
     } catch (error) {
       handleError(res, error);

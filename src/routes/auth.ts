@@ -33,7 +33,8 @@ import { ClientAuthzError, requireAttribution, requireIdentity, requireOperator 
 import { SignedActionRefused, sendSigningRefusal } from "../operator-signing/http.js";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { readBody } from "./http.js";
+import { readBody, sendUnexpectedError } from "./http.js";
+import { UserRegistryError } from "../users/store.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import {
@@ -1318,7 +1319,11 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
     return;
   }
 
-  res.status(500).json({ error: "Unexpected auth queue error." });
+  if (error instanceof UserRegistryError) {
+    res.status(error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400).json({ error: error.message, code: error.code });
+    return;
+  }
+  sendUnexpectedError(res, error, "auth");
 }
 
 // Bug: 929c6d0 — extract the last N lines from a string for error output summaries.

@@ -335,6 +335,21 @@
   flex-shrink: 0;
 }
 
+/* A state shown in a button's place: the button's box, stretched to its row's height. */
+.settings-view__status-pill {
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  background: var(--status-success-bg);
+  color: var(--accent-green);
+  cursor: default;
+  user-select: none;
+}
+
+.settings-view__status-pill:hover {
+  transform: none;
+}
+
 .settings-view__number-input {
   width: 80px;
   background: var(--bg-secondary);

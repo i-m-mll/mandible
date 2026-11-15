@@ -13,6 +13,7 @@ import { ManagedChatDefaults } from '../components/settings/ManagedChatDefaults'
 import { ChildRetentionSettings } from '../components/settings/ChildRetentionSettings';
 import { SettingsToggle as Toggle } from '../components/settings/SettingsToggle';
 import SigningSettings from '../components/settings/SigningSettings';
+import { APPROVAL_SETTINGS_SECTION } from './auth-approval';
 import { formatRelativeTime } from '../lib/format';
 import {
   getBackupStatus,
@@ -143,9 +144,8 @@ const SETTINGS_SECTIONS = {
   conversationBranching: { id: 'settings-conversation-branching', title: 'Conversation Branching' },
   issues: { id: 'settings-issues', title: 'Issues' },
   appearance: { id: 'settings-appearance', title: 'Appearance' },
-  auth: { id: 'auth-settings', title: 'Approvals' },
+  auth: { id: APPROVAL_SETTINGS_SECTION, title: 'Approvals' },
   authHooks: { id: 'settings-auth-hooks', title: 'Approval Hooks' },
-  signing: { id: 'settings-signing', title: 'Approvals' },
   versionControl: { id: 'settings-version-control', title: 'Version Control' },
   maintenance: { id: 'settings-maintenance', title: 'Maintenance' },
   backup: { id: 'settings-backup', title: 'Backup' },
@@ -1922,9 +1922,10 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       <SettingsSectionShell key={SETTINGS_SECTIONS.auth.id} section={SETTINGS_SECTIONS.auth}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.auth}
-          description="Approval display and queue retention."
+          description="Protected merges and changes to what they protect are signed with Touch ID. Other approvals take one click."
         />
         <div className="settings-view__section-body">
+          <SigningSettings instance={instance} />
           <ToggleRow
             title="Show approval console automatically"
             desc="Switch to Console when approval execution starts."
@@ -1964,16 +1965,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
       </SettingsSectionShell>,
 
-      <SettingsSectionShell key={SETTINGS_SECTIONS.signing.id} section={SETTINGS_SECTIONS.signing}>
-        <SettingsSectionHeader
-          section={SETTINGS_SECTIONS.signing}
-          description="Protected merges and changes to the signers or protected branches are signed actions: each asks for Touch ID, and the approval key signs it. Every other approval is a courtesy approval: one click, not operator-verified."
-        />
-        <div className="settings-view__section-body" data-testid="settings-signing-content">
-          <SigningSettings instance={instance} />
-        </div>
-      </SettingsSectionShell>,
-
       <SettingsSectionShell key={SETTINGS_SECTIONS.versionControl.id} section={SETTINGS_SECTIONS.versionControl}>
         <SettingsSectionHeader
           section={SETTINGS_SECTIONS.versionControl}
@@ -1997,9 +1988,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             className="btn btn--sm"
             onClick={() => void saveProtectedBranches()}
             disabled={!protectedBranchesChanged || protectedBranchesSaveState.saving}
-            title="Signed action: asks for Touch ID."
+            title="Asks for Touch ID."
           >
-            Save with Touch ID
+            Save
           </button>
           {protectedBranchesSaveState.saving && <span className="settings-view__text-desc" role="status">Waiting for Touch ID</span>}
           {protectedBranchesSaveState.error && <span className="settings-view__warning" role="alert">{protectedBranchesSaveState.error}</span>}

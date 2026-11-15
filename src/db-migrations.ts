@@ -59,7 +59,7 @@ import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.j
 import { PROTECTED_BASE_AUDIT_SCHEMA_SQL } from "./protected-base-audit-schema.js";
 import { ISSUE_SEARCH_SCHEMA_SQL } from "./ledger/issue-search.js";
 import { DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL } from "./dotfiles-instruction-hook.js";
-import { OPERATOR_SIGNING_CUSTODY_MIGRATION_SQL } from "./operator-signing/schema.js";
+import { OPERATOR_SIGNING_CUSTODY_MIGRATION_SQL, TOUCH_ID_ONLY_OPERATOR_MIGRATION_SQL } from "./operator-signing/schema.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
@@ -2395,6 +2395,7 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 239, name: "operator_signing_custody", statements: OPERATOR_SIGNING_CUSTODY_MIGRATION_SQL, requires_foreign_keys_off: true },
   { version: 240, name: "remove_delegation", statements: REMOVE_DELEGATION_MIGRATION_SQL, requires_foreign_keys_off: true },
+  { version: 241, name: "touch_id_only_operator", statements: [...TOUCH_ID_ONLY_OPERATOR_MIGRATION_SQL] },
 ];
 
 /**

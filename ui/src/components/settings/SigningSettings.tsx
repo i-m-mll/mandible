@@ -1,288 +1,124 @@
-import { Icon } from '../icons/Icon';
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import {
-  ApiError,
   canPerformOperation,
   enrollApprovalKey,
   getOperatorSigningKeyStatus,
-  registerOperatorSigningKey,
+  type ApprovalKeyState,
   type InstanceInfo,
   type OperatorSigningKeyStatus,
-  type OperatorTrustChange,
 } from '../../api';
-import { DetailPaneNotice } from '../shared/DetailPaneNotice';
-import { CopyRefButton } from '../shared/DetailHeaderIdentity';
+import { copyText } from '../shared/DetailHeaderIdentity';
 
 type Props = { instance?: InstanceInfo | null };
 
-const STATE_LABEL: Record<string, string> = {
-  usable: 'Ready',
-  key_missing: 'Needs re-enrollment',
-  key_invalidated: 'Needs re-enrollment',
-  biometry_unavailable: 'Touch ID unavailable',
-  biometry_locked_out: 'Touch ID locked',
-  no_interactive_session: 'No login session',
-  failed: 'Failed',
+/** States in which the enrolled key will never sign again: the operator is simply not enrolled. */
+const GONE: ReadonlySet<ApprovalKeyState> = new Set(['key_missing', 'key_invalidated']);
+
+const UNAVAILABLE_NOW: Partial<Record<ApprovalKeyState, string>> = {
+  biometry_unavailable: 'Touch ID is unavailable right now.',
+  biometry_locked_out: 'Touch ID is locked; unlock the Mac with your password.',
+  no_interactive_session: 'No macOS login session.',
 };
 
-const REENROLL_REASON: Partial<Record<string, string>> = {
-  key_missing: 'The approval key file is missing.',
-  key_invalidated: 'The enrolled fingerprints changed, so the Secure Enclave will not use this key again.',
-};
-
-const SIGNED_ACTION = 'Signed action: asks for Touch ID.';
-
-const CHANGE_LABEL: Record<string, string> = {
-  approval_key_enrollment: 'Approval key enrolled',
-  signer_add: 'Signer added',
-  signer_revoke: 'Signer removed',
-  protected_branches: 'Protected branches changed',
-};
-
-/** An enrollment that replaced a key without that key's signature: anyone at this Mac could have made it. */
-function replacedWithoutSignature(change: OperatorTrustChange): boolean {
-  if (change.kind !== 'approval_key_enrollment' || change.authorization !== 'bootstrap') return false;
+/** The latest enrollment replaced a key without that key's signature, so only access to this Mac authorized it. */
+function unsignedReplacement(status: OperatorSigningKeyStatus): Date | null {
+  const latest = status.trust_changes.find((change) => change.kind === 'approval_key_enrollment');
+  if (!latest || latest.authorization !== 'bootstrap') return null;
   try {
-    const replaces = (JSON.parse(change.statement) as { content?: { replaces?: unknown[] } }).content?.replaces;
-    return Array.isArray(replaces) && replaces.length > 0;
+    const replaces = (JSON.parse(latest.statement) as { content?: { replaces?: unknown[] } }).content?.replaces;
+    return Array.isArray(replaces) && replaces.length > 0 ? new Date(latest.created_at) : null;
   } catch {
-    return true;
+    return new Date(latest.created_at);
   }
 }
 
 export default function SigningSettings({ instance }: Props): JSX.Element {
   const [status, setStatus] = useState<OperatorSigningKeyStatus | null>(null);
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [formOpen, setFormOpen] = useState(false);
-  const [publicKey, setPublicKey] = useState('');
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [bootstrapOffer, setBootstrapOffer] = useState<string | null>(null);
   const readAllowed = canPerformOperation(instance, 'GET', '/api/users/operator/signing-key');
-  const importAllowed = canPerformOperation(instance, 'POST', '/api/users/operator/signing-key', { public_key: '' });
   const enrollAllowed = canPerformOperation(instance, 'POST', '/api/users/operator/approval-key', {});
 
   const refresh = useCallback(async () => {
-    if (!readAllowed) {
-      setLoading(false);
-      return;
-    }
+    if (!readAllowed) return;
     try {
       setStatus(await getOperatorSigningKeyStatus());
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not load signing status.');
-    } finally {
-      setLoading(false);
+      setError(cause instanceof Error ? cause.message : String(cause));
     }
   }, [readAllowed]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  const enroll = useCallback(async (confirmBootstrap: boolean) => {
+  const key = status?.approval_keys[0] ?? null;
+  const enrolled = key !== null && !GONE.has(key.state);
+  const failed = key?.state === 'failed';
+
+  const enroll = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
-      await enrollApprovalKey(confirmBootstrap ? { confirm_bootstrap: true } : {});
-      setBootstrapOffer(null);
+      // A key the helper cannot classify was shown as failed; clicking Enroll is the confirmation to replace it.
+      await enrollApprovalKey(failed ? { confirm_bootstrap: true } : {});
       await refresh();
     } catch (cause) {
-      if (cause instanceof ApiError && cause.code === 'operator_signature_bootstrap_confirmation_required') {
-        setBootstrapOffer(cause.message);
-      } else {
-        setError(cause instanceof Error ? cause.message : 'Could not enroll the approval key.');
-      }
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(false);
     }
-  }, [refresh]);
+  }, [failed, refresh]);
 
-  const register = useCallback(async () => {
-    setBusy(true);
-    setError(null);
+  const copyPublicKey = useCallback(async () => {
+    if (!key?.public_material) return;
     try {
-      await registerOperatorSigningKey(publicKey);
-      setPublicKey('');
-      setFormOpen(false);
-      await refresh();
+      await copyText(key.public_material);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not add the signer.');
-    } finally {
-      setBusy(false);
+      setError(cause instanceof Error ? cause.message : String(cause));
     }
-  }, [publicKey, refresh]);
+  }, [key]);
 
-  const handleFile = useCallback(async (event: Event) => {
-    const file = (event.currentTarget as HTMLInputElement).files?.[0];
-    if (!file) return;
-    if (file.size > 16_384) {
-      setError('Public-key files must be 16 KB or smaller.');
-      return;
-    }
-    try {
-      const lines = (await file.text()).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-      if (lines.length !== 1 || !/^(ssh-|ecdsa-|sk-)\S+\s+\S+(?:\s+.*)?$/.test(lines[0])) {
-        setError('Choose a .pub file containing one OpenSSH public-key line.');
-        return;
-      }
-      setError(null);
-      setPublicKey(lines[0]);
-      setFormOpen(true);
-    } catch {
-      setError('Could not read the selected public-key file.');
-    }
-  }, []);
-
-  const approvalKey = status?.approval_keys[0] ?? null;
-  const externalSigners = status?.credentials.filter((credential) => credential.custody !== 'enclave') ?? [];
-  const bootstrap = status?.trust_changes.find(replacedWithoutSignature) ?? null;
+  const replacedAt = status ? unsignedReplacement(status) : null;
+  const note = !readAllowed
+    ? 'Unavailable in this instance.'
+    : failed
+      ? key?.detail ?? 'The approval helper could not check the key.'
+      : key && UNAVAILABLE_NOW[key.state];
 
   return (
-    <div className="settings-view__signing-settings" data-settings-searchable>
-      <div
-        className="settings-view__number-row"
-        data-settings-searchable
-        data-settings-search-text={`Approval key Touch ID ${approvalKey?.fingerprint ?? ''}`}
-      >
+    <div className="settings-view__signing" data-settings-searchable data-settings-search-text="Touch ID approval key enroll public key">
+      <div className="settings-view__number-row">
         <div className="settings-view__number-info">
-          <span className="settings-view__number-label">Approval key</span>
-          {approvalKey ? (
-            <span className="settings-view__number-desc"><code>{approvalKey.fingerprint}</code></span>
-          ) : (
-            <span className="settings-view__number-desc">Held in this Mac's Secure Enclave and used only after a Touch ID match.</span>
+          <span className="settings-view__number-label">Touch ID</span>
+          {note && <span className="settings-view__number-desc">{note}</span>}
+          {replacedAt && (
+            <span className="settings-view__warning">Enrolled {replacedAt.toLocaleDateString()} without the previous key's signature.</span>
           )}
+          {error && <span className="settings-view__warning" role="alert">{error}</span>}
         </div>
-        <div className="settings-view__number-controls">
-          {approvalKey && <span className="settings-view__badge" title={approvalKey.detail ?? undefined}>{STATE_LABEL[approvalKey.state] ?? approvalKey.state}</span>}
-          {enrollAllowed && (
-            <button type="button" className="btn btn--sm" onClick={() => void enroll(false)} disabled={busy} title={SIGNED_ACTION}>
-              {approvalKey ? 'Replace with Touch ID' : 'Enroll with Touch ID'}
-            </button>
-          )}
-        </div>
+        {readAllowed && status && (
+          <div className="settings-view__number-controls">
+            {enrolled && !failed ? (
+              <>
+                <span className="btn btn--sm settings-view__status-pill" title={key.fingerprint}>Enrolled</span>
+                {key.public_material && (
+                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => void copyPublicKey()}
+                    title="GitHub accepts this OpenSSH key as a signing key.">
+                    {copied ? 'Copied' : 'Copy public key'}
+                  </button>
+                )}
+              </>
+            ) : enrollAllowed && (
+              <button type="button" className="btn btn--sm btn--active" onClick={() => void enroll()} disabled={busy}>
+                {busy ? 'Waiting for Touch ID' : 'Enroll'}
+              </button>
+            )}
+          </div>
+        )}
       </div>
-
-      {approvalKey?.public_material && (
-        <div
-          className="settings-view__field"
-          data-settings-searchable
-          data-settings-search-text="Approval public key GitHub signing key"
-        >
-          <span className="settings-view__field-label">
-            Public key{' '}
-            <CopyRefButton value={approvalKey.public_material} label="Copy public key" />
-          </span>
-          <code className="settings-view__input--mono">{approvalKey.public_material}</code>
-          <span className="settings-view__number-desc">
-            GitHub accepts this line as a Signing key; add it there to show protected merges as Verified.
-          </span>
-        </div>
-      )}
-
-      {bootstrap && (
-        <div data-settings-searchable data-settings-search-text="Approval key replaced without its predecessor's signature bootstrap">
-          <DetailPaneNotice severity="warning" density="compact" title="Approval key replaced without the previous key's signature">
-            On {new Date(bootstrap.created_at).toLocaleString()} a new approval key was enrolled while the previous key could not sign, so nothing but access to this Mac authorized it. If you did not replace the key then, someone else did: review the protected merges and trust changes since, and enroll a new key.
-          </DetailPaneNotice>
-        </div>
-      )}
-
-      {approvalKey && REENROLL_REASON[approvalKey.state] && (
-        <div data-settings-searchable data-settings-search-text="Approval key needs re-enrollment">
-          <DetailPaneNotice severity="warning" density="compact" title="Approval key needs re-enrollment">
-            {REENROLL_REASON[approvalKey.state]} Protected merges cannot be approved until you enroll a new key. With no usable key, the replacement is recorded as a bootstrap enrollment.
-          </DetailPaneNotice>
-        </div>
-      )}
-
-      {bootstrapOffer && (
-        <div data-settings-searchable data-settings-search-text={`Approval key bootstrap ${bootstrapOffer}`}>
-          <DetailPaneNotice severity="warning" density="compact" title="Replace without the current key">{bootstrapOffer} The replacement is recorded as a bootstrap enrollment.</DetailPaneNotice>
-          <button type="button" className="btn btn--active btn--sm" onClick={() => void enroll(true)} disabled={busy} title={SIGNED_ACTION}>Replace with Touch ID</button>
-        </div>
-      )}
-
-      <div className="settings-view__number-row" data-settings-searchable data-settings-search-text="External signers">
-        <div className="settings-view__number-info">
-          <span className="settings-view__number-label">External signers</span>
-          <span className="settings-view__number-desc">Mandible verifies these signatures on protected branches and never signs with them.</span>
-        </div>
-        <div className="settings-view__number-controls">
-          {importAllowed && (
-            <button
-              type="button"
-              className="btn btn--sm"
-              aria-label={formOpen ? 'Cancel' : 'Add signer'}
-              title={formOpen ? 'Cancel' : `Add signer. ${SIGNED_ACTION}`}
-              onClick={() => setFormOpen((open) => !open)}
-              disabled={busy}
-            >
-              {formOpen ? <Icon name="dismiss" /> : <Icon name="addSigningKey" size={16} />}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {!readAllowed ? (
-        <div data-settings-searchable data-settings-search-text="Signing status unavailable">
-          <DetailPaneNotice severity="info" density="compact" title="Signing status unavailable">
-            This instance does not allow reading operator signing credentials.
-          </DetailPaneNotice>
-        </div>
-      ) : loading ? null : status && (
-        <>
-          {externalSigners.map((credential) => (
-            <div
-              className="settings-view__number-row"
-              data-settings-searchable
-              data-settings-search-text={`External signer ${credential.fingerprint} ${credential.label ?? ''}`}
-              key={credential.id}
-            >
-              <div className="settings-view__number-info">
-                <span className="settings-view__number-label">{credential.fingerprint}</span>
-                {credential.label && <span className="settings-view__number-desc">{credential.label}</span>}
-              </div>
-              <span className="settings-view__badge">Verify only</span>
-            </div>
-          ))}
-          {status.trust_changes.length > 0 && (
-            <div className="settings-view__field" data-settings-searchable data-settings-search-text="Trust changes">
-              <span className="settings-view__field-label">Trust changes</span>
-              {status.trust_changes.map((change) => (
-                <div className="settings-view__number-row" key={change.id} title={change.statement}>
-                  <div className="settings-view__number-info">
-                    <span className="settings-view__number-label">{CHANGE_LABEL[change.kind] ?? change.kind}</span>
-                    <span className="settings-view__number-desc">{new Date(change.created_at).toLocaleString()}</span>
-                  </div>
-                  <span className="settings-view__badge">{change.authorization === 'bootstrap' ? 'Bootstrap' : 'Signed'}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-
-      {formOpen && importAllowed && (
-        <div className="settings-view__field" data-settings-searchable data-settings-search-text="Add OpenSSH public key signer">
-          <label className="settings-view__field-label" htmlFor="signing-public-key">OpenSSH public key</label>
-          <textarea
-            id="signing-public-key"
-            className="settings-view__input settings-view__input--mono"
-            value={publicKey}
-            onInput={(event) => setPublicKey((event.currentTarget as HTMLTextAreaElement).value)}
-            maxLength={16_384}
-            rows={3}
-            placeholder="sk-ssh-ed25519@openssh.com AAAA…"
-            disabled={busy}
-          />
-          <input id="signing-public-key-file" type="file" accept=".pub,text/plain" onChange={(event) => void handleFile(event)} disabled={busy} />
-          <button type="button" className="btn btn--active btn--sm" onClick={() => void register()} disabled={!publicKey.trim() || busy} title={SIGNED_ACTION}>
-            Add signer with Touch ID
-          </button>
-        </div>
-      )}
-
-      {error && <div data-settings-searchable data-settings-search-text={`Signing error ${error}`}><DetailPaneNotice severity="error" density="compact">{error}</DetailPaneNotice></div>}
     </div>
   );
 }

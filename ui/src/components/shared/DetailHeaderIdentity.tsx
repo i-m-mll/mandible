@@ -181,7 +181,7 @@ export function CopyRefButton({ value, label }: { value: string; label: string }
   );
 }
 
-async function copyText(value: string): Promise<void> {
+export async function copyText(value: string): Promise<void> {
   if (!value) throw new Error('copy failed');
   if (copyTextWithSelection(value)) return;
 

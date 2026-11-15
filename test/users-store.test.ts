@@ -13,8 +13,10 @@ import {
   revokeCredential,
   setupOperator,
   SYSTEM_USER_ID,
+  updateUser,
   UserRegistryError,
 } from "../src/users/store.js";
+import { TOUCH_ID_ONLY_OPERATOR_MIGRATION_SQL } from "../src/operator-signing/schema.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
@@ -53,6 +55,23 @@ describe("operator setup idempotency", () => {
     expect(listUsers(db, { kind: "human" })).toHaveLength(1);
   });
 
+});
+
+describe("names and emails author protected merges", () => {
+  it("refuses <, > and line breaks on every write", () => {
+    expect(() => setupOperator(db, { display_name: "MLL <mll@example.com>", email: "mll@example.com" })).toThrow(UserRegistryError);
+    const operator = setupOperator(db, { display_name: "MLL", email: "mll@example.com" });
+    expect(() => updateUser(db, operator.id, { display_name: "MLL\nInjected: header" })).toThrow(/may not contain/);
+    expect(() => updateUser(db, operator.id, { email: "<mll@example.com>" })).toThrow(/may not contain/);
+    expect(() => setupOperator(db, { display_name: "Other <x@y>" })).toThrow(UserRegistryError);
+  });
+
+  it("repairs a stored `Name <email>` to its name", () => {
+    const operator = setupOperator(db, { display_name: "MLL", email: "mll@example.com" });
+    db.prepare("UPDATE users SET display_name = 'MLL <mll@example.com>' WHERE id = ?").run(operator.id);
+    for (const statement of TOUCH_ID_ONLY_OPERATOR_MIGRATION_SQL) db.exec(statement);
+    expect(listUsers(db, { kind: "human" })[0]?.display_name).toBe("MLL");
+  });
 });
 
 // Valid public-shape samples for the credential allowlist.

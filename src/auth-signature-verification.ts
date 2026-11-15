@@ -75,6 +75,15 @@ export function isValidCommitSha(value: unknown): value is string {
 }
 
 export function activeSigningCredentials(db: Db): SigningCredentialRow[] {
+  return signingCredentialsAt(db, null);
+}
+
+/**
+ * Signing credentials that counted at `recordedAt`: active now, or revoked
+ * after then. A key revoked later still verifies what was recorded before its
+ * revocation; `null` asks for the credentials active now.
+ */
+export function signingCredentialsAt(db: Db, recordedAt: number | null): SigningCredentialRow[] {
   return db.prepare(
     `SELECT
        credential.id AS credential_id,
@@ -84,12 +93,12 @@ export function activeSigningCredentials(db: Db): SigningCredentialRow[] {
        credential.type
      FROM user_credentials AS credential
      JOIN users AS owner ON owner.id = credential.user_id
-     WHERE credential.status = 'active'
+     WHERE (credential.status = 'active' OR (?1 IS NOT NULL AND credential.revoked_at > ?1))
        AND owner.status = 'active'
        AND credential.type = 'ssh_key'
        AND credential.public_material IS NOT NULL
      ORDER BY credential.created_at ASC, credential.id ASC`,
-  ).all() as SigningCredentialRow[];
+  ).all(recordedAt) as SigningCredentialRow[];
 }
 
 export function allowedSignerLine(credential: SigningCredentialRow): string | null {
@@ -154,19 +163,21 @@ export function trustedSshKeygenPath(): string | null {
 
 /**
  * Verify one successful merge commit against an ephemeral allowed-signers file
- * derived exclusively from active registry credentials.
+ * derived exclusively from the registry credentials that counted at
+ * `recordedAt` (see `signingCredentialsAt`).
  */
 export async function verifyMergeCommitSignature(
   db: Db,
   cwd: string | null,
   commitSha: string | null,
+  recordedAt: number | null = null,
 ): Promise<MergeSignatureVerification> {
   if (!cwd) return unverified(commitSha, "missing_repository_path");
   if (!commitSha) return unverified(null, "missing_merge_commit_sha");
   const sshKeygenPath = trustedSshKeygenPath();
   if (!sshKeygenPath) return unverified(commitSha, "trusted_ssh_keygen_unavailable");
 
-  const credentials = activeSigningCredentials(db);
+  const credentials = signingCredentialsAt(db, recordedAt);
   const allowed = credentials.flatMap((credential) => {
     const line = allowedSignerLine(credential);
     return line ? [line] : [];
@@ -188,7 +199,7 @@ export async function verifyMergeCommitSignature(
     }
 
     const principal = diagnostic.match(/Good "git" signature for ([^\s]+) with /)?.[1] ?? null;
-    const credential = activeSigningCredentials(db).find((candidate) => candidate.credential_id === principal && allowedSignerLine(candidate) === allowed.find(line => line.startsWith(`${principal} `))) ?? null;
+    const credential = signingCredentialsAt(db, recordedAt).find((candidate) => candidate.credential_id === principal && allowedSignerLine(candidate) === allowed.find(line => line.startsWith(`${principal} `))) ?? null;
     if (!credential) {
       return unverified(commitSha, "verified_principal_not_registered", fingerprint);
     }
@@ -280,13 +291,16 @@ function approvalEvidence(db: Db, evidenceId: string | null): AttributionEvidenc
  * its approval signed (`signed_commit_sha` on the approval evidence), with a
  * signature that verifies against the approving credential. Approvals recorded
  * before the merge commit itself was signed carry no `signed_commit_sha`; for
- * them any active signing credential of the approving user counts.
+ * them any signing credential of the approving user counts. `recordedAt` is
+ * when Mandible recorded the merge as complete, for a merge already recorded:
+ * a credential revoked after then still counts for it.
  */
 export async function verifyApprovedMerge(
   db: Db,
   cwd: string | null,
   request: ApprovedMergeRequest,
   commitSha: string | null,
+  recordedAt: number | null = null,
 ): Promise<MergeSignatureVerification> {
   const approver = request.approved_by_user_id;
   if (!approver) return unverified(commitSha, "missing_approving_user");
@@ -296,7 +310,7 @@ export async function verifyApprovedMerge(
     || approval!.details.auth_request_id !== request.id || !isValidCommitSha(signed) || signed !== commitSha)) {
     return unverified(commitSha, "not_the_signed_merge");
   }
-  const verification = await verifyMergeCommitSignature(db, cwd, commitSha);
+  const verification = await verifyMergeCommitSignature(db, cwd, commitSha, recordedAt);
   if (!verification.verified) return verification;
   if (verification.user_id !== approver) {
     return unverified(commitSha, "signer_is_not_approving_user", verification.fingerprint);

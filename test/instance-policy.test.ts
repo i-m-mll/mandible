@@ -175,15 +175,16 @@ describe("instance effect policy", () => {
       .toMatchObject({ allowed: false, missing: ["auth:protected"] });
   });
 
-  it("keeps signing-key discovery read-only and writes registrations only to preview data", () => {
-    const path = "/api/users/operator/signing-key";
-    expect(operationForRequest("GET", path, "preview")?.effects).toEqual(["ledger:read"]);
-    expect(operationForRequest("POST", path, "preview")?.effects).toEqual(["ledger:write"]);
-    expect(operationForRequest("GET", path, "main")?.effects).toEqual(["auth:credentials"]);
-    expect(operationForRequest("POST", path, "main")?.effects).toEqual(["auth:credentials"]);
+  it("keeps signing-key discovery read-only and writes enrollments only to preview data", () => {
+    const status = "/api/users/operator/signing-key";
+    const enroll = "/api/users/operator/approval-key";
+    expect(operationForRequest("GET", status, "preview")?.effects).toEqual(["ledger:read"]);
+    expect(operationForRequest("POST", enroll, "preview")?.effects).toEqual(["ledger:write"]);
+    expect(operationForRequest("GET", status, "main")?.effects).toEqual(["auth:credentials"]);
+    expect(operationForRequest("POST", enroll, "main")?.effects).toEqual(["auth:credentials"]);
 
     const instance = preview();
-    expect(authorizeEffects(instance, { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("POST", path, "preview")))
+    expect(authorizeEffects(instance, { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("POST", enroll, "preview")))
       .toEqual({ allowed: true });
   });
 

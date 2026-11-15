@@ -218,8 +218,8 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(onApprove).toHaveBeenCalledWith('req-1');
   });
 
-  it('asks for Touch ID on a signed approval and shows the state the helper refused with', async () => {
-    const onApprove = vi.fn(() => Promise.reject(new ApiError('The approval key cannot sign: key_invalidated.', 409, 'operator_signature_key_invalidated')));
+  it('sends a signed approval to Settings when Touch ID is not set up', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError('Touch ID is not set up: enroll in Settings → Approvals.', 409, 'operator_signature_approval_key_required')));
     render(
       <AuthQueueView
         queue={[{ ...pendingRequest, approval_tier: 'signed' }]}
@@ -234,9 +234,9 @@ describe('AuthQueueView daemon readiness gate', () => {
         onDismiss={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Approve with Touch ID' }));
-    expect(await screen.findByText('Approval key needs re-enrollment')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Open approval settings' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(await screen.findByText('Touch ID is not set up')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Set up Touch ID' }).getAttribute('href')).toContain('section=settings-approvals');
   });
 
   it('labels a courtesy approval as one and never as verified', () => {
@@ -259,7 +259,7 @@ describe('AuthQueueView daemon readiness gate', () => {
       />,
     );
     const attribution = screen.getByLabelText('Approval attribution');
-    expect(within(attribution).getByText('Courtesy approval, not operator-verified')).toBeTruthy();
+    expect(within(attribution).getByText('Courtesy approval')).toBeTruthy();
     expect(within(attribution).queryByText('verified')).toBeNull();
   });
 
