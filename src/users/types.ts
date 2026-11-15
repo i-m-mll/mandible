@@ -39,7 +39,6 @@ export const EVIDENCE_METHODS = [
   "session_claim",
   "external_import",
   "credential_signature",
-  "hardware_presence",
   "system_internal",
   "api_token",
 ] as const;

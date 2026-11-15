@@ -21,9 +21,8 @@ import type { Logger } from "./types.js";
  *   two reads; then one `<git common dir>\t<refs/heads/name>` line per
  *   protected branch of each registered repository. Keying by the resolved Git
  *   common directory makes every worktree of a repository match.
- * - `allowed_signers`: the operator credentials the `ref_update` signing rule
- *   counts (src/protected-branch-signers.ts) in ssh-keygen allowed-signers
- *   format.
+ * - `allowed_signers`: the operator's signing credentials
+ *   (src/protected-branch-signers.ts) in ssh-keygen allowed-signers format.
  *
  * Both are derived from the protection config and the user registry; they are
  * never edited by hand and are not a second source of truth.

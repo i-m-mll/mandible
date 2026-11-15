@@ -122,7 +122,6 @@ function atomicInvocation(
   const snippet = [
     "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
     `source ${JSON.stringify(AUTH_MERGE)}`,
-    "prompt_confirm() { printf 'y'; }",
     "run_merge_preflight() { :; }",
     ...(stubCheckpoint ? ["persist_atomic_marker() { printf '%s\\n' \"$1\" >&2; }"] : []),
     "collect_declared_issues() { :; }",
@@ -236,8 +235,8 @@ describe("atomic auth merge", () => {
     const invocation = atomicInvocation(base, head, cached, {
       MANDIBLE_AUTH_PREFLIGHT_BASE_SHA: base, MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT: "1",
     }, true);
-    invocation.args[1] = invocation.args[1]!.replace("run_merge_preflight() { :; }\n", "")
-      .replace("prompt_confirm() { printf 'y'; }", "prompt_confirm() { printf 'Edit during confirmation\\n' > shared.txt; printf 'y'; }");
+    invocation.args[1] = invocation.args[1]!.replace("run_merge_preflight() { :; }\n",
+      "eval \"cached_$(declare -f run_merge_preflight)\"\nrun_merge_preflight() { cached_run_merge_preflight \"$@\" || return; printf 'Edit after preflight\\n' > shared.txt; }\n");
     const result = spawnSync("bash", invocation.args, { ...invocation.options, encoding: "utf8", timeout: 10_000 });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(fs.realpathSync(repo));
@@ -247,7 +246,7 @@ describe("atomic auth merge", () => {
     expect(reason).toContain("Checkout blocked: unstaged [ M]: shared.txt");
     expect(git(["rev-parse", "main"])).toBe(base);
     expect(fs.readFileSync(path.join(repo, ".git", "index"))).toEqual(index);
-    expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("Edit during confirmation\n");
+    expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("Edit after preflight\n");
     expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
   });
 
@@ -547,7 +546,6 @@ describe("atomic auth merge", () => {
     const snippet = [
       "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
       `source ${JSON.stringify(AUTH_MERGE)}`,
-      "prompt_confirm() { printf 'y'; }",
       "run_merge_preflight() { :; }",
         "collect_declared_issues() { :; }",
       `main ${mainArgs}`,

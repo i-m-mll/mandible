@@ -3766,8 +3766,8 @@ export class AuthQueue {
       const approverUserId = this.resolveApproverUserId(approvedByUserId);
       const exactCredentialId = operatorProof!.credentialId;
       const signerLines = authorizedMergeSignerLines(this.db, approverUserId, exactCredentialId);
-      // An operator proof signed the candidate as approveWithOperatorProof
-      // prepared it, so this approval must not recompute it.
+      // The operator proof signed the candidate approveAsOperator prepared,
+      // so this approval must not recompute it.
       request = (await this.prepareMergeApproval(request, false));
       const observed = this.observationToken(request.id, request);
       // Issue 060c9c8 — no hierarchical gate here: enforceCanonicalMergeCommand
@@ -4857,7 +4857,7 @@ export class AuthQueue {
     if (!request.approved_by_user_id) {
       throw new Error("Attributed auth merge completed without an approving user.");
     }
-    throw new Error("Manual execution requires retained action-bound operator proof.");
+    throw new Error("Manual execution requires the approval's retained signature evidence.");
   }
 
   private finalizationAttribution(request: AuthRequest): AttributionContext {

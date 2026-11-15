@@ -51,8 +51,6 @@ function cleanEnvForAuth(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     }
   }
 
-  cleaned.AUTH_MERGE_AUTO_CONFIRM = "1";
-
   return cleaned;
 }
 

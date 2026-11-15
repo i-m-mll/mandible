@@ -14,12 +14,7 @@ LEDGER_CLIENT_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/ledger
 source "$LEDGER_CLIENT_HELPER"
 
 RESET=$'\033[0m'
-BOLD_WHITE=$'\033[1;37m'
 DIM_WHITE=$'\033[2;37m'
-BOLD_CYAN=$'\033[1;36m'
-BOLD_GREEN=$'\033[1;32m'
-BOLD_YELLOW=$'\033[1;33m'
-GREEN=$'\033[32m'
 RED=$'\033[31m'
 
 trap 'exit 130' INT
@@ -44,20 +39,6 @@ usage() {
 }
 
 
-strip_ansi() {
-  printf "%s" "$1" | sed -E 's/\x1B\[[0-9;]*m//g'
-}
-
-repeat_char() {
-  local char=$1
-  local count=$2
-  local out=""
-  for ((i=0; i<count; i++)); do
-    out+="$char"
-  done
-  printf "%s" "$out"
-}
-
 branch_exists() {
   git show-ref --verify --quiet "refs/heads/$1"
 }
@@ -68,35 +49,6 @@ protected_branch() {
   else
     printf "%s" "main"
   fi
-}
-
-pluralize() {
-  local count=$1
-  local word=$2
-  if [[ "$count" == "1" ]]; then
-    printf "%s %s" "$count" "$word"
-  else
-    printf "%s %ss" "$count" "$word"
-  fi
-}
-
-parse_shortstat() {
-  local shortstat=$1
-  local files=0
-  local insertions=0
-  local deletions=0
-
-  if [[ -n "$shortstat" ]]; then
-    files=$(awk '{for (i=1;i<=NF;i++) if ($i=="files" || $i=="file") {print $(i-1); exit}}' <<<"$shortstat")
-    insertions=$(awk '{for (i=1;i<=NF;i++) if ($i ~ /insertions?/) {print $(i-1); exit}}' <<<"$shortstat")
-    deletions=$(awk '{for (i=1;i<=NF;i++) if ($i ~ /deletions?/) {print $(i-1); exit}}' <<<"$shortstat")
-  fi
-
-  files=${files:-0}
-  insertions=${insertions:-0}
-  deletions=${deletions:-0}
-
-  printf "%s %s %s" "$files" "$insertions" "$deletions"
 }
 
 git_lock_roots() {
@@ -184,109 +136,6 @@ preflight_git_locks() {
   err ""
   err "  ${DIM_WHITE}Remove stale lock files only after verifying no git process owns them, then retry.${RESET}"
   die "Aborting before auth merge because git lock files are present." 1
-}
-
-color_diff_line() {
-  local line=$1
-  if [[ "$line" == *"|"* ]]; then
-    local left=${line%%|*}
-    local right=${line#*|}
-    local colored=""
-    local ch
-    local i
-    for ((i=0; i<${#right}; i++)); do
-      ch=${right:i:1}
-      case "$ch" in
-        "+") colored+="${GREEN}+${RESET}" ;;
-        "-") colored+="${RED}-${RESET}" ;;
-        *) colored+="$ch" ;;
-      esac
-    done
-    printf "%b" "${left}|${colored}"
-  else
-    printf "%b" "$line"
-  fi
-}
-
-build_lines_for_source() {
-  local source=$1
-  local target=$2
-  local commit_count=$3
-  local files=$4
-  local insertions=$5
-  local deletions=$6
-  local -a diff_lines
-  local -a lines
-  local stats_text
-
-  stats_text="$(pluralize "$commit_count" "commit") · $(pluralize "$files" "file") · +$insertions -$deletions"
-
-  lines+=("  ${BOLD_CYAN}${source}${RESET} ${DIM_WHITE}→${RESET} ${BOLD_GREEN}${target}${RESET}")
-  lines+=("  ${DIM_WHITE}${stats_text}${RESET}")
-
-  local IFS_BAK="$IFS"
-  IFS=$'\n'
-  diff_lines=( $(git diff --stat "$target..$source") )
-  IFS="$IFS_BAK"
-  for line in "${diff_lines[@]}"; do
-    if [[ "$line" == *"files changed"* ]]; then
-      continue
-    fi
-    if [[ -z "$line" ]]; then
-      continue
-    fi
-    lines+=("  $(color_diff_line "$line")")
-  done
-
-  printf "%s\n" "${lines[@]}"
-}
-
-print_box() {
-  # Pass lines via global _box_lines array (bash 3.2 compat, no namerefs)
-  local max_len=0
-  local line
-  local idx
-
-  for idx in $(seq 0 $(( ${#_box_lines[@]} - 1 )) ); do
-    line="${_box_lines[$idx]}"
-    local stripped
-    stripped=$(strip_ansi "$line")
-    local len=${#stripped}
-    if (( len > max_len )); then
-      max_len=$len
-    fi
-  done
-
-  local top="╭$(repeat_char "─" "$max_len")╮"
-  local bottom="╰$(repeat_char "─" "$max_len")╯"
-
-  err "${DIM_WHITE}${top}${RESET}"
-  for idx in $(seq 0 $(( ${#_box_lines[@]} - 1 )) ); do
-    line="${_box_lines[$idx]}"
-    local stripped
-    stripped=$(strip_ansi "$line")
-    local pad=$((max_len - ${#stripped}))
-    local padded
-    padded="${line}$(printf '%*s' "$pad")"
-    err "${DIM_WHITE}│${RESET}${padded}${DIM_WHITE}│${RESET}"
-  done
-  err "${DIM_WHITE}${bottom}${RESET}"
-}
-
-read_tty() {
-  local response
-  if [[ "${AUTH_MERGE_AUTO_CONFIRM:-}" = "1" ]]; then
-    response="y"
-  else
-    { IFS= read -r response </dev/tty; } 2>/dev/null || IFS= read -r response
-  fi
-  printf "%s" "$response"
-}
-
-prompt_confirm() {
-  local prompt=$1
-  err "${BOLD_YELLOW}${prompt}${RESET}"
-  read_tty
 }
 
 current_branch_sha() {
@@ -698,84 +547,38 @@ main() {
   local current_branch
   current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 
-  local -a lines=()
-  lines+=("  ${BOLD_WHITE}Protected Branch Merge${RESET}")
-  lines+=("  ")
-
-  local commit_count
-  commit_count=$(git log --oneline "$target..$source" | wc -l | awk '{print $1}')
-  commit_count=${commit_count:-0}
-
-  local shortstat
-  shortstat=$(git diff --shortstat "$target..$source")
-
-  local files insertions deletions
-  read -r files insertions deletions <<<"$(parse_shortstat "$shortstat")"
-
-  if [[ "$commit_count" == "0" ]]; then
-    err "Already up to date."
-    exit 0
+  if [[ "$current_branch" != "$target" ]]; then
+    die "Atomic auth merge must run in the worktree already tracking target branch '$target'; current branch is '${current_branch:-detached HEAD}'." 1
+  fi
+  if ! tracked_worktree_is_clean; then
+    die "${CHECKOUT_READINESS_FAILURE} No ref or worktree was changed." 1
   fi
 
-  local IFS_BAK2="$IFS"
-  IFS=$'\n'
-  source_lines=( $(build_lines_for_source "$source" "$target" "$commit_count" "$files" "$insertions" "$deletions") )
-  IFS="$IFS_BAK2"
-
-  lines+=("${source_lines[@]}")
-  lines+=("  ")
-
-  _box_lines=("${lines[@]}")
-  print_box
-
-  local response
-  response=$(prompt_confirm "Confirm merge? [y/N]")
-  response=$(printf "%s" "$response" | tr '[:upper:]' '[:lower:]')
-  case "$response" in
-    y|yes)
-      ;;
-    *)
-      err "Merge cancelled."
-      exit 1
-      ;;
-  esac
-
-  if [[ "${MANDIBLE_AUTH_ATOMIC:-}" == "1" ]]; then
-    if [[ "$current_branch" != "$target" ]]; then
-      die "Atomic auth merge must run in the worktree already tracking target branch '$target'; current branch is '${current_branch:-detached HEAD}'." 1
-    fi
-    if ! tracked_worktree_is_clean; then
-      die "${CHECKOUT_READINESS_FAILURE} No ref or worktree was changed." 1
-    fi
-
-    local atomic_base
-    atomic_base=$(current_branch_sha "$target")
-    local source_head merge_tree merge_sha
-    source_head=$(current_branch_sha "$source")
-    # Issue 08a5f04 (review F3) — the reviewed-head context must be internally
-    # consistent: the daemon-supplied expected head and the cached candidate
-    # head describe the same reviewed commit.
-    if [[ -n "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}" && \
-          "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA}" != "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" ]]; then
-      die "Reviewed head context is inconsistent (expected ${MANDIBLE_AUTH_EXPECTED_HEAD_SHA}, candidate ${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-unset}); requeue and reapprove. No ref or worktree was changed." 1
-    fi
-    if [[ "$atomic_base" != "${MANDIBLE_AUTH_CANDIDATE_BASE_SHA:-}" ]] || \
-       [[ "$source_head" != "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" ]]; then
-      die "Reviewed base or head moved since auth submission; requeue and reapprove. No ref or worktree was changed." 1
-    fi
-    merge_tree=$(require_cached_candidate_tree "$atomic_base" "$source_head") || exit 1
-    verify_atomic_merge_not_empty "$merge_tree" "$atomic_base" || exit 1
-    merge_sha=$(require_signed_merge_commit "$merge_tree" "$atomic_base" "$source_head") || exit 1
-    auth_phase "publishing approval-signed merge commit ${merge_sha}; atomically advancing ${target}..."
-    cas_update_and_sync_target "$target" "$atomic_base" "$merge_sha"
-    local cas_status=$?
-    (( cas_status == 0 )) || exit "$cas_status"
-    auth_phase "protected worktree synchronized; recording the merge result..."
-    record_auth_merge_result "$atomic_base"
-    exit 0
+  local atomic_base
+  atomic_base=$(current_branch_sha "$target")
+  local source_head merge_tree merge_sha
+  source_head=$(current_branch_sha "$source")
+  # Issue 08a5f04 (review F3) — the reviewed-head context must be internally
+  # consistent: the daemon-supplied expected head and the cached candidate
+  # head describe the same reviewed commit.
+  if [[ -n "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}" && \
+        "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA}" != "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" ]]; then
+    die "Reviewed head context is inconsistent (expected ${MANDIBLE_AUTH_EXPECTED_HEAD_SHA}, candidate ${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-unset}); requeue and reapprove. No ref or worktree was changed." 1
   fi
-
-
+  if [[ "$atomic_base" != "${MANDIBLE_AUTH_CANDIDATE_BASE_SHA:-}" ]] || \
+     [[ "$source_head" != "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" ]]; then
+    die "Reviewed base or head moved since auth submission; requeue and reapprove. No ref or worktree was changed." 1
+  fi
+  merge_tree=$(require_cached_candidate_tree "$atomic_base" "$source_head") || exit 1
+  verify_atomic_merge_not_empty "$merge_tree" "$atomic_base" || exit 1
+  merge_sha=$(require_signed_merge_commit "$merge_tree" "$atomic_base" "$source_head") || exit 1
+  auth_phase "publishing approval-signed merge commit ${merge_sha}; atomically advancing ${target}..."
+  cas_update_and_sync_target "$target" "$atomic_base" "$merge_sha"
+  local cas_status=$?
+  (( cas_status == 0 )) || exit "$cas_status"
+  auth_phase "protected worktree synchronized; recording the merge result..."
+  record_auth_merge_result "$atomic_base"
+  exit 0
 }
 
 # Allow tests and atomic recovery to source this script for individual
