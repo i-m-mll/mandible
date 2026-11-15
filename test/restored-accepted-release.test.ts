@@ -204,6 +204,10 @@ it('purges only matching quarantined bytes and resumes partial or rootless delet
     expect(fs.existsSync(plan.destination)).toBe(false);
     expect(JSON.parse(fs.readFileSync(plan.purgeReceipt, 'utf8')).state).toBe('pending');
     expect(await recover(plan.applyToken)).toMatchObject({ action: 'purged' });
+    const completed = fs.readFileSync(plan.purgeReceipt, 'utf8');
+    expect(Buffer.byteLength(completed)).toBeLessThan(1024);
+    expect(JSON.parse(completed)).toMatchObject({ state: 'completed', apparentBytes: plan.apparentBytes, applyToken: plan.applyToken });
+    expect(JSON.parse(completed)).not.toHaveProperty('inventory');
     expect(await recover(plan.applyToken)).toMatchObject({ action: 'purged' });
     expect(fs.existsSync(f.outcome)).toBe(true);
     expect(fs.existsSync(f.sealed)).toBe(true);
