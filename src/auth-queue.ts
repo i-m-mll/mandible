@@ -3719,7 +3719,7 @@ export class AuthQueue {
           let expired = false;
           const expiry = setTimeout(() => { expired = true; controller.abort(); }, OPERATOR_PROOF_WINDOW_MS);
           const signed = await this.operatorSigning.commitSigner(
-            `approve merging ${request.head_branch} into ${request.base_branch} of ${request.repo ?? request.cwd} at ${request.merge_preflight_base_sha!.slice(0, 7)} (request ${request.id.slice(0, 8)})`,
+            `approve merging ${request.head_branch} into ${request.base_branch} of ${request.repo ?? request.cwd} (request ${request.id.slice(0, 8)})`,
           ).sign(unsigned, "git", controller.signal).finally(() => clearTimeout(expiry));
           if (expired) throw new AuthQueueError("invalid_status", "The approval window closed before Touch ID; approve again.");
           if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new SignedActionRefused({ code: "cancelled", detail: "Signing was cancelled." });
