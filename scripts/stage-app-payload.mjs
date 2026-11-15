@@ -104,7 +104,7 @@ export async function stageAppPayload(contents) {
   const caddy = installPinnedCaddy(path.join(os.homedir(), '.cache/mandible/package-tools'));
   if (hash(caddy) !== '425fb8342d05b06e98f6a438a2964401268df83345ad806103669fdd322bf80c') throw new Error('Caddy differs from the qualified darwin-arm64 release executable.');
   const native = { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy',
-    claude: '../MacOS/mandible-claude', trustHelper: '../MacOS/mandible-trust-helper', serviceHelper: '../MacOS/mandible-service', sqlite: '../Frameworks/libsqlite3.dylib' };
+    claude: '../MacOS/mandible-claude', trustHelper: '../MacOS/mandible-trust-helper', approvalHelper: '../Helpers/MandibleApproval.app/Contents/MacOS/mandible-approval-helper', serviceHelper: '../MacOS/mandible-service', sqlite: '../Frameworks/libsqlite3.dylib' };
   const sdkNative = path.join(resources, `node_modules/@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`);
   const signing = {};
   for (const [role, executable] of Object.entries({ bun: runtime, claude: sdkNative })) {
@@ -115,11 +115,13 @@ export async function stageAppPayload(contents) {
     fs.writeFileSync(path.join(resources, relative), entitlements);
     signing[role] = relative;
   }
-  for (const [name, source] of Object.entries({ bun: runtime, caddy, sqlite, claude: sdkNative, trustHelper: process.env.MANDIBLE_DESKTOP_TRUST_HELPER ?? path.join(root, 'src-tauri/resources/local-ca-trust-helper') })) {
+  const helpers = process.env.MANDIBLE_DESKTOP_HELPERS ?? path.join(root, 'src-tauri/resources');
+  for (const [name, source] of Object.entries({ bun: runtime, caddy, sqlite, claude: sdkNative, trustHelper: path.join(helpers, 'local-ca-trust-helper') })) {
     const destination = path.resolve(resources, native[name]);
     copy(source, destination);
     fs.chmodSync(destination, name === 'sqlite' ? 0o644 : 0o755);
   }
+  copy(path.join(helpers, 'MandibleApproval.app'), path.join(contents, 'Helpers/MandibleApproval.app'));
   fs.rmSync(sdkNative);
   fs.writeFileSync(path.join(resources, 'scripts/bun-runtime.sh'), `#!/bin/sh
 set -eu
@@ -135,7 +137,7 @@ esac
 `, { mode: 0o755 });
   const commitInfo = run('git', ['show', '-s', '--format=%s%n%cI', provenance.commit]).split('\n');
   const release = { schema: RELEASE_SCHEMA, handoff_protocol: 2, version: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version,
-    layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', libraries: '../Frameworks', agents: '../Library/LaunchAgents' } },
+    layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', libraries: '../Frameworks', agents: '../Library/LaunchAgents', helpers: '../Helpers' } },
     target: `${process.platform}-${process.arch}`, provenance: { ...provenance, summary: commitInfo[0], date: commitInfo[1], bun_revision: run(runtime, ['--revision']) },
     qualification: { bun_sha256: hash(runtime), sqlite_sha256: hash(sqlite), caddy_sha256: hash(caddy) },
     entrypoints: { daemon: 'dist/index.js', cli: 'bin/mandible', controller: 'scripts/local-runtime.mjs', trustSetup: 'scripts/local-ca-trust.mjs', service: 'scripts/bundle-service.mjs' },

@@ -3,7 +3,7 @@ set -eu
 runtime="$(scripts/bun-runtime.sh --bun-only)"
 export PATH="$(dirname "$runtime"):$PATH"
 "$runtime" run build
-scripts/build-local-ca-trust-helper.sh
+scripts/build-native-helpers.sh
 "$runtime" scripts/stage-app-payload.mjs
 triple="$(rustc -vV | sed -n 's/^host: //p')"
 payload_contents="${MANDIBLE_DESKTOP_PAYLOAD_CONTENTS:-src-tauri/resources/app-payload/Contents}"

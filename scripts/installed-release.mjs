@@ -126,7 +126,7 @@ export function verifyApplicationRelease(app) {
   return { release, digest };
 }
 
-const installedRuntimeKeys = ['MANDIBLE_RELEASE_ROOT', 'MANDIBLE_RUNTIME', 'MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_CADDY', 'MANDIBLE_CA_TRUST_HELPER', 'MANDIBLE_CLI_DIR'];
+const installedRuntimeKeys = ['MANDIBLE_RELEASE_ROOT', 'MANDIBLE_RUNTIME', 'MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_CADDY', 'MANDIBLE_CA_TRUST_HELPER', 'MANDIBLE_APPROVAL_HELPER', 'MANDIBLE_CLI_DIR'];
 
 export function installedRuntimeEnvironment(root, environment = process.env) {
   root = fs.realpathSync(root);
@@ -134,7 +134,7 @@ export function installedRuntimeEnvironment(root, environment = process.env) {
   const native = Object.fromEntries(Object.entries(release.native).map(([key, relative]) => [key, releaseFile(root, relative, release.layout)]));
   const result = { ...environment, MANDIBLE_RELEASE_ROOT: root, MANDIBLE_RUNTIME: native.bun,
     MANDIBLE_SQLITE_LIBRARY: native.sqlite, MANDIBLE_CADDY: native.caddy,
-    MANDIBLE_CA_TRUST_HELPER: native.trustHelper, MANDIBLE_CLI_DIR: path.join(root, 'cli'),
+    MANDIBLE_CA_TRUST_HELPER: native.trustHelper, MANDIBLE_APPROVAL_HELPER: native.approvalHelper, MANDIBLE_CLI_DIR: path.join(root, 'cli'),
     MANDIBLE_INSTALLED_KEYS: installedRuntimeKeys.join(' '),
     PATH: [...new Set([path.dirname(native.bun), path.join(root, 'bin'), ...(environment.PATH ?? '').split(path.delimiter)])].join(path.delimiter),
   };

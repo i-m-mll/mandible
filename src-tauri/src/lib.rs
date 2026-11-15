@@ -681,6 +681,7 @@ fn runtime_command(app: &AppHandle) -> Result<Command, String> {
         command.env("MANDIBLE_SQLITE_LIBRARY", installed_resource(&root, "native", "sqlite")?);
         command.env("MANDIBLE_CADDY", installed_resource(&root, "native", "caddy")?);
         command.env("MANDIBLE_CA_TRUST_HELPER", installed_resource(&root, "native", "trustHelper")?);
+        command.env("MANDIBLE_APPROVAL_HELPER", installed_resource(&root, "native", "approvalHelper")?);
         command.env_remove("MANDIBLE_SQLITE_LIBRARY_ARCHIVE");
         command.env_remove("MANDIBLE_RUNTIME_ARCHIVE");
     }

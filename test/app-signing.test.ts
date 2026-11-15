@@ -80,7 +80,9 @@ it('signs distinct native generations with one certificate and stable first-part
       fs.mkdirSync(resources, { recursive: true });
       fs.mkdirSync(path.join(app, 'Contents/MacOS'));
       fs.writeFileSync(path.join(app, 'Contents/Info.plist'), 'fixture plist');
-      const native = { serviceHelper: '../MacOS/mandible-service', trustHelper: '../MacOS/mandible-trust-helper', bun: '../MacOS/mandible-bun' };
+      const native = { serviceHelper: '../MacOS/mandible-service', trustHelper: '../MacOS/mandible-trust-helper', bun: '../MacOS/mandible-bun',
+        approvalHelper: '../Helpers/MandibleApproval.app/Contents/MacOS/mandible-approval-helper' };
+      fs.mkdirSync(path.join(app, 'Contents/Helpers/MandibleApproval.app/Contents/MacOS'), { recursive: true });
       for (const relative of Object.values(native)) fs.writeFileSync(path.resolve(resources, relative), generation);
       fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ native, signing: {} }));
       const finalized = finalizeAppPayload(app, signer);
@@ -93,13 +95,14 @@ it('signs distinct native generations with one certificate and stable first-part
     }
   } finally { signer.close(); }
   expect(new Set(signatures.map(item => item.identity))).toEqual(new Set([identity]));
-  for (const name of ['mandible-service', 'mandible-trust-helper']) {
-    const expected = nativeSigningIdentifier(identifier, name === 'mandible-service' ? 'serviceHelper' : 'trustHelper');
+  for (const [name, role] of [['mandible-service', 'serviceHelper'], ['mandible-trust-helper', 'trustHelper'], ['MandibleApproval.app', 'approvalHelper']]) {
+    const expected = nativeSigningIdentifier(identifier, role);
     expect(signatures.filter(item => path.basename(item.file) === name).map(item => item.identifier)).toEqual([expected, expected]);
   }
   expect(signatures.filter(item => path.basename(item.file) === 'Mandible.app').map(item => item.identifier)).toEqual([identifier, identifier]);
   expect(signatures.filter(item => path.basename(item.file) === 'mandible-bun').every(item => item.identifier === undefined)).toBe(true);
-  expect(requirements.slice(0, 4)).toEqual([identifier, `${identifier}.service`, identifier, `${identifier}.service`].map(id =>
+  const generation = [identifier, ...['service', 'trust', 'approval'].map(suffix => `${identifier}.${suffix}`)];
+  expect(requirements.slice(0, 8)).toEqual([...generation, ...generation].map(id =>
     `=anchor apple generic and certificate leaf = H"${identity}" and certificate leaf[subject.OU] = "FIXTURETEAM" and identifier "${id}"`));
   vi.mocked(spawnSync).mockReturnValue({ status: 0, stdout: '0 valid identities found', stderr: '' } as any);
   expect(() => openAppSigner({ identity: 'Apple Development: Missing' })).toThrow('Provision the selected Apple Development');

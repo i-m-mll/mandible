@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { inventoryRelease } from './stage-app-payload.mjs';
-import { nativeSigningIdentifier } from './app-signing.mjs';
+import { nativeSigningIdentifier, nativeSigningTarget } from './app-signing.mjs';
 
 export function assertUnsignedApp(app) {
   if (fs.existsSync(path.join(app, 'Contents/_CodeSignature/CodeResources'))) throw new Error('App is already signed. Assemble a fresh unsigned app; finalized or notarized apps must never be re-signed.');
@@ -18,7 +18,7 @@ export function finalizeAppPayload(app, signer) {
   const appIdentifier = signer.run('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', path.join(app, 'Contents/Info.plist')]).trim();
   signer.run('/usr/bin/xattr', ['-cr', app]);
   for (const [role, relative] of Object.entries(release.native)) {
-    signer.sign(path.resolve(resources, relative), release.signing[role] ? path.join(resources, release.signing[role]) : null,
+    signer.sign(nativeSigningTarget(app, path.resolve(resources, relative)), release.signing[role] ? path.join(resources, release.signing[role]) : null,
       role !== 'sqlite' && signer.plan.hardenedRuntime, nativeSigningIdentifier(appIdentifier, role));
   }
   const finalized = inventoryRelease(resources, release);
