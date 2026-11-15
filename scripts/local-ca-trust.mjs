@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, X509Certificate } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { acquireProcessLock as acquireKernelProcessLock } from "./process-lock.mjs";
 import { CADDY_VERSION, installPinnedCaddy, pinnedCaddyBinary } from "./pinned-caddy.mjs";
 import { gatewayGlobalOptions } from "./gateway-config.mjs";
+import { installedResourceRoot, readInstalledRelease, releaseFile } from "./installed-release.mjs";
 
 const SCHEMA = "mandible-local-ca-trust@1";
 const INTENT_SCHEMA = "mandible-local-ca-gateway-intent@1";
@@ -202,6 +203,7 @@ async function reconcileLocalCa(paths, effects, context) {
   const installationDigest = digest(regularBytes(paths.installationAuthority, "installation authority"));
   const existingRoot = prior.state === "untracked_root" ? rootDigest(paths) : null;
   const existingKey = prior.state === "untracked_root" ? keyDigest(paths) : null;
+  removeStaleSetupLeaf(paths.storageRoot);
   const session = await effects.bootstrap(context);
   try {
     context.assertHeld();
@@ -232,6 +234,29 @@ async function reconcileLocalCa(paths, effects, context) {
   } finally {
     await session.close();
   }
+}
+
+function removeStaleSetupLeaf(storageRoot) {
+  const components = ["certificates", "local", SETUP_HOST];
+  const directory = path.join(storageRoot, ...components);
+  if (!existsEntry(directory)) return;
+  if (fs.realpathSync(directory) !== path.join(fs.realpathSync(storageRoot), ...components)
+      || !fs.lstatSync(directory).isDirectory()) {
+    throw new Error("The temporary setup certificate cache is not an owned directory.");
+  }
+  const files = fs.readdirSync(directory);
+  const certificate = `${SETUP_HOST}.crt`;
+  const key = `${SETUP_HOST}.key`;
+  const metadata = `${SETUP_HOST}.json`;
+  if (files.some(name => ![certificate, key, metadata].includes(name) || !fs.lstatSync(path.join(directory, name)).isFile())) {
+    throw new Error("The temporary setup certificate cache contains unexpected entries.");
+  }
+  if (files.includes(certificate) && files.includes(key) && files.includes(metadata)) {
+    const leaf = new X509Certificate(fs.readFileSync(path.join(directory, certificate)));
+    if (Date.parse(leaf.validTo) > Date.now()) return;
+  }
+  // The setup leaf is disposable. Discard it before Caddy can renew and clean it concurrently.
+  for (const name of files) fs.rmSync(path.join(directory, name), { force: true });
 }
 
 async function freePort() {
@@ -299,19 +324,18 @@ async function bootstrapCaddy(paths, context) {
 
 function nativeTrustHelper() {
   if (process.platform !== "darwin") throw new Error("Native HTTPS trust setup is unsupported on this platform.");
-  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    path.join(scriptDir, "local-ca-trust-helper"), // packaged desktop resource
-    path.join(scriptDir, "..", "src-tauri", "resources", "local-ca-trust-helper"), // source checkout
-  ];
-  const helper = candidates.find((candidate) => existsEntry(candidate));
-  if (!helper) throw new Error("Native macOS trust helper is missing; rebuild the desktop app or run scripts/build-local-ca-trust-helper.sh in the source checkout.");
+  const resources = installedResourceRoot();
+  const helper = resources
+    ? releaseFile(resources, readInstalledRelease(resources).native.trustHelper)
+    : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src-tauri/resources/local-ca-trust-helper");
+  if (!existsEntry(helper)) throw new Error("Native macOS trust helper is missing; build it with scripts/build-local-ca-trust-helper.sh.");
   const stat = fs.lstatSync(helper);
   if (!stat.isFile() || stat.isSymbolicLink() || !(stat.mode & 0o111)) throw new Error("Native macOS trust helper is not an executable regular file.");
   return helper;
 }
 
 function systemTrustEffects(paths) {
+  const helper = nativeTrustHelper();
   return {
     bootstrap: (context) => bootstrapCaddy(paths, context),
     approveTrust: async (rootDigestValue, context) => {
@@ -325,7 +349,7 @@ function systemTrustEffects(paths) {
         if (digest(regularBytes(snapshot, "approval certificate snapshot")) !== rootDigestValue) throw new Error("Caddy root changed before the approval snapshot; no trust was installed.");
         context.assertHeld();
         // Human authorization is not an automated readiness timeout.
-        const result = spawnSync(nativeTrustHelper(), [snapshot, rootDigestValue], { encoding: "utf8" });
+        const result = spawnSync(helper, [snapshot, rootDigestValue], { encoding: "utf8" });
         if (result.error || result.status !== 0) throw new Error(`This Mac did not complete secure local connections setup. macOS owns any account authentication; Mandible does not ask for a password. ${(result.stderr || result.stdout || result.error?.message || "Approval was declined or unavailable.").trim()}`);
         context.assertHeld();
         if (rootDigest(paths) !== rootDigestValue) throw new Error("Caddy root changed during macOS approval; the prepared setup remains pinned but cannot be marked trusted.");
