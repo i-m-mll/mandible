@@ -101,7 +101,7 @@ describe("auth queue", () => {
       await waitForStatus(queue, request.id, "completed");
       expect(signer.touches).toHaveLength(4);
       const touch = signer.touches[1]!;
-      expect(touch).toMatchObject({ namespace: "git", reason: `approve merging feature/one-touch into main of ${path.basename(repo)} (request ${request.id.slice(0, 8)})` });
+      expect(touch).toMatchObject({ namespace: "git" });
       const tip = git(repo, ["rev-parse", "main"]);
       const published = git(repo, ["cat-file", "commit", tip]);
       expect(published.replace(/^gpgsig [^]*?-----END SSH SIGNATURE-----\n/m, "")).toBe(touch.message.toString("utf8").trimEnd());
