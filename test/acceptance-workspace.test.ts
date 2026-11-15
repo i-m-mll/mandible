@@ -28,9 +28,11 @@ function fixture(mode: "pass" | "install-fail" | "build-fail" | "detached" | "ca
   const stopped = path.join(root, "stopped");
   const runtime = path.join(root, "runtime");
   const scratch = path.join(path.dirname(checkout), "candidate-fixture-run");
+  const checkpoint = path.join(path.dirname(checkout), ".receipts", "fixture-run-acceptance.json");
   const scratchFixture = path.join(root, "scratch.mjs");
   const env = { ...process.env, FIXTURE_RUNTIME: runtime, FIXTURE_MODE: mode, FIXTURE_READY: ready, FIXTURE_STOPPED: stopped,
-    MANDIBLE_ACCEPTANCE_ID: "fixture-run", FIXTURE_SCRATCH: scratch, FIXTURE_REAL_BUN: process.execPath, FIXTURE_SCRATCH_SCRIPT: scratchFixture };
+    MANDIBLE_HOME: home, MANDIBLE_ACCEPTANCE_ID: "fixture-run", FIXTURE_SCRATCH: scratch, FIXTURE_CHECKPOINT: checkpoint,
+    FIXTURE_REAL_BUN: process.execPath, FIXTURE_SCRATCH_SCRIPT: scratchFixture };
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repoRoot, env, encoding: "utf8", timeout: 10_000 }).trim();
   const write = (file: string, text: string) => fs.writeFileSync(file, text, { mode: 0o755 });
   write(path.join(repoRoot, ".gitignore"), "node_modules/\n.cache/\ndist/\ntarget/\n/src-tauri/gen/\n/src-tauri/resources/\n/src-tauri/binaries/\n");
@@ -48,6 +50,9 @@ const ownership = createOwnedRun({ root, instanceId: 'fixture', project: 'fixtur
   outputs: ['build.log', generatedProcessLog].map(path => ({ path, kind: 'generated' })) });
 saveOwnedMetadata(path.join(root, 'metadata.json'), { ownership });
 fs.writeFileSync(path.join(root, 'build.log'), 'partial output');
+const checkpoint = process.env.FIXTURE_CHECKPOINT;
+fs.mkdirSync(path.dirname(checkpoint), { recursive: true });
+fs.writeFileSync(checkpoint, '{}');
 if (process.env.FIXTURE_MODE === 'detached') {
   const child = spawn('/bin/sleep', ['30'], { detached: true, stdio: 'ignore' });
   fs.writeFileSync(process.env.FIXTURE_READY, String(child.pid));
@@ -97,7 +102,7 @@ printf '{"status":"passed","candidate":"%s"}\\n' "$(git rev-parse HEAD)"
     cwd: checkout, encoding: "utf8", timeout: 10_000,
   }).trim().split("\n").sort();
   const retained = ["!! .cache/typescript/check", "!! node_modules/dependency", "!! src-tauri/service-helper/target/release/helper", "!! src-tauri/target/release/deps/compiled"].sort();
-  return { root, checkout, ready, stopped, scratch, git, run, add, remaining, retained };
+  return { root, checkout, ready, stopped, scratch, checkpoint, git, run, add, remaining, retained };
 }
 
 it("recreates only the missing acceptance checkout and clears all package outputs on a pass", async () => {
@@ -124,6 +129,8 @@ it("clears owned scratch and checkout outputs after an interrupted package produ
   const f = fixture("build-fail");
   await expect(f.run()).resolves.toMatchObject({ status: "failed" });
   expect(fs.existsSync(f.scratch)).toBe(false);
+  expect(fs.existsSync(f.checkpoint)).toBe(false);
+  expect(fs.existsSync(path.join(path.dirname(f.checkpoint), "fixture-run.json"))).toBe(false);
   expect(f.remaining()).toEqual(f.retained);
 });
 
@@ -132,6 +139,7 @@ it("postpones cleanup and prevents checkout reuse while a separately supervised 
   try {
     await expect(f.run()).resolves.toMatchObject({ status: "failed", result: { cleanup_error: expect.stringContaining("process lifetime") } });
     expect(fs.existsSync(f.scratch)).toBe(true);
+    expect(fs.existsSync(f.checkpoint)).toBe(true);
     expect(fs.existsSync(path.join(f.checkout, "dist", "daemon"))).toBe(true);
     await expect(f.run()).resolves.toMatchObject({ status: "failed", error: expect.stringContaining("previous candidate acceptance") });
   } finally {

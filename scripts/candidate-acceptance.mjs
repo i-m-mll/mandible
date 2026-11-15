@@ -407,7 +407,6 @@ export async function finalizeAcceptance({ metadataFile, result, phases, candida
     ownedReceipt = receipt;
     result.receipt = receipt;
     phases.timing();
-    saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
     result.checks.cleanup = cleanupOwnedRun(metadataFile, { apply: true });
     if (result.checks.cleanup.action !== 'delete-owned' || result.checks.cleanup.remaining?.length) result.status = 'failed';
     if (result.status === 'passed' && !diagnostic && Date.now() < until) {
@@ -436,7 +435,9 @@ export async function finalizeAcceptance({ metadataFile, result, phases, candida
   if (result.checks.cleanup?.action === 'delete-owned' && !result.checks.cleanup.remaining?.length && !result.cleanup_error) phase.pass();
   else phase.fail(result.cleanup_error ?? 'Acceptance could not delete all of its scratch files.');
   phases.timing();
-  if (ownedReceipt) saveOwnedMetadata(ownedReceipt, { ...JSON.parse(fs.readFileSync(ownedReceipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
+  if (ownedReceipt && (diagnostic || !acceptance.record_id)) {
+    saveOwnedMetadata(ownedReceipt, { ...JSON.parse(fs.readFileSync(ownedReceipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
+  }
   return result;
 }
 
@@ -523,7 +524,9 @@ async function main(startedAt) {
   let passiveHealth, passiveError;
   let interactionCompletedAt = null;
   const interactionController = new AbortController();
-  const superviseCheck = { signal: interactionController.signal, onSpawn: child => recordScratchProcess(metadataFile, child, true) };
+  const recordProcess = (child, group) =>
+    recordScratchProcess(metadataFile, child, group, pendingPackage && path.join(pendingPackage.root, 'metadata.json'));
+  const superviseCheck = { signal: interactionController.signal, onSpawn: child => recordProcess(child, true) };
   const passiveController = new AbortController();
   const interactionWake = new AbortController();
   const diagnostics = path.join(run, 'diagnostics');
@@ -534,7 +537,7 @@ async function main(startedAt) {
   const launch = (binary, args, env, name) => {
     const fd = fs.openSync(path.join(run, `${name}.log`), 'w'); files.push(fd); logs[name] = fd;
     const child = spawn('/usr/bin/sandbox-exec', ['-p', executionProfile, binary, ...args], { cwd: run, env, stdio: ['ignore', fd, fd] });
-    recordScratchProcess(metadataFile, child);
+    recordProcess(child);
     child.on('error', error => { result.checks[`${name}_launch_error`] = error.message; });
     return child;
   };
@@ -659,7 +662,7 @@ async function main(startedAt) {
         '--pid', String(daemon.pid), '--duration', String(Math.max(1, Math.floor(diagnosticDuration / 1000))), '--sample', '--sample-max', '4', '--out', diagnostics, '--json'],
         { cwd: run, env: buildEnv, stdio: ['ignore', out, err] });
       stallProbe.on('error', error => { result.checks.probe_launch_error = error.message; });
-      recordScratchProcess(metadataFile, stallProbe);
+      recordProcess(stallProbe);
     }
     await new Promise((resolve, reject) => {
       const body = JSON.stringify({ slug: 'candidate-operator', display_name: 'Candidate operator', email: 'candidate@example.invalid' });
@@ -772,7 +775,7 @@ async function main(startedAt) {
         const receipt = path.join(cache, '.receipts', `${ownership.runId}.json`);
         if (fs.existsSync(receipt)) result.receipt = receipt;
         saveOwnedMetadata(evidence, result);
-        if (fs.existsSync(receipt)) saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: result });
+        if (!recordId && fs.existsSync(receipt)) saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: result });
       }
     }
     phases.timing();

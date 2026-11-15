@@ -15,7 +15,7 @@ export async function generatedStorage({ home, cache, db, apply = false, limit =
   restoreScratchCursors(cursors?.scratch); restoreReleaseCursors(cursors?.releases);
   const scratch = [];
   for (const name of ['acceptance', 'route-cost-sweep']) scratch.push(...await reconcileGeneratedScratch(path.join(cache, name), { apply, limit, until }));
-  const releases = await reconcileAcceptedReleases(db, home, { apply, limit, until });
+  const releases = await reconcileAcceptedReleases(db, home, { apply, limit, until, acceptanceCache: path.join(cache, 'acceptance') });
   return { apply, scratch, releases, cursors: { scratch: scratchCursors(), releases: releaseCursors() } };
 }
 

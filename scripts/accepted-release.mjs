@@ -272,7 +272,7 @@ export async function createPendingRelease({ storage, ownership }) {
       outputs: [{ path: 'Mandible.app', kind: 'interactive' }] });
     saveOwnedMetadata(path.join(retained, 'metadata.json'), { ownership: owner,
       ...(process.env.MANDIBLE_ACCEPTANCE_ID ? { pendingAcceptance: { recordId: process.env.MANDIBLE_ACCEPTANCE_ID, requestId: process.env.MANDIBLE_ACCEPTANCE_REQUEST,
-        scratchRoot: ownership.root, runId: ownership.runId } } : {}) });
+        scratchRoot: ownership.root, runId: ownership.runId, processes: [] } } : {}) });
     const app = path.join(retained, 'Mandible.app');
     return { root: retained, runId: owner.runId, ownership: owner, app, resources: path.join(app, 'Contents/Resources') };
   }, { mode: 'create' });

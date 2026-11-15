@@ -251,6 +251,35 @@ it('keeps exact retryable selections and reclaims dismissed or superseded reques
   } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+it('reclaims an interrupted unsealed package from its own process records after cache loss', async () => {
+  const home = temporary();
+  const db = retentionDb(path.join(home, 'db'));
+  const producer = await deadOwner();
+  try {
+    const runId = 'interrupted';
+    const storage = path.join(home, 'accepted-releases', '.v2');
+    const pending = await createPendingRelease({ storage, ownership: { runId, instanceId: 'fixture', project: 'project', workUnit: 'unit' } });
+    fs.mkdirSync(pending.app);
+    const metadataFile = path.join(pending.root, 'metadata.json');
+    const activeConsumer = { pid: process.pid, identity: processIdentity(process.pid) };
+    const pendingAcceptance = { recordId: runId, runId, requestId: 'request', scratchRoot: path.join(home, 'deleted-cache', `candidate-${runId}`),
+      processes: [activeConsumer] };
+    const save = () => saveOwnedMetadata(metadataFile, { ownership: { ...pending.ownership, processOwner: producer }, pendingAcceptance });
+    save();
+    db.prepare("INSERT INTO auth_requests (id, status, command, title, created_at, updated_at, expires_at) VALUES ('request', 'dismissed', 'true', 'fixture', 1, 2, 100)").run();
+    db.prepare("INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at) VALUES (?, 'request', ?, ?, ?, ?, 'failed', 1, 2)")
+      .run(runId, ...Object.values(candidate));
+    expect(await reconcileAcceptedReleases(db, home, { apply: true })).toContainEqual(
+      expect.objectContaining({ root: pending.root, action: 'retain', reasons: ['pending producer live or uncertain'] }));
+    pendingAcceptance.processes = [producer];
+    save();
+    expect(await reconcileAcceptedReleases(db, home, { apply: true })).toContainEqual(
+      expect.objectContaining({ root: pending.root, action: 'delete-owned' }));
+    expect(fs.existsSync(pending.root)).toBe(false);
+    expect(fs.existsSync(path.join(storage, '.run-locks', runId + '.process'))).toBe(false);
+  } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 it('shares active accepted-release locks with legacy callers and refuses reuse of a terminal run ID', async () => {
   const home = temporary();
   const storage = path.join(home, 'accepted-releases');

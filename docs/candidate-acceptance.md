@@ -61,6 +61,8 @@ command and evidence boundary.
 
 Each run records its exact project, work-unit owner, instance and generated outputs before producing them. The shared owned-run lifecycle saves a compact receipt outside the scratch root and reclaims disposed raw material after assessment or failure. Unknown files, active consumers, identity drift and cleanup errors preserve the remaining bytes and fail the gate. The receipt contains source and executable hashes, the runtime, interaction evidence, log digest, shutdown results and cleanup outcome. Apparent unlinked bytes are reported separately from physical space recovery.
 
+When a daemon-managed acceptance settles, it reads the bounded failure details for the ledger before deleting the scratch root and its cache checkpoints. If an interrupted run still owns an unsealed package, the compact scratch disposition stays until that package is cleared. An accepted package's certificate belongs to durable release storage.
+
 Generated storage is reconciled asynchronously at daemon startup, on committed
 auth request/selection changes, on the existing idle tick, and before acceptance
 or route-sweep allocation. Process lifetime and recorded process groups establish

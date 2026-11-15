@@ -14,7 +14,7 @@ import path from "node:path";
 import type { CandidateAcceptancePhase, CandidateAcceptanceProjection } from "./contracts.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
-import { getUserHome } from "./platform-paths.js";
+import { getMandibleHome, getUserHome } from "./platform-paths.js";
 import { compactAcceptanceResult, readAcceptanceFailure } from "../scripts/acceptance-result.mjs";
 import { ACCEPTANCE_CERTIFICATE_SCHEMA, ACCEPTANCE_RECEIPT_CAPABILITY } from "../scripts/acceptance-certificate.mjs";
 import { ACCEPTANCE_CLEANUP_MS, ACCEPTANCE_EXPECTED_TOTAL_MS, ACCEPTANCE_STAGES, acceptanceBackstop, parsePhaseLine, ProgressWatch, scriptIdleMs, stageWarning, totalWarning,
@@ -397,7 +397,7 @@ class AcceptanceWorkspace {
     if (!this.producersSettled) return "An acceptance process group did not settle before checkout cleanup.";
     const recordId = this.input.env.MANDIBLE_ACCEPTANCE_ID;
     if (recordId) {
-      const error = await reclaimAcceptanceScratch(path.dirname(this.checkout), recordId);
+      const error = await reclaimAcceptanceScratch(path.dirname(this.checkout), recordId, this.input.env.MANDIBLE_HOME ?? getMandibleHome());
       if (error) return error;
     }
     if (!this.identity) return null;
@@ -528,6 +528,11 @@ export const runCandidateAcceptance: CandidateAcceptanceExecutor = async (input)
       } finally {
         assertHeld();
         cleanupError = await workspace.cleanup();
+      }
+      if (!cleanupError && outcome.status === 'failed' && outcome.result && typeof outcome.result === 'object'
+          && 'receipt' in outcome.result && typeof outcome.result.receipt === 'string' && path.isAbsolute(outcome.result.receipt)) {
+        const { receipt: _removedCheckpoint, ...result } = outcome.result;
+        return { ...outcome, result };
       }
       if (!cleanupError) return outcome;
       return { status: "failed", error: outcome.error ?? describeAcceptanceFailure(new Error(cleanupError), "finalization").text,

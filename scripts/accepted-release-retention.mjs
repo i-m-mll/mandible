@@ -7,6 +7,7 @@ import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
 import { acceptedReleaseHome, retireAcceptedReleaseRunLock, withAcceptedReleaseRunLock } from './accepted-release-lock.mjs';
 import { ACCEPTED_RELEASE_DIRECTORY, VERSIONED_RELEASE_DIRECTORY } from './accepted-release-storage.mjs';
 import { generatedOwnerIdle } from './generated-scratch.mjs';
+import { acceptanceScratchPath, clearAcceptanceScratchRecords } from './acceptance-workspace.mjs';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { fileURLToPath } from 'node:url';
 import { authRequestCanRepeatExecution, authRequestHasRetryableStatus } from '../src/auth-retry.ts';
@@ -25,11 +26,13 @@ function producerOwners(metadata) {
   const { ownership, pendingAcceptance } = metadata;
   const owners = [];
   if (pendingAcceptance || ownership?.processOwner || ownership?.processes?.length) {
-    owners.push({ run: ownership, reason: 'acceptance producer lifetime live or uncertain' });
+    const run = pendingAcceptance?.processes
+      ? { ...ownership, processes: [...(ownership.processes ?? []), ...pendingAcceptance.processes] } : ownership;
+    owners.push({ run, reason: 'acceptance producer lifetime live or uncertain' });
   }
   // A seal is published only after acceptance's child processes have settled.
   // A missing scratch root supplies no additional consumer to observe.
-  if (pendingAcceptance) {
+  if (pendingAcceptance && !pendingAcceptance.processes) {
     const root = pendingAcceptance.scratchRoot;
     if (!path.isAbsolute(root ?? '')) throw new Error('Acceptance scratch locator is invalid.');
     const entry = fs.lstatSync(root, { throwIfNoEntry: false });
@@ -55,40 +58,49 @@ export async function acceptedReleaseProducerReferencesAsync(metadata) {
   return reasons;
 }
 
-async function reconcilePending(db, home, root, apply) {
+async function reconcilePending(db, home, root, apply, acceptanceCache) {
   const file = path.join(root, 'metadata.json');
   const inspect = () => {
     const metadata = JSON.parse(fs.readFileSync(file, 'utf8'));
     const run = metadata.ownership;
     const producer = metadata.pendingAcceptance;
     if (!ownedRunIdentityMatches(root, run) || !producer?.recordId) return { reasons: ['unknown pending custody'] };
-    if (!generatedOwnerIdle(run)) return { reasons: ['pending producer live or uncertain'] };
-    const scratch = producerAuthority(producer);
-    if (!scratch || !generatedOwnerIdle(scratch)) return { reasons: ['producer consumers live or uncertain'] };
+    const durableProcesses = producer.processes;
+    if (!generatedOwnerIdle(durableProcesses ? { ...run, processes: durableProcesses } : run)) {
+      return { reasons: ['pending producer live or uncertain'] };
+    }
+    const scratch = durableProcesses ? null : producerAuthority(producer);
+    if (!durableProcesses && (!scratch || !generatedOwnerIdle(scratch))) return { reasons: ['producer consumers live or uncertain'] };
     const sealed = path.join(path.dirname(root), '.receipts', `${run.runId}-accepted-release.json`);
     if (fs.existsSync(sealed)) return { reasons: ['sealed package belongs to accepted reconciliation'] };
     const row = db.prepare('SELECT status, auth_request_id FROM auth_candidate_acceptances WHERE id = ?').get(producer.recordId);
     if (!row || row.auth_request_id !== producer.requestId || row.status !== 'failed') return { reasons: ['acceptance outcome unresolved'] };
     const consumers = inspectRunConsumers(root);
     if (!consumers.idle) return { reasons: [consumers.reason] };
-    return { metadata, run, producer, sealed, scratch };
+    return { metadata, run, producer, sealed, processes: durableProcesses ?? scratch.processes };
   };
   const collect = () => {
     const state = inspect();
     if (state.reasons) return { root, action: 'retain', reasons: state.reasons };
     if (!apply) return { root, action: 'dispose', reason: 'failed pending acceptance; producer and consumers stopped' };
-    const { metadata, run, producer, sealed, scratch } = state;
+    const { metadata, run, producer, sealed, processes } = state;
     db.transaction(() => {
       const row = db.prepare('SELECT status FROM auth_candidate_acceptances WHERE id = ?').get(producer.recordId);
       if (row?.status !== 'failed' || fs.existsSync(sealed)) throw new Error('Pending acceptance authority changed.');
       if (run.state !== 'terminal') {
-        run.processes = scratch.processes;
+        run.processes = processes;
         run.disposable = true; run.outputs = run.outputs.map(output => ({ ...output, kind: 'generated' }));
         saveOwnedMetadata(file, metadata);
         finalizeOwnedRun(file, { expectedRevision: run.revision, outcome: 'failed', summary: 'Interrupted pending package; failed acceptance producer and consumers stopped.' });
       }
     }).immediate();
-    return { root, ...cleanupOwnedRun(file, { apply: true }) };
+    const result = cleanupOwnedRun(file, { apply: true });
+    if (result.action === 'delete-owned' && !result.remaining?.length && acceptanceCache
+        && producer.scratchRoot === acceptanceScratchPath(acceptanceCache, producer.recordId)
+        && !fs.lstatSync(producer.scratchRoot, { throwIfNoEntry: false })) {
+      clearAcceptanceScratchRecords(acceptanceCache, producer.recordId, home);
+    }
+    return { root, ...result };
   };
   return apply ? withInstallationGatewayLock(home, () => withAcceptedReleaseRunLock(root, collect, { recoverStale: true })) : collect();
 }
@@ -165,7 +177,7 @@ function releaseEntries(storage) {
   return files.map(entry => ({ ...entry, storage }));
 }
 
-export async function reconcileAcceptedReleases(db, home, { apply = false, limit = 8, until = Date.now() + 5000 } = {}) {
+export async function reconcileAcceptedReleases(db, home, { apply = false, limit = 8, until = Date.now() + 5000, acceptanceCache } = {}) {
   const location = path.join(home, ACCEPTED_RELEASE_DIRECTORY);
   if (!fs.existsSync(location)) return [];
   const storage = fs.realpathSync(location);
@@ -196,7 +208,12 @@ export async function reconcileAcceptedReleases(db, home, { apply = false, limit
           if (hasRoot() && outcome.generatedRecovery?.processOwner && !generatedOwnerIdle(outcome.generatedRecovery, recovery)) {
             return { root: recovery, action: 'retain', reasons: ['acceptance producer lifetime live or uncertain'] };
           }
-          return { root: recovery, ...recoverOwnedRunDisposition(outcome.receipt, { apply }) };
+          const result = recoverOwnedRunDisposition(outcome.receipt, { apply });
+          if (apply && result.action === 'disposed' && acceptanceCache
+              && !fs.lstatSync(acceptanceScratchPath(acceptanceCache, runId), { throwIfNoEntry: false })) {
+            clearAcceptanceScratchRecords(acceptanceCache, runId, home);
+          }
+          return { root: recovery, ...result };
         };
         results.push(apply ? await withInstallationGatewayLock(home, () => withAcceptedReleaseRunLock(recovery, recover, {
           mode: 'recover', recoverStale: true, onUnavailable: (state, reason) => ({
@@ -206,7 +223,7 @@ export async function reconcileAcceptedReleases(db, home, { apply = false, limit
         continue;
       }
       if (pendingRoot) {
-        results.push(await reconcilePending(db, home, pendingRoot, apply)); continue;
+        results.push(await reconcilePending(db, home, pendingRoot, apply, acceptanceCache)); continue;
       }
       const bytes = fs.readFileSync(file);
       const reference = `accepted-release:${createHash('sha256').update(bytes).digest('hex')}:${Buffer.from(file).toString('base64url')}`;

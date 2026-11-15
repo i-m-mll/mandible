@@ -3,11 +3,19 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers, processIdentity, saveOwnedMetadata, recoverOwnedRunDisposition } from './owned-run.mjs';
 
-export function recordScratchProcess(metadataFile, child, group = false) {
+export function recordScratchProcess(metadataFile, child, group = false, pendingReleaseMetadata) {
   if (!child.pid) return;
+  const record = { pid: child.pid, identity: processIdentity(child.pid), group };
+  if (pendingReleaseMetadata) {
+    const release = JSON.parse(fs.readFileSync(pendingReleaseMetadata, 'utf8'));
+    if (release.pendingAcceptance) {
+      release.pendingAcceptance.processes.push(record);
+      saveOwnedMetadata(pendingReleaseMetadata, release);
+    }
+  }
   const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
   metadata.ownership.processes ??= [];
-  metadata.ownership.processes.push({ pid: child.pid, identity: processIdentity(child.pid), group });
+  metadata.ownership.processes.push(record);
   saveOwnedMetadata(metadataFile, metadata);
 }
 
@@ -103,7 +111,7 @@ export async function reconcileGeneratedScratch(parent, { apply = false, limit =
         }
         const exists = !!fs.lstatSync(receipt.root, { throwIfNoEntry: false });
         if (receipt.cleanup === 'completed' && !exists
-            || exists && (!receipt.generatedRecovery || !ownerIdle(receipt.generatedRecovery))) continue;
+            || exists && (!receipt.generatedRecovery || !ownerIdle(receipt.generatedRecovery, receipt.root))) continue;
         const reconcile = () => recoverOwnedRunDisposition(job.file, { apply, inspect });
         results.push(apply ? await withOwnedRunLock(receipt.root, reconcile, { recoverStale: true }) : reconcile());
       } catch (error) { results.push({ file: job.file, action: 'cleanup-pending', reason: String(error) }); }
