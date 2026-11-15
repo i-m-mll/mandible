@@ -9,7 +9,8 @@ import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
-import { addAttributionEvidence, getOperator } from "../src/users/store.js";
+import { getOperator } from "../src/users/store.js";
+import { AUTH_MERGE_REVIEW, approveFixtureRequest, awaitFixtureResolution, commitOnBranch, createAuthCheckRepo, git, publishFixtureExecution, waitForStatus } from "./helpers/auth-queue-fixtures.js";
 import { createMigratedDb } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 
@@ -20,21 +21,26 @@ it("retries a failed hook through the CLI and real route without replaying the m
   const auth = new ClientAuthenticator(db, { secretsDir: path.join(dir, "credentials") });
   const token = auth.mintApiToken(operator.id).token;
   const hooks = new AuthHookManager(db);
-  const executor = vi.fn(async () => ({ exit_code: 0, output: "merge executed" }));
-  const queue = new AuthQueue({ db, hookManager: hooks, executor, backgroundMaintenance: false });
+  let queue!: AuthQueue;
+  const executor = vi.fn((options: Parameters<typeof publishFixtureExecution>[1]) => publishFixtureExecution(queue, options));
+  queue = new AuthQueue({ db, hookManager: hooks, executor, backgroundMaintenance: false });
   const router = new Router({ clientAuth: auth });
   registerAuthRoutes(router, queue, inlineLedgerReader(() => db));
-  const requestId = crypto.randomUUID();
-  const mergeSha = "a".repeat(40);
-  // Retained successful publication: only convergence remains to be repaired.
-  const evidence = addAttributionEvidence(db, { evidence_method: "credential_signature", details: {
-    publication_verified: true, verified: true, commit_sha: mergeSha, signer_user_id: operator.id,
-  } });
-  db.prepare(`INSERT INTO auth_requests
-    (id, type, command, title, repo, cwd, status, exit_code, output, approved_by_user_id,
-     execution_evidence_id, created_at, updated_at, expires_at)
-    VALUES (?, 'merge', 'echo merge-must-not-rerun', 'Retry fixture', 'retry-cli', ?, 'completed', 0, ?, ?, ?, 1, 1, ?)`)
-    .run(requestId, dir, `MANDIBLE_MERGE_RESULT ${JSON.stringify({ merge_sha: mergeSha })}`, operator.id, evidence.id, Date.now() + 60_000);
+  // A published, approval-signed merge: only convergence remains to be repaired.
+  const repo = createAuthCheckRepo();
+  commitOnBranch(repo, "feature/retry", { "retry.txt": "retry\n" });
+  db.prepare("INSERT INTO work_repos (id, root, name, default_branch, dir_exists, excluded) VALUES ('retry-cli', ?, 'retry-cli', 'main', 1, 0)").run(fs.realpathSync(repo));
+  const submitted = await queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge", title: "Retry fixture",
+    command: "mandible auth merge feature/retry --into main", repo: "retry-cli", cwd: repo, base_branch: "main",
+    head_branch: "feature/retry", merge_head_sha: git(repo, ["rev-parse", "feature/retry"]), execution_mode: "daemon" });
+  const requestId = submitted.id;
+  await awaitFixtureResolution(queue, requestId, async () => {
+    await approveFixtureRequest(queue, requestId);
+    await waitForStatus(queue, requestId, "completed");
+  });
+  await queue.drainFinalizers();
+  const evidenceId = queue.getRequestReference(requestId)!.execution_evidence_id;
+  expect(evidenceId).toBeTruthy();
   const marker = path.join(dir, "repaired");
   const hook = hooks.create({ repo_pattern: "retry-cli", auth_type: "merge", label: "Repair hook", position: 0,
     required: true, command: `test -f '${marker}'` });
@@ -114,11 +120,12 @@ it("retries a failed hook through the CLI and real route without replaying the m
     expect(unconfirmed.stdout).not.toContain("complete");
     expect(posts).toBe(postsBeforeDisconnect + 1);
     expect(executor.mock.calls.length).toBe(mergeExecutions);
-    expect(queue.getRequestReference(requestId)).toMatchObject({ status: "completed", exit_code: 0, execution_evidence_id: evidence.id });
+    expect(queue.getRequestReference(requestId)).toMatchObject({ status: "completed", exit_code: 0, execution_evidence_id: evidenceId });
   } finally {
     if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await queue.dispose();
     db.close();
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
   }
 });

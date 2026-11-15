@@ -14,7 +14,9 @@ import { appendAuthLifecycleEvent, listAuthLifecycleEvents } from '../src/auth-l
 import { authRequestSnapshot } from '../src/auth-request-snapshot.js';
 import { AuthHookManager } from '../src/auth-hooks.js';
 import { systemAction } from '../src/identity/resolver.js';
-import { addAttributionEvidence, createUser } from '../src/users/store.js';
+import { addAttributionEvidence, addCredential, createUser } from '../src/users/store.js';
+import { commitOnBranch, createAuthCheckRepo, git } from './helpers/auth-queue-fixtures.js';
+import { forgeX, markers, newKey } from './helpers/approval-gate-rig.js';
 
 /** Raw insert: the fixture also runs against pre-head schemas. */
 function addTokenCredential(db: ReturnType<typeof createMigratedDb>, userId: string, fingerprint: string): { id: string } {
@@ -30,7 +32,7 @@ import type { AuthRequest, AuthLifecycleActor } from '../src/types.js';
 
 const candidate = { pin_sha: 'a'.repeat(40), tree_sha: 'b'.repeat(40), base_sha: 'c'.repeat(40), head_sha: 'd'.repeat(40) };
 const actor: AuthLifecycleActor = { ...systemAction(), authority_path: 'system' };
-async function fixture(db = createMigratedDb()) {
+async function fixture(db = createMigratedDb(), reviewed = candidate) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'failed-retirement-')));
   const id = randomUUID(); const execution = randomUUID(); const record = randomUUID();
   const owner = createUser(db, { slug: 'retirement-owner', display_name: 'Retirement owner', kind: 'agent' });
@@ -43,18 +45,18 @@ async function fixture(db = createMigratedDb()) {
   fs.mkdirSync(pending.resources, { recursive: true });
   const program = path.join(pending.resources, 'program'); fs.writeFileSync(program, 'accepted program');
   const shipped = { schema: 'mandible-installed-release@1', version: '1', target: `${process.platform}-${process.arch}`, layout: { kind: 'macos-app', roots: { resources: '.' } },
-    provenance: { commit: candidate.pin_sha, source_digest: 'e'.repeat(64) }, entrypoints: { daemon: 'program' }, native: {}, files: { program: installedFileIdentity(program) } } as any;
+    provenance: { commit: reviewed.pin_sha, source_digest: 'e'.repeat(64) }, entrypoints: { daemon: 'program' }, native: {}, files: { program: installedFileIdentity(program) } } as any;
   fs.writeFileSync(path.join(pending.resources, 'release.json'), JSON.stringify(shipped));
-  const accepted = await retainAcceptedRelease({ pending, candidate, shipped, expectedDigest: applicationIdentity(pending.app),
+  const accepted = await retainAcceptedRelease({ pending, candidate: reviewed, shipped, expectedDigest: applicationIdentity(pending.app),
     acceptance: { record_id: record, request_id: id }, evidence: Buffer.from('{}') });
   const metadataFile = path.join(pending.root, 'metadata.json');
   const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8')); delete metadata.ownership.processOwner; saveOwnedMetadata(metadataFile, metadata);
   db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, exit_code, merge_candidate_pin_sha, merge_candidate_tree_sha,
     merge_preflight_base_sha, merge_head_sha, merge_finalized_at, created_at, updated_at, expires_at, custody_work_unit_id, approved_by_user_id)
-    VALUES (?, 'merge', 'mandible auth merge feature/x --into main', 'failed delivery', 'executing', 0, ?, ?, ?, ?, NULL, 1, 1, 100, 'unit', ?)`).run(id, ...Object.values(candidate), owner.id);
+    VALUES (?, 'merge', 'mandible auth merge feature/x --into main', 'failed delivery', 'executing', 0, ?, ?, ?, ?, NULL, 1, 1, 100, 'unit', ?)`).run(id, ...Object.values(reviewed), owner.id);
   db.prepare('UPDATE auth_requests SET depends_on_ids = ? WHERE id = ?').run(JSON.stringify([randomUUID(), randomUUID()]), id);
   db.prepare("INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at, result_json) VALUES (?, ?, ?, ?, ?, ?, 'passed', 1, 2, ?)")
-    .run(record, id, ...Object.values(candidate), JSON.stringify({ receipt: accepted.reference }));
+    .run(record, id, ...Object.values(reviewed), JSON.stringify({ receipt: accepted.reference }));
   db.prepare("INSERT INTO auth_request_actions (id, auth_request_id, ordinal, kind, target_issue_ref, payload, state, staged_at, updated_at) VALUES ('selection', ?, 1, 'checkpoint_add', 'fixture', ?, 'staged', 1, 1)")
     .run(id, JSON.stringify({ kind: 'accepted-release', payload: { acceptanceId: record, reference: accepted.reference } }));
   appendAuthLifecycleEvent(db, { requestId: id, eventType: 'executing', priorStatus: 'approved', nextStatus: 'executing', actor, occurredAt: 2 });
@@ -248,13 +250,21 @@ it.each([221, 222])('migrates failed hook evidence unchanged from v%i and admits
 });
 
 it('enforces real request custody and generation at the AuthQueue retirement entrypoint before marking custody', async () => {
-  const f = await fixture();
+  // The published merge is the commit the owner's approval signed.
+  const repo = createAuthCheckRepo();
+  commitOnBranch(repo, 'feature/x', { 'x.txt': 'x\n' });
+  const f = await fixture(createMigratedDb(), { ...candidate, tree_sha: git(repo, ['merge-tree', '--write-tree', 'main', 'feature/x']),
+    base_sha: git(repo, ['rev-parse', 'main']), head_sha: git(repo, ['rev-parse', 'feature/x']) });
   const other = addTokenCredential(f.db, f.owner.id, 'retirement-other');
   const currentActor = f.currentActor;
   const event = listAuthLifecycleEvents(f.db, f.id).at(-1)!;
-  const commit = 'f'.repeat(40);
-  const evidence = addAttributionEvidence(f.db, { evidence_method: 'credential_signature', details: { publication_verified: true, verified: true, commit_sha: commit, signer_user_id: f.owner.id } });
-  f.db.prepare('UPDATE auth_requests SET execution_evidence_id = ?, output = ? WHERE id = ?').run(evidence.id, `MANDIBLE_MERGE_RESULT ${JSON.stringify({ merge_sha: commit })}\npost-completion hook retries`, f.id);
+  const key = newKey('retirement');
+  const signer = addCredential(f.db, f.owner.id, { type: 'ssh_key', fingerprint: key.fingerprint, public_material: key.pub, label: 'retirement approval' });
+  f.db.prepare("UPDATE auth_requests SET cwd = ?, repo = 'fixture', base_branch = 'main', head_branch = 'feature/x', commit_message = 'Retire fixture merge\n' WHERE id = ?").run(repo, f.id);
+  const commit = forgeX(repo, f.read(), key.key);
+  git(repo, ['update-ref', 'refs/heads/main', commit]);
+  const evidence = addAttributionEvidence(f.db, { evidence_method: 'credential_signature', credential_id: signer.id, details: { auth_request_id: f.id, signed_commit_sha: commit } });
+  f.db.prepare('UPDATE auth_requests SET execution_evidence_id = ?, output = ? WHERE id = ?').run(evidence.id, `${markers(f.read(), commit).all}post-completion hook retries`, f.id);
   const queue = new AuthQueue({ db: f.db, backgroundMaintenance: false, broadcast: () => {} });
   try {
     await expect(queue.retireFailedDelivery(f.id, 'Retire obsolete attempt', { ...currentActor, session_id: 'another-session', credential_id: other.id }, event.revision, 3))

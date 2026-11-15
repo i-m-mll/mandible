@@ -672,10 +672,10 @@ describe("auth queue", () => {
       await completeFixturePublication(queue, sibling.id);
       admission.mockRestore();
       await approveFixtureRequest(queue, execRequest.id); await started;
-      void (queue as unknown as { sweepSuccessfulMergeFinalizers(): Promise<void> }).sweepSuccessfulMergeFinalizers();
+      const sweep = (queue as unknown as { sweepSuccessfulMergeFinalizers(): Promise<void> }).sweepSuccessfulMergeFinalizers();
       expect((await queue.getRequest(pending.id))?.merge_preflight_base_sha).toBe(staleBase);
       await expect(approveFixtureRequest(queue, pending.id)).rejects.toThrow(/Refusal: execution_chain_busy/);
-      releaseExec(); await waitForStatus(queue, execRequest.id, 'failed'); await queue.drainFinalizers();
+      releaseExec(); await waitForStatus(queue, execRequest.id, 'failed'); await sweep; await queue.drainFinalizers();
       expect((await queue.getRequest(pending.id))).toMatchObject({ status: 'pending', merge_preflight_base_sha: git(repo, ['rev-parse', 'main']) });
       expect((await queue.getRequest(pending.id))?.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
     } finally { releaseExec?.(); (await queue.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
