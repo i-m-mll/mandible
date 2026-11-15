@@ -56,20 +56,15 @@ observation-only. Readiness, continuous health/log coverage, process and native
 service identities, installed package digest and any owed desktop relaunch must
 converge before delivery actions close issues.
 
-The retained accepted app belongs to its acceptance owned-run. Pending or failed
-handoffs preserve it for recovery. Acknowledgment removes the scoped previous
-installed app and disposes the superseded owner's retained package. The current
-release retains one package for its pinned verification runtime. Immutable
-acceptance receipts and evidence survive disposal. Abandoned requests use:
+Generated-storage maintenance disposes of unreferenced accepted packages. It retains the installed release and each exact package selected by a request that can execute or retry delivery. Active handoffs and other consumers can delay disposal until their custody is released. Immutable acceptance receipts and evidence survive disposal.
+
+The same disposal decision applies to an explicit request:
 
 ```sh
 bun scripts/dispose-accepted-release.mjs REQUEST ACCEPTANCE 'Reason'
 ```
 
-This refuses an installed release or unresolved handoff, and requires a rejected,
-withdrawn, superseded or expired request. Retained packages are not cache material.
-Whole-package verification and disposal run in bounded child processes so the
-daemon continues serving requests during convergence.
+Whole-package verification and disposal run in bounded child processes so the daemon continues serving requests during convergence.
 
 ## Qualification
 

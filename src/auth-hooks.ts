@@ -29,10 +29,10 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { findRuntimeDeliveryIntents, verifyRuntimeHandoffAuthority, type RuntimePublicationBinding, type RuntimeDeliveryReference, type RuntimeDeliveryIntent } from "./runtime-handoff-proof.js";
-import { readRuntimeHandoffLock, runtimeHandoffLockRefusal, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
+import { readRuntimeHandoffLock, runtimeHandoffLockRefusal, readRuntimeHandoffRetirement, type RuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import { inspectServiceDefinitions, serviceInstallationContext, runtimeHandoffReadiness } from "../scripts/service-definitions.mjs";
 import type { AuthPublicationBlocker } from "./contracts.js";
-import { authRequestChangesBuildInputs } from "./runtime-build-scope.js";
+import { authRequestChangesBuildInputs, MANDIBLE_REBUILD_HOOK_ID } from "./runtime-build-scope.js";
 import { observationPending, runtimeObservationAcceptance, runtimeHandoffDisposition, runtimeReceiptAcceptanceMarker } from "../scripts/runtime-observation.mjs";
 
 import { extractSuccessfulMergeCommitSha } from "./auth-signature-verification.js";
@@ -103,7 +103,7 @@ export interface RuntimeHandoffClient {
 }
 
 /** The required hook whose runtime handoff self-updates this installation. */
-export const MANDIBLE_REBUILD_HOOK_ID = "builtin-mandible-rebuild";
+export { MANDIBLE_REBUILD_HOOK_ID } from "./runtime-build-scope.js";
 
 // Most hooks should finish quickly. The built-in Mandible hook may perform a
 // cold Rust/Tauri release build after native changes, so it gets a deliberate
@@ -387,7 +387,7 @@ export class AuthHookManager {
       let journal: RuntimeHandoffJournal | null;
       try { journal = await runtime.readRuntimeHandoff(getMandibleHome(), run.auth_request_id, run.id); }
       catch (error) { pending.push({ request_id: run.auth_request_id, reason: error instanceof Error ? error.message : String(error), blockers: [], attempted_at: null }); continue; }
-      if (journal?.attempt?.state !== 'complete' || !journal.attempt.fence || journal.cleanup?.state === 'complete') continue;
+      if (journal?.phase === 'retired' || journal?.attempt?.state !== 'complete' || !journal.attempt.fence || journal.cleanup?.state === 'complete') continue;
       const cleanup = journal.cleanup as { reason?: unknown; blockers?: unknown; attemptedAt?: unknown } | undefined;
       pending.push({ request_id: run.auth_request_id, reason: typeof cleanup?.reason === 'string' ? cleanup.reason : null,
         blockers: Array.isArray(cleanup?.blockers) ? cleanup.blockers : [], attempted_at: typeof cleanup?.attemptedAt === 'number' ? cleanup.attemptedAt : null });
@@ -416,11 +416,26 @@ export class AuthHookManager {
     return readiness.ok ? null : { code: readiness.refusal.category, message: readiness.refusal.message };
   }
 
-  private recordRuntimeRetirement(requestId: string, executionId: string): void {
+  private recordRuntimeRetirement(run: AuthHookRun): boolean {
+    if (run.state === 'complete' || run.state === 'retired') return run.state === 'retired';
+    const archived = readRuntimeHandoffRetirement(this.handoffPath(run));
+    if (!archived) return false;
+    const binding = archived.binding;
+    const intent = this.deliveryIntents.get(run.id);
+    if (binding.requestId !== run.auth_request_id || binding.executionId !== run.id
+        || binding.hookId !== run.hook_id || binding.commandDigest !== run.command_digest
+        || intent && (JSON.stringify(binding.publicationEvidence) !== JSON.stringify(intent.publicationEvidence)
+          || JSON.stringify(binding.acceptedRelease ?? null) !== JSON.stringify(intent.publication.acceptedRelease ?? null))) {
+      throw new Error('Retired runtime handoff differs from its hook execution.');
+    }
+    const result = this.db.prepare("UPDATE auth_hook_executions SET state = 'retired' WHERE id = ? AND state IN ('pending', 'running', 'failed')").run(run.id);
+    if (result.changes) this.cleanupEpoch += 1;
+    return !!result.changes;
+  }
+
+  reconcileRuntimeRetirement(requestId: string): void {
     const run = this.getRun(requestId, MANDIBLE_REBUILD_HOOK_ID);
-    if (!run || run.id !== executionId) return;
-    this.db.prepare("UPDATE auth_hook_executions SET state = 'failed', exit_code = 1, output = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('pending', 'running')").run(
-      truncateOutput(`${run.output}\nRuntime handoff retired by the operator; convergence was not confirmed.`), Date.now(), Date.now(), run.id);
+    if (run) this.recordRuntimeRetirement(run);
   }
 
   async retireFailedRuntimeHandoff(input: { bindingDigest: string; reason: string }, actor: unknown): Promise<unknown> {
@@ -428,7 +443,7 @@ export class AuthHookManager {
     const result = await runtime.retireFailedRuntimeHandoff(getMandibleHome(), { ...input, actor });
     this.cleanupEpoch += 1;
     const retirement = result as { requestId?: string; executionId?: string };
-    if (retirement?.requestId && retirement.executionId) this.recordRuntimeRetirement(retirement.requestId, retirement.executionId);
+    if (retirement?.requestId && retirement.executionId) this.reconcileRuntimeRetirement(retirement.requestId);
     return result;
   }
 
@@ -502,6 +517,7 @@ export class AuthHookManager {
     adopt: (binding: RuntimePublicationBinding, proof: Awaited<ReturnType<typeof verifyRuntimeHandoffAuthority>>) => Promise<() => void>,
     guard: () => void, explicitCleanupRetry = false,
   ): Promise<RuntimeVerificationResult & { adopted?: boolean; disposalError?: unknown }> {
+    if (journal.phase === 'retired') throw new Error('Retired delivery cannot be retried.');
     const current = runtimeHandoffDisposition(journal);
     if (current?.runtime !== 'complete') return { outcome: 'pending',
       reason: journal.attempt?.state === 'failed' ? journal.error || 'The approved update attempt failed.' : 'The approved update attempt is still executing.',
@@ -518,7 +534,7 @@ export class AuthHookManager {
       const commitAdoption = await adopt(journal.binding, proof);
       verifiedReceipt = await runtime.verifyRuntimeHandoffReceipt(journal, { probe: true });
       const latestJournal = await this.readDeliveryJournal(runtime, run);
-      if (runtimeReceiptAcceptanceMarker(latestJournal) !== marker) throw new Error('Terminal runtime receipt changed during verification.');
+      if (latestJournal.phase === 'retired' || runtimeReceiptAcceptanceMarker(latestJournal) !== marker) throw new Error('Terminal runtime receipt changed during verification.');
       adopted = this.db.transaction(() => {
         guard();
         const latest = this.getRun(run.auth_request_id, run.hook_id);
@@ -577,15 +593,23 @@ export class AuthHookManager {
     try {
       const rows = this.db.prepare("SELECT * FROM auth_hook_executions WHERE hook_id = ? ORDER BY created_at ASC").all(MANDIBLE_REBUILD_HOOK_ID) as Record<string, unknown>[];
       for (const run of this.mapRuns(rows)) {
-        if (!run.runtime_delivery) continue;
         let failed: string | undefined;
         try {
+          if (this.recordRuntimeRetirement(run)) {
+            if (this.reportedHandoffFailures.delete(run.auth_request_id)) await onStuckCleared(run.auth_request_id);
+            continue;
+          }
+          if (!run.runtime_delivery) continue;
           const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(new URL('../scripts/runtime-handoff.mjs', import.meta.url).href);
           const journal = await this.readDeliveryJournal(runtime, run);
+          if (journal.phase === 'retired') {
+            this.recordRuntimeRetirement(run);
+            continue;
+          }
           if (journal.attempt?.state === 'failed' && run.state !== 'complete') {
             const reason = journal.error?.trim() || 'The approved update attempt failed.';
             const now = Date.now();
-            const changed = this.db.prepare("UPDATE auth_hook_executions SET state = 'failed', output = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state NOT IN ('complete', 'failed')").run(
+            const changed = this.db.prepare("UPDATE auth_hook_executions SET state = 'failed', output = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state NOT IN ('complete', 'failed', 'retired')").run(
               truncateOutput(`${run.output}\nRuntime update failed: ${reason}`), now, now, run.id);
             if (changed.changes) { failed = reason; this.cleanupEpoch += 1; }
           } else {
@@ -845,6 +869,7 @@ export class AuthHookManager {
   grantRetry(authRequestId: string, hookId?: string): number {
     if (!this.hasDurableTables()) return 0;
     const now = Date.now();
+    if (!hookId || hookId === MANDIBLE_REBUILD_HOOK_ID) this.reconcileRuntimeRetirement(authRequestId);
     if (this.listRuns(authRequestId).some(run => run.state === 'retired' && (!hookId || run.hook_id === hookId))) throw new Error('Retired delivery cannot be retried.');
     const runs = this.listRuns(authRequestId).filter(
       (run) => run.state === "failed" && !this.hasRuntimeHandoff(run) && (!hookId || run.hook_id === hookId),
@@ -912,6 +937,7 @@ export class AuthHookManager {
       // process already spawned this hook, and honouring it is what keeps a
       // concurrent sweep from starting a second copy.
       if (!run || run.state !== "pending" || this.hasRuntimeHandoff(run)) continue;
+      if (run.hook_id === MANDIBLE_REBUILD_HOOK_ID && this.recordRuntimeRetirement(run)) continue;
       if (run.attempts >= run.max_attempts) {
         this.markRunFailedExhausted(run);
         continue;
@@ -979,7 +1005,7 @@ export class AuthHookManager {
     this.db
       .prepare(
         `UPDATE auth_hook_executions
-         SET state = ?, exit_code = ?, output = ?, attempt_history = ?,
+         SET state = CASE WHEN state = 'retired' THEN state ELSE ? END, exit_code = ?, output = ?, attempt_history = ?,
              finished_at = ?, updated_at = ?
          WHERE id = ?`,
       )

@@ -69,17 +69,9 @@ checks consumers. Cleanup saves its outcome outside the generated root, removes
 only declared outputs, preserves unknown entries, and retries partial deletion
 without repeating acceptance, publication, merge, or handoff.
 
-Accepted applications remain while a live request selects them, the current
-acceptance needs them, the installed bundle owns them, a delivery retains a
-predecessor or replacement reference, or an explicit investigation holds them.
-The handoff releases those references at its respective terminal fences; see
-[handoff cleanup](runtime-handoff.md#ownership-receipts-and-cleanup).
-Acquisition and disposal claims share a short SQLite write boundary;
-inspection, application hashing and unlink run outside it. Immutable
-acceptance evidence and release receipts survive payload disposal. Legacy roots
-without recorded producer lifetimes require explicit disposition; this preserves
-existing recovery and investigation material during rollout. The reusable
-acceptance checkout and unique writable previews are outside collection.
+Accepted packages are disposed by default. An exact package is retained while it is installed or selected by a request that can still execute or retry delivery. A failed, expired, or needs-rebase request keeps its selection while the request can be retried with that candidate. A completed request keeps its selected package while a pre-admission rebuild can still use it. Archived handoff retirement ends retry for the recorded execution. Active producers, handoff operations and filesystem consumers delay cleanup until their custody is released.
+
+Acquisition and disposal claims share a short SQLite write boundary. Inspection, application hashing and unlink run outside it. Immutable acceptance evidence and release receipts survive payload disposal. The reusable acceptance checkout and unique writable previews are outside collection.
 
 Inspect or apply the same retention decision with:
 
@@ -111,10 +103,10 @@ scripts/bun-runtime.sh --exec scripts/recover-restored-accepted-release.mjs <run
 scripts/bun-runtime.sh --exec scripts/recover-restored-accepted-release.mjs <run-uuid> --purge --apply <purge-token>
 ```
 
-Retain a run for investigation with `--apply --retain <metadata.json> --reason
+Retain diagnostic scratch for investigation with `--apply --retain <metadata.json> --reason
 <need> --review-by <ISO-date>`; release it with `--apply --release <metadata.json>
 --reason <resolution>`. A review deadline never grants deletion authority.
-Release removes the hold; operational references still determine payload lifetime.
+Accepted package retention follows installation and request custody.
 Route sweeps using `--keep` additionally require `--project` and `--work-unit`
 owner IDs, `--reason`, and `--review-by` within seven days. Ordinary disposable
 sweeps use process ownership without inventing ledger work units.

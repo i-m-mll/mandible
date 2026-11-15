@@ -83,6 +83,11 @@ async function release(home: string, db: Database, id: string, status: string, p
   return { ...accepted, metadataFile, evidence: accepted.receipt.evidence.receipt };
 }
 
+function stageSelection(db: Database, request: string, pkg: Awaited<ReturnType<typeof release>>) {
+  return addAuthRequestAction(db, { id: request } as any, { kind: 'checkpoint_add', target_issue_ref: 'issue',
+    payload: { kind: 'accepted-release', payload: { acceptanceId: pkg.receipt.acceptance.record_id, reference: pkg.reference } } }, 1);
+}
+
 function retentionDb(file: string) {
   return createMigratedDb({ path: file });
 }
@@ -99,17 +104,15 @@ it('retains operational roots and evidence while reclaiming abandoned payloads i
     const investigation = packages.get('investigation')!;
     finalizeOwnedRun(investigation.metadataFile, { expectedRevision: 1, outcome: 'investigating', summary: 'Explicit investigation', reviewBy: new Date(Date.now() + 60000).toISOString() }, idle);
     const selected = packages.get('pending')!;
-    for (const operation of ['retain', 'release']) await runSupervisedCommand(process.execPath, [path.resolve('scripts/generated-storage.mjs'), '--apply', `--${operation}`, selected.metadataFile,
-      '--reason', 'Selected package investigation', '--review-by', new Date(Date.now() + 60000).toISOString()], { capture: true, timeout: 3000, graceMs: 100 });
-    expect(JSON.parse(fs.readFileSync(selected.metadataFile, 'utf8')).ownership.state).toBe('creating');
+    stageSelection(db, 'pending', selected);
     assertAcceptedReleaseAvailable(selected.reference);
     const auditBytes = fs.readFileSync(Buffer.from(packages.get('abandoned')!.reference.split(':')[2], 'base64url').toString());
     const plan = await reconcileAcceptedReleases(db, home, { limit: 100 });
-    expect(plan.filter(row => row.action === 'dispose')).toHaveLength(1);
+    expect(plan.filter(row => row.action === 'dispose')).toHaveLength(2);
     expect(fs.existsSync(packages.get('abandoned')!.root)).toBe(true);
     const beforeInventory = fs.readFileSync(packages.get('abandoned')!.metadataFile);
     const inventory = await runSupervisedCommand(process.execPath, [path.resolve('scripts/generated-storage.mjs'), '--home', home, '--db', db.name, '--cache', path.join(home, 'cache'), '--limit', '100'], { capture: true, timeout: 3000, graceMs: 100 });
-    expect(JSON.parse(inventory.stdout).releases.filter((row: { action: string }) => row.action === 'dispose')).toHaveLength(1);
+    expect(JSON.parse(inventory.stdout).releases.filter((row: { action: string }) => row.action === 'dispose')).toHaveLength(2);
     expect(fs.readFileSync(packages.get('abandoned')!.metadataFile)).toEqual(beforeInventory);
     await reconcileAcceptedReleases(db, home, { apply: true, limit: 100 });
     const retiredPair = ['process', 'process.owner'].map(suffix => path.join(home, 'accepted-releases', `.abandoned.lock.${suffix}`));
@@ -117,7 +120,7 @@ it('retains operational roots and evidence while reclaiming abandoned payloads i
     const completed = await reconcileAcceptedReleases(db, home, { apply: true, limit: 100 });
     expect(completed).toContainEqual(expect.objectContaining({ reference: packages.get('abandoned')!.reference, action: 'disposed' }));
     expect(retiredPair.some(file => fs.existsSync(file))).toBe(false);
-    for (const [id, pkg] of packages) expect(fs.existsSync(pkg.root)).toBe(id !== 'abandoned');
+    for (const [id, pkg] of packages) expect(fs.existsSync(pkg.root)).toBe(!['abandoned', 'investigation'].includes(id));
     expect(fs.readFileSync(Buffer.from(packages.get('abandoned')!.reference.split(':')[2], 'base64url').toString())).toEqual(auditBytes);
     expect(fs.existsSync(packages.get('abandoned')!.evidence)).toBe(true);
     const prior = packages.get('prior')!.reference;
@@ -186,19 +189,22 @@ it('serializes reference acquisition with disposal and protects sealed/running a
       db.prepare("UPDATE auth_requests SET status = 'pending'").run();
       db.prepare("UPDATE auth_candidate_acceptances SET status = 'passed', result_json = ?").run(JSON.stringify({ receipt: pkg.reference }));
     }).immediate();
+    const staged = stageSelection(db, 'race', pkg);
     releaseGateway(); await hold;
     expect((await reconcileAcceptedReleases(db, home, { apply: true, limit: 100 }))[0].action).toBe('retain');
     db.prepare("UPDATE auth_requests SET status = 'withdrawn'").run();
+    db.prepare('DELETE FROM auth_request_actions WHERE id = ?').run(staged.id);
     const disposalRace = reconcileAcceptedReleases(db, home, { apply: true, limit: 100 });
     let carried: { id: string };
     db.transaction(() => {
-      db.prepare("INSERT INTO auth_requests (id, status, command, title, created_at, updated_at, expires_at) VALUES ('successor', 'pending', 'true', 'successor', 1, 1, 100)").run();
-      carried = addAuthRequestAction(db, { id: 'successor' } as any, { kind: 'checkpoint_add', target_issue_ref: 'issue', payload: { kind: 'accepted-release', payload: { reference: pkg.reference } } }, 1);
+      db.prepare("UPDATE auth_requests SET status = 'pending' WHERE id = 'race'").run();
+      carried = stageSelection(db, 'race', pkg);
     }).immediate();
     expect((await disposalRace)[0]).toMatchObject({ action: 'cleanup-pending', reason: expect.stringContaining('Reference acquired before disposal claim') });
     expect(fs.existsSync(pkg.app)).toBe(true);
-    expect(acceptedReleaseDatabaseReferences(db, pkg.reference, pkg.receipt)).toContain('selected by live request successor');
+    expect(acceptedReleaseDatabaseReferences(db, pkg.reference, pkg.receipt)).toContain('selected by live request race');
     db.prepare('DELETE FROM auth_request_actions WHERE id = ?').run(carried!.id);
+    db.prepare("UPDATE auth_requests SET status = 'withdrawn' WHERE id = 'race'").run();
     const claim = (mark: () => void) => db.transaction(() => {
       expect(acceptedReleaseDatabaseReferences(db, pkg.reference, pkg.receipt)).toEqual([]);
       mark();
@@ -212,6 +218,36 @@ it('serializes reference acquisition with disposal and protects sealed/running a
     await disposeAcceptedRelease(pkg.reference, candidate, 'Final operational reference released', { home, claim });
     expect(fs.existsSync(pkg.root)).toBe(false);
     expect(() => assertAcceptedReleaseAvailable(pkg.reference)).toThrow();
+  } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+it('keeps exact retryable selections and reclaims dismissed or superseded requests with stale history', async () => {
+  const home = temporary(); const db = retentionDb(path.join(home, 'db')); const producer = await deadOwner();
+  try {
+    const pkg = await release(home, db, 'retry', 'failed', producer);
+    const selection = stageSelection(db, 'retry', pkg);
+    const status = db.prepare("UPDATE auth_requests SET status = ? WHERE id = 'retry'");
+    for (const eligible of ['failed', 'expired', 'needs_rebase']) {
+      status.run(eligible);
+      expect(await reconcileAcceptedReleases(db, home, { apply: true })).toContainEqual(
+        expect.objectContaining({ reference: pkg.reference, action: 'retain' }));
+      expect(fs.existsSync(pkg.app)).toBe(true);
+    }
+    db.prepare("UPDATE auth_requests SET merge_candidate_pin_sha = ? WHERE id = 'retry'").run('e'.repeat(40));
+    expect(acceptedReleaseDatabaseReferences(db, pkg.reference, pkg.receipt)).toEqual([]);
+    db.prepare("UPDATE auth_requests SET merge_candidate_pin_sha = ? WHERE id = 'retry'").run(candidate.pin_sha);
+    status.run('dismissed');
+    db.prepare("UPDATE auth_requests SET last_executed_at = 2 WHERE id = 'retry'").run();
+    db.prepare(`INSERT INTO auth_hook_executions (id, auth_request_id, hook_id, command, command_digest, required,
+      state, attempts, max_attempts, created_at, updated_at)
+      VALUES ('old-hook', 'retry', 'builtin-mandible-rebuild', 'true', ?, 1, 'failed', 0, 3, 1, 2)`).run('a'.repeat(64));
+    expect(acceptedReleaseDatabaseReferences(db, pkg.reference, pkg.receipt)).toEqual([]);
+    status.run('superseded');
+    db.prepare("UPDATE auth_request_actions SET state = 'vetoed' WHERE id = ?").run(selection.id);
+    await reconcileAcceptedReleases(db, home, { apply: true });
+    expect(fs.existsSync(pkg.app)).toBe(false);
+    expect(db.prepare("SELECT status, last_executed_at FROM auth_requests WHERE id = 'retry'").get()).toEqual({ status: 'superseded', last_executed_at: 2 });
+    expect(db.prepare("SELECT attempts, state FROM auth_hook_executions WHERE id = 'old-hook'").get()).toEqual({ attempts: 0, state: 'failed' });
   } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 

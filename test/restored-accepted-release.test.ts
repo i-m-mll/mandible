@@ -38,7 +38,7 @@ async function restoredFixture({ legacy = false, survivor = false, reason = lega
     fs.writeFileSync(evidence, '{}');
     const accepted = await retainAcceptedRelease({ pending, candidate, shipped,
       acceptance: { record_id: legacy ? null : runId, request_id: legacy ? null : requestId },
-      evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 }, expectedDigest: applicationIdentity(pending.app) });
+      evidence: Buffer.from('{}'), expectedDigest: applicationIdentity(pending.app) });
     // Simulate the historical seal even when the current writer copies proof into durable custody.
     const sealed = path.join(storage, '.receipts', `${runId}-accepted-release.json`);
     saveOwnedMetadata(sealed, { ...accepted.receipt, evidence: { ...accepted.receipt.evidence, receipt: evidence } });
@@ -117,7 +117,7 @@ it('plans without touching the restore, retries an interrupted move, and retains
   } finally { f.db.close(); }
 });
 
-it('rechecks filesystem, consumers and database holds upon apply', async () => {
+it('rechecks active ownership and consumers upon apply despite unrelated failed hooks', async () => {
   const f = await restoredFixture();
   try {
     const plan = await f.recover();
@@ -143,9 +143,9 @@ it('rechecks filesystem, consumers and database holds upon apply', async () => {
         .run(randomUUID(), f.requestId, '0'.repeat(64));
       return { idle: true } as const;
     };
-    expect(await f.recover(plan.applyToken, hold)).toMatchObject({ action: 'preserve', reason: 'unresolved delivery hook' });
-    expect(fs.existsSync(f.root)).toBe(true);
-    expect(fs.existsSync(plan.recoveryReceipt)).toBe(false);
+    expect(await f.recover(plan.applyToken, hold)).toMatchObject({ action: 'quarantined' });
+    expect(fs.existsSync(f.root)).toBe(false);
+    expect(fs.existsSync(plan.recoveryReceipt)).toBe(true);
   } finally { f.db.close(); }
 });
 

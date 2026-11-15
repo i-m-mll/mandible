@@ -34,8 +34,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const file = path.resolve(values.retain || values.release);
     const root = path.dirname(file);
     const storage = fs.realpathSync(path.dirname(root));
-    const withRunLock = path.basename(storage) === ACCEPTED_RELEASE_DIRECTORY || isVersionedReleaseStorage(storage)
-      ? withAcceptedReleaseRunLock : withOwnedRunLock;
+    const acceptedStorage = path.basename(storage) === ACCEPTED_RELEASE_DIRECTORY || isVersionedReleaseStorage(storage);
+    if (acceptedStorage && values.retain) throw new Error('Investigation holds apply to diagnostic scratch only.');
+    const withRunLock = acceptedStorage ? withAcceptedReleaseRunLock : withOwnedRunLock;
     const result = await withRunLock(root, () => {
       const metadata = JSON.parse(fs.readFileSync(file, 'utf8'));
       const { ownership } = metadata;

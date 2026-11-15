@@ -147,6 +147,7 @@ import { holdsResponsibility, recordResponsibilityTransfer, type ResponsibilityA
 import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incidents.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
+import { authRequestHasRetryableStatus, authRequestCanRepeatExecution } from "./auth-retry.js";
 import { acceptedReleaseSelection, bindAcceptedRelease } from "./accepted-release-selection.js";
 import { GeneratedStorageMaintenance } from './generated-storage.js';
 import { retireFailedDelivery } from './failed-delivery-retirement.js';
@@ -3417,7 +3418,7 @@ export class AuthQueue {
     try {
       await this.expireStale();
       const request = this.requireRequest(id);
-      if (!this.isFailedLike(request)) {
+      if (!authRequestHasRetryableStatus(request)) {
         throw new AuthQueueError(
           "invalid_status",
           `Request is ${request.status}, cannot retry.`,
@@ -3425,7 +3426,7 @@ export class AuthQueue {
         );
       }
 
-      if (extractAtomicMergeState(request.output).prepared || this.hookManager.runtimeHandoffOwnsRequest(request.id)) {
+      if (!authRequestCanRepeatExecution(request, this.hookManager.runtimeHandoffOwnsRequest(request.id))) {
         throw new AuthQueueError("invalid_status", "Prepared publication state is retained for recovery; this request cannot repeat execution.");
       }
       const now = this.now();
@@ -3459,7 +3460,7 @@ export class AuthQueue {
     try {
       await this.expireStale();
       const request = this.requireRequest(id);
-      if (!this.isFailedLike(request)) {
+      if (!authRequestHasRetryableStatus(request)) {
         throw new AuthQueueError(
           "invalid_status",
           `Request is ${request.status}, cannot requeue.`,
@@ -3467,7 +3468,7 @@ export class AuthQueue {
         );
       }
 
-      if (extractAtomicMergeState(request.output).prepared || this.hookManager.runtimeHandoffOwnsRequest(request.id)) {
+      if (!authRequestCanRepeatExecution(request, this.hookManager.runtimeHandoffOwnsRequest(request.id))) {
         throw new AuthQueueError("invalid_status", "Prepared publication state is retained for recovery; this request cannot repeat execution.");
       }
       const now = this.now();
@@ -6176,6 +6177,7 @@ export class AuthQueue {
           "Convergence retry applies only to a successfully executed request.",
         );
       }
+      if (!hookId || hookId === MANDIBLE_REBUILD_HOOK_ID) this.hookManager.reconcileRuntimeRetirement?.(request.id);
       if (this.hookManager.listRuns(request.id).some(run => run.state === 'retired' && (!hookId || run.hook_id === hookId))) {
         throw new AuthQueueError('invalid_status', 'Retired delivery cannot be retried.');
       }
@@ -6350,7 +6352,7 @@ export class AuthQueue {
       const now = this.now();
       // Bug: f690657 — when result is null (executor threw before the child
       // process exited), use exit_code=1 rather than null. exit_code=null is
-      // treated by isFailedLike as "no exit code yet" which makes completed+null
+      // treated as "no exit code yet" which makes completed+null
       // look like a successful completion, hiding the failure from the user.
       let exitCode = result != null ? (result.exit_code ?? 1) : 1;
       const prior = this.requireRequest(id);
@@ -8561,13 +8563,9 @@ export class AuthQueue {
     };
   }
 
-  private isFailedLike(request: AuthRequest): boolean {
-    return request.status === "failed" || request.status === "expired" || request.status === "needs_rebase";
-  }
-
   private requireActionEditableRequest(id: string): AuthRequest {
     const request = this.requireRequest(id);
-    if (request.status !== "pending" && !this.isFailedLike(request)) {
+    if (request.status !== "pending" && !authRequestHasRetryableStatus(request)) {
       throw new AuthQueueError(
         "invalid_status",
         `Request is ${request.status}, cannot modify staged actions.`,

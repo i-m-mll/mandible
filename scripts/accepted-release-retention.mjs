@@ -4,11 +4,15 @@ import { createHash } from 'node:crypto';
 import { readImmutableAcceptedRelease, acceptedReleaseDisposition, acceptedReleaseFilesystemReferences, disposeAcceptedRelease } from './accepted-release.mjs';
 import { ownedRunReceipt, recoverOwnedRunDisposition, ownedRunIdentityMatches, inspectRunConsumers, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
 import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
-import { retireAcceptedReleaseRunLock, withAcceptedReleaseRunLock } from './accepted-release-lock.mjs';
+import { acceptedReleaseHome, retireAcceptedReleaseRunLock, withAcceptedReleaseRunLock } from './accepted-release-lock.mjs';
 import { ACCEPTED_RELEASE_DIRECTORY, VERSIONED_RELEASE_DIRECTORY } from './accepted-release-storage.mjs';
 import { generatedOwnerIdle } from './generated-scratch.mjs';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { fileURLToPath } from 'node:url';
+import { authRequestCanRepeatExecution, authRequestHasRetryableStatus } from '../src/auth-retry.ts';
+import { findRuntimeDeliveryIntents, runtimePublicationSelectsRelease } from '../src/runtime-handoff-proof.ts';
+import { MANDIBLE_REBUILD_HOOK_ID } from '../src/runtime-build-scope.ts';
+import { readRuntimeHandoffRetirement } from './runtime-handoff-lock.mjs';
 
 function producerAuthority(producer) {
   const file = path.join(producer.scratchRoot, 'metadata.json');
@@ -43,7 +47,7 @@ async function reconcilePending(db, home, root, apply) {
     const metadata = JSON.parse(fs.readFileSync(file, 'utf8'));
     const run = metadata.ownership;
     const producer = metadata.pendingAcceptance;
-    if (!ownedRunIdentityMatches(root, run) || !producer?.recordId || run.state === 'investigating') return { reasons: ['unknown pending custody or explicit investigation'] };
+    if (!ownedRunIdentityMatches(root, run) || !producer?.recordId) return { reasons: ['unknown pending custody'] };
     if (!generatedOwnerIdle(run)) return { reasons: ['pending producer live or uncertain'] };
     const scratch = producerAuthority(producer);
     if (!scratch || !generatedOwnerIdle(scratch)) return { reasons: ['producer consumers live or uncertain'] };
@@ -75,30 +79,48 @@ async function reconcilePending(db, home, root, apply) {
   return apply ? withInstallationGatewayLock(home, () => withAcceptedReleaseRunLock(root, collect, { recoverStale: true })) : collect();
 }
 
-/** Historical actions/receipts are evidence; only current operational roots retain payloads. */
+/** Historical actions and results are evidence. Only the exact usable selection retains a sealed payload. */
 export function acceptedReleaseDatabaseReferences(db, reference, receipt) {
-  const reasons = [];
-  const selections = db.prepare(`SELECT r.id FROM auth_request_actions action JOIN auth_requests r ON r.id = action.auth_request_id
-    WHERE action.kind = 'checkpoint_add' AND action.state = 'staged' AND json_extract(action.payload, '$.kind') = 'accepted-release'
-    AND json_extract(action.payload, '$.payload.reference') = ? AND r.status IN ('pending', 'approved', 'executing', 'failed')`).all(reference);
-  for (const selection of selections) reasons.push(`selected by live request ${selection.id}`);
-  const running = db.prepare("SELECT id FROM auth_candidate_acceptances WHERE id = ? AND status = 'running'").get(receipt.acceptance.record_id);
-  if (running) reasons.push('acceptance producer running');
-  const rows = db.prepare(`SELECT a.*, r.status AS request_status, r.merge_candidate_pin_sha, r.merge_candidate_tree_sha,
-    r.merge_preflight_base_sha, r.merge_head_sha, r.last_executed_at, r.merge_finalized_at
-    FROM auth_candidate_acceptances a JOIN auth_requests r ON r.id = a.auth_request_id
-    WHERE a.id = ? OR json_extract(a.result_json, '$.receipt') = ?`).all(receipt.acceptance.record_id, reference);
-  for (const row of rows) {
-    const current = row.pin_sha === row.merge_candidate_pin_sha && row.tree_sha === row.merge_candidate_tree_sha
-      && row.base_sha === row.merge_preflight_base_sha && row.head_sha === row.merge_head_sha;
-    const selected = db.prepare("SELECT id FROM auth_request_actions WHERE auth_request_id = ? AND kind = 'checkpoint_add' AND state = 'staged' AND json_extract(payload, '$.kind') = 'accepted-release' AND json_extract(payload, '$.payload.reference') = ? LIMIT 1").get(row.auth_request_id, reference);
-    const latest = db.prepare('SELECT id FROM auth_candidate_acceptances WHERE auth_request_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1').get(row.auth_request_id);
-    if (row.status === 'running' || current && (selected || latest?.id === row.id && row.status === 'passed') && ['pending', 'approved', 'executing', 'failed'].includes(row.request_status)) reasons.push(`current request ${row.auth_request_id}`);
-    if (row.last_executed_at && !row.merge_finalized_at) reasons.push('unresolved publication');
-    const hook = db.prepare("SELECT id FROM auth_hook_executions WHERE auth_request_id = ? AND required = 1 AND state NOT IN ('complete', 'retired') LIMIT 1").get(row.auth_request_id);
-    if (hook) reasons.push('unresolved delivery hook');
+  const { record_id: recordId, request_id: requestId } = receipt.acceptance;
+  const row = db.prepare("SELECT * FROM auth_candidate_acceptances WHERE id = ? OR json_extract(result_json, '$.receipt') = ?").get(recordId ?? null, reference);
+  if (!row || (recordId && row.id !== recordId) || (requestId && row.auth_request_id !== requestId)) return [];
+  if (row.status === 'running') return ['acceptance producer running'];
+  if (row.status !== 'passed' || JSON.parse(row.result_json ?? 'null')?.receipt !== reference
+      || Object.entries(receipt.candidate).some(([field, value]) => row[field] !== value)) return [];
+
+  const request = db.prepare('SELECT * FROM auth_requests WHERE id = ?').get(row.auth_request_id);
+  if (!request || row.pin_sha !== request.merge_candidate_pin_sha || row.tree_sha !== request.merge_candidate_tree_sha
+      || row.base_sha !== request.merge_preflight_base_sha || row.head_sha !== request.merge_head_sha
+      || request.custody_work_unit_id && request.custody_work_unit_id !== receipt.retention.work_unit) return [];
+  const actions = db.prepare(`SELECT state, payload FROM auth_request_actions WHERE auth_request_id = ?
+    AND kind = 'checkpoint_add' AND json_extract(payload, '$.kind') = 'accepted-release'`).all(request.id);
+  if (actions.length !== 1) return [];
+  const action = actions[0];
+  const selection = JSON.parse(action.payload).payload;
+  if (selection?.reference !== reference || selection.acceptanceId !== row.id) return [];
+
+  if (action.state === 'staged' && ['pending', 'approved', 'executing'].includes(request.status)) {
+    return [`selected by live request ${request.id}`];
   }
-  return reasons;
+
+  const retryRequest = action.state === 'staged' && authRequestHasRetryableStatus(request);
+  const retryDelivery = request.status === 'completed' && request.exit_code === 0 && ['staged', 'applied'].includes(action.state);
+  if (!retryRequest && !retryDelivery) return [];
+
+  const hook = db.prepare('SELECT * FROM auth_hook_executions WHERE auth_request_id = ? AND hook_id = ?').get(request.id, MANDIBLE_REBUILD_HOOK_ID);
+  const identity = hook && { requestId: request.id, executionId: hook.id, hookId: hook.hook_id, commandDigest: hook.command_digest };
+  const admitted = !!identity && findRuntimeDeliveryIntents(db, [identity]).size > 0;
+  if (retryRequest) {
+    return authRequestCanRepeatExecution(request, admitted) ? [`selected by live request ${request.id}`] : [];
+  }
+
+  if (!hook || !['pending', 'running', 'failed'].includes(hook.state) || admitted) return [];
+  const home = acceptedReleaseHome(receipt.package.handle.root);
+  const journal = path.join(home, 'config/local-sessions/handoff', `${request.id}-${hook.id}`, 'journal.json');
+  const retired = readRuntimeHandoffRetirement(journal);
+  if (retired && retired.binding.requestId === request.id && retired.binding.executionId === hook.id
+      && retired.binding.hookId === hook.hook_id && retired.binding.commandDigest === hook.command_digest) return [];
+  return runtimePublicationSelectsRelease(db, identity, selection) ? [`selected by retryable delivery ${hook.id}`] : [];
 }
 
 const cursors = new Map();
@@ -197,11 +219,9 @@ export async function reconcileAcceptedReleases(db, home, { apply = false, limit
       const run = metadata.ownership;
       const reasons = [...acceptedReleaseFilesystemReferences(home, reference), ...acceptedReleaseDatabaseReferences(db, reference, receipt)];
       if (run.state !== 'terminal') {
-        if (!run.processOwner?.identity) reasons.push('legacy ownership requires explicit disposition');
-        else if (!generatedOwnerIdle(run)) reasons.push('acceptance producer lifetime active');
+        if ((run.processOwner || run.processes?.length) && !generatedOwnerIdle(run)) reasons.push('acceptance producer lifetime active or uncertain');
         reasons.push(...acceptedReleaseProducerReferences(metadata));
       }
-      if (run.state === 'investigating') reasons.push('explicit investigation');
       if (reasons.length) { results.push({ reference, action: 'retain', reasons }); continue; }
       if (!apply) { results.push({ reference, action: 'dispose', reason: 'no operational references' }); continue; }
       const claim = mark => claimAcceptedReleaseDisposal(db, reference, receipt, mark);
