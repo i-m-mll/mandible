@@ -175,17 +175,16 @@ describe("instance effect policy", () => {
       .toMatchObject({ allowed: false, missing: ["auth:protected"] });
   });
 
-  it("keeps signing-key discovery read-only and writes enrollments only to preview data", () => {
+  it("lets a preview read signing-key status and enroll into its own data, but not touch production credentials", () => {
+    const ceiling = { effect_ceiling: STANDARD_PREVIEW_EFFECTS };
     const status = "/api/users/operator/signing-key";
     const enroll = "/api/users/operator/approval-key";
-    expect(operationForRequest("GET", status, "preview")?.effects).toEqual(["ledger:read"]);
-    expect(operationForRequest("POST", enroll, "preview")?.effects).toEqual(["ledger:write"]);
-    expect(operationForRequest("GET", status, "main")?.effects).toEqual(["auth:credentials"]);
-    expect(operationForRequest("POST", enroll, "main")?.effects).toEqual(["auth:credentials"]);
-
-    const instance = preview();
-    expect(authorizeEffects(instance, { effect_ceiling: STANDARD_PREVIEW_EFFECTS }, operationForRequest("POST", enroll, "preview")))
-      .toEqual({ allowed: true });
+    expect(authorizeEffects(preview(), ceiling, operationForRequest("GET", status, "preview"))).toEqual({ allowed: true });
+    expect(authorizeEffects(preview(), ceiling, operationForRequest("POST", enroll, "preview"))).toEqual({ allowed: true });
+    const main = resolveInstanceInfo({ env: {} });
+    for (const [method, url] of [["GET", status], ["POST", enroll]] as const) {
+      expect(authorizeEffects(main, ceiling, operationForRequest(method, url, "main"))).toMatchObject({ allowed: false });
+    }
   });
 
   it("keeps preview theme, navigation, and font edits separate from production in both directions", async () => {

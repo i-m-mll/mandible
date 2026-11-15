@@ -17,19 +17,14 @@ import { fixtureOperatorSigning, operatorCaller, SoftwareOperatorSigner } from "
 export type Executor = NonNullable<ConstructorParameters<typeof AuthQueue>[0]>["executor"];
 export type ExecOptions = Parameters<NonNullable<Executor>>[0];
 
-/** A software signer whose sign can be blocked and whose request can be rewritten before signing. */
+/** A software signer whose sign can be blocked. */
 export class ScriptedSigner extends SoftwareOperatorSigner {
   gate: Promise<void> | null = null;
   entered: (() => void) | null = null;
-  rewrite: ((request: SignRequest) => SignRequest) | null = null;
-  afterSign: (() => void) | null = null;
   override async sign(request: SignRequest, signal?: AbortSignal): Promise<SignOutcome> {
     this.entered?.();
     if (this.gate) await this.gate;
-    const outcome = await super.sign(this.rewrite ? this.rewrite(request) : request, signal);
-    this.touches[this.touches.length - 1] = request;
-    this.afterSign?.();
-    return outcome;
+    return super.sign(request, signal);
   }
   block(): { release: () => void; entered: Promise<void> } {
     let release!: () => void;
@@ -90,54 +85,37 @@ export interface Rig {
   signer: ScriptedSigner;
   operatorId: string;
   enclaveCredentialId: string;
-  enclaveKey: string;
   execs: ExecOptions[];
-  mode: { kind: "publish" | "fail" | "hold" };
   hold(): Held;
-  clock: { at: number };
   submit(branch: string, files?: Record<string, string>): Promise<AuthRequest>;
   approve(id: string): Promise<AuthRequest>;
-  objects(): string;
-  evidenceCount(): number;
   main(): string;
-  newQueue(options?: Partial<ConstructorParameters<typeof AuthQueue>[0]>): AuthQueue;
   dispose(): Promise<void>;
 }
 
-export function rig(options: { fakeClock?: boolean } = {}): Rig {
+export function rig(): Rig {
   const repo = createAuthCheckRepo();
   const db = createMigratedDb();
   const signing = configureSigningCredential(db, repo);
   git(repo, ["config", "--unset", "user.signingkey"]);
   const signer = new ScriptedSigner();
   const execs: ExecOptions[] = [];
-  const mode: Rig["mode"] = { kind: "publish" };
+  const mode: { kind: "publish" | "hold" } = { kind: "publish" };
   let holder: { resolve: (o: ExecOptions) => void; done: Promise<{ exit_code: number; output: string }>; finish: (r: { exit_code: number; output: string }) => void } | null = null;
-  const clock = { at: Date.now() };
-  const queues: AuthQueue[] = [];
   let queue!: AuthQueue;
   const executor: Executor = async (opts) => {
     execs.push(opts);
     if (mode.kind === "publish") return publishFixtureExecution(queue, opts);
-    if (mode.kind === "hold" && holder) {
-      const h = holder;
-      h.resolve(opts);
-      const r = await h.done;
-      return { exit_code: r.exit_code, signal: null, stdout: "", stderr: r.output, output: r.output, started_at: Date.now(), finished_at: Date.now() };
-    }
-    return { exit_code: 1, signal: null, stdout: "", stderr: "fixture stop\n", output: "fixture stop\n", started_at: Date.now(), finished_at: Date.now() };
+    const h = holder!;
+    h.resolve(opts);
+    const r = await h.done;
+    return { exit_code: r.exit_code, signal: null, stdout: "", stderr: r.output, output: r.output, started_at: Date.now(), finished_at: Date.now() };
   };
-  const make = (extra: Partial<ConstructorParameters<typeof AuthQueue>[0]> = {}) => {
-    const q = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false,
-      operatorSigning: fixtureOperatorSigning(db, signer), executor, ...(options.fakeClock ? { now: () => clock.at } : {}), ...extra });
-    queues.push(q);
-    return q;
-  };
-  queue = make();
+  queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false,
+    operatorSigning: fixtureOperatorSigning(db, signer), executor });
   registerWorkRepo(db, repo);
   const r: Rig = {
-    repo, db, queue, signer, operatorId: signing.operatorId, enclaveCredentialId: signing.credentialId, enclaveKey: signing.keyPath,
-    execs, mode, clock,
+    repo, db, queue, signer, operatorId: signing.operatorId, enclaveCredentialId: signing.credentialId, execs,
     hold() {
       mode.kind = "hold";
       let resolve!: (o: ExecOptions) => void;
@@ -154,13 +132,10 @@ export function rig(options: { fakeClock?: boolean } = {}): Rig {
         merge_head_sha: git(repo, ["rev-parse", branch]) });
     },
     approve: (id) => queue.approveAsOperator(id, operatorCaller(signing.operatorId), queue.lifecycleRevision(id)!),
-    objects: () => git(repo, ["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"]),
-    evidenceCount: () => (db.prepare("SELECT count(*) AS n FROM attribution_evidence").get() as { n: number }).n,
     main: () => git(repo, ["rev-parse", "main"]),
-    newQueue: (extra) => make(extra),
     async dispose() {
       holder?.finish({ exit_code: 1, output: "dispose\n" });
-      for (const q of queues) await q.dispose().catch(() => undefined);
+      await queue.dispose().catch(() => undefined);
       db.close();
     },
   };

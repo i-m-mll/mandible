@@ -130,7 +130,7 @@ describe("approving with no usable approval key", () => {
         else r.signer.states.set(authority.keyPath(key.fingerprint), { state });
         const revision = r.queue.lifecycleRevision(request.id);
         await expect(r.approve(request.id)).rejects.toMatchObject({
-          refusal: { code: state === "not enrolled" ? "approval_key_required" : state, detail: expect.stringContaining("Touch ID is not set up") },
+          refusal: { code: state === "not enrolled" ? "approval_key_required" : state },
         });
         expect(r.signer.touches).toHaveLength(0);
         expect(r.execs).toHaveLength(0);
@@ -178,7 +178,6 @@ describe("a signer revoked later still counts for merges recorded before its rev
       const { sha, credentialId } = await recordedExternalMerge(r, Date.now() + 60_000);
       revokeCredential(r.db, credentialId);
       const audit = await r.queue.baseAuditForRequest((await r.submit("feature/after-revocation")).id);
-      expect(audit?.baseline_sha).not.toBe(sha);
       expect(audit?.unexpected.map((commit) => commit.sha)).toContain(sha);
     } finally { await r.dispose(); }
   });

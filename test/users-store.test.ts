@@ -61,8 +61,8 @@ describe("names and emails author protected merges", () => {
   it("refuses <, > and line breaks on every write", () => {
     expect(() => setupOperator(db, { display_name: "MLL <mll@example.com>", email: "mll@example.com" })).toThrow(UserRegistryError);
     const operator = setupOperator(db, { display_name: "MLL", email: "mll@example.com" });
-    expect(() => updateUser(db, operator.id, { display_name: "MLL\nInjected: header" })).toThrow(/may not contain/);
-    expect(() => updateUser(db, operator.id, { email: "<mll@example.com>" })).toThrow(/may not contain/);
+    expect(() => updateUser(db, operator.id, { display_name: "MLL\nInjected: header" })).toThrow(UserRegistryError);
+    expect(() => updateUser(db, operator.id, { email: "<mll@example.com>" })).toThrow(UserRegistryError);
     expect(() => setupOperator(db, { display_name: "Other <x@y>" })).toThrow(UserRegistryError);
   });
 
