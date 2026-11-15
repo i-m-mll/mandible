@@ -68,7 +68,7 @@ it("refuses a signed action without an enrolled key, then bootstraps enrollment 
   expect((await setBranches('["main"]')).status).toBe(200);
   expect(branches()).toBe('["main"]');
   expect(signer.touches).toHaveLength(2);
-  expect(signer.touches[1]).toMatchObject({ namespace: OPERATOR_STATEMENT_NAMESPACE, reason: "change which branches Mandible protects" });
+  expect(signer.touches[1]).toMatchObject({ namespace: OPERATOR_STATEMENT_NAMESPACE, key: signing.keyPath(enclaveKey().fingerprint) });
   const [change] = listTrustChanges(db).filter((entry) => entry.kind === "protected_branches");
   expect(change).toMatchObject({ authorization: "signed", signatures: [{ credential_id: enclaveKey().id, role: "approval_key" }] });
   expect(await verifySshSignature(enclaveKey().public_material!, OPERATOR_STATEMENT_NAMESPACE, change!.statement, change!.signatures[0]!.signature)).toBe(true);
@@ -104,7 +104,7 @@ it("replaces a usable key with both signatures and revokes the old key", async (
   const replaced = await enroll();
   expect(replaced.status, JSON.stringify(replaced.body)).toBe(201);
   expect(replaced.body).toMatchObject({ trust_change: { authorization: "signed", signatures: [{ role: "new_key" }, { role: "approval_key", credential_id: first.id }] } });
-  expect(signer.touches.map((touch) => touch.reason).slice(-2)).toEqual(["enroll a new Mandible approval key", "authorize replacing your Mandible approval key"]);
+  expect(signer.touches.slice(-2).map((touch) => touch.key)).toEqual([signing.keyPath(enclaveKey().fingerprint), signing.keyPath(first.fingerprint)]);
   const old = listCredentials(db, operatorId, { includeRevoked: true }).find((credential) => credential.id === first.id)!;
   expect(old).toMatchObject({ status: "revoked", custody: "enclave" });
   expect(enclaveKey().id).not.toBe(first.id);

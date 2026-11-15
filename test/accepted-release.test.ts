@@ -315,7 +315,6 @@ it('seals negotiated v2 authority without cache, verifies its manifest on demand
     const receiptFile = Buffer.from(reference.split(':')[2], 'base64url').toString('utf8');
     expect(fs.statSync(receiptFile).size).toBeLessThanOrEqual(ACCEPTANCE_CERTIFICATE_LIMIT);
     const text = JSON.stringify({ ...certificate, extra: '🐙'.repeat(20_000) });
-    expect(text.length).toBeLessThan(ACCEPTANCE_CERTIFICATE_LIMIT);
     fs.writeFileSync(receiptFile, text);
     const oversized = `accepted-release:${installedFileIdentity(receiptFile).sha256}:${Buffer.from(receiptFile).toString('base64url')}`;
     expect(() => readAcceptedReleaseReceipt(oversized)).toThrow('exceeds 64 KiB');

@@ -626,7 +626,7 @@ export async function approveFixtureRequest(queue: AuthQueue, id: string): Promi
   }
   if (request.cwd && fs.existsSync(path.join(request.cwd, '.git')) &&
       !fs.existsSync(path.join(git(request.cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'mandible-test-signing-key'))) {
-    configureSigningCredential(db, request.cwd, 'ssh_key');
+    configureSigningCredential(db, request.cwd);
   }
   return approveAsFixtureOperator(queue, id);
 }

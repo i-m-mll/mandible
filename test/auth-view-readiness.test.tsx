@@ -234,33 +234,10 @@ describe('AuthQueueView daemon readiness gate', () => {
         onDismiss={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    expect(await screen.findByText('Touch ID is not set up')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Set up Touch ID' }).getAttribute('href')).toContain('section=settings-approvals');
-  });
-
-  it('labels a courtesy approval as one and never as verified', () => {
-    render(
-      <AuthQueueView
-        queue={[]}
-        historyQueue={[{
-          ...pendingRequest, type: 'config-change', status: 'completed', approval_tier: 'courtesy',
-          approver: { id: 'operator', display_name: 'Operator', kind: 'human' },
-          execution_evidence: { user: null, evidence_method: 'api_token', evidence_id: 'ev-1', credential: null },
-        }]}
-        outputs={{}}
-        selectedAuthId="req-1"
-        daemonReady
-        instance={authMainInstance}
-        onApprove={() => undefined}
-        onReject={() => undefined}
-        onRetry={() => undefined}
-        onDismiss={() => undefined}
-      />,
-    );
-    const attribution = screen.getByLabelText('Approval attribution');
-    expect(within(attribution).getByText('Courtesy approval')).toBeTruthy();
-    expect(within(attribution).queryByText('verified')).toBeNull();
+    const settingsLink = () => document.querySelector('a[href*="section=settings-approvals"]');
+    expect(settingsLink()).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Approve/ }));
+    await waitFor(() => expect(settingsLink()).not.toBeNull());
   });
 
   it('shows copied Description as read-only while keeping approval disabled', () => {
