@@ -103,9 +103,9 @@ export default function SigningSettings({ instance }: Props): JSX.Element {
           <div className="settings-view__number-controls">
             {enrolled && !failed ? (
               <>
-                <span className="settings-view__status-pill" title={key.fingerprint}>Enrolled</span>
+                <span className="btn btn--sm settings-view__status-pill" title={key.fingerprint}>Enrolled</span>
                 {key.public_material && (
-                  <button type="button" className="btn btn--sm" onClick={() => void copyPublicKey()}
+                  <button type="button" className="btn btn--ghost btn--sm" onClick={() => void copyPublicKey()}
                     title="GitHub accepts this OpenSSH key as a signing key.">
                     {copied ? 'Copied' : 'Copy public key'}
                   </button>

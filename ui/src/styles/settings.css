@@ -335,18 +335,19 @@
   flex-shrink: 0;
 }
 
-/* Matches .btn.btn--sm box so a state can stand where its button was. */
+/* A state shown in a button's place: the button's box, stretched to its row's height. */
 .settings-view__status-pill {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: calc(12px + var(--chrome-text-increment, 0px));
-  font-family: inherit;
-  line-height: normal;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
   background: var(--status-success-bg);
   color: var(--accent-green);
   cursor: default;
   user-select: none;
+}
+
+.settings-view__status-pill:hover {
+  transform: none;
 }
 
 .settings-view__number-input {
