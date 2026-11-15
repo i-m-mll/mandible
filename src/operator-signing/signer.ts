@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { installedResourceRoot, readInstalledRelease, releaseFile } from "../../scripts/installed-release.mjs";
 
 /**
  * The operator signer: the one interface through which Mandible creates
@@ -156,10 +157,10 @@ function failure(value: Record<string, unknown>): { result: "failed"; detail: st
   return { result: "failed", detail: typeof value.detail === "string" ? value.detail : `Unexpected approval helper result '${String(value.result)}'.` };
 }
 
-/** The installed runtime names the helper; a source checkout builds it as a nested app in Tauri resources. */
-export function resolveApprovalHelperPath(env: NodeJS.ProcessEnv = process.env): string | null {
-  const configured = env.MANDIBLE_APPROVAL_HELPER?.trim();
-  if (configured) return path.isAbsolute(configured) ? configured : null;
+/** The installed release manifest names the helper; a source checkout builds it as a nested app in Tauri resources. */
+export function resolveApprovalHelperPath(): string | null {
+  const installed = installedResourceRoot();
+  if (installed) return releaseFile(installed, readInstalledRelease(installed).native.approvalHelper);
   const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "src-tauri", "resources", "MandibleApproval.app", "Contents", "MacOS", "mandible-approval-helper");
   return existsSync(source) ? source : null;
 }

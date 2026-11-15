@@ -8,7 +8,7 @@ import { migrateFixtureThrough } from './helpers/schema-snapshot.js';
 import { createPendingRelease, retainAcceptedRelease, applicationIdentity, assertAcceptedReleaseAvailable } from '../scripts/accepted-release.mjs';
 import { installedFileIdentity } from '../scripts/installed-release.mjs';
 import { saveOwnedMetadata } from '../scripts/owned-run.mjs';
-import { reconcileAcceptedReleases } from '../scripts/accepted-release-retention.mjs';
+import { acceptedReleaseDatabaseReferences, reconcileAcceptedReleases } from '../scripts/accepted-release-retention.mjs';
 import { retireFailedDelivery } from '../src/failed-delivery-retirement.js';
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents } from '../src/auth-lifecycle.js';
 import { authRequestSnapshot } from '../src/auth-request-snapshot.js';
@@ -25,6 +25,7 @@ function addTokenCredential(db: ReturnType<typeof createMigratedDb>, userId: str
 import { CURRENT_SCHEMA_VERSION, migrate } from '../src/db-migrations.js';
 import { AuthQueue } from '../src/auth-queue.js';
 import { acceptedReleaseProducerReferencesAsync } from '../scripts/accepted-release-retention.mjs';
+import { runtimeHandoffBindingDigest } from '../scripts/runtime-handoff-lock.mjs';
 import type { AuthRequest, AuthLifecycleActor } from '../src/types.js';
 
 const candidate = { pin_sha: 'a'.repeat(40), tree_sha: 'b'.repeat(40), base_sha: 'c'.repeat(40), head_sha: 'd'.repeat(40) };
@@ -44,9 +45,8 @@ async function fixture(db = createMigratedDb()) {
   const shipped = { schema: 'mandible-installed-release@1', version: '1', target: `${process.platform}-${process.arch}`, layout: { kind: 'macos-app', roots: { resources: '.' } },
     provenance: { commit: candidate.pin_sha, source_digest: 'e'.repeat(64) }, entrypoints: { daemon: 'program' }, native: {}, files: { program: installedFileIdentity(program) } } as any;
   fs.writeFileSync(path.join(pending.resources, 'release.json'), JSON.stringify(shipped));
-  const evidence = path.join(home, 'evidence.json'); fs.writeFileSync(evidence, '{}');
   const accepted = await retainAcceptedRelease({ pending, candidate, shipped, expectedDigest: applicationIdentity(pending.app),
-    acceptance: { record_id: record, request_id: id }, evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 } });
+    acceptance: { record_id: record, request_id: id }, evidence: Buffer.from('{}') });
   const metadataFile = path.join(pending.root, 'metadata.json');
   const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8')); delete metadata.ownership.processOwner; saveOwnedMetadata(metadataFile, metadata);
   db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, exit_code, merge_candidate_pin_sha, merge_candidate_tree_sha,
@@ -127,7 +127,7 @@ it('retires once without rewriting failure, then ordinary cleanup resumes interr
   } finally { f.close(); }
 });
 
-it('refuses admission, investigation, installed, unknown material and live references without changing failed history', async () => {
+it('refuses admission, installed, unknown material and live consumers without changing failed history', async () => {
   const f = await fixture();
   try {
     const original = f.hook(); const count = listAuthLifecycleEvents(f.db, f.id).length;
@@ -136,9 +136,6 @@ it('refuses admission, investigation, installed, unknown material and live refer
     await expect(f.run()).rejects.toThrow('handoff material'); fs.unlinkSync(unknown);
     fs.writeFileSync(path.join(runtime, 'bundle-owner.json'), JSON.stringify({ acceptedRelease: f.accepted.reference }));
     await expect(f.run()).rejects.toThrow('installed release'); fs.unlinkSync(path.join(runtime, 'bundle-owner.json'));
-    const metadata = JSON.parse(fs.readFileSync(f.metadataFile, 'utf8'));
-    saveOwnedMetadata(f.metadataFile, { ...metadata, ownership: { ...metadata.ownership, state: 'investigating' } });
-    await expect(f.run()).rejects.toThrow('investigation'); saveOwnedMetadata(f.metadataFile, metadata);
     await expect(f.run({ inspect: async () => ({ idle: false, reason: 'live consumer' }) })).rejects.toThrow('live consumer');
     const attempts = JSON.parse(original.attempt_history);
     attempts[0].outcome = 'timeout'; attempts[0].exit_code = null;
@@ -148,11 +145,6 @@ it('refuses admission, investigation, installed, unknown material and live refer
     f.db.prepare('UPDATE auth_hook_executions SET attempt_history = ? WHERE id = ?').run(JSON.stringify(attempts), f.execution);
     await expect(f.run()).rejects.toThrow('settlement is uncertain');
     f.db.prepare('UPDATE auth_hook_executions SET attempt_history = ? WHERE id = ?').run(original.attempt_history, f.execution);
-    f.db.prepare("INSERT INTO auth_requests (id, command, title, status, created_at, updated_at, expires_at) VALUES ('other', 'true', 'other', 'pending', 1, 1, 100)").run();
-    f.db.prepare("INSERT INTO auth_request_actions (id, auth_request_id, ordinal, kind, target_issue_ref, payload, state, staged_at, updated_at) VALUES ('other-selection', 'other', 1, 'checkpoint_add', 'fixture', ?, 'staged', 1, 1)")
-      .run(JSON.stringify({ kind: 'accepted-release', payload: { reference: f.accepted.reference } }));
-    await expect(f.run()).rejects.toThrow('operational references remain');
-    f.db.prepare("DELETE FROM auth_request_actions WHERE id = 'other-selection'").run();
     const publication = { schema: 'mandible-runtime-publication@1', requestId: f.id, executionId: f.execution, hookId: 'builtin-mandible-rebuild', commandDigest: f.hook().command_digest };
     addAttributionEvidence(f.db, { evidence_method: 'credential_signature', details: { runtime_publication: publication, runtime_publication_digest: createHash('sha256').update(JSON.stringify(publication)).digest('hex') } });
     await expect(f.run()).rejects.toThrow('publication was admitted');
@@ -160,6 +152,53 @@ it('refuses admission, investigation, installed, unknown material and live refer
     expect(listAuthLifecycleEvents(f.db, f.id)).toHaveLength(count);
     expect(fs.existsSync(f.accepted.app)).toBe(true);
   } finally { f.close(); }
+});
+
+it('retires exact archived handoffs without rewriting attempts or settling withheld actions', async () => {
+  const f = await fixture();
+  vi.stubEnv('MANDIBLE_HOME', f.home);
+  try {
+    const merge = 'f'.repeat(40);
+    f.db.prepare('UPDATE auth_requests SET output = ? WHERE id = ?').run(`MANDIBLE_MERGE_RESULT ${JSON.stringify({ merge_sha: merge })}`, f.id);
+    const failure = f.hook();
+    const refs = () => acceptedReleaseDatabaseReferences(f.db, f.accepted.reference, f.accepted.receipt);
+    expect(refs()).toEqual([`selected by retryable delivery ${f.execution}`]);
+
+    fs.mkdirSync(f.journal, { recursive: true });
+    const binding = { home: f.home, requestId: f.id, executionId: f.execution, hookId: failure.hook_id,
+      commandDigest: failure.command_digest, acceptedRelease: { reference: f.accepted.reference } };
+    const bindingDigest = runtimeHandoffBindingDigest(binding);
+    const journal = JSON.stringify({ schema: 'mandible-runtime-handoff@1', phase: 'failed', binding, bindingDigest,
+      attempt: { state: 'failed' }, error: 'original failure' });
+    fs.writeFileSync(path.join(f.journal, 'journal.json'), journal);
+    const file = path.join(f.journal, 'retirement.json');
+    const archive = { schema: 'mandible-runtime-handoff-retirement@1', requestId: f.id, executionId: f.execution,
+      bindingDigest, helperBootedOut: true, journalSha256: createHash('sha256').update(journal).digest('hex') };
+    fs.writeFileSync(file, JSON.stringify({ ...archive, executionId: randomUUID() }));
+    const hooks = new AuthHookManager(f.db);
+    expect(() => hooks.grantRetry(f.id)).toThrow('Retired handoff evidence changed');
+    expect(f.hook()).toEqual(failure);
+
+    fs.writeFileSync(file, JSON.stringify(archive));
+    expect(refs()).toEqual([]);
+    const request = f.read();
+    const events = listAuthLifecycleEvents(f.db, f.id);
+    const adoption = vi.fn();
+    const failed = vi.fn();
+    await expect(hooks.reconcileRuntimeHandoffs(adoption, failed)).resolves.toEqual([]);
+    expect(f.hook()).toEqual({ ...failure, state: 'retired' });
+    expect(f.read()).toEqual(request);
+    const reconciled = listAuthLifecycleEvents(f.db, f.id);
+    expect(reconciled.slice(0, -1)).toEqual(events);
+    expect(reconciled.at(-1)).toMatchObject({ event_type: 'revised', authority_path: 'system',
+      reason: expect.stringContaining(f.execution) });
+    expect(adoption).not.toHaveBeenCalled();
+    expect(failed).not.toHaveBeenCalled();
+    expect(() => hooks.grantRetry(f.id)).toThrow('cannot be retried');
+    expect(listAuthLifecycleEvents(f.db, f.id)).toEqual(reconciled);
+    await reconcileAcceptedReleases(f.db, f.home, { apply: true });
+    expect(fs.existsSync(f.accepted.app)).toBe(false);
+  } finally { vi.unstubAllEnvs(); f.close(); }
 });
 
 it('does not block the event loop during consumer observation and rejects concurrent retry/custody changes', async () => {

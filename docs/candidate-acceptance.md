@@ -61,6 +61,8 @@ command and evidence boundary.
 
 Each run records its exact project, work-unit owner, instance and generated outputs before producing them. The shared owned-run lifecycle saves a compact receipt outside the scratch root and reclaims disposed raw material after assessment or failure. Unknown files, active consumers, identity drift and cleanup errors preserve the remaining bytes and fail the gate. The receipt contains source and executable hashes, the runtime, interaction evidence, log digest, shutdown results and cleanup outcome. Apparent unlinked bytes are reported separately from physical space recovery.
 
+When a daemon-managed acceptance settles, it reads the bounded failure details for the ledger before deleting the scratch root and its cache checkpoints. If an interrupted run still owns an unsealed package, the compact scratch disposition stays until that package is cleared. An accepted package's certificate belongs to durable release storage.
+
 Generated storage is reconciled asynchronously at daemon startup, on committed
 auth request/selection changes, on the existing idle tick, and before acceptance
 or route-sweep allocation. Process lifetime and recorded process groups establish
@@ -69,17 +71,9 @@ checks consumers. Cleanup saves its outcome outside the generated root, removes
 only declared outputs, preserves unknown entries, and retries partial deletion
 without repeating acceptance, publication, merge, or handoff.
 
-Accepted applications remain while a live request selects them, the current
-acceptance needs them, the installed bundle owns them, a delivery retains a
-predecessor or replacement reference, or an explicit investigation holds them.
-The handoff releases those references at its respective terminal fences; see
-[handoff cleanup](runtime-handoff.md#ownership-receipts-and-cleanup).
-Acquisition and disposal claims share a short SQLite write boundary;
-inspection, application hashing and unlink run outside it. Immutable
-acceptance evidence and release receipts survive payload disposal. Legacy roots
-without recorded producer lifetimes require explicit disposition; this preserves
-existing recovery and investigation material during rollout. The reusable
-acceptance checkout and unique writable previews are outside collection.
+Accepted packages are disposed by default. An exact package is retained while it is installed or selected by a request that can still execute or retry delivery. A failed, expired, or needs-rebase request keeps its selection while the request can be retried with that candidate. A completed request keeps its selected package while a pre-admission rebuild can still use it. Archived handoff retirement ends retry for the recorded execution. Active producers, handoff operations and filesystem consumers delay cleanup until their custody is released.
+
+Acquisition and disposal claims share a short SQLite write boundary. Inspection, application hashing and unlink run outside it. Immutable acceptance evidence and release receipts survive payload disposal. The reusable acceptance checkout and unique writable previews are outside collection.
 
 Inspect or apply the same retention decision with:
 
@@ -95,41 +89,46 @@ isolated installation. Inventory opens the ledger read-only and changes no files
 `disposed` reports intentional payload removal with its durable cleanup outcome.
 `cleanup-pending` retains the reason and is retried by maintenance.
 
-Retain a run for investigation with `--apply --retain <metadata.json> --reason
+Inspect one exact restored run UUID with the recovery command. It verifies the sealed application and either a recorded discard or the ledger's exact supersession of an unpublished selection. It checks current installation, handoff, ledger and consumer holds. This works even when historical acceptance proof was in deleted scratch storage. Pending requests with missing legacy evidence run fresh acceptance for their exact candidate at daemon startup or when acceptance is retried.
+
+```bash
+scripts/bun-runtime.sh --exec scripts/recover-restored-accepted-release.mjs <run-uuid>
+scripts/bun-runtime.sh --exec scripts/recover-restored-accepted-release.mjs <run-uuid> --apply <dry-run-token>
+```
+
+Take a fresh, consistent online ledger backup before applying recovery to a live installation. Apply rechecks the reviewed evidence and current holds, then renames the restored directory into `accepted-releases/.restored-quarantine/<run-uuid>` on the same volume. The adjacent recovery receipt records the exact move and supports retry after interruption. Keep it with the quarantined directory for reversal. The accepted-release seal and compact outcome remain in `.receipts`, and moving the directory does not reclaim its storage. Admission and installation still require the original acceptance evidence.
+
+Purge a reviewed quarantined release with a separate dry run and token. Purge records the verified inventory before unlinking and can resume with the same token after interruption. Both historical receipts remain available.
+
+```bash
+scripts/bun-runtime.sh --exec scripts/recover-restored-accepted-release.mjs <run-uuid> --purge
+scripts/bun-runtime.sh --exec scripts/recover-restored-accepted-release.mjs <run-uuid> --purge --apply <purge-token>
+```
+
+Retain diagnostic scratch for investigation with `--apply --retain <metadata.json> --reason
 <need> --review-by <ISO-date>`; release it with `--apply --release <metadata.json>
 --reason <resolution>`. A review deadline never grants deletion authority.
-Release removes the hold; operational references still determine payload lifetime.
+Accepted package retention follows installation and request custody.
 Route sweeps using `--keep` additionally require `--project` and `--work-unit`
 owner IDs, `--reason`, and `--review-by` within seven days. Ordinary disposable
 sweeps use process ownership without inventing ledger work units.
 
-Before execution, a run copies the built application into pending owned-run
-custody at `<authority-home>/accepted-releases/<run-id>/Mandible.app` and checks
-its signature and whole-app digest. On a pass, it checks that the exercised app
-is unchanged and seals it in place; no rebuild or second copy occurs. Only a
-passing acceptance row authorizes selection of its receipt. A sealing or cleanup
-failure fails the row; any preserved material remains owned by its delivery
-work unit.
+Before execution, a run copies the built application into pending owned-run custody and checks its signature and whole-app digest. After the runtime checks and scratch cleanup pass, it checks that the exercised app is unchanged and seals it in place. Only a passing acceptance row authorizes selection of its receipt. A sealing or cleanup failure fails the row; any preserved material remains owned by its delivery work unit.
 
-`scripts/accepted-release.mjs` and its declaration file define the single
-`mandible-accepted-release@1` receipt and resolver. The immutable receipt binds:
+The daemon explicitly advertises `MANDIBLE_ACCEPTANCE_RECEIPT_SCHEMA=mandible-accepted-release@2`. V2 stores the app at `<authority-home>/accepted-releases/.v2/<run-id>/Mandible.app` and seals a single UTF-8 certificate at `<authority-home>/accepted-releases/.v2/.receipts/<run-id>-accepted-release.json`. The certificate is capped at 64 KiB and records:
 
-- `acceptance`: unique owned-run ID and the daemon's acceptance row/request IDs
-  when supplied by the authority;
-- `candidate`: exact `pin_sha`, `tree_sha`, `base_sha` and `head_sha`;
-- `target` and `shipped`: the finalized installed-release manifest;
-- `package`: `owned-run` custody handle, `Mandible.app` relative path and whole
-  app SHA-256;
-- `retention`: canonical project, delivery work-unit owner and disposal policy;
-- `evidence`: immutable bounded acceptance evidence file and its SHA-256.
+- The exact candidate pin, tree, base and head; run, acceptance row and request; canonical project and work unit.
+- The owned app locator, whole-app SHA-256, exact installed-manifest SHA-256 and target.
+- The acceptance contract version, fixed gate verdicts, and bounded interaction, health and shutdown observations.
+
+The certificate contains no shipped inventory or raw diagnostics. Operations that need the manifest read it from the retained or installed app and verify it against the certificate. Diagnostic output and ledger summaries are size-bounded projections and do not confer acceptance.
+
+For bootstrap, an old daemon sends no capability. The producer then uses the existing `mandible-accepted-release@1` format, including its embedded shipped manifest, with the app and receipt at their original locations and a hash-verified, bounded proof stored at `<authority-home>/accepted-releases/.receipts/evidence/<run-id>-acceptance.json`. Unknown capabilities are refused. Both receipt versions remain readable; historical v1 receipts retain their original evidence path, digest, and bytes.
 
 The result's existing string `receipt` field carries
 `accepted-release:<receipt-sha256>:<base64url-absolute-receipt-path>` (at most
 512 characters). It survives the legacy authority's 64 KiB result compaction.
-`resolveAcceptedRelease(reference, expectedCandidate)` verifies that exact
-receipt, evidence, custody identity, whole app and shipped inventory/provenance;
-it returns `{receipt, app, resources}` or refuses. It never selects a newer run
-or rebuilds bytes.
+`resolveAcceptedRelease(reference, expectedCandidate)` verifies the exact receipt, evidence, custody identity, whole app, and installed manifest. It returns `{receipt, app, resources, release}` or refuses. It never selects a newer run or rebuilds bytes.
 
 The daemon binds a passing acceptance automatically as one `checkpoint_add`
 action with `kind: accepted-release`, targeted at the request-bound delivery
@@ -155,10 +154,9 @@ owned-run cleanup refuses their unresolved interactive outputs. After delivery
 or abandonment the owner calls `disposeAcceptedRelease(reference, candidate,
 reason)`, which explicitly finalizes the retained run with a discard disposition
 and uses ordinary owned-run cleanup. Pending approval never
-expires retained bytes. Acceptance evidence and compact cleanup receipts remain
-available after package disposal. The immutable accepted-release receipt also
-remains in `<authority-home>/accepted-releases/.receipts/<run-id>-accepted-release.json`,
-outside the package cleanup root; its original reference and hash do not change.
+expires retained bytes. The immutable accepted-release receipt and compact cleanup records stay outside the package cleanup root, so receipt references and digests survive disposal.
+
+Release operations acquire a permanent namespace guard before opening a run lock. Negotiated v2 runs use the hidden `accepted-releases/.v2` namespace, a versioned owner record, and lock filenames outside the legacy lifecycle convention. Once the root is absent and its compact outcome records completed cleanup, later operations cannot open a new per-run lock. Retirement checks those facts under the namespace guard, takes the existing child lock exclusively, and removes the verified lock and PID files. Maintenance retries interrupted retirement. Legacy pairs remain until a cutover can drain older installed runtimes, retained helpers, and source scripts and fence their future invocations against the authority home.
 
 The command reports missing platform or candidate prerequisites as `unavailable`, and execution, interaction, log or cleanup failures as `failed`; the daemon records either as a failed run with the reason. Only `passed` exits successfully. An incomplete health observation never passes
 this finite gate. Event-loop stalls, lag warnings, memory warnings, concrete

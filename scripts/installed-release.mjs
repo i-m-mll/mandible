@@ -81,7 +81,16 @@ export function releaseFile(root, relative, layout = JSON.parse(fs.readFileSync(
 }
 
 export function readInstalledRelease(root) {
-  const release = JSON.parse(fs.readFileSync(path.join(root, 'release.json'), 'utf8'));
+  return parseInstalledRelease(root, fs.readFileSync(path.join(root, 'release.json'), 'utf8'));
+}
+
+export function readInstalledReleaseIdentity(root) {
+  const bytes = fs.readFileSync(path.join(root, 'release.json'));
+  return { release: parseInstalledRelease(root, bytes.toString('utf8')), sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
+function parseInstalledRelease(root, text) {
+  const release = JSON.parse(text);
   if (release.schema !== RELEASE_SCHEMA || !/^[a-f0-9]{40}$/.test(release.provenance?.commit ?? '')
       || !/^[a-f0-9]{64}$/.test(release.provenance?.source_digest ?? '')
       || release.target !== `${process.platform}-${process.arch}` || typeof release.version !== 'string'
@@ -126,7 +135,7 @@ export function verifyApplicationRelease(app) {
   return { release, digest };
 }
 
-const installedRuntimeKeys = ['MANDIBLE_RELEASE_ROOT', 'MANDIBLE_RUNTIME', 'MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_CADDY', 'MANDIBLE_CA_TRUST_HELPER', 'MANDIBLE_APPROVAL_HELPER', 'MANDIBLE_CLI_DIR'];
+const installedRuntimeKeys = ['MANDIBLE_RELEASE_ROOT', 'MANDIBLE_RUNTIME', 'MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_CADDY', 'MANDIBLE_CLI_DIR'];
 
 export function installedRuntimeEnvironment(root, environment = process.env) {
   root = fs.realpathSync(root);
@@ -134,7 +143,7 @@ export function installedRuntimeEnvironment(root, environment = process.env) {
   const native = Object.fromEntries(Object.entries(release.native).map(([key, relative]) => [key, releaseFile(root, relative, release.layout)]));
   const result = { ...environment, MANDIBLE_RELEASE_ROOT: root, MANDIBLE_RUNTIME: native.bun,
     MANDIBLE_SQLITE_LIBRARY: native.sqlite, MANDIBLE_CADDY: native.caddy,
-    MANDIBLE_CA_TRUST_HELPER: native.trustHelper, MANDIBLE_APPROVAL_HELPER: native.approvalHelper, MANDIBLE_CLI_DIR: path.join(root, 'cli'),
+    MANDIBLE_CLI_DIR: path.join(root, 'cli'),
     MANDIBLE_INSTALLED_KEYS: installedRuntimeKeys.join(' '),
     PATH: [...new Set([path.dirname(native.bun), path.join(root, 'bin'), ...(environment.PATH ?? '').split(path.delimiter)])].join(path.delimiter),
   };

@@ -321,23 +321,40 @@ async fn secure_local_connections_setup(
         .map_err(|error| format!("secure-local-connections setup task failed: {error}"))?
 }
 
-fn resolve_ca_trust_helper(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Some(root) = installed_resources(app)? { return installed_resource(&root, "native", "trustHelper"); }
-    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/local-ca-trust-helper"))
+#[cfg(target_os = "macos")]
+fn show_native_setup_result(app: &AppHandle, result: Result<SecureLocalConnectionsStatus, String>) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSAlert, NSWindow};
+    use objc2_foundation::NSString;
+
+    let (headline, detail) = match result {
+        Ok(_) => ("Secure local connections are ready", "You can now open Mandible."),
+        Err(error) => {
+            eprintln!("{error}");
+            (
+                "Secure local connections setup did not finish",
+                "Choose Connections → Set up secure local connections to try again.",
+            )
+        }
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(error) = window.with_webview(move |platform| {
+            let native = unsafe { &*(platform.ns_window() as *const NSWindow) };
+            let marker = MainThreadMarker::new().expect("webview callback runs on the main thread");
+            let alert = NSAlert::new(marker);
+            alert.setMessageText(&NSString::from_str(headline));
+            alert.setInformativeText(&NSString::from_str(detail));
+            alert.beginSheetModalForWindow_completionHandler(native, None);
+        }) {
+            eprintln!("Could not show secure local connections result: {error}");
+        }
+    }
 }
 
-fn show_native_setup_result(app: &AppHandle, headline: &str, detail: &str) {
-    match resolve_ca_trust_helper(app) {
-        Ok(helper) => {
-            match Command::new(helper).arg("--result").arg(headline).arg(detail).status() {
-                Ok(status) if status.success() => (),
-                Ok(status) => eprintln!("could not show secure-local-connections result: native alert exited with {status}; {headline}: {detail}"),
-                Err(error) => eprintln!("could not show secure-local-connections result: {error}; {headline}: {detail}"),
-            }
-        }
-        Err(error) => eprintln!(
-            "could not show secure-local-connections result: {error}; {headline}: {detail}"
-        ),
+#[cfg(not(target_os = "macos"))]
+fn show_native_setup_result(_: &AppHandle, result: Result<SecureLocalConnectionsStatus, String>) {
+    if let Err(error) = result {
+        eprintln!("{error}");
     }
 }
 
@@ -350,18 +367,7 @@ fn launch_native_ca_setup(handle: AppHandle, active: Arc<AtomicBool>) {
         return;
     }
     std::thread::spawn(move || {
-        match run_ca_setup_command(&handle, "setup") {
-            Ok(_) => show_native_setup_result(
-                &handle,
-                "Secure local connections are ready for this Mac account.",
-                "You can now open Mandible in this browser.",
-            ),
-            Err(error) => show_native_setup_result(
-                &handle,
-                "Secure local connections setup did not finish.",
-                &error,
-            ),
-        }
+        show_native_setup_result(&handle, run_ca_setup_command(&handle, "setup"));
         active.store(false, Ordering::Release);
     });
 }
@@ -680,8 +686,6 @@ fn runtime_command(app: &AppHandle) -> Result<Command, String> {
         command.env("MANDIBLE_RUNTIME", installed_resource(&root, "native", "bun")?);
         command.env("MANDIBLE_SQLITE_LIBRARY", installed_resource(&root, "native", "sqlite")?);
         command.env("MANDIBLE_CADDY", installed_resource(&root, "native", "caddy")?);
-        command.env("MANDIBLE_CA_TRUST_HELPER", installed_resource(&root, "native", "trustHelper")?);
-        command.env("MANDIBLE_APPROVAL_HELPER", installed_resource(&root, "native", "approvalHelper")?);
         command.env_remove("MANDIBLE_SQLITE_LIBRARY_ARCHIVE");
         command.env_remove("MANDIBLE_RUNTIME_ARCHIVE");
     }

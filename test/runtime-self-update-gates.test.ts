@@ -20,6 +20,7 @@ import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { AuthRequestInput, SseEvent } from "../src/types.js";
 import { addCredential, createUser, getOperator } from "../src/users/store.js";
 import { bindingDigest, retireFailedRuntimeHandoff } from "../scripts/runtime-handoff.mjs";
+import { readImmutableAcceptedRelease } from "../scripts/accepted-release.mjs";
 import * as serviceDefinitions from "../scripts/service-definitions.mjs";
 import { readRuntimeHandoffLock } from "../scripts/runtime-handoff-lock.mjs";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
@@ -263,6 +264,27 @@ describe('automatic accepted-package binding', () => {
     bindAcceptedRelease(db, (await queue.getRequest(request.id))!, accepted.id, issue.id, Date.now());
     expect(queue.listLifecycleEvents(request.id)).toHaveLength(revisions.length);
     expect(queue.listActions(request.id)).toEqual(actions);
+  });
+
+  it('reruns the exact pending selection when its legacy acceptance evidence is gone', async () => {
+    const request = await submit();
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    runs[0].settle({ status: 'passed', result: {}, error: null });
+    await queue.drainCandidateAcceptances();
+    const current = (await queue.getRequest(request.id))!;
+    const oldSelection = acceptedReleaseSelection(db, current, queue.listActions(request.id), false).selection;
+    const seal = readImmutableAcceptedRelease(oldSelection.reference);
+    if (seal.schema !== 'mandible-accepted-release@1') throw new Error('Expected legacy selection.');
+    fs.unlinkSync(seal.evidence.receipt);
+    expect(await queue.runCandidateAcceptance(current)).toMatchObject({ state: 'running' });
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
+    expect(runs[1].input.pinSha).toBe(runs[0].input.pinSha);
+    runs[1].settle({ status: 'passed', result: {}, error: null });
+    await queue.drainCandidateAcceptances();
+    const newSelection = acceptedReleaseSelection(db, current, queue.listActions(request.id), false).selection;
+    expect(newSelection.reference).not.toBe(oldSelection.reference);
+    expect(db.prepare('SELECT status FROM auth_candidate_acceptances WHERE id = ?').get(oldSelection.acceptanceId))
+      .toEqual({ status: 'passed' });
   });
 
   it.each(['custody', 'lifecycle', 'pin', 'receipt', 'package owner'] as const)('fails finalization on a changed %s without a passed or running orphan', async change => {

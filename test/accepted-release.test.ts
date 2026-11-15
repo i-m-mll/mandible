@@ -11,8 +11,20 @@ import { createOwnedRun, withOwnedRunLock, saveOwnedMetadata } from '../scripts/
 import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { diagnosticReplayPackage, finalizeAcceptance, acceptanceOwnedOutputs } from '../scripts/candidate-acceptance.mjs';
 import { acceptancePhases } from '../scripts/acceptance-progress.mjs';
+import { ACCEPTANCE_CERTIFICATE_SCHEMA, ACCEPTANCE_CERTIFICATE_LIMIT, acceptanceReceiptSchema } from '../scripts/acceptance-certificate.mjs';
+import { readAcceptedInstalledRelease } from '../scripts/accepted-release.mjs';
 
 const finalized = (result: Record<string, unknown>) => ({ result, phases: acceptancePhases(result, { write: () => {} }) });
+function passingResult(shipped: unknown) {
+  return finalized({
+    status: 'passed', provenance: { shipped },
+    phases: Object.fromEntries(['package_build', 'package_verification', 'readiness', 'desktop_interaction', 'health_coverage'].map(name => [name, { status: 'passed' }])),
+    checks: { desktop_interaction: { passed: true, setup: { reloads: 2 } }, desktop_interaction_completed_at: 2,
+      health_coverage: { observation: { startedAt: 1, mustCover: 2, completedAt: 3 }, periodic_windows_completed: 1 },
+      shutdown: { daemon_exit: 0, daemon_signal: null, gateway_exit: 0, gateway_signal: null, desktop_exit: null, desktop_signal: 'SIGTERM' },
+      log_failures: [], log_diagnostics: 'diagnostic detail 🐙'.repeat(10_000) },
+  });
+}
 import { acceptedReleaseSelection } from '../src/accepted-release-selection.js';
 import { createAuthCheckRepo, insertSiblingMergeRequest } from './helpers/auth-queue-fixtures.js';
 import { createMigratedDb } from './helpers/ledger-fixtures.js';
@@ -93,11 +105,12 @@ it('reads and acquires a previously sealed receipt larger than 1 MiB, preserving
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
-it('seals the exercised app in place after scratch disposal and refuses changed selection or bytes', async () => {
+it('verifies the sealed app after losing the acceptance cache and refuses changed evidence or application bytes', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'accepted-release-'));
   try {
-    const scratch = path.join(root, 'scratch');
-    fs.mkdirSync(scratch);
+    const cache = path.join(root, 'cache');
+    const scratch = path.join(cache, 'scratch');
+    fs.mkdirSync(scratch, { recursive: true });
     const ownership = createOwnedRun({ root: scratch, instanceId: 'proof', project: 'project', workUnit: 'work-unit', disposable: true, outputs: acceptanceOwnedOutputs });
     const pending = await createPendingRelease({ storage: path.join(root, 'retained'), ownership });
     const { resources, app } = pending;
@@ -108,8 +121,6 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
     fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: '1',
       target: `${process.platform}-${process.arch}`, layout: { kind: 'macos-app', roots: { resources: '.' } },
       provenance: { commit: candidate.pin_sha, source_digest: 'e'.repeat(64) }, entrypoints: { daemon: 'program' }, native: {}, files: { program: installedFileIdentity(program) } }));
-    const evidence = path.join(root, 'evidence.json');
-    fs.writeFileSync(evidence, JSON.stringify({ status: 'passed', candidate: candidate.pin_sha }));
     const failedReceipt = path.join(root, 'failed.json');
     const failed = { schema: 'mandible-owned-run@1', acceptance: { schema: 'mandible-candidate-acceptance@1', status: 'failed',
       candidate: candidate.pin_sha, provenance: { marker: { source_digest: 'e'.repeat(64) }, package_sha256: applicationIdentity(app) } } };
@@ -120,24 +131,35 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
     expect(() => diagnosticReplayPackage(failedReceipt, app)).toThrow('exact failed acceptance');
     const inode = fs.statSync(program).ino;
     const { release: shipped, digest } = verifyApplicationRelease(app);
-    expect(fs.existsSync(path.join(root, 'retained', '.receipts', `${pending.runId}-accepted-release.json`))).toBe(false);
+    const diagnostic = path.join(cache, '.receipts', `${ownership.runId}-acceptance.json`);
+    fs.mkdirSync(path.dirname(diagnostic));
+    fs.writeFileSync(diagnostic, 'diagnostic data independent of release authority');
+    const pendingReceipt = path.join(root, 'retained', '.receipts', `${pending.runId}-accepted-release.json`);
+    const seal = { pending, candidate, shipped, acceptance: { record_id: null, request_id: null }, evidence: Buffer.from('{}'), expectedDigest: digest };
+    await expect(retainAcceptedRelease({ ...seal, expectedDigest: '0'.repeat(64) })).rejects.toThrow('changed during acceptance');
+    await expect(retainAcceptedRelease({ ...seal, evidence: Buffer.from('🐙'.repeat(20_000)) })).rejects.toThrow('exceeds 64 KiB');
+    expect(fs.existsSync(pendingReceipt)).toBe(false);
     let reference = '';
     await withOwnedRunLock(scratch, async () => {
       const metadata = path.join(scratch, 'metadata.json');
       saveOwnedMetadata(metadata, { ownership });
-      await expect(retainAcceptedRelease({ pending, candidate, shipped, acceptance: { record_id: null, request_id: null },
-        evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 }, expectedDigest: '0'.repeat(64) })).rejects.toThrow('changed during acceptance');
-      fs.mkdirSync(path.join(root, '.receipts'), { recursive: true });
-      saveOwnedMetadata(path.join(root, '.receipts', `${ownership.runId}-acceptance.json`), { status: 'passed', provenance: { shipped } });
-      const result = await finalizeAcceptance({ metadataFile: metadata, run: scratch, cache: root, ownership, pendingPackage: pending,
-        candidateBinding: candidate, testedPackageDigest: digest,
-        ...finalized({ status: 'passed', provenance: { shipped }, checks: {} }) });
+      const result = await finalizeAcceptance({ metadataFile: metadata, run: scratch, ownership, pendingPackage: pending,
+        candidateBinding: candidate, testedPackageDigest: digest, ...passingResult(shipped) });
       expect(result.status).toBe('passed');
       expect(result.checks.cleanup).toMatchObject({ action: 'delete-owned', remaining: [] });
       reference = result.receipt;
     });
     expect(fs.statSync(program).ino).toBe(inode);
     expect(fs.existsSync(scratch)).toBe(false);
+    fs.rmSync(cache, { recursive: true });
+    const legacy = resolveAcceptedRelease(reference, candidate).receipt;
+    if (legacy.schema !== 'mandible-accepted-release@1') throw new Error('Legacy reader cannot open this bootstrap receipt.');
+    expect(legacy.shipped).toEqual(shipped);
+    const retainedProof = legacy.evidence.receipt;
+    const proofBytes = fs.readFileSync(retainedProof);
+    expect(proofBytes.length).toBeLessThanOrEqual(ACCEPTANCE_CERTIFICATE_LIMIT);
+    expect(JSON.parse(proofBytes.toString())).toMatchObject({ status: 'passed', package_sha256: digest, gates: { runtime_scratch_cleanup: 'passed' } });
+    expect(proofBytes.toString()).not.toContain('diagnostic detail');
     expect(reference.length).toBeLessThanOrEqual(512);
     const database = path.join(root, 'ledger.db');
     const db = createMigratedDb({ path: database, operator: { slug: 'auth-test-operator' }, now: 1 });
@@ -157,6 +179,10 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
       const acceptance = db.prepare('SELECT id FROM auth_candidate_acceptances WHERE auth_request_id = ?').get('request') as { id: string };
       const action = { kind: 'checkpoint_add', state: 'staged', payload: { kind: 'accepted-release', payload: { acceptanceId: acceptance.id, reference: storedReference } } };
       expect(acceptedReleaseSelection(db, request, [action]).receipt.candidate).toEqual(candidate);
+      fs.appendFileSync(retainedProof, '\n');
+      expect(() => acceptedReleaseSelection(db, request, [action], false)).toThrow('evidence bytes changed');
+      expect(() => resolveAcceptedRelease(reference, candidate)).toThrow('evidence bytes changed');
+      fs.writeFileSync(retainedProof, proofBytes);
       for (const actions of [[], [action, action], [{ ...action, state: 'vetoed' }]]) {
         expect(() => acceptedReleaseSelection(db, request, actions)).toThrow('Exactly one non-vetoed');
       }
@@ -214,7 +240,8 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
     saveOwnedMetadata(metadataFile, { ...originalMetadata, ownership: { ...originalMetadata.ownership, state: 'terminal' } });
     expect(() => resolveAcceptedRelease(reference, candidate)).toThrow('claimed for disposal');
     expect(readAcceptedReleaseReceipt(reference, candidate).candidate).toEqual(candidate);
-    fs.writeFileSync(metadataFile, metadataBytes);
+    saveOwnedMetadata(metadataFile, { ...originalMetadata, ownership: { ...originalMetadata.ownership,
+      processOwner: { pid: process.pid, identity: 'settled acceptance fixture lifetime' } } });
     const receiptFile = Buffer.from(reference.split(':')[2], 'base64url').toString('utf8');
     const receiptBytes = fs.readFileSync(receiptFile);
     fs.writeFileSync(receiptFile, '{}');
@@ -228,8 +255,73 @@ it('seals the exercised app in place after scratch disposal and refuses changed 
     expect(disposed.remaining).toEqual([]);
     expect(fs.existsSync(selected.receipt.package.handle.root)).toBe(false);
     expect(fs.readFileSync(receiptFile).equals(receiptBytes)).toBe(true);
-    expect(fs.existsSync(evidence)).toBe(true);
+    expect(readAcceptedReleaseReceipt(reference, candidate)).toMatchObject({ evidence: { receipt: retainedProof } });
+    expect(fs.readFileSync(retainedProof)).toEqual(proofBytes);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('seals negotiated v2 authority without cache, verifies its manifest on demand, and enforces the byte ceiling when reading', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acceptance-certificate-'));
+  const cache = path.join(root, 'cache');
+  const scratch = path.join(cache, 'scratch');
+  const capability = ACCEPTANCE_CERTIFICATE_SCHEMA;
+  try {
+    expect(() => acceptanceReceiptSchema('mandible-accepted-release@99')).toThrow('Unsupported');
+    fs.mkdirSync(scratch, { recursive: true });
+    const ownership = createOwnedRun({ root: scratch, runId: 'record', instanceId: 'instance', project: 'project', workUnit: 'unit', disposable: true, outputs: acceptanceOwnedOutputs });
+    const pending = await createPendingRelease({ storage: path.join(root, 'accepted-releases/.v2'), ownership });
+    fs.mkdirSync(pending.resources, { recursive: true });
+    const program = path.join(pending.resources, 'program');
+    fs.writeFileSync(program, 'accepted program');
+    const candidate = { pin_sha: 'a'.repeat(40), tree_sha: 'b'.repeat(40), base_sha: 'c'.repeat(40), head_sha: 'd'.repeat(40) };
+    const manifest = path.join(pending.resources, 'release.json');
+    fs.writeFileSync(manifest, JSON.stringify({ schema: 'mandible-installed-release@1', version: '1', target: `${process.platform}-${process.arch}`,
+      layout: { kind: 'macos-app', roots: { resources: '.' } }, provenance: { commit: candidate.pin_sha, source_digest: 'e'.repeat(64) },
+      entrypoints: { daemon: 'program' }, native: {}, files: { program: installedFileIdentity(program) }, package_metadata: 'large manifest 🐙'.repeat(10_000) }));
+    const { release: shipped, digest } = verifyApplicationRelease(pending.app);
+    const result = await withOwnedRunLock(scratch, async () => {
+      const metadataFile = path.join(scratch, 'metadata.json');
+      saveOwnedMetadata(metadataFile, { ownership });
+      return finalizeAcceptance({ metadataFile, run: scratch, ownership, pendingPackage: pending, receiptCapability: capability,
+        acceptance: { record_id: 'record', request_id: 'request' }, candidateBinding: candidate, testedPackageDigest: digest, ...passingResult(shipped) });
+    });
+    expect(result.status, String(result.cleanup_error ?? '')).toBe('passed');
+    fs.rmSync(cache, { recursive: true });
+    const reference = result.receipt as string;
+    assertAcceptedReleaseAvailable(reference);
+    const certificate = readAcceptedReleaseReceipt(reference, candidate);
+    expect(certificate).toMatchObject({ schema: capability, acceptance: { run_id: 'record', record_id: 'record', request_id: 'request' },
+      package: { sha256: digest }, manifest_sha256: installedFileIdentity(manifest).sha256, gates: { health_coverage: 'passed' } });
+    expect(certificate).not.toHaveProperty('shipped');
+    expect(certificate).not.toHaveProperty('evidence');
+    expect(resolveAcceptedRelease(reference, candidate).release).toEqual(shipped);
+    fs.appendFileSync(manifest, '\n');
+    expect(() => readAcceptedInstalledRelease(certificate, pending.resources)).toThrow('Installed manifest differs');
+    const db = createMigratedDb({ path: path.join(root, 'ledger.db') });
+    const repo = createAuthCheckRepo();
+    try {
+      insertSiblingMergeRequest(db, repo, 'request', 'main');
+      db.prepare("INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at, result_json) VALUES ('record', 'request', ?, ?, ?, ?, 'passed', 1, 2, ?)")
+        .run(candidate.pin_sha, candidate.tree_sha, candidate.base_sha, candidate.head_sha, JSON.stringify({ receipt: reference }));
+      const request = { id: 'request', custody_work_unit_id: 'unit', merge_candidate_pin_sha: candidate.pin_sha,
+        merge_candidate_tree_sha: candidate.tree_sha, merge_preflight_base_sha: candidate.base_sha, merge_head_sha: candidate.head_sha };
+      const action = { kind: 'checkpoint_add', state: 'staged', payload: { kind: 'accepted-release', payload: { acceptanceId: 'record', reference } } };
+      expect(acceptedReleaseSelection(db, request, [action], false).receipt).toEqual(certificate);
+      expect(() => acceptedReleaseSelection(db, request, [action])).toThrow('Accepted application bytes changed');
+    } finally { db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+    fs.rmSync(pending.root, { recursive: true });
+    expect(readAcceptedReleaseReceipt(reference, candidate)).toEqual(certificate);
+
+    const receiptFile = Buffer.from(reference.split(':')[2], 'base64url').toString('utf8');
+    expect(fs.statSync(receiptFile).size).toBeLessThanOrEqual(ACCEPTANCE_CERTIFICATE_LIMIT);
+    const text = JSON.stringify({ ...certificate, extra: '🐙'.repeat(20_000) });
+    expect(text.length).toBeLessThan(ACCEPTANCE_CERTIFICATE_LIMIT);
+    fs.writeFileSync(receiptFile, text);
+    const oversized = `accepted-release:${installedFileIdentity(receiptFile).sha256}:${Buffer.from(receiptFile).toString('base64url')}`;
+    expect(() => readAcceptedReleaseReceipt(oversized)).toThrow('exceeds 64 KiB');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 it('disposes only the exact pending package and preserves changed or unknown retained material', async () => {
@@ -270,7 +362,7 @@ it('cleans disposable scratch independently when a failed pending package is dis
       fs.writeFileSync(path.join(scratch, 'build.log'), 'scratch');
       const metadataFile = path.join(scratch, 'metadata.json');
       saveOwnedMetadata(metadataFile, { ownership });
-      const result = await finalizeAcceptance({ metadataFile, run: scratch, cache: root, ownership, pendingPackage: pending,
+      const result = await finalizeAcceptance({ metadataFile, run: scratch, ownership, pendingPackage: pending,
         testedPackageDigest: digest, ...finalized({ status: 'failed', provenance: {}, checks: {} }) });
       expect(result.status).toBe('failed');
       expect(result.checks.cleanup).toMatchObject({ action: 'delete-owned', remaining: [] });

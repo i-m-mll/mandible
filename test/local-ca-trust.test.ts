@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertLocalCaIdentity, setupCaddyfile, setupLocalCa } from "../scripts/local-ca-trust.mjs";
 import { localCaFixture } from "./helpers/local-ca-fixture";
 
@@ -78,6 +78,28 @@ describe("one-time local CA trust", () => {
     fx.setNativeTrusted(true);
     await expect(setupFake(fx)).resolves.toMatchObject({ state: "trusted" });
     expect(fx.counts()).toEqual({ approvals: 1, bootstraps: 2, closes: 2 });
+  });
+
+  it("clears an expired or incomplete setup leaf before starting Caddy", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2040, 0, 1));
+    try {
+      for (const complete of [true, false]) {
+        const fx = fixture();
+        const host = "setup.mandible.localhost";
+        const leaf = path.join(fx.paths.storageRoot, "certificates", "local", host);
+        fs.mkdirSync(leaf, { recursive: true });
+        fs.copyFileSync(new URL("./fixtures/runtime-test-cert.pem", import.meta.url), path.join(leaf, `${host}.crt`));
+        fs.writeFileSync(path.join(leaf, `${host}.json`), "{}");
+        if (complete) fs.writeFileSync(path.join(leaf, `${host}.key`), "fixture-key");
+        await expect(setupLocalCa(fx.paths, {
+          ...fx.effects,
+          bootstrap: async () => {
+            expect(fs.readdirSync(leaf)).toEqual([]);
+            return fx.effects.bootstrap();
+          },
+        }, mockedLockAdapter)).resolves.toMatchObject({ state: "trusted" });
+      }
+    } finally { clock.mockRestore(); }
   });
 
   it("refuses a partial untracked CA instead of silently generating a replacement root", async () => {

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
+import { desktopPackageEnvironment } from './desktop-build-layout.mjs';
 
 /** Keep package inventory out of Cargo inputs; all generated-context settings remain. */
 const compileConfiguration = JSON.stringify({ bundle: {
@@ -26,12 +27,12 @@ export function tauriBundleArguments(options) {
   return [...args, '--bundles', 'app', '--no-sign'];
 }
 /** Native compilation and the source payload converge before one package assembly. */
-export async function assembleDesktopApplication(root, options, cargoArguments, { run = runSupervisedCommand, env = process.env } = {}) {
+export async function assembleDesktopApplication(root, options, cargoArguments, { run = runSupervisedCommand, env = process.env, onSpawn } = {}) {
   const controller = new AbortController();
   const interrupt = () => controller.abort();
   process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt);
   const cli = path.join(root, 'node_modules/@tauri-apps/cli/tauri.js');
-  const settings = { cwd: root, env, stdio: 'inherit', timeout: 600_000, signal: controller.signal };
+  const settings = { cwd: root, env: desktopPackageEnvironment(root, env), stdio: 'inherit', timeout: 600_000, signal: controller.signal, onSpawn };
   let failure;
   try {
     await Promise.allSettled([

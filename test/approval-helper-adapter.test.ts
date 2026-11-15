@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, expect, it } from "vitest";
-import { HelperOperatorSigner, resolveApprovalHelperPath } from "../src/operator-signing/signer.js";
+import { HelperOperatorSigner } from "../src/operator-signing/signer.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-helper-adapter-"));
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -43,9 +43,4 @@ it("kills the helper and reports cancelled when the caller aborts", async () => 
   const pending = new HelperOperatorSigner(file).sign(request, controller.signal);
   setTimeout(() => controller.abort(), 50);
   expect(await pending).toEqual({ result: "cancelled" });
-});
-
-it("finds the helper only at an absolute configured path", () => {
-  expect(resolveApprovalHelperPath({ MANDIBLE_APPROVAL_HELPER: "/opt/helper" })).toBe("/opt/helper");
-  expect(resolveApprovalHelperPath({ MANDIBLE_APPROVAL_HELPER: "relative/helper" })).toBeNull();
 });

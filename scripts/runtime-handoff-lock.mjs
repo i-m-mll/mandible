@@ -12,19 +12,36 @@ import { createHash } from 'node:crypto';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 export const runtimeHandoffBindingDigest = binding => hash(JSON.stringify(binding));
 
+
+export function readRuntimeHandoffRetirement(journalFile, bytes, journal) {
+  const file = path.join(path.dirname(journalFile), 'retirement.json');
+  let retired;
+  try { retired = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  bytes ??= fs.readFileSync(journalFile);
+  journal ??= JSON.parse(bytes);
+  const binding = journal?.binding;
+  if (journal?.schema !== 'mandible-runtime-handoff@1'
+      || !binding?.requestId || !binding.executionId
+      || !['failed', 'verification-pending'].includes(journal.phase)
+      || retired?.schema !== 'mandible-runtime-handoff-retirement@1'
+      || retired.requestId !== binding.requestId || retired.executionId !== binding.executionId
+      || typeof retired.helperBootedOut !== 'boolean'
+      || retired.bindingDigest !== journal.bindingDigest || runtimeHandoffBindingDigest(binding) !== journal.bindingDigest
+      || retired.journalSha256 !== hash(bytes)) throw new Error('Retired handoff evidence changed.');
+  return { retirement: retired, binding };
+}
+
 function pendingVerification(home, owner, journal, bytes) {
   const b = journal?.binding;
   if (journal?.schema !== 'mandible-runtime-handoff@1' || journal.phase !== 'verification-pending' || !b || b.home !== home || !/^[a-zA-Z0-9_-]{8,128}$/.test(b.requestId ?? '') || !/^[a-zA-Z0-9_-]{8,128}$/.test(b.executionId ?? '')
       || typeof b.hookId !== 'string' || !b.hookId || !/^[0-9a-f]{64}$/.test(b.commandDigest ?? '')
       || owner.bindingDigest !== journal.bindingDigest || runtimeHandoffBindingDigest(b) !== owner.bindingDigest
       || owner.journal !== path.join(home, 'config/local-sessions/handoff', `${b.requestId}-${b.executionId}`, 'journal.json')) return null;
-  const directory = path.dirname(owner.journal);
-  const retirementFile = path.join(directory, 'retirement.json');
-  if (fs.existsSync(retirementFile)) {
-    const retired = JSON.parse(fs.readFileSync(retirementFile, 'utf8'));
-    if (retired.schema === 'mandible-runtime-handoff-retirement@1' && retired.requestId === b.requestId && retired.executionId === b.executionId
-        && retired.bindingDigest === journal.bindingDigest && retired.journalSha256 === hash(bytes)) return null;
-  }
+  if (readRuntimeHandoffRetirement(owner.journal, bytes, journal)) return null;
   const observation = journal.lastObservation;
   if (observation?.outcome !== 'pending' || typeof observation.code !== 'string' || !observation.code
       || typeof observation.reason !== 'string' || !observation.reason.trim()) return null;

@@ -14,13 +14,17 @@ import path from "node:path";
 import type { CandidateAcceptancePhase, CandidateAcceptanceProjection } from "./contracts.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
-import { getUserHome } from "./platform-paths.js";
-import { readAcceptanceFailure } from "../scripts/acceptance-result.mjs";
-import { ACCEPTANCE_EXPECTED_TOTAL_MS, ACCEPTANCE_STAGES, acceptanceBackstop, parsePhaseLine, ProgressWatch, scriptIdleMs, stageWarning, totalWarning,
+import { getMandibleHome, getUserHome } from "./platform-paths.js";
+import { compactAcceptanceResult, readAcceptanceFailure } from "../scripts/acceptance-result.mjs";
+import { ACCEPTANCE_CERTIFICATE_SCHEMA, ACCEPTANCE_RECEIPT_CAPABILITY } from "../scripts/acceptance-certificate.mjs";
+import { ACCEPTANCE_CLEANUP_MS, ACCEPTANCE_EXPECTED_TOTAL_MS, ACCEPTANCE_STAGES, acceptanceBackstop, parsePhaseLine, ProgressWatch, scriptIdleMs, stageWarning, totalWarning,
   type AcceptanceBackstop, type AcceptancePhaseEvent, type AcceptancePhaseName } from "../scripts/acceptance-progress.mjs";
-import { acceptanceFailure, compactFailure, describeAcceptanceFailure, failureText, sentence, stageActivity } from "../scripts/acceptance-failure.mjs";
+import { acceptanceFailure, describeAcceptanceFailure, failureText, sentence, stageActivity } from "../scripts/acceptance-failure.mjs";
 
 import { runSupervisedCommand, type SupervisedCommandFailure } from "../scripts/process-group-supervisor.mjs";
+import { acceptanceBuildEnvironment, acceptanceBuildOutputs } from "../scripts/desktop-build-layout.mjs";
+import { withOwnedRunLock } from "../scripts/owned-run.mjs";
+import { reclaimAcceptanceScratch, requireIdleAcceptanceWorkspace } from "../scripts/acceptance-workspace.mjs";
 
 export const CANDIDATE_ACCEPTANCE_INTERRUPTED = failureText("environment", "Acceptance stopped because the Mandible daemon restarted while it was running");
 
@@ -62,8 +66,6 @@ export interface CandidateAcceptanceOutcome {
 }
 
 export type CandidateAcceptanceExecutor = (input: CandidateAcceptanceInput) => Promise<CandidateAcceptanceOutcome>;
-
-const MAX_RESULT_CHARS = 64 * 1024;
 
 function subprocessFailureEvidence(error: unknown): Record<string, unknown> | null {
   if (!error || typeof error !== "object" || !("processGroupSettled" in error)) return null;
@@ -268,6 +270,7 @@ export class CandidateAcceptanceRuns {
       finalize = this.prepareFinalization?.(requestId, candidate);
       const input = job.input();
       return this.executor({ ...input, env: { ...input.env, MANDIBLE_ACCEPTANCE_ID: recordId, MANDIBLE_ACCEPTANCE_REQUEST: requestId,
+        [ACCEPTANCE_RECEIPT_CAPABILITY]: ACCEPTANCE_CERTIFICATE_SCHEMA,
         MANDIBLE_ACCEPTANCE_STARTED_AT: String(startedAt),
         MANDIBLE_ACCEPTANCE_TREE: candidate.tree_sha, MANDIBLE_ACCEPTANCE_BASE: candidate.base_sha, MANDIBLE_ACCEPTANCE_HEAD: candidate.head_sha },
         signal: controller.signal, onPhase: event => this.phase(requestId, event) });
@@ -280,34 +283,10 @@ export class CandidateAcceptanceRuns {
   private finish(requestId: string, recordId: string, outcome: CandidateAcceptanceOutcome, finalize?: (recordId: string) => void): void {
     if (this.stopped) return;
     let result: string | null;
-    try { result = outcome.result == null ? null : JSON.stringify(outcome.result) ?? null; }
+    try { result = outcome.result == null ? null : JSON.stringify(compactAcceptanceResult(outcome.result as Record<string, unknown>)); }
     catch (error) {
       result = null;
       outcome = { status: 'failed', result: null, error: failureText('environment', `The acceptance result could not be stored: ${error instanceof Error ? error.message : String(error)}`) };
-    }
-    if (result && result.length > MAX_RESULT_CHARS) {
-      const value = outcome.result as Record<string, unknown>;
-      const checks = value?.checks as { initial_transport_error?: { code?: unknown; message?: unknown }; failure_logs?: unknown; route_cost?: Record<string, unknown> } | undefined;
-      const text = (field: unknown, limit: number) => typeof field === 'string' ? field.slice(0, limit) : null;
-      const failureLogs = Array.isArray(checks?.failure_logs) ? checks.failure_logs
-        .filter(log => log && ['daemon', 'gateway', 'route-cost', 'source-preview'].includes(log.name)).slice(0, 4)
-        .map(log => ({ name: log.name, sha256: text(log.sha256, 64), bytes: typeof log.bytes === 'number' ? log.bytes : null,
-          excerpt: typeof log.excerpt === 'string' ? log.excerpt.slice(-4000) : null })) : undefined;
-      result = JSON.stringify({ truncated: true, status: text(value?.status, 16), candidate: text(value?.candidate, 128), binding: value?.binding, timing: value?.timing, phases: value?.phases, warnings: value?.warnings,
-        secondary_errors: Array.isArray(value?.secondary_errors) ? value.secondary_errors.map(item => text(item, 512)).slice(0, 8) : undefined,
-        subprocess: value?.subprocess, error: text(value?.error, 1024), failure: compactFailure(value?.failure), receipt: text(value?.receipt, 512), checks: {
-          ...(checks?.initial_transport_error ? { initial_transport_error: {
-            code: text(checks.initial_transport_error.code, 64), message: text(checks.initial_transport_error.message, 512),
-          } } : {}),
-          ...(failureLogs ? { failure_logs: failureLogs } : {}),
-          ...(checks?.route_cost ? { route_cost: {
-            complete: checks.route_cost.complete, diagnostic: checks.route_cost.diagnostic,
-            error: text(checks.route_cost.error, 512), counts: checks.route_cost.counts, progress: checks.route_cost.progress,
-            pending_confirmations: Array.isArray(checks.route_cost.pending_confirmations) ? checks.route_cost.pending_confirmations.slice(0, 32) : undefined,
-            routes_not_run: Array.isArray(checks.route_cost.routes_not_run) ? checks.route_cost.routes_not_run.slice(0, 32) : undefined,
-            source_stderr: text(checks.route_cost.source_stderr, 4000),
-          } } : {}),
-        } });
     }
     const close = this.db.prepare(
       "UPDATE auth_candidate_acceptances SET status = ?, finished_at = ?, result_json = ?, error = ? WHERE id = ? AND status = 'running'",
@@ -341,11 +320,99 @@ export function acceptanceCheckoutPath(): string {
   return path.join(getUserHome(), ".cache", "mandible", "acceptance", "checkout");
 }
 
+function prepareAcceptanceCheckoutPath(): string {
+  const home = getUserHome();
+  const checkout = acceptanceCheckoutPath();
+  const relative = path.relative(home, path.dirname(checkout));
+  let directory = fs.realpathSync(home);
+  for (const part of relative.split(path.sep)) {
+    directory = path.join(directory, part);
+    try { fs.mkdirSync(directory, { mode: 0o700 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    if (!fs.lstatSync(directory).isDirectory()) {
+      throw acceptanceFailure("environment", `The acceptance checkout parent at ${directory} must be a canonical directory`);
+    }
+  }
+  return path.join(directory, path.basename(checkout));
+}
+
 const checkoutIdleMs = ACCEPTANCE_STAGES.checkout.idleMs!;
 
 async function git(cwd: string, args: string[], env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<string> {
-  const { stdout } = await runSupervisedCommand("git", args, { cwd, env: { ...env, GIT_OPTIONAL_LOCKS: "0" }, capture: true, idleMs: checkoutIdleMs, graceMs: 750, maxBuffer: 4 * 1024 * 1024, signal });
+  const { stdout, stdoutTruncated } = await runSupervisedCommand("git", args, { cwd, env: { ...env, GIT_OPTIONAL_LOCKS: "0" }, capture: true, idleMs: checkoutIdleMs, graceMs: 750, maxBuffer: 4 * 1024 * 1024, signal });
+  if (stdoutTruncated) throw new Error(`Git ${args[0]} output exceeded the acceptance limit.`);
   return stdout.trim();
+}
+
+function hasUnsettledGroup(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  return ("processGroupSettled" in error && error.processGroupSettled === false)
+    || ("cause" in error && hasUnsettledGroup(error.cause));
+}
+
+class AcceptanceWorkspace {
+  private identity: fs.Stats | null = null;
+  private producersSettled = true;
+
+  constructor(readonly checkout: string, private readonly input: CandidateAcceptanceInput) {}
+
+  async prepare(signal: AbortSignal): Promise<void> {
+    requireIdleAcceptanceWorkspace(path.dirname(this.checkout));
+    const { repoRoot, pinSha, env } = this.input;
+    const registrations = await git(repoRoot, ["worktree", "list", "--porcelain", "-z"], env, signal);
+    const registration = registrations.split("\0\0").map(record => record.split("\0"))
+      .find(fields => fields[0] === `worktree ${this.checkout}`);
+    const existing = fs.lstatSync(this.checkout, { throwIfNoEntry: false });
+    const detachedUnlocked = registration?.includes("detached") && !registration.some(field => /^locked(?: |$)/.test(field));
+    if ((registration && !detachedUnlocked) || (existing && (!existing.isDirectory() || !detachedUnlocked))) {
+      throw acceptanceFailure("environment", `The acceptance checkout at ${this.checkout} is not an unlocked detached worktree of this repository`);
+    }
+    if (!existing) {
+      if (registration) {
+        if (!registration.some(field => /^prunable(?: |$)/.test(field))) {
+          throw acceptanceFailure("environment", `Git has not marked the missing acceptance checkout at ${this.checkout} as prunable`);
+        }
+        await git(repoRoot, ["worktree", "remove", "--force", this.checkout], env, signal);
+      }
+      await git(repoRoot, ["worktree", "add", "--detach", this.checkout, pinSha], env, signal);
+    }
+    const common = fs.realpathSync(await git(repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], env, signal));
+    const gitDirectory = fs.realpathSync(await git(this.checkout, ["rev-parse", "--absolute-git-dir"], env, signal));
+    if (path.dirname(gitDirectory) !== path.join(common, "worktrees")
+        || fs.realpathSync(path.resolve(gitDirectory, fs.readFileSync(path.join(gitDirectory, "gitdir"), "utf8").trim())) !== path.join(this.checkout, ".git")) {
+      throw acceptanceFailure("environment", `Git does not bind ${this.checkout} to the acceptance worktree registration in this repository`);
+    }
+    this.identity = fs.lstatSync(this.checkout);
+    if (existing) {
+      await git(this.checkout, ["checkout", "--detach", "--force", pinSha], env, signal);
+      await git(this.checkout, ["clean", "-ffd"], env, signal);
+    }
+  }
+
+  observeFailure(error: unknown): void {
+    if (hasUnsettledGroup(error)) this.producersSettled = false;
+  }
+
+  async cleanup(): Promise<string | null> {
+    if (!this.producersSettled) return "An acceptance process group did not settle before checkout cleanup.";
+    const recordId = this.input.env.MANDIBLE_ACCEPTANCE_ID;
+    if (recordId) {
+      const error = await reclaimAcceptanceScratch(path.dirname(this.checkout), recordId, this.input.env.MANDIBLE_HOME ?? getMandibleHome());
+      if (error) return error;
+    }
+    if (!this.identity) return null;
+    try {
+      const current = fs.lstatSync(this.checkout);
+      if (!current.isDirectory() || current.dev !== this.identity.dev || current.ino !== this.identity.ino) {
+        throw new Error("The acceptance checkout changed during the run.");
+      }
+      const paths = acceptanceBuildOutputs(this.checkout).map(relative => `:(literal)${relative}`);
+      await git(this.checkout, ["clean", "-ffdx", "--", ...paths], this.input.env, AbortSignal.timeout(ACCEPTANCE_CLEANUP_MS));
+      return null;
+    } catch (error) {
+      return `Could not remove the generated acceptance checkout outputs: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
 }
 
 export interface AcceptanceCommandCompletion {
@@ -376,18 +443,9 @@ export function candidateAcceptanceOutcome(pin: string, run: AcceptanceCommandCo
 }
 
 /** Reset the persistent acceptance checkout to the exact pin and install its dependencies. */
-async function prepareAcceptanceCheckout(input: CandidateAcceptanceInput, signal: AbortSignal): Promise<{ checkout: string; runtime: string; env: NodeJS.ProcessEnv }> {
-  const checkout = acceptanceCheckoutPath();
-  const common = fs.realpathSync(await git(input.repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal));
-  if (!fs.existsSync(checkout)) {
-    fs.mkdirSync(path.dirname(checkout), { recursive: true, mode: 0o700 });
-    await git(input.repoRoot, ["worktree", "add", "--detach", checkout, input.pinSha], input.env, signal);
-  } else {
-    const owner = fs.realpathSync(await git(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"], input.env, signal));
-    if (owner !== common) throw acceptanceFailure("environment", `The acceptance checkout at ${checkout} belongs to another repository, so acceptance left it alone instead of reusing it.`);
-    await git(checkout, ["checkout", "--detach", "--force", input.pinSha], input.env, signal);
-    await git(checkout, ["clean", "-ffd"], input.env, signal);
-  }
+async function prepareAcceptanceCheckout(input: CandidateAcceptanceInput, workspace: AcceptanceWorkspace, signal: AbortSignal): Promise<{ runtime: string; env: NodeJS.ProcessEnv }> {
+  const { checkout } = workspace;
+  await workspace.prepare(signal);
   const checkedOut = await git(checkout, ["rev-parse", "HEAD"], input.env, signal);
   if (checkedOut !== input.pinSha) throw acceptanceFailure("environment", `The acceptance checkout is at commit ${checkedOut} after checking out the candidate ${input.pinSha}.`, { checked_out: checkedOut, candidate: input.pinSha });
   const { stdout: runtimeOut } = await runSupervisedCommand("/bin/sh", [path.join(checkout, "scripts", "bun-runtime.sh")], { cwd: checkout, env: input.env, capture: true, idleMs: checkoutIdleMs, graceMs: 750, signal });
@@ -396,13 +454,13 @@ async function prepareAcceptanceCheckout(input: CandidateAcceptanceInput, signal
   // CLI, then native macOS tools (a Homebrew `xattr` breaks app bundling),
   // then Cargo and the inherited hook PATH.
   const { stdout: runtimePath } = await runSupervisedCommand(runtime, [path.join(checkout, "scripts", "runtime-environment-path.mjs"), runtime, checkout], { cwd: checkout, env: input.env, capture: true, idleMs: checkoutIdleMs, graceMs: 750, signal });
-  const env = { ...input.env, MANDIBLE_RUNTIME: runtime, PATH: runtimePath.trim() };
+  const env = { ...acceptanceBuildEnvironment(input.env), MANDIBLE_RUNTIME: runtime, PATH: runtimePath.trim() };
   await runSupervisedCommand(runtime, ["install", "--frozen-lockfile"], { cwd: checkout, env, capture: true, idleMs: checkoutIdleMs, graceMs: 750, maxBuffer: 16 * 1024 * 1024, signal })
     .catch((error: SupervisedCommandFailure) => {
       if (error.code === "HUNG" || error.aborted || error.exitCode == null) throw error;
       throw acceptanceFailure("either", `Installing the candidate's dependencies (bun install --frozen-lockfile) failed with exit code ${error.exitCode}. A lockfile that does not match package.json points at the branch; a network or registry problem points at the environment.`);
     });
-  return { checkout, runtime, env };
+  return { runtime, env };
 }
 
 /**
@@ -459,18 +517,40 @@ function withCheckoutPhase(outcome: CandidateAcceptanceOutcome, checkout: Checko
 export const runCandidateAcceptance: CandidateAcceptanceExecutor = async (input) => {
   const startedAt = Number(input.env.MANDIBLE_ACCEPTANCE_STARTED_AT ?? Date.now());
   const backstop = acceptanceBackstop(input.signal, { startedAt });
-  try { return await acceptanceRun(input, startedAt, backstop); }
+  try {
+    const checkout = prepareAcceptanceCheckoutPath();
+    return await withOwnedRunLock(checkout, async (_token: string, assertHeld: () => void) => {
+      const workspace = new AcceptanceWorkspace(checkout, input);
+      let outcome: CandidateAcceptanceOutcome;
+      let cleanupError: string | null;
+      try {
+        outcome = await acceptanceRun(input, workspace, startedAt, backstop);
+      } finally {
+        assertHeld();
+        cleanupError = await workspace.cleanup();
+      }
+      if (!cleanupError && outcome.status === 'failed' && outcome.result && typeof outcome.result === 'object'
+          && 'receipt' in outcome.result && typeof outcome.result.receipt === 'string' && path.isAbsolute(outcome.result.receipt)) {
+        const { receipt: _removedCheckpoint, ...result } = outcome.result;
+        return { ...outcome, result };
+      }
+      if (!cleanupError) return outcome;
+      return { status: "failed", error: outcome.error ?? describeAcceptanceFailure(new Error(cleanupError), "finalization").text,
+        result: { ...(outcome.result as object | null), cleanup_error: cleanupError } };
+    }, { recoverStale: true });
+  }
   finally { backstop.close(); }
 };
 
-async function acceptanceRun(input: CandidateAcceptanceInput, startedAt: number, backstop: AcceptanceBackstop): Promise<CandidateAcceptanceOutcome> {
+async function acceptanceRun(input: CandidateAcceptanceInput, workspace: AcceptanceWorkspace, startedAt: number, backstop: AcceptanceBackstop): Promise<CandidateAcceptanceOutcome> {
   const onPhase = (event: AcceptancePhaseEvent) => {
     backstop.enter(event.name as AcceptancePhaseName);
     input.onPhase?.(event);
   };
   const checkoutStarted = Date.now();
   onPhase({ name: "checkout", status: "running", elapsed_ms: null });
-  const prepared = await runAcceptanceCommand(backstop, signal => prepareAcceptanceCheckout(input, signal)).then(value => ({ value }), (error: unknown) => ({ error }));
+  const prepared = await runAcceptanceCommand(backstop, signal => prepareAcceptanceCheckout(input, workspace, signal))
+    .then(value => ({ value }), (error: unknown) => { workspace.observeFailure(error); return { error }; });
   const elapsed = Date.now() - checkoutStarted;
   const checkout: CheckoutPhase = { status: "error" in prepared ? "failed" : "passed", started_at: checkoutStarted, elapsed_ms: elapsed,
     expected_ms: ACCEPTANCE_STAGES.checkout.expectedMs, over_expected: elapsed > ACCEPTANCE_STAGES.checkout.expectedMs };
@@ -479,13 +559,15 @@ async function acceptanceRun(input: CandidateAcceptanceInput, startedAt: number,
     const subprocess = subprocessFailureEvidence(prepared.error);
     return withCheckoutPhase({ status: "failed", result: subprocess ? { subprocess } : null, error: describeAcceptanceFailure(prepared.error, "checkout").text }, checkout);
   }
-  const { checkout: checkoutPath, runtime, env } = prepared.value;
+  const { checkout: checkoutPath } = workspace;
+  const { runtime, env } = prepared.value;
   const { watch, onOutput } = acceptanceScriptWatch(onPhase);
   const run = await runAcceptanceCommand(backstop, signal => runSupervisedCommand(runtime, [path.join(checkoutPath, "scripts", "candidate-acceptance.mjs"), "--project", input.projectId, "--work-unit", input.workUnitId],
-    { cwd: checkoutPath, env, capture: true, watch, onOutput, graceMs: 750, maxBuffer: 16 * 1024 * 1024, signal }))
+    { cwd: checkoutPath, env, capture: true, watch, onOutput, graceMs: ACCEPTANCE_CLEANUP_MS, maxBuffer: 16 * 1024 * 1024, signal }))
     .then(result => ({ ...result, failure: null as string | null, diagnostics: null as Record<string, unknown> | null }))
     .catch((error: SupervisedCommandFailure & { cause?: unknown }) => {
       const subprocess = (error.code === "BACKSTOP" ? error.cause : error) as SupervisedCommandFailure;
+      workspace.observeFailure(subprocess);
       return { code: subprocess.exitCode ?? null, stdout: subprocess.stdout ?? "", stderr: subprocess.stderr ?? "", failure: error.message, diagnostics: subprocessFailureEvidence(subprocess),
         backstop: error.code === "BACKSTOP" ? error : null };
     });

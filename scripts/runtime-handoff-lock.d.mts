@@ -24,3 +24,5 @@ export function runtimeHandoffSettled(journal: unknown): boolean;
 export function readRuntimeHandoffLock(home: string): RuntimeHandoffLock | null;
 export function runtimeHandoffLockRefusal(lock: RuntimeHandoffLock): string;
 export function runtimeHandoffBindingDigest(binding: unknown): string;
+
+export function readRuntimeHandoffRetirement(journalFile: string, bytes?: Buffer | string, journal?: unknown): { retirement: unknown; binding: import('../src/runtime-handoff-proof.js').RuntimePublicationBinding } | null;

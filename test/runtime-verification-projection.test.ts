@@ -81,7 +81,7 @@ it.each(['owner', 'acceptance', 'retirement', 'schema'] as const)('refuses a sta
   if (change === 'acceptance') f.db.prepare("UPDATE auth_hook_executions SET state = 'complete' WHERE id = ?").run(f.executionId);
   if (change === 'schema') { f.journal.schema = 'unknown'; f.write(); }
   if (change === 'retirement') fs.writeFileSync(path.join(f.dir, 'retirement.json'), JSON.stringify({ schema: 'mandible-runtime-handoff-retirement@1',
-    requestId: f.requestId, executionId: f.executionId, bindingDigest: f.digest, journalSha256: createHash('sha256').update(fs.readFileSync(f.file)).digest('hex') }));
+    requestId: f.requestId, executionId: f.executionId, bindingDigest: f.digest, helperBootedOut: false, journalSha256: createHash('sha256').update(fs.readFileSync(f.file)).digest('hex') }));
   expect(f.queue.convergenceForRequest(f.requestId)).not.toHaveProperty('runtime_verification');
 });
 

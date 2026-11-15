@@ -4,4 +4,5 @@ export interface AcceptanceResultBinding {
   started_at: number;
 }
 export function acceptanceResultPath(cache: string, runId: string): string;
+export function compactAcceptanceResult(result: Record<string, unknown>): Record<string, unknown>;
 export function readAcceptanceFailure(cache: string, binding: AcceptanceResultBinding): { result: Record<string, unknown> | null; error: string | null };

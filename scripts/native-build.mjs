@@ -90,7 +90,8 @@ export function stageNativeBuild({ worktree, root, candidate }) {
     TMPDIR: temporary, TMP: temporary, TEMP: temporary, MANDIBLE_DESKTOP_SWIFT_CACHE: path.join(buildRoot, 'swift-cache'),
     CARGO_PROFILE_DEV_DEBUG: '0', MANDIBLE_DESKTOP_BOOTSTRAP_DIR: bootstrap,
     MANDIBLE_DESKTOP_PAYLOAD_CONTENTS: payload, MANDIBLE_DESKTOP_BINARIES_DIR: binaries,
-    MANDIBLE_DESKTOP_SQLITE_LIBRARY: sqliteLibrary, MANDIBLE_DESKTOP_HELPERS: generated };
+    MANDIBLE_DESKTOP_SQLITE_LIBRARY: sqliteLibrary, MANDIBLE_DESKTOP_TRUST_HELPER: path.join(generated, 'local-ca-trust-helper'),
+    MANDIBLE_DESKTOP_APPROVAL_HELPER: path.join(generated, 'MandibleApproval.app') };
   const toolchain = nativeToolchain(worktree);
   const fingerprint = createHash('sha256').update(JSON.stringify({ candidate, config, toolchain,
     profile: 'dev-debug-0', cargoBuildDir: env.CARGO_BUILD_BUILD_DIR, cargoTargetDir: env.CARGO_TARGET_DIR })).digest('hex');

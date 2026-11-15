@@ -6,7 +6,7 @@ import { compiledBuildDigest, readBuildRevision, runtimeDependenciesDigest } fro
 import type { Db } from "./db.js";
 import { readGitCommitFacts } from "./git-object-facts.js";
 import { canonicalizeChangeMessage } from "./auth-change-message.js";
-import { acceptedReleaseSelection, type AcceptedReleaseSelection } from './accepted-release-selection.js';
+import { acceptedReleaseSelection, AcceptedReleaseSelectionRefusal, type AcceptedReleaseSelection } from './accepted-release-selection.js';
 import { authorizedMergeSignerLines, extractAtomicMergeState, extractSuccessfulMergeCommitSha, verifyApprovedMerge } from "./auth-signature-verification.js";
 import { addAttributionEvidence, getAttributionEvidence } from "./users/store.js";
 import { systemAction } from "./identity/resolver.js";
@@ -90,17 +90,18 @@ export async function validateRuntimeSource(db: Db, sourcePath: string, destinat
   }
 }
 
-const fail = (reason: string): never => { throw new Error(`Runtime handoff publication refused: ${reason}`); };
+class RuntimePublicationRefusal extends Error {}
+const fail = (reason: string): never => { throw new RuntimePublicationRefusal(`Runtime handoff publication refused: ${reason}`); };
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-function readPublicationState(db: Db, binding: RuntimePublicationBinding) {
+function readPublicationState(db: Db, binding: RuntimeHookIdentity & Pick<RuntimePublicationBinding, 'delivery' | 'acceptedRelease' | 'mergeCommit' | 'mergeBase' | 'mergeHead'>) {
   const row = db.prepare("SELECT * FROM auth_requests WHERE id = ?").get(binding.requestId) as Record<string, any> | undefined;
   const hook = db.prepare("SELECT * FROM auth_hook_executions WHERE id = ?").get(binding.executionId) as Record<string, any> | undefined;
   if (hook?.state === 'retired') fail('delivery was explicitly retired');
   if (!row || !hook || binding.hookId !== "builtin-mandible-rebuild" || row.type !== "merge" || !["executing", "completed"].includes(row.status) ||
       row.status === "completed" && row.exit_code !== 0 || !row.approved_by_user_id ||
       hook.auth_request_id !== row.id || hook.hook_id !== binding.hookId || hook.command_digest !== binding.commandDigest ||
-      createHash("sha256").update(hook.command).digest("hex") !== binding.commandDigest) throw new Error("Runtime handoff publication refused: request or hook binding differs");
+      createHash("sha256").update(hook.command).digest("hex") !== binding.commandDigest) throw new RuntimePublicationRefusal("Runtime handoff publication refused: request or hook binding differs");
   const commit = extractSuccessfulMergeCommitSha(row.output ?? "");
   if (!commit || binding.mergeCommit && binding.mergeCommit !== commit) fail("exact publication receipt is unavailable");
   const events = db.prepare("SELECT revision, snapshot_json, snapshot_sha256 FROM auth_request_lifecycle_events WHERE auth_request_id = ? AND next_status IN ('approved', 'executing') ORDER BY revision DESC").all(row.id) as Array<{ revision: number; snapshot_json: string; snapshot_sha256: string }>;
@@ -133,6 +134,17 @@ function readPublicationState(db: Db, binding: RuntimePublicationBinding) {
   if (atomic.invalid || atomic.prepared && (atomic.prepared.merge_sha !== commit || atomic.prepared.base_sha !== base || atomic.prepared.head_sha !== head || atomic.prepared.tree_sha !== tree) ||
       atomic.applied && (atomic.applied.merge_sha !== commit || atomic.applied.base_sha !== base)) fail("atomic publication evidence differs");
   return { row, hook, event: event!, frozen, base, head, tree, commit: commit!, selected, liveSelection };
+}
+
+/** Check the frozen ledger binding that a pre-admission hook retry would consume. */
+export function runtimePublicationSelectsRelease(db: Db, hook: RuntimeHookIdentity, selection: AcceptedReleaseSelection): boolean {
+  try {
+    const state = readPublicationState(db, { ...hook, delivery: 'accepted-release', acceptedRelease: selection });
+    return !!state.selected;
+  } catch (error) {
+    if (error instanceof RuntimePublicationRefusal || error instanceof AcceptedReleaseSelectionRefusal) return false;
+    throw error;
+  }
 }
 
 type PublicationState = ReturnType<typeof readPublicationState>;
