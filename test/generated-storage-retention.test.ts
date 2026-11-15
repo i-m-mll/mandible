@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import Database from '../src/sqlite.ts';
-import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun, withOwnedRunLock, recoverGeneratedReceipt } from '../scripts/owned-run.mjs';
+import { createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun, withOwnedRunLock, recoverOwnedRunDisposition } from '../scripts/owned-run.mjs';
 import { processIdentity, withInstallationGatewayLock } from '../scripts/lifecycle-lock.mjs';
 import { reconcileGeneratedScratch } from '../scripts/generated-scratch.mjs';
 import { createPendingRelease, disposePendingRelease, retainAcceptedRelease, applicationIdentity, assertAcceptedReleaseAvailable, disposeAcceptedRelease, acceptedReleaseFilesystemReferences } from '../scripts/accepted-release.mjs';
@@ -64,7 +64,7 @@ it('recovers dead disposable scratch and interrupted deletion; live, unknown, an
     const receipt = JSON.parse(fs.readFileSync(final.ownership.receipt, 'utf8'));
     expect(receipt).toMatchObject({ outcome: 'failed', cleanup: 'completed', summary: 'Measured failure; no replay.' });
     saveOwnedMetadata(final.ownership.receipt, { ...receipt, cleanup: 'pending' });
-    recoverGeneratedReceipt(final.ownership.receipt, { ...idle, apply: true });
+    recoverOwnedRunDisposition(final.ownership.receipt, { ...idle, apply: true });
     expect(JSON.parse(fs.readFileSync(final.ownership.receipt, 'utf8')).cleanup).toBe('completed');
   } finally { fs.rmSync(parent, { recursive: true, force: true }); }
 });
@@ -289,5 +289,39 @@ it('retries interrupted lock retirement from the v2 compact outcome', async () =
     expect(await reconcileAcceptedReleases(db, home, { apply: true })).toContainEqual({ root: pending.root, action: 'retired-lock' });
     expect(fs.existsSync(`${lock}.process`)).toBe(false);
     expect(await reconcileAcceptedReleases(db, home, { apply: true })).toEqual([]);
+  } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+it('reconciles accepted dispositions without cached admission proof and only completes after root removal', async () => {
+  const home = temporary();
+  const db = retentionDb(path.join(home, 'db'));
+  try {
+    const producer = await deadOwner();
+    const fresh = await release(home, db, 'cache-missing', 'withdrawn', producer);
+    fs.unlinkSync(fresh.evidence);
+    const prior = await release(home, db, 'premature-completed', 'withdrawn', producer);
+    await disposeAcceptedRelease(prior.reference, candidate, 'Recorded disposal before crash.', { home, database: db.name, deferCleanup: true });
+    const priorOutcome = path.join(home, 'accepted-releases/.receipts/premature-completed.json');
+    const receipt = JSON.parse(fs.readFileSync(priorOutcome, 'utf8'));
+    saveOwnedMetadata(priorOutcome, { ...receipt, cleanup: 'completed', remaining: [] });
+    fs.unlinkSync(prior.evidence);
+    expect((await reconcileAcceptedReleases(db, home, { limit: 100 })).filter(result => result.action === 'dispose' || result.action === 'delete-owned')).toHaveLength(2);
+
+    const remove = fs.rmdirSync;
+    const interruption = vi.spyOn(fs, 'rmdirSync').mockImplementation((file, options) => {
+      if (file === prior.root) {
+        expect(JSON.parse(fs.readFileSync(priorOutcome, 'utf8')).cleanup).toBe('pending');
+        remove(file, options);
+        throw new Error('interrupted after root removal');
+      }
+      remove(file, options);
+    });
+    try { await reconcileAcceptedReleases(db, home, { apply: true, limit: 100 }); }
+    finally { interruption.mockRestore(); }
+    expect(fs.existsSync(fresh.root)).toBe(false);
+    expect(fs.existsSync(prior.root)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(priorOutcome, 'utf8')).cleanup).toBe('pending');
+    await reconcileAcceptedReleases(db, home, { apply: true, limit: 100 });
+    expect(JSON.parse(fs.readFileSync(priorOutcome, 'utf8')).cleanup).toBe('completed');
   } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });

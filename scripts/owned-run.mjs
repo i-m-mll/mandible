@@ -113,7 +113,7 @@ function contained(root, relative, allowLeafLink = false) {
 export function ownedRunIdentityMatches(root, run) {
   if (!run) return false;
   const stat = fs.lstatSync(root);
-  return isOwnedRunSchema(run.schema) && run.root === fs.realpathSync(root)
+  return stat.isDirectory() && isOwnedRunSchema(run.schema) && run.root === fs.realpathSync(root)
     && !stat.isSymbolicLink() && fs.realpathSync(root) === run.root
     && stat.dev === run.rootIdentity?.dev && stat.ino === run.rootIdentity?.ino;
 }
@@ -127,19 +127,19 @@ export function ownedRunHandle(metadata) {
 export function ownedRunReceipt(handle) {
   if (!handle?.runId || !/^[a-zA-Z0-9-]+$/.test(handle.runId)) throw new Error('Exact owned run handle required');
   const file = path.join(path.dirname(path.resolve(handle.root)), '.receipts', `${handle.runId}.json`);
-  if (!fs.existsSync(file)) return null;
+  if (!fs.lstatSync(file, { throwIfNoEntry: false })) return null;
   const receipt = readOwnedMetadata(file);
   if (receipt.runId !== handle.runId || receipt.root !== path.resolve(handle.root)) throw new Error('Compact receipt identity changed');
   return { ...receipt, receipt: file };
 }
 
-function inventory(root, relative, hashBytes = true) {
+export function ownedRunInventory(root, relative, hashBytes = true) {
   const target = contained(root, relative, true);
   let stat;
   try { stat = fs.lstatSync(target); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
   if (stat.isSymbolicLink()) return [{ path: relative, kind: 'symlink', link: fs.readlinkSync(target), dev: stat.dev, ino: stat.ino }];
   if (stat.isDirectory()) return [
-    ...fs.readdirSync(target).flatMap(child => inventory(root, path.join(relative, child), hashBytes)),
+    ...fs.readdirSync(target).flatMap(child => ownedRunInventory(root, path.join(relative, child), hashBytes)),
     { path: relative, kind: 'directory', dev: stat.dev, ino: stat.ino },
   ];
   if (!stat.isFile()) throw new Error(`Unclassified owned entry: ${target}`);
@@ -159,7 +159,8 @@ export function validateOwnedRunFinalization(root, run) {
     return { ok: false, reason: 'compact outcome path is outside owner receipts' };
   }
   const receipt = readOwnedMetadata(run.receipt);
-  if (receipt.schema !== run.schema || receipt.runId !== run.runId || receipt.outcome !== run.outcome || receipt.manifestDigest !== outputDigest(run.outputs)) {
+  if (!validOwnedRunOutcome(run.receipt, receipt) || !matchesOutcomeOwner(run, receipt)
+      || receipt.outcome !== run.outcome || receipt.manifestDigest !== outputDigest(run.outputs)) {
     return { ok: false, reason: 'compact outcome does not match owner' };
   }
   return { ok: true, receipt };
@@ -200,7 +201,7 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
     if (!consumers.idle) throw new Error(consumers.reason);
   }
   const outputs = run.outputs.map(output => {
-    const manifest = disposableGenerated ? [] : inventory(root, output.path, output.kind === 'interactive');
+    const manifest = disposableGenerated ? [] : ownedRunInventory(root, output.path, output.kind === 'interactive');
     if (output.kind === 'interactive' && manifest.length) {
       if (disposition === 'transferred') {
         if (!transferReference?.trim()) throw new Error('Transfer requires the established accepted output reference');
@@ -228,26 +229,82 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
   return metadata;
 }
 
-/** Resume deletion after metadata was unlinked, using the immutable root identity in the external outcome. */
-export function recoverGeneratedReceipt(file, { apply = false, inspect = inspectRunConsumers } = {}) {
+function rootStat(file) {
+  return fs.lstatSync(file, { throwIfNoEntry: false });
+}
+
+function beginCleanup(file, receipt) {
+  if (receipt.cleanup !== 'pending') saveOwnedMetadata(file, { ...receipt, cleanup: 'pending' });
+}
+
+function publishCleanup(file, receipt, remaining, details = {}) {
+  const { reason: _previousFailure, receipt: _file, ...outcome } = receipt;
+  if (!remaining.length) {
+    if (rootStat(receipt.root)) throw new Error('Owned run root remains before cleanup completion.');
+    const directory = fs.openSync(path.dirname(receipt.root), 'r');
+    try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+  }
+  saveOwnedMetadata(file, { ...outcome, ...details, cleanup: remaining.length ? 'pending' : 'completed', remaining });
+}
+
+function removeOwnedRoot(root, metadataFile) {
+  if (metadataFile) fs.unlinkSync(metadataFile);
+  fs.rmdirSync(root);
+}
+
+function validOwnedRunOutcome(file, receipt) {
+  return isOwnedRunSchema(receipt.schema) && typeof receipt.root === 'string' && path.resolve(receipt.root) === receipt.root
+    && /^[a-zA-Z0-9-]+$/.test(receipt.runId ?? '') && fs.realpathSync(file) === path.join(path.dirname(receipt.root), '.receipts', `${receipt.runId}.json`)
+    && ['accepted', 'assessed', 'failed', 'abandoned'].includes(receipt.outcome) && (receipt.outcome !== 'accepted' || receipt.converged === true)
+    && ['pending', 'completed'].includes(receipt.cleanup) && /^[a-f0-9]{64}$/.test(receipt.manifestDigest ?? '')
+    && Number.isSafeInteger(receipt.rootIdentity?.dev) && Number.isSafeInteger(receipt.rootIdentity?.ino);
+}
+
+function matchesOutcomeOwner(run, receipt) {
+  return run?.runId === receipt.runId && run.schema === receipt.schema && run.root === receipt.root
+    && run.instanceId === receipt.instanceId && run.project === receipt.project && run.workUnit === receipt.workUnit
+    && run.rootIdentity?.dev === receipt.rootIdentity.dev && run.rootIdentity?.ino === receipt.rootIdentity.ino;
+}
+
+/** Recover a durable disposition after interruption without relying on older metadata. */
+export function recoverOwnedRunDisposition(file, { apply = false, inspect = inspectRunConsumers } = {}) {
   const receipt = readOwnedMetadata(file);
-  if (!isOwnedRunSchema(receipt.schema) || !receipt.generatedRecovery || !receipt.root
-      || file !== path.join(path.dirname(receipt.root), '.receipts', `${receipt.runId}.json`)) return { action: 'skip', reason: 'no generated recovery authority' };
-  if (!fs.existsSync(receipt.root)) {
-    if (apply && receipt.cleanup !== 'completed') saveOwnedMetadata(file, { ...receipt, cleanup: 'completed', remaining: [] });
+  if (!validOwnedRunOutcome(file, receipt)) return { action: 'skip', reason: 'no exact terminal disposition authority' };
+  const root = receipt.root;
+  if (!rootStat(root)) {
+    if (apply && receipt.cleanup !== 'completed') publishCleanup(file, receipt, []);
     return { action: 'disposed', reason: 'root removed; external outcome retained' };
   }
-  const root = receipt.root;
-  if (fs.existsSync(path.join(root, 'metadata.json'))) return { action: 'skip', reason: 'metadata owns recovery' };
-  const run = { schema: receipt.schema, root, rootIdentity: receipt.rootIdentity };
-  if (!identityMatches(root, run)) return { action: 'skip', reason: 'root identity changed' };
+  if (!identityMatches(root, receipt)) return { action: 'skip', reason: 'root identity changed; explicit recovery required' };
+  const candidate = path.join(root, 'metadata.json');
+  const metadataFile = rootStat(candidate) ? candidate : null;
+  const recovery = receipt.generatedRecovery;
+  if (metadataFile) {
+    const { ownership } = readOwnedMetadata(metadataFile);
+    if (!matchesOutcomeOwner(ownership, receipt)) return { action: 'skip', reason: 'metadata disagrees with the terminal outcome' };
+    if (ownership.state === 'terminal') return cleanupOwnedRun(metadataFile, { apply, inspect });
+    if (ownership.state !== 'creating' || !ownership.disposable || !recovery
+        || !ownership.outputs.every(output => output.kind === 'generated')
+        || outputDigest(ownership.outputs.map(output => ({ ...output, disposition: 'disposable', manifest: [] }))) !== receipt.manifestDigest
+        || JSON.stringify(ownership.outputs.map(output => output.path)) !== JSON.stringify(recovery.outputs)) {
+      return { action: 'skip', reason: 'unresolved owner metadata requires explicit recovery' };
+    }
+  }
+  if (recovery && (!Array.isArray(recovery.outputs) || !recovery.outputs.length)) {
+    return { action: 'skip', reason: 'invalid generated recovery inventory' };
+  }
+  const paths = recovery?.outputs.map(relative => contained(root, relative, true)) ?? [];
+  if (!recovery && fs.readdirSync(root).length) {
+    return { action: 'skip', reason: 'inventoried root still has entries without terminal metadata' };
+  }
   const consumers = inspect(root);
   if (!consumers.idle) return { action: 'skip', reason: consumers.reason };
-  if (!apply) return { action: 'delete-owned', reason: 'external generated outcome owns interrupted deletion' };
-  for (const relative of receipt.generatedRecovery.outputs) fs.rmSync(contained(root, relative, true), { recursive: true, force: true });
-  const remaining = fs.readdirSync(root);
-  if (!remaining.length) fs.rmdirSync(root);
-  saveOwnedMetadata(file, { ...receipt, cleanup: remaining.length ? 'pending' : 'completed', remaining });
+  if (!apply) return { action: 'delete-owned', reason: 'external disposition owns interrupted deletion' };
+  beginCleanup(file, receipt);
+  for (const owned of paths) fs.rmSync(owned, { recursive: true, force: true });
+  const remaining = fs.readdirSync(root).filter(name => !metadataFile || name !== path.basename(metadataFile));
+  if (!remaining.length) removeOwnedRoot(root, metadataFile);
+  publishCleanup(file, receipt, remaining);
   return { action: remaining.length ? 'cleanup-pending' : 'delete-owned', remaining, receipt: file };
 }
 
@@ -269,10 +326,11 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
     if (!apply) return { action: 'delete-owned', reason: 'terminal disposable generated run may be removed', bytes: null, reclaimedBytes: null };
     if (!identityMatches(root, run) || readOwnedMetadata(metadataFile).ownership.revision !== run.revision) return blocked('owned root or metadata revision changed');
     try {
+      beginCleanup(run.receipt, receipt);
       for (const output of run.outputs) fs.rmSync(contained(root, output.path, true), { recursive: true, force: true });
       const extras = fs.readdirSync(root).filter(name => name !== path.basename(metadataFile));
-      saveOwnedMetadata(run.receipt, { ...receipt, cleanup: extras.length ? 'pending' : 'completed', remaining: extras, physicalRecovery: 'not measured' });
-      if (!extras.length) { fs.unlinkSync(metadataFile); fs.rmdirSync(root); }
+      if (!extras.length) removeOwnedRoot(root, metadataFile);
+      publishCleanup(run.receipt, receipt, extras, { physicalRecovery: 'not measured' });
       return { action: 'delete-owned', reason: extras.length ? 'unknown entries preserved' : 'terminal disposable generated run removed', bytes: null, reclaimedBytes: null, remaining: extras, receipt: run.receipt };
     } catch (error) {
       saveOwnedMetadata(run.receipt, { ...receipt, cleanup: 'pending', reason: String(error) });
@@ -294,6 +352,7 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
     let stat;
     try { stat = fs.lstatSync(target); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
     if (stat.dev !== file.dev || stat.ino !== file.ino
+      || (file.kind === 'directory' && !stat.isDirectory())
       || (file.kind === 'symlink' && (!stat.isSymbolicLink() || fs.readlinkSync(target) !== file.link))
       || (file.kind === 'file' && (!stat.isFile() || stat.size !== file.size || (file.sha256 && createHash('sha256').update(fs.readFileSync(target)).digest('hex') !== file.sha256)))) {
       return blocked(`owned bytes changed after disposition: ${file.path}`);
@@ -305,6 +364,7 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
   if (readOwnedMetadata(metadataFile).ownership.revision !== run.revision) return blocked('metadata revision changed');
   let reclaimedBytes = 0;
   try {
+    beginCleanup(run.receipt, receipt);
     for (const file of remaining) {
       const target = contained(root, file.path, file.kind === 'symlink');
       if (file.kind === 'directory') {
@@ -312,16 +372,16 @@ export function cleanupOwnedRun(metadataFile, { apply = false, inspect = inspect
       } else { fs.unlinkSync(target); reclaimedBytes += file.size ?? 0; }
     }
     const extras = fs.readdirSync(root).filter(name => name !== path.basename(metadataFile));
-    run.cleanup = { state: extras.length ? 'pending' : 'completed', remaining: extras };
-    run.revision += 1;
-    saveOwnedMetadata(metadataFile, metadata);
-    saveOwnedMetadata(run.receipt, { ...receipt, cleanup: run.cleanup.state, remaining: extras, unlinkedApparentBytes: reclaimedBytes, physicalRecovery: 'not measured' });
-    if (!extras.length) { fs.unlinkSync(metadataFile); fs.rmdirSync(root); }
+    if (extras.length) {
+      run.cleanup = { state: 'pending', remaining: extras };
+      run.revision += 1;
+      saveOwnedMetadata(metadataFile, metadata);
+    } else removeOwnedRoot(root, metadataFile);
+    publishCleanup(run.receipt, receipt, extras, { unlinkedApparentBytes: (receipt.unlinkedApparentBytes ?? 0) + reclaimedBytes, physicalRecovery: 'not measured' });
     return { action: 'delete-owned', reason: extras.length ? 'unknown entries preserved; owner action required' : 'owned intermediates removed; compact receipt retained', bytes, reclaimedBytes, remaining: extras, receipt: run.receipt };
   } catch (error) {
-    run.cleanup = { state: 'pending', reason: String(error), remaining: files.filter(file => fs.existsSync(path.join(root, file.path))).map(file => file.path) };
-    run.revision += 1;
-    saveOwnedMetadata(metadataFile, metadata);
-    return { action: 'cleanup-pending', reason: String(error), bytes, reclaimedBytes, remaining: run.cleanup.remaining };
+    const surviving = files.filter(file => rootStat(path.join(root, file.path))).map(file => file.path);
+    saveOwnedMetadata(run.receipt, { ...receipt, cleanup: 'pending', reason: String(error), remaining: surviving, unlinkedApparentBytes: (receipt.unlinkedApparentBytes ?? 0) + reclaimedBytes });
+    return { action: 'cleanup-pending', reason: String(error), bytes, reclaimedBytes, remaining: surviving };
   }
 }

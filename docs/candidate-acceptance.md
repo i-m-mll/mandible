@@ -95,6 +95,22 @@ isolated installation. Inventory opens the ledger read-only and changes no files
 `disposed` reports intentional payload removal with its durable cleanup outcome.
 `cleanup-pending` retains the reason and is retried by maintenance.
 
+When a recorded discard leaves an accepted release on disk, inspect one exact run UUID with the recovery command. It verifies the sealed application and terminal disposition, and reports current installation, handoff, ledger and consumer holds. It can classify historical disposition when the original acceptance evidence was in excluded scratch storage.
+
+```bash
+scripts/bun-runtime.sh --exec scripts/recover-restored-accepted-release.mjs <run-uuid>
+scripts/bun-runtime.sh --exec scripts/recover-restored-accepted-release.mjs <run-uuid> --apply <dry-run-token>
+```
+
+Take a fresh, consistent online ledger backup before applying recovery to a live installation. Apply rechecks the reviewed evidence and current holds, then renames the restored directory into `accepted-releases/.restored-quarantine/<run-uuid>` on the same volume. The adjacent recovery receipt records the exact move and supports retry after interruption. Keep it with the quarantined directory for reversal. The accepted-release seal and compact outcome remain in `.receipts`, and moving the directory does not reclaim its storage. Admission and installation still require the original acceptance evidence.
+
+Purge a reviewed quarantined release with a separate dry run and token. Purge records the verified inventory before unlinking and can resume with the same token after interruption. Both historical receipts remain available.
+
+```bash
+scripts/bun-runtime.sh --exec scripts/recover-restored-accepted-release.mjs <run-uuid> --purge
+scripts/bun-runtime.sh --exec scripts/recover-restored-accepted-release.mjs <run-uuid> --purge --apply <purge-token>
+```
+
 Retain a run for investigation with `--apply --retain <metadata.json> --reason
 <need> --review-by <ISO-date>`; release it with `--apply --release <metadata.json>
 --reason <resolution>`. A review deadline never grants deletion authority.

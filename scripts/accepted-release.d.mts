@@ -1,3 +1,4 @@
+import type { OwnedRunOutcome } from './owned-run.mjs';
 import type { InstalledRelease } from './installed-release.mjs';
 import type { AcceptanceCertification, ACCEPTANCE_CONTRACT } from './acceptance-certificate.mjs';
 export interface AcceptedReleaseCandidate { pin_sha: string; tree_sha: string; base_sha: string; head_sha: string }
@@ -26,6 +27,8 @@ export function applicationIdentity(app: string): string;
 export function assertAcceptedReleaseAvailable(reference: string): void;
 export function handoffRetainedReleases(journal: { phase?: string; helperFencedAt?: number; cleanup?: { state?: string }; attempt?: { fence?: unknown }; mutationFence?: unknown; binding?: { acceptedRelease?: { reference?: string }; bundleOwner?: { acceptedRelease?: string } } }): string[];
 export function acceptedReleaseFilesystemReferences(home: string, reference: string): string[];
+export function acceptedReleaseDisposition(receipt: AcceptedReleaseReceipt): OwnedRunOutcome | null;
+export function readImmutableAcceptedRelease(reference: string, expectedCandidate?: AcceptedReleaseCandidate): AcceptedReleaseReceipt;
 export function readAcceptedReleaseReceipt(reference: string, expectedCandidate?: AcceptedReleaseCandidate): AcceptedReleaseReceipt;
 export function readAcceptedInstalledRelease(receipt: AcceptedReleaseReceipt, resources: string): InstalledRelease;
 export function resolveAcceptedRelease(reference: string, expectedCandidate?: AcceptedReleaseCandidate): { receipt: AcceptedReleaseReceipt; app: string; resources: string; release: InstalledRelease };

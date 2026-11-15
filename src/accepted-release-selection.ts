@@ -1,4 +1,4 @@
-import { resolveAcceptedRelease, readAcceptedReleaseReceipt, assertAcceptedReleaseAvailable } from '../scripts/accepted-release.mjs';
+import { resolveAcceptedRelease, readAcceptedReleaseReceipt, readImmutableAcceptedRelease, assertAcceptedReleaseAvailable } from '../scripts/accepted-release.mjs';
 import type { AcceptedReleaseCandidate } from '../scripts/accepted-release.mjs';
 import type { Db } from './db.js';
 import type { AuthRequest } from './types.js';
@@ -69,6 +69,14 @@ export function validateAcceptedReleaseSelection(db: Db, request: Record<string,
 
 /** Historical selection remains verifiable after its executable custody was disposed. */
 export function readAcceptedReleaseEvidenceSelection(db: Db, request: Record<string, any>, selection: AcceptedReleaseSelection) {
+  return readSelection(db, request, selection, readAcceptedReleaseReceipt);
+}
+
+export function readAcceptedReleaseDispositionSelection(db: Db, request: Record<string, any>, selection: AcceptedReleaseSelection) {
+  return readSelection(db, request, selection, readImmutableAcceptedRelease);
+}
+
+function readSelection(db: Db, request: Record<string, any>, selection: AcceptedReleaseSelection, readReceipt: typeof readAcceptedReleaseReceipt) {
   if (!selection || typeof selection.acceptanceId !== 'string' || typeof selection.reference !== 'string') throw new Error('Invalid accepted-release selection.');
   const row = db.prepare('SELECT * FROM auth_candidate_acceptances WHERE id = ?').get(selection.acceptanceId) as Record<string, any> | undefined;
   const candidate: AcceptedReleaseCandidate = { pin_sha: request.merge_candidate_pin_sha, tree_sha: request.merge_candidate_tree_sha,
@@ -76,7 +84,7 @@ export function readAcceptedReleaseEvidenceSelection(db: Db, request: Record<str
   if (!row || row.auth_request_id !== request.id || row.status !== 'passed'
       || Object.entries(candidate).some(([key, value]) => !value || row[key] !== value)
       || JSON.parse(row.result_json ?? 'null')?.receipt !== selection.reference) throw new Error('Selected acceptance does not pass for this exact request and candidate.');
-  const resolved = { receipt: readAcceptedReleaseReceipt(selection.reference, candidate) };
+  const resolved = { receipt: readReceipt(selection.reference, candidate) };
   if (resolved.receipt.acceptance.record_id && resolved.receipt.acceptance.record_id !== row.id
       || resolved.receipt.acceptance.request_id && resolved.receipt.acceptance.request_id !== request.id) throw new Error('Retained receipt names another acceptance or request.');
   if (request.custody_work_unit_id && resolved.receipt.retention.work_unit !== request.custody_work_unit_id) {

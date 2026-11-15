@@ -35,7 +35,7 @@ function unavailable({ root, runId, mode }) {
         || !/^[a-f0-9]{64}$/.test(outcome.manifestDigest))) throw new Error('Incomplete accepted release cleanup proof.');
     return 'completed';
   }
-  if (mode === 'recover' && outcome?.cleanup === 'pending' && outcome.generatedRecovery) return null;
+  if (mode === 'recover' && outcome?.cleanup === 'pending') return null;
   return 'absent';
 }
 
