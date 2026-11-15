@@ -125,7 +125,7 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 ## Auth Requests
 
 - Protected-branch merges are asynchronous: submit an auth request, stop, and let the user approve in Mandible.
-- Approval and merge execution are user actions. Agents do not approve, merge, or bypass the auth queue.
+- Approval and merge execution are user actions, in the dashboard or the operator's own `mandible auth approve`, which refuses agent sessions. Agents do not approve, merge, or bypass the auth queue.
 - Multiple pending merge requests may coexist when they are pairwise independent. Run `mandible auth check` before submitting when unsure; submission rejects clashes with file-level conflict context. Planned related branches still integrate first.
 
 ## Coordination
@@ -143,6 +143,6 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 
 - Default CLI transport is loopback HTTP via `MANDIBLE_BASE=http://127.0.0.1:<port>`.
 - Sandboxed agents without loopback can use `MANDIBLE_BASE=file:///path/to/spool` for issue, auth submission/listing, work-unit mutation, coordinator, conversation index, repo listing, and daemon-indexed log routes.
-- The file transport denies approval, merge, admin, and config routes; auth approval remains a user/dashboard action.
+- The file transport denies approval, merge, admin, and config routes; auth approval remains a user action.
 
 <!-- END MANDIBLE MANAGED INSTRUCTIONS -->

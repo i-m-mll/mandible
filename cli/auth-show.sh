@@ -20,6 +20,7 @@ printf '%s\n' "$response" | jq -r '
   def subject: if .kind == "action" then "\(.action) \(.issue)" elif .kind == "finalizer" then .step
     elif .kind == "hook" then .hook_id else .branch end;
   "\(.id[0:8]) [\(.status)] \(.title)",
+  (if .lifecycle_revision != null then "  revision \(.lifecycle_revision)" else empty end),
   (if .status == "failed" then
     "  failed: \(.failure_reason)",
     "  retry: open the request in the Mandible app and choose Retry; it returns to pending for a new approval"

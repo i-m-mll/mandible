@@ -58,6 +58,7 @@ mandible auth request --type <type> --command <command> --cwd <path> --repo <ref
   [--supersedes ID] [--drop-superseded-action ORDINAL:REASON]...
   [--timeout N] [--no-watch] [--force|-f]
 mandible auth withdraw <request-id> --reason <text> --expected-revision <n> --expected-custody-generation <n> [--json]
+mandible auth approve <request> --revision <n>    # operator only; refuses agent sessions
 mandible auth merge <branch> [opts]    # executes the merge; invoked by daemon
 
 ## LEDGER MECHANISM CLIENT

@@ -320,6 +320,16 @@
         ]
       }
     },
+    "auth.approve": {
+      "route": ["auth", "approve"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "request","value": {"type": "string"}},
+          {"kind": "option","names": ["--revision"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}
+        ]
+      }
+    },
     "auth.acceptance.run": {
       "route": ["auth", "acceptance", "run"],
       "grammar": {
