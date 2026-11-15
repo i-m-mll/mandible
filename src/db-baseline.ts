@@ -18,6 +18,7 @@ import type { Db } from "./db.js";
 import { AUTH_CLEARANCE_SCHEMA_SQL } from "./auth-clearance-schema.js";
 import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.js";
 import { PROTECTED_BASE_AUDIT_SCHEMA_SQL } from "./protected-base-audit-schema.js";
+import { OPERATOR_TRUST_CHANGES_SCHEMA_SQL, USER_CREDENTIALS_INDEX_SQL, USER_CREDENTIALS_TABLE_SQL } from "./operator-signing/schema.js";
 import { ISSUE_SEARCH_SCHEMA_SQL } from "./ledger/issue-search.js";
 import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
@@ -35,7 +36,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 238;
+export const BASELINE_SCHEMA_VERSION = 239;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -505,7 +506,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE spaces (\n        id               TEXT PRIMARY KEY,\n        project_id       TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        title            TEXT NOT NULL,\n        default_renderer TEXT NOT NULL DEFAULT 'canvas'\n                           CHECK(default_renderer IN ('canvas','document','board','collection')),\n        description      TEXT,\n        metadata_json    TEXT NOT NULL DEFAULT '{}'\n                           CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at       INTEGER NOT NULL,\n        updated_at       INTEGER NOT NULL\n      )",
   "CREATE TABLE trash_entries (\n        id               TEXT PRIMARY KEY,\n        project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        checkout_id      TEXT NOT NULL REFERENCES ledger_project_checkouts(id) ON DELETE RESTRICT,\n        repo_root        TEXT NOT NULL,\n        branch           TEXT NOT NULL,\n        issue_refs_json  TEXT NOT NULL DEFAULT '[]'\n                           CHECK(json_valid(issue_refs_json) AND json_type(issue_refs_json)='array'),\n        reason           TEXT NOT NULL\n                           CHECK(reason IN ('superseded','merged','abandoned','manual')),\n        actor            TEXT NOT NULL,\n        snapshot_ref     TEXT NOT NULL UNIQUE,\n        snapshot_oid     TEXT NOT NULL,\n        original_oid     TEXT NOT NULL,\n        retention_policy TEXT NOT NULL DEFAULT 'trash-retention.v1',\n        retention_days   INTEGER NOT NULL CHECK(retention_days BETWEEN 1 AND 3650),\n        state            TEXT NOT NULL DEFAULT 'active'\n                           CHECK(state IN (\n                             'active','remove_failed','restored','expired',\n                             'restore_failed','gc_pending','gc_failed'\n                           )),\n        created_at       INTEGER NOT NULL,\n        expires_at       INTEGER NOT NULL,\n        restored_at      INTEGER,\n        expired_at       INTEGER,\n        last_error       TEXT,\n        outcome_json     TEXT NOT NULL DEFAULT '{}'\n                           CHECK(json_valid(outcome_json) AND json_type(outcome_json)='object')\n      )",
   "CREATE TABLE user_bindings (\n        id           TEXT PRIMARY KEY,\n        user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        binding_type TEXT NOT NULL\n                       CHECK(binding_type IN ('app_name','provider_session_env','process_pattern','git_author_email','external_author')),\n        value        TEXT NOT NULL,\n        scope        TEXT,\n        status       TEXT NOT NULL DEFAULT 'active'\n                       CHECK(status IN ('active','inactive')),\n        created_at   INTEGER NOT NULL,\n        updated_at   INTEGER NOT NULL\n      )",
-  "CREATE TABLE user_credentials (\n        id              TEXT PRIMARY KEY,\n        user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        type            TEXT NOT NULL,\n        fingerprint     TEXT NOT NULL,\n        public_material TEXT,\n        label           TEXT,\n        status          TEXT NOT NULL DEFAULT 'active'\n                          CHECK(status IN ('active','revoked')),\n        created_at      INTEGER NOT NULL,\n        revoked_at      INTEGER,\n        metadata_json   TEXT NOT NULL DEFAULT '{}'\n                          CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object')\n      )",
+  USER_CREDENTIALS_TABLE_SQL,
   "CREATE TABLE user_group_members (\n        group_id  TEXT NOT NULL REFERENCES user_groups(id) ON DELETE CASCADE,\n        user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n        created_at INTEGER NOT NULL,\n        PRIMARY KEY (group_id, user_id)\n      )",
   "CREATE TABLE user_groups (\n        id           TEXT PRIMARY KEY,\n        slug         TEXT NOT NULL UNIQUE,\n        display_name TEXT NOT NULL,\n        kind         TEXT NOT NULL DEFAULT 'custom'\n                       CHECK(kind IN ('system','custom')),\n        created_at   INTEGER NOT NULL,\n        updated_at   INTEGER NOT NULL\n      )",
   USER_SETTINGS_SCHEMA_SQL,
@@ -655,8 +656,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_user_group_members_user\n        ON user_group_members(user_id, group_id)",
   "CREATE INDEX idx_user_bindings_lookup\n        ON user_bindings(binding_type, value)",
   "CREATE INDEX idx_user_bindings_user\n        ON user_bindings(user_id)",
-  "CREATE UNIQUE INDEX idx_user_credentials_active_fingerprint\n        ON user_credentials(fingerprint) WHERE status = 'active'",
-  "CREATE INDEX idx_user_credentials_user\n        ON user_credentials(user_id)",
+  ...USER_CREDENTIALS_INDEX_SQL,
   "CREATE INDEX idx_webhook_events_created\n        ON webhook_events(created_at DESC)",
   "CREATE INDEX idx_webhook_events_status\n        ON webhook_events(status)",
   "CREATE INDEX idx_work_units_ledger_issue\n      ON work_units(ledger_issue_id) WHERE ledger_issue_id IS NOT NULL",
@@ -919,6 +919,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   ...PROTECTED_BASE_AUDIT_SCHEMA_SQL,
   ...INTERFACE_NOTES_SCHEMA_SQL,
   ...NOTIFICATIONS_SCHEMA_SQL,
+  ...OPERATOR_TRUST_CHANGES_SCHEMA_SQL,
 ];
 
 const DEFAULT_SETTINGS: ReadonlyArray<readonly [string, string]> = [

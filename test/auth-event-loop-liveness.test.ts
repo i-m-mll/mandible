@@ -141,9 +141,8 @@ it('keeps pending lifecycle and registered health work live while preserving sam
         ...revisionControl(targets.withdraw), reason: 'Withdraw the private fixture action.' });
       const skipped = await invoke('POST', `/api/auth/request/${targets.skip}/skip`, {});
       expect(revised.status, JSON.stringify(revised.body)).toBe(200);
-      expect(rejected.status).toBe(403);
-      expect(rejected.body).toMatchObject({ code: 'operator_presence_required' });
-      expect(queue.getRequestExact(targets.reject)?.status).toBe('pending');
+      expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
+      expect(queue.getRequestExact(targets.reject)?.status).toBe('rejected');
       expect(withdrawn.body).toMatchObject({ status: 'withdrawn' });
       expect(skipped.status).toBe(200);
       expect(queue.getRequestExact(targets.skip)?.skipped_at).toBe(clock);

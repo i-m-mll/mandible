@@ -112,12 +112,14 @@ import { defaultCodexNativeArchiveAdapter } from "./conversation-control/codex-n
 import { installedResourceRoot, readInstalledRelease, verifyInstalledRelease } from "../scripts/installed-release.mjs";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import { startProtectedBranchGuardProjection } from "./protected-branch-guard.js";
-import { getMandibleHomePath } from "./platform-paths.js";
+import { getMandibleConfigPath, getMandibleHomePath } from "./platform-paths.js";
+import { getOperator } from "./users/store.js";
 import type { Logger, StartupCommitInfo } from "./types.js";
 import { DaemonMemoryDiagnostics, memoryWarningFractionFromEnv } from "./daemon-memory.js";
 import { EventLoopLagDiagnostics } from "./daemon-event-loop.js";
 import { EventLoopStallIncident } from "./event-loop-stall-incident.js";
-import { auditOperatorSigningCredential } from "./signing-credential-audit.js";
+import { OperatorSigningAuthority } from "./operator-signing/authority.js";
+import { HelperOperatorSigner, resolveApprovalHelperPath } from "./operator-signing/signer.js";
 import {
   RestartAvailabilityStore,
   restartAvailabilityInstanceKey,
@@ -285,7 +287,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }, (error: unknown) => {
     logger("warn", "delegated_signer_reconnect_failed", { error: String(error) });
   });
+  const operatorSigning = new OperatorSigningAuthority(db, new HelperOperatorSigner(resolveApprovalHelperPath()), getMandibleConfigPath("approval-keys"));
   const authQueue = new AuthQueue({
+    operatorSigning,
     autoApprover: autoApproveManager,
     clearanceManager,
     backgroundMaintenance: operationalMutationsAllowed,
@@ -318,7 +322,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const notesHome = interfaceNotesHome(instance);
   registerInterfaceNoteRoutes(router, db, notesHome);
   registerLedgerChangeRoutes(router, db);
-  registerSettingsRoutes(router, instance.role);
+  registerSettingsRoutes(router, instance.role, operatorSigning);
   registerUserSettingsRoutes(router, db);
   registerHostUserPreferencesRoutes(router, new HostUserPreferencesStore(instance.user_preferences_root));
   registerSystemRoutes(router, workScanner, operationalLogStore?.db ?? db);
@@ -394,7 +398,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Issue: 3d85f43 — canonical project registry CLI/API
   registerProjectRoutes(router);
   // Issue: e89c2b0 — user registry core (users, credentials, bindings, evidence)
-  registerUserRoutes(router);
+  registerUserRoutes(router, operatorSigning);
   // Issue: 708dc4c — client-auth token mint/list, mode toggle, and telemetry.
   registerClientAuthRoutes(router, clientAuth);
   registerWorkflowRoutes(router);
@@ -641,34 +645,21 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
   }
 
-  // Issue 2205073 — audit the protected-merge signing credential at startup.
-  // An unregistered `git user.signingkey` is invisible until base-transition
-  // provenance verification refuses an approval with no visible cause, so the
-  // misconfiguration is surfaced here instead. Read-only; it runs in the
-  // background and never blocks startup.
-  void auditOperatorSigningCredential(db).then((signingAudit) => {
-    if (signingAudit.status === "missing_credential") {
-      logger("warn", "signing_credential_unregistered", {
-        subsystem: "auth",
-        operator: signingAudit.operator_slug,
-        fingerprint: signingAudit.fingerprint,
-        detail:
-          "The configured git user.signingkey is not an active registered signing credential. " +
-          "Protected-branch merges signed with it cannot be attested when a later approval " +
-          "recomputes a stale merge candidate.",
-        fix: signingAudit.hint,
-      });
-    } else if (signingAudit.status === "unresolvable") {
-      logger("warn", "signing_credential_unresolvable", {
-        subsystem: "auth",
-        operator: signingAudit.operator_slug,
-        configured_key: signingAudit.configured_key,
-        reason: signingAudit.reason,
-      });
-    }
-  }, (error: unknown) => {
-    logger("warn", "signing_credential_audit_failed", { error: String(error) });
-  });
+  // Issue 9b7b2ca — signed operator actions need an enrolled, usable approval
+  // key. Surface its absence at startup instead of at the first refusal.
+  if (instance.role === "main" && operationalMutationsAllowed && getOperator(db)) {
+    void operatorSigning.approvalKeyStatus().then((keys) => {
+      const usable = keys.some((key) => key.state === "usable");
+      if (!usable) {
+        logger("warn", keys.length === 0 ? "approval_key_not_enrolled" : "approval_key_unusable", {
+          subsystem: "auth",
+          states: keys.map((key) => ({ fingerprint: key.credential.fingerprint, state: key.state, detail: key.detail })),
+        });
+      }
+    }, (error: unknown) => {
+      logger("warn", "approval_key_status_failed", { error: String(error) });
+    });
+  }
 
   // Issue 5886596 — keep the Git reference-transaction guard's projection
   // (protected refs per repository plus operator allowed signers) current.

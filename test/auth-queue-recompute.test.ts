@@ -15,7 +15,6 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import type { Db } from "../src/db.js";
-import { getOperator } from "../src/users/store.js";
 import { advanceMainViaAuthorizedMerge, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createMigratedDb, createNoopHookManager, git, registerWorkRepo, signedMergeIntoMain, waitForStatus, writeFile } from "./helpers/auth-queue-fixtures.js";
 
 describe("auth queue", () => {
@@ -529,9 +528,7 @@ describe("auth queue", () => {
           expect(message).toContain("Refusal: base_transition_unaccounted");
           expect(message).toContain("signature");
           expect(message).toContain(unregisteredFingerprint);
-          expect(message).toContain(
-            `mandible user credential add ${getOperator(db)!.slug} --from-git-signingkey`,
-          );
+          expect(message).toContain("add its public key as an external signer in Settings");
           expect((await queue.getRequest(request.id))?.status).toBe("pending");
           expect(calls).toHaveLength(0);
         } finally {

@@ -11,7 +11,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { migrateLocalAuthorizationEvidence } from "../src/local-authorization-migration.js";
-import { AuthClearanceManager } from "../src/auth-clearance.js";
+import { AuthClearanceManager, type ClearanceGrantAuthorizer } from "../src/auth-clearance.js";
+
+/** Clearance-manager tests cover scope and use; the route signs the grant. */
+const allowGrant: ClearanceGrantAuthorizer = async () => ({ ok: true });
 import { AuthQueue } from "../src/auth-queue.js";
 import { resetDb, setDb, type Db } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
@@ -179,7 +182,7 @@ describe("scoped protected-merge clearance", () => {
     try {
       const request = await f.submit();
       f.db.prepare("UPDATE auth_requests SET repo = 'mandible' WHERE id = ?").run(request.id);
-      await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id, allowGrant);
       const consumed = await f.manager.consume(request.id, f.actor, () => undefined);
       f.setStop(async () => { throw new Error("restart signer stop refused"); });
       await expect(consumed.settle()).rejects.toThrow("restart signer stop refused");
@@ -188,7 +191,7 @@ describe("scoped protected-merge clearance", () => {
       await waitUntil(() => f.queue.rebuildFailure?.message.includes("restart remains draining"), "failed authority restart barrier");
       expect(f.queue.isRebuilding).toBe(true);
       expect(restart).not.toHaveBeenCalled();
-      await expect(f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id)).rejects.toThrow(/closing/);
+      await expect(f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id, allowGrant)).rejects.toThrow(/closing/);
       expect(f.released).toEqual([]);
       f.setStop(async context => { f.released.push(context.leaseId); });
       await f.queue.retryHookConvergence(request.id);
@@ -222,11 +225,11 @@ describe("scoped protected-merge clearance", () => {
     });
     try {
       const request = await f.submit();
-      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id, allowGrant);
       await f.queue.approveWithClearance(request.id, f.actor);
       await waitUntil(() => f.executions.length === 1, "held executor admission");
       const closing = f.queue.dispose().then(() => { closed = true; });
-      await expect(f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id)).rejects.toThrow(/closing/);
+      await expect(f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id, allowGrant)).rejects.toThrow(/closing/);
       expect(closed).toBe(false);
       expect(f.released).toEqual([]);
       execution.resolve();
@@ -251,7 +254,7 @@ describe("scoped protected-merge clearance", () => {
     const f = fixture();
     try {
       const request = await f.submit();
-      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id, allowGrant);
       f.setBroadcast(() => { throw new Error("publication failed"); });
       await expect(f.queue.approveWithClearance(request.id, f.actor)).rejects.toThrow("publication failed");
       expect(f.executions).toEqual([]);
@@ -267,7 +270,7 @@ describe("scoped protected-merge clearance", () => {
     const f = fixture();
     try {
       const request = await f.submit();
-      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id, allowGrant);
       let closing: Promise<void> | undefined;
       f.setBroadcast(() => { closing ??= f.queue.dispose(); });
       await f.queue.approveWithClearance(request.id, f.actor);
@@ -285,7 +288,7 @@ describe("scoped protected-merge clearance", () => {
     const f = fixture();
     try {
       const request = await f.submit();
-      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id);
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id }, f.operator.id, allowGrant);
       const consumed = await f.manager.consume(request.id, f.actor, () => undefined);
       f.setStop(async () => { throw new Error("stop refused"); });
       await expect(consumed.settle()).rejects.toThrow("stop refused");
@@ -315,7 +318,7 @@ describe("scoped protected-merge clearance", () => {
     try {
       const request = await f.submit();
       const follower = await f.submit("follower");
-      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id, maxUses: 2 }, f.operator.id);
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id, maxUses: 2 }, f.operator.id, allowGrant);
       await f.queue.approveWithClearance(request.id, f.actor);
       await waitUntil(async () => (await f.queue.getRequest(request.id))?.error?.includes("termination is unproven") === true, "executor cleanup uncertainty");
       expect(await f.queue.getRequest(request.id)).toMatchObject({ status: "executing", exit_code: null, resolved_at: null });
@@ -346,7 +349,7 @@ describe("scoped protected-merge clearance", () => {
         grantee: f.agent.id,
         issueRef: f.issue.id,
         headBranch: "feature/other",
-      }, f.operator.id)).rejects.toMatchObject({ code: "scope_mismatch" });
+      }, f.operator.id, allowGrant)).rejects.toMatchObject({ code: "scope_mismatch" });
     } finally {
       (await f.queue.dispose());
       f.db.close();
@@ -364,7 +367,7 @@ describe("scoped protected-merge clearance", () => {
       }
       const request = await f.submit("dependent", { depends_on_ids: [first.id] });
       const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id,
-        issueRef: f.issue.id, headBranch: "feature/scoped" }, f.operator.id);
+        issueRef: f.issue.id, headBranch: "feature/scoped" }, f.operator.id, allowGrant);
       const borrow = f.signer.borrow.bind(f.signer);
       vi.spyOn(f.signer, "borrow").mockImplementation(leaseId => {
         f.db.prepare("UPDATE auth_requests SET depends_on_ids = ? WHERE id = ?").run(JSON.stringify([second.id]), request.id);
@@ -384,7 +387,7 @@ describe("scoped protected-merge clearance", () => {
       const request = (await f.submit("dependent", { depends_on_ids: [dependency.id] }));
       const clearance = await f.manager.issue({
         requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id, headBranch: "feature/scoped",
-      }, f.operator.id);
+      }, f.operator.id, allowGrant);
 
       await expect((async () => (await f.queue.approveWithClearance(request.id, f.actor))())).rejects.toThrow(/Dependency .* is pending/);
       expect(f.manager.uses(clearance.id)).toEqual([]);
@@ -407,7 +410,7 @@ describe("scoped protected-merge clearance", () => {
       const request = (await f.submit("queue"));
       const clearance = await f.manager.issue({
         requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id, headBranch: "feature/scoped",
-      }, f.operator.id);
+      }, f.operator.id, allowGrant);
       const executing = (await f.queue.approveWithClearance(request.id.slice(0, 8), f.actor));
       expect(executing).toMatchObject({ status: "executing", approval_source: "clearance" });
       // The fixture executor publishes no signed merge, so evidence verification
@@ -437,7 +440,7 @@ describe("scoped protected-merge clearance", () => {
         grantee: f.agent.id,
         issueRef: f.issue.id,
         headBranch: "feature/scoped",
-      }, f.operator.id);
+      }, f.operator.id, allowGrant);
       expect(clearance.max_uses).toBe(1);
       expect(clearance.expires_at - clearance.issued_at).toBe(60 * 60_000);
       let transitioned = false;
@@ -506,7 +509,7 @@ describe("scoped protected-merge clearance", () => {
         issueRef: f.issue.id,
         headBranch: "feature/scoped",
         action: "merge",
-      }, f.operator.id);
+      }, f.operator.id, allowGrant);
       expect(clearance.created_from_request_id).toBeNull();
       const request = (await f.submit("later"));
       const consumption = await f.manager.consume(request.id, f.actor, () => undefined);
@@ -525,7 +528,7 @@ describe("scoped protected-merge clearance", () => {
       const request = await f.submit("tokenless", { requester_evidence_method: "session_claim", requester_credential_id: null });
       revokeCredential(f.db, f.agentCredential.id);
       const actor = { ...f.actor, evidence_method: "session_claim", credential_id: null };
-      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id);
+      const clearance = await f.manager.issue({ requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id, allowGrant);
       expect(clearance.grantee_credential_id).toBeNull();
       const columns = (f.db.prepare("PRAGMA table_info(auth_clearances)").all() as Array<{ name: string }>).map(column => column.name);
       const expressions = columns.map(column => column === "id" ? "'old-grant'" : column === "grantee_credential_id" ? "?" : column);
@@ -542,7 +545,7 @@ describe("scoped protected-merge clearance", () => {
       expect(consumed.use).toMatchObject({ requester_user_id: f.agent.id, requester_evidence_method: "session_claim", requester_credential_id: null });
       await consumed.settle();
       const another = await f.submit("successor", { requester_evidence_method: "session_claim", requester_credential_id: null });
-      await f.manager.issue({ requestId: another.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id);
+      await f.manager.issue({ requestId: another.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id, allowGrant);
       const successor = createUser(f.db, { slug: "successor", kind: "agent", display_name: "Successor" });
       f.db.prepare("UPDATE auth_request_responsibility SET owner_user_id = ?, custody_generation = custody_generation + 1 WHERE auth_request_id = ?")
         .run(successor.id, another.id);
@@ -566,7 +569,7 @@ describe("scoped protected-merge clearance", () => {
         requestId: request.id,
         grantee: f.agent.id,
         headBranch: "feature/scoped",
-      }, f.operator.id)).rejects.toThrow(message);
+      }, f.operator.id, allowGrant)).rejects.toThrow(message);
     } finally {
       (await f.queue.dispose());
       f.db.close();
@@ -580,7 +583,7 @@ describe("scoped protected-merge clearance", () => {
       const first = (await f.submit("first"));
       const clearance = await f.manager.issue({
         requestId: first.id, grantee: f.agent.id, issueRef: f.issue.id, durationMinutes: 1,
-      }, f.operator.id);
+      }, f.operator.id, allowGrant);
       f.db.prepare(
         `INSERT INTO auth_request_actions
           (id, auth_request_id, ordinal, kind, target_issue_ref, payload, state, staged_at, updated_at)
@@ -595,7 +598,7 @@ describe("scoped protected-merge clearance", () => {
       await expect((async () => (await f.manager.consume(first.id, f.actor, () => undefined))())).rejects.toThrow(/No active/);
 
       const second = (await f.submit("second"));
-      const oneUse = await f.manager.issue({ requestId: second.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id);
+      const oneUse = await f.manager.issue({ requestId: second.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id, allowGrant);
       const consumption = await f.manager.consume(second.id, f.actor, () => undefined);
       await consumption.settle();
       await expect((async () => (await f.manager.consume(second.id, f.actor, () => undefined))())).rejects.toThrow(/No active/);
@@ -603,10 +606,10 @@ describe("scoped protected-merge clearance", () => {
 
       const third = (await f.submit("third"));
       const ambiguousIssue = await f.manager.issue(
-        { requestId: third.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id,
+        { requestId: third.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id, allowGrant,
       );
       const ambiguousHead = await f.manager.issue(
-        { requestId: third.id, grantee: f.agent.id, headBranch: "feature/scoped" }, f.operator.id,
+        { requestId: third.id, grantee: f.agent.id, headBranch: "feature/scoped" }, f.operator.id, allowGrant,
       );
       await expect((async () => (await f.manager.consume(third.id, f.actor, () => undefined))())).rejects.toThrow(/Multiple active/);
 
@@ -616,7 +619,7 @@ describe("scoped protected-merge clearance", () => {
       await f.manager.revoke(ambiguousHead.id, f.operator.id);
 
       const expiring = (await f.submit("expiring"));
-      await f.manager.issue({ requestId: expiring.id, grantee: f.agent.id, issueRef: f.issue.id, durationMinutes: 1 }, f.operator.id);
+      await f.manager.issue({ requestId: expiring.id, grantee: f.agent.id, issueRef: f.issue.id, durationMinutes: 1 }, f.operator.id, allowGrant);
       f.setClock(70_001);
       await expect((async () => (await f.manager.consume(expiring.id, f.actor, () => undefined))())).rejects.toThrow(/No active/);
     } finally {
@@ -631,7 +634,7 @@ describe("scoped protected-merge clearance", () => {
     try {
       const request = (await f.submit());
       f.db.exec("CREATE TRIGGER refuse_clearance BEFORE INSERT ON auth_clearances BEGIN SELECT RAISE(ABORT, 'refused'); END");
-      await expect(f.manager.issue({ requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id))
+      await expect(f.manager.issue({ requestId: request.id, grantee: f.agent.id, issueRef: f.issue.id }, f.operator.id, allowGrant))
         .rejects.toThrow(/refused/);
       expect(f.released).toHaveLength(1);
       expect(f.db.prepare("SELECT COUNT(*) AS count FROM auth_clearances").get()).toEqual({ count: 0 });
@@ -668,7 +671,7 @@ describe("auth clearance API", () => {
     const db = migratedMemoryDb();
     const operator = setupOperator(db, { slug: "clearance-api-operator", display_name: "Clearance API Operator" });
     setDb(db);
-    const issue = vi.fn(async (input: unknown, issuer: string) => ({ id: "clearance-1", input, issuer }));
+    const issue = vi.fn(async (input: unknown, issuer: string, _authorize: ClearanceGrantAuthorizer) => ({ id: "clearance-1", input, issuer }));
     const manager = {
       close: async () => undefined,
       issue,
@@ -698,8 +701,13 @@ describe("auth clearance API", () => {
           credential_id: "operator-token", source: "http_bearer",
         },
       } as RequestLike, result.res);
-      expect(result.state.status).toBe(403);
-      expect(issue).not.toHaveBeenCalled();
+      expect(result.state.status).toBe(201);
+      expect(issue).toHaveBeenCalledWith({
+        requestId: null, grantee: "agent-a", project: "mandible", baseBranch: "develop", issueRef: "de690d2",
+        headBranch: "feature/exact", action: "merge", durationMinutes: 30, maxUses: 2,
+      }, operator.id, expect.any(Function));
+      const authorize = issue.mock.calls[0]![2] as ClearanceGrantAuthorizer;
+      await expect(authorize({} as never)).resolves.toMatchObject({ ok: false, code: "operator_signature_signing_failed" });
     } finally {
       (await queue.dispose());
       db.close();

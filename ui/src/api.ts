@@ -1141,19 +1141,27 @@ export type OperatorSigningCredential = {
   type: string;
   fingerprint: string;
   label: string | null;
+  custody: 'enclave' | 'external' | null;
+  public_material: string | null;
+};
+
+export type ApprovalKeyState = 'usable' | 'key_missing' | 'key_invalidated' | 'biometry_unavailable'
+  | 'biometry_locked_out' | 'no_interactive_session' | 'failed';
+
+export type OperatorTrustChange = {
+  id: string;
+  kind: 'approval_key_enrollment' | 'signer_add' | 'signer_revoke' | 'protected_branches'
+    | 'delegated_signer_setup' | 'delegated_signer_remove';
+  authorization: 'signed' | 'bootstrap';
+  statement: string;
+  created_at: number;
 };
 
 export type OperatorSigningKeyStatus = {
-  audit: {
-    status: 'ok' | 'no_operator' | 'unconfigured' | 'unresolvable' | 'missing_credential';
-    configured: boolean;
-    fingerprint: string | null;
-    operator_slug: string | null;
-    reason: string | null;
-    hint: string | null;
-  };
+  operator_slug: string | null;
+  approval_keys: Array<OperatorSigningCredential & { state: ApprovalKeyState; detail: string | null }>;
   credentials: OperatorSigningCredential[];
-  git_config_read: boolean;
+  trust_changes: OperatorTrustChange[];
 };
 
 export async function getOperatorSigningKeyStatus(): Promise<OperatorSigningKeyStatus> {
@@ -1161,12 +1169,16 @@ export async function getOperatorSigningKeyStatus(): Promise<OperatorSigningKeyS
   return (await parseMaybeJson(response)) as OperatorSigningKeyStatus;
 }
 
-export async function registerOperatorSigningKey(input:
-  | { source: 'configured' }
-  | { source: 'public_key'; public_key: string }
-): Promise<{ credential: OperatorSigningCredential; unchanged: boolean }> {
-  const response = await apiPost('/api/users/operator/signing-key', input);
+/** Add a verify-only external signer; the approval key signs the change. */
+export async function registerOperatorSigningKey(publicKey: string): Promise<{ credential: OperatorSigningCredential; unchanged: boolean }> {
+  const response = await apiPost('/api/users/operator/signing-key', { public_key: publicKey });
   return (await parseMaybeJson(response)) as { credential: OperatorSigningCredential; unchanged: boolean };
+}
+
+/** Create and enroll a new approval key through the approval helper. */
+export async function enrollApprovalKey(input: { confirm_bootstrap?: boolean } = {}): Promise<{ credential: OperatorSigningCredential; trust_change: OperatorTrustChange }> {
+  const response = await apiPost('/api/users/operator/approval-key', input);
+  return (await parseMaybeJson(response)) as { credential: OperatorSigningCredential; trust_change: OperatorTrustChange };
 }
 
 export async function getDelegatedSigningStatus(): Promise<DelegatedSigningStatus> {

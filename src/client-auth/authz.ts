@@ -1,4 +1,3 @@
-import { operatorPresenceIdentity } from "./operator-presence.js";
 import { type Db } from "../db.js";
 import {
   resolveProviderSessionAttributionResult,
@@ -141,17 +140,9 @@ export function requireOperator(db: Db, req: RequestLike): ResolvedClientIdentit
   return identity;
 }
 
-export function requireProtectedOperator(db: Db, req: RequestLike): ResolvedClientIdentity {
-  requireIdentity(req);
-  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return requireOperator(db, req);
-  const proof = operatorPresenceIdentity(req);
-  if (!proof) throw new ClientAuthzError(403, "operator_presence_required", "Fresh action-bound operator presence is required.");
-  return proof;
-}
-
 export function authorizeOperatorSetup(db: Db, req: RequestLike): void {
   if (getOperatorId(db) !== null) {
-    requireProtectedOperator(db, req);
+    requireOperator(db, req);
     return;
   }
   if ((req as RequestLike & { managed_client?: boolean }).managed_client === true
@@ -188,7 +179,7 @@ export function requireSelfOrOperator(
   targetUserId: string,
 ): ResolvedClientIdentity {
   const identity = requireIdentity(req);
-  if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) return requireProtectedOperator(db, req);
+  if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) return requireOperator(db, req);
   if (identity.user_id === targetUserId) return identity;
   if (isOperator(db, identity)) return identity;
   throw new ClientAuthzError(

@@ -16,6 +16,7 @@ import {
   recordPassingCandidateAcceptance, registerWorkRepo, tamperLooseGitObject,
   registerTestDelegatedLease,
 } from "./helpers/auth-queue-fixtures.js";
+import { approveAsFixtureOperator } from "./helpers/operator-signing-fixtures.js";
 
 const gate = vi.hoisted(() => ({ current: null as any }));
 vi.mock("node:child_process", async () => {
@@ -122,7 +123,7 @@ it("rechecks the pending queue before inserting a concurrently observed merge", 
 for (const cancellation of ["result", "dispose"] as const) {
   it(`settles a queued admission cancelled by ${cancellation} without starting its executor`, async () => {
     const f = await fixture();
-    await f.queue.approveWithOperatorProof(f.request.id, f.signing.operatorId);
+    await approveAsFixtureOperator(f.queue, f.request.id, f.signing.operatorId);
     await f.ready;
     const first = (f.queue as any).inFlight.get(f.request.id) as Promise<void>;
     const original = (f.queue as any).executeInBackground;
@@ -262,7 +263,7 @@ for (const change of ["description", "command", "authority", "custody", "withdra
     const custody = change === "custody" ? bindCustody(f) : null;
     if (change === 'accepted package') recordPassingCandidateAcceptance(f.db, f.request.id, true);
     const held = holdChild((kind, _program, args) => kind === "spawn" && args.includes("sign") && args.includes("mandible-auth"));
-    const approval = f.queue.approveWithOperatorProof(f.request.id, f.signing.operatorId);
+    const approval = approveAsFixtureOperator(f.queue, f.request.id, f.signing.operatorId);
     try {
       await reached(held, approval);
       if (change === "description") f.db.prepare("UPDATE auth_requests SET commit_message = commit_message || ? WHERE id = ?").run("\nChanged review\n", f.request.id);
@@ -283,7 +284,7 @@ for (const change of ["head", "base", "pin", "object", "hooks"] as const) {
   it(`rejects ${change} changes during post-proof Git observation`, async () => {
     const f = await fixture();
     const held = holdChild((kind, _program, args) => kind === "execFile" && args[0] === "config" && args.includes("user.email"));
-    const approval = f.queue.approveWithOperatorProof(f.request.id, f.signing.operatorId);
+    const approval = approveAsFixtureOperator(f.queue, f.request.id, f.signing.operatorId);
     let restore: (() => void) | undefined;
     try {
       await reached(held, approval);
@@ -322,7 +323,7 @@ it("orders terminal pin cleanup after a held ref swap and conditional compensati
 for (const change of ["output", "authority", "lifecycle"] as const) {
   it(`does not commit stale completion evidence after ${change} changes`, async () => {
     const f = await fixture();
-    await f.queue.approveWithOperatorProof(f.request.id, f.signing.operatorId);
+    await approveAsFixtureOperator(f.queue, f.request.id, f.signing.operatorId);
     await f.ready;
     const publication = publishTestCandidate(f.repo, f.queue.getRequestExact(f.request.id)!);
     const held = holdChild((kind, _program, args) => kind === "execFile" && args.includes("--batch"));
@@ -342,7 +343,7 @@ for (const change of ["output", "authority", "lifecycle"] as const) {
 
 it("drains a held finite observation and ignores an executor released after database close", async () => {
   const f = await fixture();
-  await f.queue.approveWithOperatorProof(f.request.id, f.signing.operatorId);
+  await approveAsFixtureOperator(f.queue, f.request.id, f.signing.operatorId);
   await f.ready;
   const running = [...(f.queue as any).inFlight.values()];
   const held = holdChild((kind, program, args) => kind === "execFile" && program === "git" && args[0] === "status");

@@ -26,7 +26,7 @@ import type {
 import {
   ClientAuthzError,
   authorizeOperatorSetup,
-  requireProtectedOperator as requireOperator,
+  requireOperator,
   requireSelfOrOperator,
 } from "../client-auth/authz.js";
 import { bodyRecord, sendJson } from "./http.js";
@@ -44,11 +44,10 @@ import {
   removeGroupMember,
   type PermissionSubjectType,
 } from "../permissions/store.js";
-import {
-  discoverConfiguredPublicSigningKey,
-  resolveOpenSshPublicKey,
-  type SigningKeyResolution,
-} from "../signing-credential-audit.js";
+import { resolveOpenSshPublicKey } from "../operator-signing/public-key.js";
+import { listTrustChanges, type OperatorSigningAuthority } from "../operator-signing/authority.js";
+import { SignedActionRefused, sendSigningRefusal, signedOrThrow } from "../operator-signing/http.js";
+import type { UserCredential } from "../users/types.js";
 import { entityRefs } from "../entity-refs.js";
 
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
@@ -64,6 +63,10 @@ function optionalMetadata(body: Record<string, unknown>): Record<string, unknown
 }
 
 function handleError(res: ResponseLike, error: unknown): void {
+  if (error instanceof SignedActionRefused) {
+    sendSigningRefusal(res, error.refusal);
+    return;
+  }
   if (error instanceof ClientAuthzError) {
     sendJson(res, error.status, { error: error.message, code: error.code });
     return;
@@ -87,7 +90,23 @@ function userView(db: ReturnType<typeof getDb>, ref: string) {
   };
 }
 
-export function registerUserRoutes(router: RouteRegistrar): void {
+const SIGNING_TYPES = new Set(["ssh_key", "delegated_ssh_key"]);
+
+/** The operator's signing credentials are the gate's trust set; other credentials are not. */
+function inTrustSet(db: ReturnType<typeof getDb>, userId: string, type: string): boolean {
+  return SIGNING_TYPES.has(type) && getOperator(db)?.id === userId;
+}
+
+function signerSummary(credential: UserCredential) {
+  const { id, type, fingerprint, label, custody, public_material } = credential;
+  return { id, type, fingerprint, label, custody, public_material };
+}
+
+export function registerUserRoutes(router: RouteRegistrar, operatorSigning: OperatorSigningAuthority | null): void {
+  const signing = (): OperatorSigningAuthority => {
+    if (!operatorSigning) throw new SignedActionRefused({ code: "signing_failed", detail: "This instance has no approval signer." });
+    return operatorSigning;
+  };
   // Literal subpaths must register before /api/users/:ref so the param route
   // does not shadow them.
 
@@ -106,85 +125,69 @@ export function registerUserRoutes(router: RouteRegistrar): void {
       requireOperator(db, req);
       const operator = getOperator(db);
       const credentials = operator
-        ? listCredentials(db, operator.id).filter((credential) =>
-            credential.type === "ssh_key" || credential.type === "delegated_ssh_key")
-          .map(({ id, type, fingerprint, label }) => ({ id, type, fingerprint, label }))
+        ? listCredentials(db, operator.id).filter((credential) => SIGNING_TYPES.has(credential.type)).map(signerSummary)
         : [];
-      const configured = await discoverConfiguredPublicSigningKey();
-      const registered = Boolean(configured.value && credentials.some((credential) =>
-        credential.fingerprint === configured.value!.fingerprint));
+      const approvalKeys = operatorSigning ? await operatorSigning.approvalKeyStatus() : [];
       sendJson(res, 200, {
-        audit: {
-          status: !operator
-            ? "no_operator"
-            : !configured.configured_key
-              ? "unconfigured"
-              : !configured.value
-                ? "unresolvable"
-                : registered
-                  ? "ok"
-                  : "missing_credential",
-          configured: Boolean(configured.configured_key),
-          fingerprint: configured.value?.fingerprint ?? null,
-          operator_slug: operator?.slug ?? null,
-          reason: configured.reason,
-          hint: configured.configured_key && configured.value && !registered
-            ? "Register the configured public key."
-            : null,
-        },
+        operator_slug: operator?.slug ?? null,
+        approval_keys: approvalKeys.map(({ credential, state, detail }) => ({ ...signerSummary(credential), state, detail })),
         credentials,
-        git_config_read: true,
+        trust_changes: listTrustChanges(db),
       });
     } catch (error) {
       handleError(res, error);
     }
   }, { operation: { id: "get:/api/users/operator/signing-key", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
+  // An external signer is a public key Mandible only verifies, such as a
+  // YubiKey's; adding one changes whom the gate trusts, so the approval key signs it.
   router.post("/api/users/operator/signing-key", async (req, res) => {
     try {
       const db = getDb();
       requireOperator(db, req);
       const operator = getOperator(db);
       if (!operator) throw new UserRegistryError("not_found", "The local operator is not set up.");
-      const body = bodyRecord(req);
-      const source = optionalString(body, "source");
-      let resolved: SigningKeyResolution;
-      if (source === "public_key") {
-        const publicKey = optionalString(body, "public_key");
-        if (!publicKey) throw new UserRegistryError("invalid", "Paste or upload an OpenSSH public key.");
-        resolved = await resolveOpenSshPublicKey(publicKey);
-      } else if (source === "configured") {
-        const configured = await discoverConfiguredPublicSigningKey();
-        if (!configured.configured_key) {
-          throw new UserRegistryError("invalid", "Global Git user.signingkey is not configured. Paste or upload an OpenSSH public key instead.");
-        }
-        resolved = configured.value
-          ? { ok: true, value: configured.value }
-          : { ok: false, reason: configured.reason ?? "public_key_not_available_without_private_key_access" };
-      } else {
-        throw new UserRegistryError("invalid", "Choose an available OpenSSH public key source.");
-      }
+      const publicKey = optionalString(bodyRecord(req), "public_key");
+      if (!publicKey) throw new UserRegistryError("invalid", "Paste or upload an OpenSSH public key.");
+      const resolved = await resolveOpenSshPublicKey(publicKey);
       if (!resolved.ok) {
-        const message = resolved.reason === "expected_one_openssh_public_key_line"
+        throw new UserRegistryError("invalid", resolved.reason === "expected_one_openssh_public_key_line"
           ? "Provide exactly one OpenSSH public-key line."
-          : "The selected value is not a readable OpenSSH public key.";
-        throw new UserRegistryError("invalid", message);
+          : "The selected value is not a readable OpenSSH public key.");
       }
-
       const existing = listCredentials(db, operator.id).find((credential) =>
-        credential.fingerprint === resolved.value.fingerprint
-        && (credential.type === "ssh_key" || credential.type === "delegated_ssh_key"));
-      const credential = existing ?? addCredential(db, operator.id, {
-        type: "ssh_key",
-        fingerprint: resolved.value.fingerprint,
-        public_material: resolved.value.material,
-        label: source === "configured" ? "global git user.signingkey" : "Settings public-key import",
-      });
-      sendJson(res, existing ? 200 : 201, { credential, unchanged: Boolean(existing) });
+        credential.fingerprint === resolved.value.fingerprint && SIGNING_TYPES.has(credential.type));
+      if (existing) {
+        sendJson(res, 200, { credential: existing, unchanged: true });
+        return;
+      }
+      const { value: credential } = signedOrThrow(await signing().authorizeTrustChange("signer_add",
+        { type: "ssh_key", custody: "external", fingerprint: resolved.value.fingerprint, public_key: resolved.value.material },
+        `trust the signing key ${resolved.value.fingerprint}`, req.signal,
+        () => addCredential(db, operator.id, {
+          type: "ssh_key",
+          fingerprint: resolved.value.fingerprint,
+          public_material: resolved.value.material,
+          label: "Settings public-key import",
+        })));
+      sendJson(res, 201, { credential, unchanged: false });
     } catch (error) {
       handleError(res, error);
     }
   }, { operation: { id: "post:/api/users/operator/signing-key", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "deny" });
+
+  // Mandible creates the approval key through the approval helper; no caller
+  // supplies key material for a key Mandible will invoke.
+  router.post("/api/users/operator/approval-key", async (req, res) => {
+    try {
+      const db = getDb();
+      requireOperator(db, req);
+      const { credential, change } = signedOrThrow(await signing().enroll(req.signal, { confirmBootstrap: bodyRecord(req).confirm_bootstrap === true }));
+      sendJson(res, 201, { credential: signerSummary(credential), trust_change: change });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { operation: { id: "post:/api/users/operator/approval-key", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:credentials"], requestSchema: null, reportingCategory: "api" }, fileRpc: "deny" });
 
   router.post("/api/users/setup", (req, res) => {
     try {
@@ -208,9 +211,9 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "post:/api/users/setup", operatorPresence: true, effects: ({ instanceRole }) => instanceRole === "preview" ? ["auth:credentials"] : [], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/users/setup", effects: ({ instanceRole }) => instanceRole === "preview" ? ["auth:credentials"] : [], requestSchema: null, reportingCategory: "api" }, fileRpc: "allow" });
 
-  router.post("/api/users/credentials/:id/revoke", (req, res) => {
+  router.post("/api/users/credentials/:id/revoke", async (req, res) => {
     try {
       // Issue 708dc4c / finding 2 — revoking a credential (incl. api_tokens) is
       // an authentication-administration action: require the credential's owner
@@ -218,13 +221,18 @@ export function registerUserRoutes(router: RouteRegistrar): void {
       // checked against the real credential, not a caller-supplied user ref.
       const db = getDb();
       const owner = db
-        .prepare("SELECT user_id FROM user_credentials WHERE id = ?")
-        .get(req.params.id) as { user_id: string } | undefined;
+        .prepare("SELECT user_id, type, fingerprint, status FROM user_credentials WHERE id = ?")
+        .get(req.params.id) as { user_id: string; type: string; fingerprint: string; status: string } | undefined;
       if (!owner) {
         throw new UserRegistryError("not_found", `No credential '${req.params.id}'.`);
       }
       requireSelfOrOperator(db, req, owner.user_id);
-      const credential = revokeCredential(db, req.params.id);
+      const revoke = () => revokeCredential(db, req.params.id);
+      const credential = owner.status === "active" && inTrustSet(db, owner.user_id, owner.type)
+        ? signedOrThrow(await signing().authorizeTrustChange("signer_revoke",
+          { credential_id: req.params.id, type: owner.type, fingerprint: owner.fingerprint },
+          `stop trusting the signing key ${owner.fingerprint}`, req.signal, revoke)).value
+        : revoke();
       sendJson(res, 200, { credential });
     } catch (error) {
       handleError(res, error);
@@ -468,7 +476,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
     }
   }, { operation: { id: "get:/api/users/:ref/credentials", effects: ["auth:credentials"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  router.post("/api/users/:ref/credentials", (req, res) => {
+  router.post("/api/users/:ref/credentials", async (req, res) => {
     try {
       const db = getDb();
       const target = resolveUserOrThrow(db, req.params.ref);
@@ -478,7 +486,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
       const fingerprint = optionalString(body, "fingerprint");
       if (!type) throw new UserRegistryError("invalid", "type is required.");
       if (!fingerprint) throw new UserRegistryError("invalid", "fingerprint is required.");
-      const credential = addCredential(db, target.id, {
+      const input = {
         type,
         fingerprint,
         public_material: "public_material" in body
@@ -486,7 +494,13 @@ export function registerUserRoutes(router: RouteRegistrar): void {
           : null,
         label: optionalString(body, "label") ?? null,
         metadata: optionalMetadata(body),
-      });
+      };
+      const add = () => addCredential(db, target.id, input);
+      const credential = inTrustSet(db, target.id, type)
+        ? signedOrThrow(await signing().authorizeTrustChange("signer_add",
+          { type, custody: type === "ssh_key" ? "external" : null, fingerprint: input.fingerprint.trim(), public_key: input.public_material },
+          `trust the signing key ${input.fingerprint.trim()}`, req.signal, add)).value
+        : add();
       sendJson(res, 201, { credential });
     } catch (error) {
       handleError(res, error);

@@ -10,7 +10,6 @@ import { publishFixtureExecution, approveFixtureRequest } from "./helpers/auth-q
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import * as operatorProof from "../src/auth-operator-proof.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { SseEvent } from "../src/types.js";
@@ -23,6 +22,7 @@ import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { createLedgerIssue as createSharedLedgerIssue, createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
 import { advanceMainViaAuthorizedMerge, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createMigratedDb, createNoopHookManager, createQueue, executionEvidenceChain, git, registerTestDelegatedLease, registerWorkRepo, uniqueMissingPath, waitForStatus, writeFile } from "./helpers/auth-queue-fixtures.js";
+import { approveAsFixtureOperator, fixtureOperatorSigning, SoftwareOperatorSigner } from "./helpers/operator-signing-fixtures.js";
 
 function createMigratedDbWithAgent() {
   return createSharedMigratedDb({
@@ -37,14 +37,14 @@ describe("auth queue", () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     let queue: AuthQueue | undefined;
-    const proof = vi.spyOn(operatorProof, "signOperatorChallenge");
+    const signer = new SoftwareOperatorSigner();
     try {
       writeFile(repo, "notes.txt", "original notes\n");
       git(repo, ["add", "notes.txt"]); git(repo, ["commit", "-m", "Tracked review notes"]);
       commitOnBranch(repo, "feature/readiness", { "feature.txt": "reviewed feature\n" });
       registerWorkRepo(db, repo);
       const signing = configureSigningCredential(db, repo, "ssh_key");
-      queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
+      queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false, operatorSigning: fixtureOperatorSigning(db, signer) });
       const request = await queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge", command: "mandible auth merge feature/readiness --into main",
         title: "Review retained candidate", cwd: repo, repo: path.basename(repo), base_branch: "main", head_branch: "feature/readiness",
         merge_head_sha: git(repo, ["rev-parse", "feature/readiness"]) });
@@ -58,17 +58,17 @@ describe("auth queue", () => {
       expect(blocker!.message).toContain(fs.realpathSync(repo));
       expect(blocker!.message).toContain("unstaged [ M]: shared.txt");
       expect(blocker!.message).toContain("staged [M ]: notes.txt");
-      await expect(queue.approveWithOperatorProof(request.id, signing.operatorId)).rejects.toMatchObject({
+      await expect(approveAsFixtureOperator(queue, request.id, signing.operatorId)).rejects.toMatchObject({
         code: "merge_check_failed", message: expect.stringContaining("shared.txt"),
       });
-      expect(proof).not.toHaveBeenCalled();
+      expect(signer.touches).toEqual([]);
       expect(await queue.getRequest(request.id)).toMatchObject({ status: "pending", approved_by_user_id: null,
         execution_evidence_id: null, merge_candidate_pin_sha: pin, merge_preflight_base_sha: base });
       expect(git(repo, ["rev-parse", "main"])).toBe(base);
       expect(fs.readFileSync(path.join(repo, ".git", "index"))).toEqual(index);
       expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("Unstaged edit added during review\n");
       expect(fs.readFileSync(path.join(repo, "notes.txt"), "utf8")).toBe("Staged edit added during review\n");
-    } finally { proof.mockRestore(); await queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+    } finally { await queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
   });
 
   it("executes from the re-resolved target root with verified credential-signature evidence", async () => {

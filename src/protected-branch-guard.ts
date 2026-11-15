@@ -161,7 +161,7 @@ export function startProtectedBranchGuardProjection(options: {
         options.logger("warn", "protected_branch_guard_no_operator_signers", {
           dir,
           detail: "No active operator signing credential is registered, so the Git guard refuses every protected-branch update that is not a fast-forward from its upstream.",
-          fix: "mandible user setup (registers the global git user.signingkey)",
+          fix: "Enroll an approval key in Settings.",
         });
       }
     } catch (error) {

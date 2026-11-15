@@ -110,12 +110,6 @@ export function authorizedMergeSignerLines(
     });
 }
 
-export function authorizedOperatorSignerLines(db: Db, userId: string): string[] {
-  return activeSigningCredentials(db)
-    .filter((credential) => credential.user_id === userId && credential.type === "ssh_key")
-    .flatMap((credential) => { const line = allowedSignerLine(credential); return line ? [line] : []; });
-}
-
 function unverified(
   commitSha: string | null,
   reason: string,

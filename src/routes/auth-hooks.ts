@@ -50,7 +50,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
     }
     const hook = hookManager.create(parsed.input);
     res.status(201).json(hook);
-  }), { operation: { id: "post:/api/auth/hooks", operatorPresence: true, effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }), { operation: { id: "post:/api/auth/hooks", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   // Update an existing hook — capability-fenced (issue 27241e6). Update is as
   // powerful as create: it can rewrite the command bytes of an already-trusted
@@ -65,7 +65,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
       return;
     }
     res.json(updated);
-  }), { operation: { id: "put:/api/auth/hooks/:id", operatorPresence: true, effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }), { operation: { id: "put:/api/auth/hooks/:id", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   // Delete a hook (built-in hooks cannot be deleted) — capability-fenced.
   // Deleting a required hook removes a convergence guarantee, so it is a
@@ -85,7 +85,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
       }
       res.status(500).json({ error: "Unexpected error." });
     }
-  }), { operation: { id: "delete:/api/auth/hooks/:id", operatorPresence: true, effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }), { operation: { id: "delete:/api/auth/hooks/:id", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   return hookManager;
 }

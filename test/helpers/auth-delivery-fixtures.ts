@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import type { AuthQueue } from "../../src/auth-queue.js";
 import type { AuthRequest } from "../../src/types.js";
+import { approveAsFixtureOperator } from "./operator-signing-fixtures.js";
 
 function git(repo: string, args: string[], input?: string): string {
   const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" } as NodeJS.ProcessEnv;
@@ -14,7 +15,7 @@ function git(repo: string, args: string[], input?: string): string {
 
 /** Requires configureSigningCredential(db, repo, "ssh_key") from auth-queue-fixtures. */
 export async function approveWithTestOperator(queue: AuthQueue, request: AuthRequest, operatorId: string): Promise<AuthRequest> {
-  return queue.approveWithOperatorProof(request.id, operatorId);
+  return approveAsFixtureOperator(queue, request.id, operatorId);
 }
 
 /** Publish the exact candidate in a temporary test repository with its registered operator key. */

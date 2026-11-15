@@ -46,10 +46,13 @@ import {
 } from "./ledger-fixtures.js";
 import {
   addCredential,
+  addEnclaveApprovalKey,
   addDelegatedSigningLease,
   getOperator,
+  listCredentials,
 } from "../../src/users/store.js";
 import { waitUntil } from "./wait-until.js";
+import { approveAsFixtureOperator, fixtureOperatorSigning, installFixtureApprovalKey } from "./operator-signing-fixtures.js";
 
 // --- temp-path custody -----------------------------------------------------
 //
@@ -391,8 +394,9 @@ export function executionEvidenceChain(
 }
 
 /**
- * Generates a real keypair inside the repository, exactly as before. The key is
- * deliberately not memoised across repositories. It lives in private Git
+ * Configures the repository's git signer. An `ssh_key` is the operator's
+ * enrolled approval key, signed with by the software signer; one database has
+ * one, shared by every repository it configures. The key lives in private Git
  * metadata so branch switches and broad fixture staging cannot delete or
  * commit its bytes.
  */
@@ -402,17 +406,27 @@ export function configureSigningCredential(
   type: "ssh_key" | "delegated_ssh_key",
 ): { credentialId: string; keyPath: string; operatorId: string } {
   const keyPath = path.join(git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "mandible-test-signing-key");
-  execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", keyPath]);
+  const operator = getOperator(db)!;
+  // One operator has one approval key: further repositories sign with the same key.
+  const enrolled = type === "ssh_key" ? listCredentials(db, operator.id).find((credential) => credential.custody === "enclave" && credential.status === "active") : undefined;
+  if (enrolled) {
+    fs.copyFileSync(fixtureOperatorSigning(db).keyPath(enrolled.fingerprint), keyPath);
+    fs.chmodSync(keyPath, 0o600);
+    fs.writeFileSync(`${keyPath}.pub`, `${enrolled.public_material}\n`);
+    git(repo, ["config", "gpg.format", "ssh"]);
+    git(repo, ["config", "user.signingkey", keyPath]);
+    return { credentialId: enrolled.id, keyPath, operatorId: operator.id };
+  }
+  execFileSync("ssh-keygen", ["-q", "-t", "ecdsa", "-b", "256", "-N", "", "-f", keyPath]);
   const publicMaterial = fs.readFileSync(`${keyPath}.pub`, "utf8").trim();
   const fingerprint = execFileSync("ssh-keygen", ["-lf", `${keyPath}.pub`, "-E", "sha256"], {
     encoding: "utf8",
   }).trim().split(/\s+/)[1]!;
-  const operator = getOperator(db)!;
-  const credential = addCredential(db, operator.id, {
-    type,
-    fingerprint,
-    public_material: publicMaterial,
-  });
+  // The test key is both the enrolled approval key and the repo's git signer.
+  const credential = type === "ssh_key"
+    ? addEnclaveApprovalKey(db, operator.id, { fingerprint, public_material: publicMaterial })
+    : addCredential(db, operator.id, { type, fingerprint, public_material: publicMaterial });
+  if (type === "ssh_key") installFixtureApprovalKey(db, fingerprint, keyPath);
   git(repo, ["config", "gpg.format", "ssh"]);
   git(repo, ["config", "user.signingkey", keyPath]);
   return { credentialId: credential.id, keyPath, operatorId: operator.id };
@@ -641,7 +655,7 @@ export async function approveFixtureRequest(queue: AuthQueue, id: string): Promi
       !fs.existsSync(path.join(git(request.cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']), 'mandible-test-signing-key'))) {
     configureSigningCredential(db, request.cwd, 'ssh_key');
   }
-  return queue.approveWithOperatorProof(id, getOperator(db)!.id);
+  return approveAsFixtureOperator(queue, id);
 }
 
 /** Stored historical rows test projections/recovery, never execution authority. */

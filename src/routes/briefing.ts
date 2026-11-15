@@ -1,5 +1,5 @@
 import type { LedgerReader } from "../ledger-reads/index.js";
-import { attributionForRequest, ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity, requireOperator, requireProtectedOperator } from "../client-auth/authz.js";
+import { attributionForRequest, ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity, requireOperator } from "../client-auth/authz.js";
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalJson } from "../canonical-json.js";
 import type { Db } from "../db.js";
@@ -209,12 +209,11 @@ function groupUpdateViewer(db: Db, req: RequestLike): { userId: string; operator
     "Briefing group updates by an agent require a configured active human operator.").id, operator: true };
 }
 
-function humanReviewOperator(db: Db, req: RequestLike, protectedAction = false) {
-  const identity = protectedAction ? requireProtectedOperator(db, req) : requireOperator(db, req);
+function humanReviewOperator(db: Db, req: RequestLike) {
+  const identity = requireOperator(db, req);
   return {
     actor: { userId: identity.user_id,
-      evidenceMethod: protectedAction ? "credential_signature" as const
-        : identity.method === "api_token" ? "api_token" as const : "local_default" as const,
+      evidenceMethod: identity.method === "api_token" ? "api_token" as const : "local_default" as const,
       credentialId: identity.credential_id },
     viewer: { userId: identity.user_id, operator: true as const, humanReviewOperator: true as const },
   };
@@ -636,7 +635,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
 
   server.post("/api/briefing-groups/:groupId/review-dispositions", (req, res) => {
     try {
-      const principal = humanReviewOperator(db, req, true);
+      const principal = humanReviewOperator(db, req);
       const requestBody = body(req);
       const allowed = ["decision", "expected_base_bundle_ref", "proposal_bundle_ref", "binding_digest",
         "destination_changes"];
@@ -654,7 +653,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
         decision: requestBody.decision,
         bindingDigest: typeof requestBody.binding_digest === "string" ? requestBody.binding_digest : "",
         destinationChanges: destinationChanges(requestBody.destination_changes),
-      }, { ...principal.actor, evidenceMethod: "credential_signature" }, principal.viewer);
+      }, principal.actor, principal.viewer);
       if (result.changed) broadcast(result.disposition.kind === "accepted"
         ? BRIEFING_EVENTS.groupProposalAccepted : BRIEFING_EVENTS.groupProposalRejected, {
         group_id: result.group.id,
@@ -664,7 +663,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
-  }, { operation: { id: "post:/api/briefing-groups/:groupId/review-dispositions", operatorPresence: true, effects: ["ledger:write", "auth:protected"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/review-dispositions", effects: ["ledger:write", "auth:protected"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/review-candidates", (req, res) => {
     try {

@@ -145,6 +145,8 @@ export const METADATA_BACKUP_TABLES = [
   "user_bindings",
   "delegated_signing_leases",
   "attribution_evidence",
+  // Every authorization of a change to the operator's trust set, with its signatures.
+  "operator_trust_changes",
   // Scoped merge clearances are durable audit metadata. Runtime signer handles
   // are deliberately absent and therefore every restored grant fails closed.
   "auth_clearances",

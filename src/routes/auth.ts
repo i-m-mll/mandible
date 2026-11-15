@@ -33,7 +33,8 @@ import {
   AttributionReadResolver,
   authAttributionReadFields,
 } from "../identity/read-projection.js";
-import { ClientAuthzError, requireIdentity, requireProtectedOperator as requireOperator } from "../client-auth/authz.js";
+import { ClientAuthzError, requireIdentity, requireOperator } from "../client-auth/authz.js";
+import { sendSigningRefusal } from "../operator-signing/http.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -726,7 +727,13 @@ export function registerAuthRoutes(
   app.post("/api/auth/request/:id/approve", globalCapabilityRoute("approve_auth", async (req, res) => {
     try {
       const identity = req.client_identity!;
-      const request = await authQueue.approveWithOperatorProof(req.params.id, identity.user_id);
+      const request = await authQueue.approveAsOperator(req.params.id, {
+        user_id: identity.user_id,
+        evidence_method: attributionForRequest(db, req)?.evidence_method ?? "local_default",
+        identity_method: identity.method,
+        source: identity.source,
+        credential_id: identity.credential_id,
+      });
       res.status(202).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
@@ -757,7 +764,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/reject", operatorPresence: true, effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/reject", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/skip", async (req, res) => {
     try {
@@ -882,12 +889,18 @@ export function registerAuthRoutes(
         action: "merge",
         durationMinutes: typeof body.duration_minutes === "number" ? body.duration_minutes : undefined,
         maxUses: typeof body.max_uses === "number" ? body.max_uses : undefined,
-      }, operator.user_id);
+      }, operator.user_id, async (grant) => {
+        const signing = authQueue.operatorSigningAuthority;
+        if (!signing) return { ok: false, code: "operator_signature_signing_failed", detail: "This instance has no approval signer." };
+        const signed = await signing.signStatement({ kind: "clearance_grant", content: { ...grant } },
+          "issue a merge clearance", req.signal, () => undefined);
+        return signed.ok ? { ok: true } : { ok: false, code: `operator_signature_${signed.error.code}`, detail: signed.error.detail };
+      });
       res.status(201).json({ clearance });
     } catch (error) {
       handleClearanceError(error, res);
     }
-  }, { operation: { id: "post:/api/auth/clearances", operatorPresence: true, effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/clearances", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/clearances/:id/revoke", async (req, res) => {
     try {
@@ -896,7 +909,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleClearanceError(error, res);
     }
-  }, { operation: { id: "post:/api/auth/clearances/:id/revoke", operatorPresence: true, effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/clearances/:id/revoke", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/clearance/execute", async (req, res) => {
     try {
@@ -920,26 +933,36 @@ export function registerAuthRoutes(
     const body = readBody<Record<string, unknown>>(req);
     try {
       requireOperator(db, req);
-      const status = await clearanceManager.setupSigning({
+      const options = {
         name: typeof body.name === "string" ? body.name : undefined,
         email: typeof body.email === "string" ? body.email : undefined,
         ageRecipient: typeof body.age_recipient === "string" ? body.age_recipient : undefined,
         overwrite: body.overwrite === true,
-      });
-      res.status(201).json(status);
+      };
+      const signing = authQueue.operatorSigningAuthority;
+      if (!signing) { res.status(409).json({ error: "This instance has no approval signer.", code: "operator_signature_signing_failed" }); return; }
+      const signed = await signing.authorizeTrustChange("delegated_signer_setup", { options },
+        "set up the delegated clearance signer", req.signal, () => undefined);
+      if (!signed.ok) { sendSigningRefusal(res, signed.error); return; }
+      res.status(201).json(await clearanceManager.setupSigning(options));
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
     }
-  }, { operation: { id: "post:/api/auth/clearances/signing/setup", operatorPresence: true, effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "post:/api/auth/clearances/signing/setup", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.delete("/api/auth/clearances/signing", async (req, res) => {
     try {
       requireOperator(db, req);
+      const signing = authQueue.operatorSigningAuthority;
+      if (!signing) { res.status(409).json({ error: "This instance has no approval signer.", code: "operator_signature_signing_failed" }); return; }
+      const signed = await signing.authorizeTrustChange("delegated_signer_remove", { status: clearanceManager.signingStatus() },
+        "remove the delegated clearance signer", req.signal, () => undefined);
+      if (!signed.ok) { sendSigningRefusal(res, signed.error); return; }
       res.json(await clearanceManager.removeSigning());
     } catch (error) {
       handleClearanceError(error, res);
     }
-  }, { operation: { id: "delete:/api/auth/clearances/signing", operatorPresence: true, effects: ["auth:credentials"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+  }, { operation: { id: "delete:/api/auth/clearances/signing", effects: ["auth:credentials"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   return authQueue;
 }

@@ -233,7 +233,7 @@ bun run build            # daemon and app
 
 ```bash
 bun run start            # daemon on 127.0.0.1:29420; creates ~/.mandible/mandible.db and migrates it
-mandible user setup      # the local operator; registers the global git signing key as a credential
+mandible user setup      # the local operator
 ```
 
 Browsers and the desktop use the HTTPS front door. Initialize it once with `bun run local-front-door -- initialize`, install the pinned Caddy with `bun run local-front-door -- install`, trust the local certificate root with `bun scripts/local-ca-trust.mjs setup`, then run it with `bun run local-front-door -- run` and open `https://app.mandible.localhost:19420`. Opening the app as the logged-in OS user never requires a login, and access never expires. See [Local browser access](docs/guides/local-browser-sessions.mdx).
@@ -243,7 +243,7 @@ installations use the guarded [runtime handoff](docs/runtime-handoff.md) and
 [exact-candidate acceptance](docs/candidate-acceptance.md) contracts. Opening a
 second app does not replace an existing live source installation.
 
-The operator's signing key must be registered as an active `ssh_key` credential, or approvals refuse. `mandible user setup` reads the global `user.signingkey` only; register another key with `mandible user credential add <operator> --from-git-signingkey`.
+Protected merges, clearances, and changes to the trust set (approval key, external signers, protected branches) are signed actions: the operator's approval key, held in the Secure Enclave and enrolled in Settings, signs each one after a Touch ID match. Every other operator action is a courtesy action recorded with the caller's resolved identity. Mandible never reads the git signing configuration.
 
 ### State on disk
 

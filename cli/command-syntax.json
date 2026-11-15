@@ -1605,7 +1605,9 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "ref","value": {"type": "string"}},
-          {"kind": "choice","items": [{"kind": "sequence","items": [{"kind": "option","names": ["--type"],"values": [{"kind": "argument","name": "t","value": {"type": "string"}}]},{"kind": "option","names": ["--fingerprint"],"values": [{"kind": "argument","name": "f","value": {"type": "string"}}]},{"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--public-material"],"values": [{"kind": "argument","name": "m","value": {"type": "string"}}]}]}}]},{"kind": "sequence","items": [{"kind": "option","names": ["--from-git-signingkey"],"values": []}]}]},
+          {"kind": "option","names": ["--type"],"values": [{"kind": "argument","name": "t","value": {"type": "string"}}]},
+          {"kind": "option","names": ["--fingerprint"],"values": [{"kind": "argument","name": "f","value": {"type": "string"}}]},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--public-material"],"values": [{"kind": "argument","name": "m","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--label"],"values": [{"kind": "argument","name": "l","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]

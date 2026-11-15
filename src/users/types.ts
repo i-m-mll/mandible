@@ -22,6 +22,9 @@ export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
 
 export type CredentialStatus = "active" | "revoked";
 
+/** Whether Mandible can invoke an `ssh_key` here or only verify it; null for other types. */
+export type CredentialCustody = "enclave" | "external";
+
 export const BINDING_TYPES = [
   "app_name",
   "provider_session_env",
@@ -84,6 +87,7 @@ export interface UserCredential {
   created_at: number;
   revoked_at: number | null;
   metadata: Record<string, unknown>;
+  custody: CredentialCustody | null;
 }
 
 export interface UserBinding {

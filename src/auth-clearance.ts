@@ -84,6 +84,24 @@ export class AuthClearanceError extends Error {
   }
 }
 
+/**
+ * The grant a clearance's approval-key signature covers. `delegated_public_key`
+ * names the key the delegated merges are signed with.
+ */
+export interface ClearanceGrant {
+  grantee_user_id: string;
+  project_id: string;
+  base_branch: string;
+  issue_id: string | null;
+  head_branch: string | null;
+  expires_at: number;
+  max_uses: number;
+  delegated_public_key: string | null;
+}
+
+/** Signs a grant with the operator's approval key; a refusal names why. */
+export type ClearanceGrantAuthorizer = (grant: ClearanceGrant) => Promise<{ ok: true } | { ok: false; code: string; detail: string }>;
+
 export class AuthClearanceManager {
   private readonly lifecycle = new AuthorityLifecycle();
   private closing: Promise<void> | null = null;
@@ -121,11 +139,11 @@ export class AuthClearanceManager {
     return this.closing;
   }
 
-  async issue(input: IssueClearanceInput, issuerUserId: string): Promise<AuthClearance> {
-    return this.lifecycle.run(() => this.issueAdmitted(input, issuerUserId));
+  async issue(input: IssueClearanceInput, issuerUserId: string, authorize: ClearanceGrantAuthorizer): Promise<AuthClearance> {
+    return this.lifecycle.run(() => this.issueAdmitted(input, issuerUserId, authorize));
   }
 
-  private async issueAdmitted(input: IssueClearanceInput, issuerUserId: string): Promise<AuthClearance> {
+  private async issueAdmitted(input: IssueClearanceInput, issuerUserId: string, authorize: ClearanceGrantAuthorizer): Promise<AuthClearance> {
     const now = this.now();
     const operator = getOperator(this.db);
     if (!operator || operator.status !== "active" || operator.id !== issuerUserId) {
@@ -163,6 +181,14 @@ export class AuthClearanceManager {
     const durationMinutes = boundedInteger(input.durationMinutes, DEFAULT_DURATION_MINUTES, 1, MAX_DURATION_MINUTES);
     const maxUses = boundedInteger(input.maxUses, DEFAULT_MAX_USES, 1, 100);
     const expiresAt = now + durationMinutes * 60_000;
+    const delegated = this.db.prepare(
+      "SELECT public_material FROM user_credentials WHERE user_id = ? AND type = 'delegated_ssh_key' AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+    ).get(operator.id) as { public_material: string | null } | undefined;
+    const authorized = await authorize({
+      grantee_user_id: grantee.id, project_id: project.id, base_branch: baseBranch, issue_id: issueId,
+      head_branch: headBranch, expires_at: expiresAt, max_uses: maxUses, delegated_public_key: delegated?.public_material ?? null,
+    });
+    if (!authorized.ok) throw new AuthClearanceError(authorized.code, authorized.detail);
     const approval = await this.signer.issueFresh(Math.ceil((expiresAt - now) / 1000));
     const id = randomUUID();
     try {

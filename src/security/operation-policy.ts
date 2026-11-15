@@ -37,7 +37,6 @@ export const STANDARD_PREVIEW_EFFECTS: readonly Effect[] = [
 export type Operation = {
   id: string;
   effects: readonly Effect[];
-  operatorPresence?: boolean;
 };
 
 const INLINE_ARTIFACT_BYTE_FIELDS = new Set([
@@ -69,7 +68,6 @@ export interface OperationContext {
 }
 
 export interface OperationDescriptor {
-  operatorPresence?: boolean;
   id: string;
   effects: readonly Effect[] | ((context: OperationContext) => readonly Effect[]);
   requestSchema: import("zod").ZodType | null;
@@ -81,7 +79,7 @@ export function resolveOperation(descriptor: OperationDescriptor, context: Opera
   if (!Array.isArray(effects) || effects.some(effect => !EFFECTS.includes(effect))) {
     throw new Error(`Invalid effects from operation ${descriptor.id}`);
   }
-  return { id: descriptor.id, effects, operatorPresence: descriptor.operatorPresence };
+  return { id: descriptor.id, effects };
 }
 
 /** Whether an instance keeps interface notes in the instance it was copied from rather than in its own ledger. */

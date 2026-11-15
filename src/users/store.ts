@@ -15,6 +15,7 @@ import {
   type AddDelegatedSigningLeaseInput,
   type AttributionEvidence,
   type CreateUserInput,
+  type CredentialCustody,
   type DelegatedSigningLease,
   type SetupOperatorInput,
   type UpdateUserInput,
@@ -77,6 +78,7 @@ interface CredentialRow {
   created_at: number;
   revoked_at: number | null;
   metadata_json: string;
+  custody: CredentialCustody | null;
 }
 
 interface BindingRow {
@@ -137,6 +139,7 @@ function mapCredential(row: CredentialRow): UserCredential {
     created_at: row.created_at,
     revoked_at: row.revoked_at,
     metadata: parseJsonObject(row.metadata_json),
+    custody: row.custody,
   };
 }
 
@@ -493,11 +496,48 @@ export function listCredentials(
   return rows.map(mapCredential);
 }
 
+/**
+ * Register a credential from caller-supplied public material. An `ssh_key`
+ * registered this way is always verify-only: no caller can supply key material
+ * for a key Mandible will invoke (see `addEnclaveApprovalKey`).
+ */
 export function addCredential(
   db: Db,
   ref: string,
   input: AddCredentialInput,
   now: number = Date.now(),
+): UserCredential {
+  return insertCredential(db, ref, input, input.type === "ssh_key" ? "external" : null, now);
+}
+
+/** Register an approval key the approval helper created in this Mac's Secure Enclave. */
+export function addEnclaveApprovalKey(
+  db: Db,
+  userId: string,
+  input: { fingerprint: string; public_material: string; label?: string | null },
+  now: number = Date.now(),
+): UserCredential {
+  return insertCredential(db, userId, { type: "ssh_key", ...input }, "enclave", now);
+}
+
+/** A replaced approval key stays active as a verify-only signer so history still verifies. */
+export function retireEnclaveCustody(db: Db, credentialId: string): void {
+  mutateLedgerRecord(db, {
+    entity_type: "credential",
+    entity_id: credentialId,
+    snapshot: () => db.prepare("SELECT id, user_id, status, custody FROM user_credentials WHERE id = ?").get(credentialId) ?? null,
+  }, () => {
+    const changed = db.prepare("UPDATE user_credentials SET custody = 'external' WHERE id = ? AND custody = 'enclave'").run(credentialId);
+    if (changed.changes !== 1) throw new UserRegistryError("conflict", `Credential '${credentialId}' is not an enclave approval key.`);
+  });
+}
+
+function insertCredential(
+  db: Db,
+  ref: string,
+  input: AddCredentialInput,
+  custody: CredentialCustody | null,
+  now: number,
 ): UserCredential {
   const user = resolveUserOrThrow(db, ref);
   if (!(CREDENTIAL_TYPES as readonly string[]).includes(input.type)) {
@@ -517,13 +557,13 @@ export function addCredential(
     entity_type: "credential",
     entity_id: id,
     payload: { user_id: user.id },
-    snapshot: () => db.prepare("SELECT id, user_id, type, fingerprint, public_material, label, status, revoked_at, metadata_json FROM user_credentials WHERE id = ?").get(id) ?? null,
+    snapshot: () => db.prepare("SELECT id, user_id, type, fingerprint, public_material, label, status, revoked_at, metadata_json, custody FROM user_credentials WHERE id = ?").get(id) ?? null,
   }, () => {
     try {
       db.prepare(
         `INSERT INTO user_credentials
-           (id, user_id, type, fingerprint, public_material, label, status, created_at, revoked_at, metadata_json)
-         VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?)`,
+           (id, user_id, type, fingerprint, public_material, label, status, created_at, revoked_at, metadata_json, custody)
+         VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?)`,
       ).run(
         id,
         user.id,
@@ -533,6 +573,7 @@ export function addCredential(
         input.label ?? null,
         now,
         serializeMetadata(input.metadata),
+        custody,
       );
     } catch (error) {
       if (isUniqueConstraint(error)) {

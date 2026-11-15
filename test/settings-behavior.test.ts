@@ -97,8 +97,7 @@ describe('SettingsView', () => {
       }
       if (url === '/api/users/operator/signing-key') {
         return new Response(JSON.stringify({
-          audit: { status: 'unconfigured', configured: false, fingerprint: null, operator_slug: 'operator', reason: null, hint: null },
-          credentials: [], git_config_read: true,
+          operator_slug: 'operator', approval_keys: [], credentials: [], trust_changes: [],
         }), { headers: { 'content-type': 'application/json' } });
       }
       return new Response('{}', { headers: { 'content-type': 'application/json' } });
@@ -179,8 +178,7 @@ describe('SettingsView', () => {
       }
       if (url === '/api/users/operator/signing-key') {
         return new Response(JSON.stringify({
-          audit: { status: 'unconfigured', configured: false, fingerprint: null, operator_slug: 'operator', reason: null, hint: null },
-          credentials: [], git_config_read: true,
+          operator_slug: 'operator', approval_keys: [], credentials: [], trust_changes: [],
         }), { headers: { 'content-type': 'application/json' } });
       }
       return new Response('{}', { headers: { 'content-type': 'application/json' } });
