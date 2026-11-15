@@ -15,7 +15,7 @@ import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as abortableDelay } from 'node:timers/promises';
 import { withOwnedRunLock, createOwnedRun, saveOwnedMetadata, finalizeOwnedRun, cleanupOwnedRun } from './owned-run.mjs';
-import { reconcileGeneratedScratch, recordScratchProcess } from './generated-scratch.mjs';
+import { generatedChildrenIdle, generatedProcessLog, reconcileGeneratedScratch, recordScratchProcess } from './generated-scratch.mjs';
 import { generatedStorage } from './generated-storage.mjs';
 import Database from '../src/sqlite.ts';
 import { readBuildRevision } from './build-revision.mjs';
@@ -27,6 +27,8 @@ import { acceptanceFailure, describeAcceptanceFailure, sentence } from './accept
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError, EVENT_LOOP_STALL_BUDGET_MS } from '../src/runtime-health-contract.ts';
 import { gatewayCaddyfile, GATEWAY_GRACE_SECONDS } from './gateway-config.mjs';
 import { resolveAppSigning, requireNativeAppSigning } from './app-signing.mjs';
+import { daemonBuildOutput, desktopAppPath } from './desktop-build-layout.mjs';
+import { acceptanceScratchPath } from './acceptance-workspace.mjs';
 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -49,7 +51,7 @@ export function acceptanceApplicationPolicy() {
   }
   return startedAt;
 }
-export const acceptanceOwnedOutputs = ['home', 'build.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile'].map(path => ({ path, kind: 'generated' }));
+export const acceptanceOwnedOutputs = ['home', 'build.log', 'daemon.log', 'desktop.log', 'gateway.log', 'Caddyfile', generatedProcessLog].map(path => ({ path, kind: 'generated' }));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const instant = ms => Number.isFinite(ms) ? new Date(ms).toISOString() : String(ms);
 const exit = child => child.signalCode ? `signal ${child.signalCode}` : `exit code ${child.exitCode}`;
@@ -104,7 +106,7 @@ export function createAcceptanceHome(home) {
   fs.mkdirSync(home, { mode: 0o700 });
 }
 
-async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment, home, profile, watch }) {
+async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment, home, profile, watch, signal, onSpawn }) {
   const privateHome = path.join(home, 'updater-entrypoint');
   const journal = path.join(privateHome, 'config/local-sessions/handoff/invalid-request-invalid-execution/journal.json');
   fs.mkdirSync(path.dirname(journal), { recursive: true, mode: 0o700 });
@@ -112,7 +114,7 @@ async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment
     binding: { home: privateHome, requestId: 'invalid-request', executionId: 'invalid-execution' } }), { mode: 0o600 });
   try {
     await runSupervisedCommand('/usr/bin/sandbox-exec', ['-p', profile, runtime, '--no-install', path.join(resources, 'handoff/helper.mjs'), 'worker', journal], {
-      env: { ...environment, MANDIBLE_HOME: privateHome }, cwd: privateHome, capture: true, maxBuffer: 16 * 1024, watch, graceMs: 250,
+      env: { ...environment, MANDIBLE_HOME: privateHome }, cwd: privateHome, capture: true, maxBuffer: 16 * 1024, watch, graceMs: 250, signal, onSpawn,
     });
   } catch (error) {
     if (error.exitCode === 1 && error.processGroupSettled && error.stderr?.trim() === 'Runtime handoff binding is malformed or changed.') {
@@ -125,14 +127,14 @@ async function verifyPackagedUpdaterEntrypoint({ resources, runtime, environment
   throw acceptanceFailure('candidate', 'The packaged updater accepted a deliberately invalid handoff journal; it must refuse one.');
 }
 
-export async function verifyPackagedExports({ resources, runtime, environment, home, provenance, watch, onSpawn }) {
+export async function verifyPackagedExports({ resources, runtime, environment, home, provenance, watch, signal, onSpawn }) {
   const fixtureRoot = path.join(home, 'exports');
   fs.mkdirSync(fixtureRoot, { mode: 0o700 });
   let proof;
   try {
     const output = await runSupervisedCommand(runtime, ['--no-install', path.join(root, 'scripts/prove-installed-exports.mjs'), resources, fixtureRoot], {
       env: { ...environment, MANDIBLE_EXPORT_PROOF_SUPERVISED: '1' }, cwd: fixtureRoot,
-      capture: true, maxBuffer: 32 * 1024, watch, graceMs: 250, onSpawn,
+      capture: true, maxBuffer: 32 * 1024, watch, graceMs: 250, signal, onSpawn,
     });
     proof = JSON.parse(output.stdout);
   } catch (error) {
@@ -471,7 +473,7 @@ async function main(startedAt) {
   const receiptCapability = process.env[ACCEPTANCE_RECEIPT_CAPABILITY];
   const receiptSchema = acceptanceReceiptSchema(receiptCapability);
   if (diagnostic && !(diagnosticDuration > 0 && Number.isFinite(diagnosticDuration))) throw new Error('Diagnostic replay --duration must be a positive number of milliseconds.');
-  if (!diagnostic) requireNativeAppSigning(resolveAppSigning(root));
+  const signing = diagnostic ? null : requireNativeAppSigning(resolveAppSigning(root));
   const candidate = diagnostic?.candidate || command('git', ['rev-parse', 'HEAD']);
   const parents = command('git', ['show', '-s', '--format=%P', candidate]).split(' ');
   const candidateBinding = { pin_sha: candidate, tree_sha: command('git', ['rev-parse', `${candidate}^{tree}`]),
@@ -486,15 +488,17 @@ async function main(startedAt) {
     try { await generatedStorage({ db, home: process.env.MANDIBLE_HOME, cache: path.dirname(cache), apply: true, until: Date.now() + ACCEPTANCE_CLEANUP_MS }); }
     finally { db.close(); }
   } else await reconcileGeneratedScratch(cache, { apply: true, until: Date.now() + ACCEPTANCE_CLEANUP_MS });
-  const run = fs.mkdtempSync(path.join(cache, 'candidate-'));
   const project = option('--project'); const workUnit = option('--work-unit');
-  if (!project || !workUnit) { fs.rmdirSync(run); throw acceptanceFailure('environment', 'Acceptance was started without the project and work unit to record its result under (--project and --work-unit).'); }
+  if (!project || !workUnit) throw acceptanceFailure('environment', 'Acceptance was started without the project and work unit to record its result under (--project and --work-unit).');
+  const recordId = diagnostic ? null : process.env.MANDIBLE_ACCEPTANCE_ID;
+  const run = recordId ? acceptanceScratchPath(cache, recordId) : fs.mkdtempSync(path.join(cache, 'candidate-'));
+  if (recordId) fs.mkdirSync(run, { mode: 0o700 });
   return withOwnedRunLock(run, async () => {
   const nonce = randomBytes(32).toString('hex');
   const instanceId = `acceptance-${nonce.slice(0, 16)}`;
   const outputs = diagnostic ? [...acceptanceOwnedOutputs, { path: 'Mandible.app', kind: 'generated' }, { path: 'diagnostics', kind: 'interactive' }] : acceptanceOwnedOutputs;
   const ownership = createOwnedRun({ root: run, instanceId, project, workUnit, disposable: true, outputs,
-    ...(!diagnostic && process.env.MANDIBLE_ACCEPTANCE_ID ? { runId: process.env.MANDIBLE_ACCEPTANCE_ID } : {}) });
+    ...(recordId ? { runId: recordId } : {}) });
   const metadataFile = path.join(run, 'metadata.json');
   saveOwnedMetadata(metadataFile, { ownership, candidate });
   const home = path.join(run, 'home');
@@ -519,6 +523,7 @@ async function main(startedAt) {
   let passiveHealth, passiveError;
   let interactionCompletedAt = null;
   const interactionController = new AbortController();
+  const superviseCheck = { signal: interactionController.signal, onSpawn: child => recordScratchProcess(metadataFile, child, true) };
   const passiveController = new AbortController();
   const interactionWake = new AbortController();
   const diagnostics = path.join(run, 'diagnostics');
@@ -540,14 +545,18 @@ async function main(startedAt) {
     let builtApp = diagnostic?.app;
     if (!diagnostic) {
     const buildLog = fs.openSync(path.join(run, 'build.log'), 'w'); files.push(buildLog);
-    await phases.run('package_build', watch => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], { cwd: root, env: buildEnv, log: buildLog, watch, graceMs: 250, onSpawn: child => recordScratchProcess(metadataFile, child, true) })
+    const processLog = path.join(run, generatedProcessLog);
+    fs.writeFileSync(processLog, '', { flag: 'wx', mode: 0o600 });
+    await phases.run('package_build', watch => runSupervisedCommand(runtime, ['run', 'tauri:build', '--', '--bundles', 'app'], {
+      cwd: root, env: { ...buildEnv, TMPDIR: home, MANDIBLE_ACCEPTANCE_PROCESS_LOG: processLog }, log: buildLog, watch, graceMs: 3_500, ...superviseCheck,
+    })
       .catch(error => {
-        if (error.code === 'HUNG' || error.exitCode == null) throw error;
+        if (error.code === 'HUNG' || error.aborted || error.exitCode == null) throw error;
         throw acceptanceFailure('either', `Building the signed Mandible.app from the candidate failed with exit code ${error.exitCode}. The end of the build log is kept with the acceptance result (build_failure_excerpt): a compile or bundling error there points at the branch, a missing tool or signing identity at the environment.`);
       }));
     const builtRevision = readBuildRevision(root);
     if (builtRevision !== candidate) throw acceptanceFailure('either', `The build produced a daemon for revision ${builtRevision}, not the candidate ${candidate}, so the package was not built from the candidate.`, { built: builtRevision, candidate });
-    builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
+    builtApp = desktopAppPath(root, { env: buildEnv, product: signing.config.productName });
     }
     const verification = phases.begin('package_verification');
     if (!diagnostic) {
@@ -560,7 +569,7 @@ async function main(startedAt) {
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
     verification.watch.advance('the package signature was verified');
     const resources = path.join(app, 'Contents', 'Resources');
-    const marker = diagnostic?.marker || JSON.parse(fs.readFileSync(path.join(root, 'dist', 'build-revision.json'), 'utf8'));
+    const marker = diagnostic?.marker || JSON.parse(fs.readFileSync(path.join(root, daemonBuildOutput, 'build-revision.json'), 'utf8'));
     const { release: shipped, digest } = verifyApplicationRelease(app);
     if (shipped.provenance.commit !== candidate || shipped.provenance.source_digest !== marker.source_digest) {
       const values = { package_commit: shipped.provenance.commit, package_source_digest: shipped.provenance.source_digest, candidate, candidate_source_digest: marker.source_digest };
@@ -573,10 +582,9 @@ async function main(startedAt) {
     if (diagnostic && testedPackageDigest !== diagnostic.sha256) throw new Error('Diagnostic package changed while copying.');
     executionProfile = installedExecutionProfile({ checkout: root, commonDirectory: command("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]), app });
     if (!diagnostic) result.checks.updater_entrypoint = await verifyPackagedUpdaterEntrypoint({ resources, runtime: packagedRuntime,
-      environment: resourceEnv, home, profile: executionProfile, watch: verification.watch });
+      environment: resourceEnv, home, profile: executionProfile, watch: verification.watch, ...superviseCheck });
     result.checks.installed_exports = await verifyPackagedExports({ resources, runtime: packagedRuntime,
-      environment: resourceEnv, home, provenance: shipped.provenance, watch: verification.watch,
-      onSpawn: child => recordScratchProcess(metadataFile, child, true) });
+      environment: resourceEnv, home, provenance: shipped.provenance, watch: verification.watch, ...superviseCheck });
     result.provenance = { marker, daemon_sha256: sha256(releaseFile(resources, shipped.entrypoints.daemon)), native_sha256: sha256(path.join(app, "Contents/MacOS/mandible-app")), harness_sha256: sha256(fileURLToPath(import.meta.url)), package_sha256: testedPackageDigest, shipped };
     verification.pass();
     const readiness = phases.begin('readiness');
@@ -744,7 +752,7 @@ async function main(startedAt) {
       recordFailure(acceptanceFailure('either', `The ${labels[name]} ended with ${exit(child)} instead of exiting cleanly when acceptance stopped it; its log excerpt in the acceptance result shows why.`, { exit_code: child.exitCode, signal: child.signalCode }));
     }
     if (result.status !== 'passed') result.checks.failure_logs = acceptanceFailureLogs(run);
-    if (![stallProbe, daemon, desktop, gateway].every(child => !child || child.exitCode !== null || child.signalCode !== null)) {
+    if (!generatedChildrenIdle(JSON.parse(fs.readFileSync(metadataFile, 'utf8')).ownership)) {
       result.status = 'failed'; result.cleanup_error = 'A process acceptance started was still running after shutdown, so acceptance kept its scratch files instead of deleting them.';
       recordFailure(acceptanceFailure('environment', result.cleanup_error));
     } else {
