@@ -8,6 +8,7 @@ import {
   registerOperatorSigningKey,
   type InstanceInfo,
   type OperatorSigningKeyStatus,
+  type OperatorTrustChange,
 } from '../../api';
 import { DetailPaneNotice } from '../shared/DetailPaneNotice';
 import { CopyRefButton } from '../shared/DetailHeaderIdentity';
@@ -37,6 +38,17 @@ const CHANGE_LABEL: Record<string, string> = {
   signer_revoke: 'Signer removed',
   protected_branches: 'Protected branches changed',
 };
+
+/** An enrollment that replaced a key without that key's signature: anyone at this Mac could have made it. */
+function replacedWithoutSignature(change: OperatorTrustChange): boolean {
+  if (change.kind !== 'approval_key_enrollment' || change.authorization !== 'bootstrap') return false;
+  try {
+    const replaces = (JSON.parse(change.statement) as { content?: { replaces?: unknown[] } }).content?.replaces;
+    return Array.isArray(replaces) && replaces.length > 0;
+  } catch {
+    return true;
+  }
+}
 
 export default function SigningSettings({ instance }: Props): JSX.Element {
   const [status, setStatus] = useState<OperatorSigningKeyStatus | null>(null);
@@ -123,6 +135,7 @@ export default function SigningSettings({ instance }: Props): JSX.Element {
 
   const approvalKey = status?.approval_keys[0] ?? null;
   const externalSigners = status?.credentials.filter((credential) => credential.custody !== 'enclave') ?? [];
+  const bootstrap = status?.trust_changes.find(replacedWithoutSignature) ?? null;
 
   return (
     <div className="settings-view__signing-settings" data-settings-searchable>
@@ -163,6 +176,14 @@ export default function SigningSettings({ instance }: Props): JSX.Element {
           <span className="settings-view__number-desc">
             GitHub accepts this line as a Signing key; add it there to show protected merges as Verified.
           </span>
+        </div>
+      )}
+
+      {bootstrap && (
+        <div data-settings-searchable data-settings-search-text="Approval key replaced without its predecessor's signature bootstrap">
+          <DetailPaneNotice severity="warning" density="compact" title="Approval key replaced without the previous key's signature">
+            On {new Date(bootstrap.created_at).toLocaleString()} a new approval key was enrolled while the previous key could not sign, so nothing but access to this Mac authorized it. If you did not replace the key then, someone else did: review the protected merges and trust changes since, and enroll a new key.
+          </DetailPaneNotice>
         </div>
       )}
 
