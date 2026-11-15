@@ -51,11 +51,25 @@ export function handoffRetainedReleases(journal) {
 
 export function acceptedReleaseFilesystemReferences(home, reference) {
   const reasons = [];
-  if (readBundleOwner({ runtimeDir: path.join(home, 'config/local-sessions') })?.acceptedRelease === reference) reasons.push('The installed release still owns these bytes.');
-  const active = readRuntimeHandoffLock(home);
-  if (active && (!active.journalPath || !active.bindingDigest || !active.requestId || !active.executionId)) reasons.push('unreadable handoff ownership');
+  const locator = /^accepted-release:[a-f0-9]{64}(:[A-Za-z0-9_-]+)$/.exec(reference)?.[1];
+  const retains = binding => binding === reference
+    || !!locator && typeof binding === 'string' && binding.startsWith('accepted-release:') && binding.endsWith(locator);
+  const installed = readBundleOwner({ runtimeDir: path.join(home, 'config/local-sessions') })?.acceptedRelease;
+  if (retains(installed)) reasons.push('The installed release still owns these bytes.');
+  else if (installed != null && typeof installed !== 'string') reasons.push('unreadable installed release ownership');
   const directory = path.join(home, 'config/local-sessions/handoff');
-  if (fs.existsSync(directory)) for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+  const active = readRuntimeHandoffLock(home);
+  if (active && (active.state === 'unreadable' || !active.journalPath || !active.bindingDigest || !active.requestId
+      || !active.executionId || active.journalPath !== path.join(directory, path.basename(path.dirname(active.journalPath)), 'journal.json'))) {
+    reasons.push('unreadable handoff ownership');
+  }
+  const handoffs = fs.lstatSync(directory, { throwIfNoEntry: false });
+  if (!handoffs) return reasons;
+  if (!handoffs.isDirectory() || fs.realpathSync(directory) !== path.join(fs.realpathSync(home), 'config/local-sessions/handoff')) {
+    return [...reasons, 'unclassified handoff directory'];
+  }
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) reasons.push(`unclassified handoff entry ${entry.name}`);
     if (!entry.isDirectory()) continue;
     const file = path.join(directory, entry.name, 'journal.json');
     if (!fs.existsSync(file)) {
@@ -70,12 +84,14 @@ export function acceptedReleaseFilesystemReferences(home, reference) {
       const retired = JSON.parse(fs.readFileSync(retirement, 'utf8'));
       if (retired.bindingDigest === journal.bindingDigest && retired.journalSha256 === hash(bytes)) continue;
     }
-    if (handoffRetainedReleases(journal).includes(reference)) reasons.push(`unresolved handoff ${entry.name}`);
+    const references = handoffRetainedReleases(journal);
+    if (references.some(reference => typeof reference !== 'string')) reasons.push(`unclassified handoff journal ${entry.name}`);
+    else if (references.some(retains)) reasons.push(`unresolved handoff ${entry.name}`);
   }
   return reasons;
 }
 
-function readImmutableAcceptedRelease(reference, expectedCandidate) {
+export function readImmutableAcceptedRelease(reference, expectedCandidate) {
   const match = /^accepted-release:([a-f0-9]{64}):([A-Za-z0-9_-]+)$/.exec(reference ?? '');
   if (!match || reference.length > 512) throw new Error('Invalid accepted release reference.');
   const file = Buffer.from(match[2], 'base64url').toString('utf8');

@@ -126,13 +126,13 @@ export function ownedRunReceipt(handle) {
   return { ...receipt, receipt: file };
 }
 
-function inventory(root, relative, hashBytes = true) {
+export function ownedRunInventory(root, relative, hashBytes = true) {
   const target = contained(root, relative, true);
   let stat;
   try { stat = fs.lstatSync(target); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
   if (stat.isSymbolicLink()) return [{ path: relative, kind: 'symlink', link: fs.readlinkSync(target), dev: stat.dev, ino: stat.ino }];
   if (stat.isDirectory()) return [
-    ...fs.readdirSync(target).flatMap(child => inventory(root, path.join(relative, child), hashBytes)),
+    ...fs.readdirSync(target).flatMap(child => ownedRunInventory(root, path.join(relative, child), hashBytes)),
     { path: relative, kind: 'directory', dev: stat.dev, ino: stat.ino },
   ];
   if (!stat.isFile()) throw new Error(`Unclassified owned entry: ${target}`);
@@ -193,7 +193,7 @@ export function finalizeOwnedRun(metadataFile, { expectedRevision, outcome, conv
     if (!consumers.idle) throw new Error(consumers.reason);
   }
   const outputs = run.outputs.map(output => {
-    const manifest = disposableGenerated ? [] : inventory(root, output.path, output.kind === 'interactive');
+    const manifest = disposableGenerated ? [] : ownedRunInventory(root, output.path, output.kind === 'interactive');
     if (output.kind === 'interactive' && manifest.length) {
       if (disposition === 'transferred') {
         if (!transferReference?.trim()) throw new Error('Transfer requires the established accepted output reference');

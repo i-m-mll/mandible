@@ -15,6 +15,7 @@ export function applicationIdentity(app: string): string;
 export function assertAcceptedReleaseAvailable(reference: string): void;
 export function handoffRetainedReleases(journal: { phase?: string; helperFencedAt?: number; cleanup?: { state?: string }; attempt?: { fence?: unknown }; mutationFence?: unknown; binding?: { acceptedRelease?: { reference?: string }; bundleOwner?: { acceptedRelease?: string } } }): string[];
 export function acceptedReleaseFilesystemReferences(home: string, reference: string): string[];
+export function readImmutableAcceptedRelease(reference: string, expectedCandidate?: AcceptedReleaseCandidate): AcceptedReleaseReceipt;
 export function readAcceptedReleaseReceipt(reference: string, expectedCandidate?: AcceptedReleaseCandidate): AcceptedReleaseReceipt;
 export function resolveAcceptedRelease(reference: string, expectedCandidate?: AcceptedReleaseCandidate): { receipt: AcceptedReleaseReceipt; app: string; resources: string };
 export function disposeAcceptedRelease(reference: string, expectedCandidate: AcceptedReleaseCandidate, reason: string, options?: { home?: string; database?: string; assertHeld?: () => void; claim?: (mark: () => void) => void; deferCleanup?: boolean; inspect?: (root: string) => { idle: boolean; reason?: string } | Promise<{ idle: boolean; reason?: string }> }): Promise<{ action: string; reason: string; remaining?: string[] }>;
