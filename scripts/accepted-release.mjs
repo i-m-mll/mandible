@@ -1,13 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { applicationIdentity, installedFileIdentity, readInstalledRelease } from './installed-release.mjs';
-import { createOwnedRun, saveOwnedMetadata, withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers } from './owned-run.mjs';
+import { applicationIdentity, installedFileIdentity, readInstalledReleaseIdentity } from './installed-release.mjs';
+import { createOwnedRun, saveOwnedBytes, saveOwnedMetadata, withOwnedRunLock, ownedRunIdentityMatches, finalizeOwnedRun, cleanupOwnedRun, inspectRunConsumers } from './owned-run.mjs';
 import { withInstallationGatewayLock } from './lifecycle-lock.mjs';
 import { readBundleOwner } from './bundle-services.mjs';
 import { readRuntimeHandoffLock, runtimeHandoffSettled } from './runtime-handoff-lock.mjs';
+import { LEGACY_ACCEPTED_RELEASE_SCHEMA, ACCEPTANCE_CERTIFICATE_SCHEMA, ACCEPTANCE_CERTIFICATE_LIMIT, ACCEPTANCE_CONTRACT,
+  boundedAcceptanceBytes, validateAcceptanceCertificate } from './acceptance-certificate.mjs';
+import { isVersionedReleaseStorage } from './accepted-release-storage.mjs';
 
-export const ACCEPTED_RELEASE_SCHEMA = 'mandible-accepted-release@1';
+export const ACCEPTED_RELEASE_SCHEMA = LEGACY_ACCEPTED_RELEASE_SCHEMA;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const candidateKeys = ['pin_sha', 'tree_sha', 'base_sha', 'head_sha'];
 
@@ -82,25 +85,38 @@ function readImmutableAcceptedRelease(reference, expectedCandidate) {
   if (!path.isAbsolute(file) || fs.realpathSync(file) !== file || !fs.lstatSync(file).isFile()) throw new Error('Accepted release receipt bytes changed.');
   const bytes = fs.readFileSync(file);
   if (hash(bytes) !== match[1]) throw new Error('Accepted release receipt bytes changed.');
-  return validateAcceptedReleaseReceipt(JSON.parse(bytes), file, expectedCandidate);
+  const receipt = JSON.parse(bytes);
+  if (receipt.schema === ACCEPTANCE_CERTIFICATE_SCHEMA) {
+    if (bytes.length > ACCEPTANCE_CERTIFICATE_LIMIT) throw new Error('Accepted release certificate exceeds 64 KiB.');
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    validateAcceptanceCertificate(receipt);
+  }
+  return validateAcceptedReleaseReceipt(receipt, file, expectedCandidate);
 }
 
 function validateAcceptedReleaseReceipt(receipt, file, expectedCandidate) {
   validateCandidate(receipt.candidate);
-  if (receipt.schema !== ACCEPTED_RELEASE_SCHEMA || receipt.package?.custody !== 'owned-run'
+  if (![ACCEPTED_RELEASE_SCHEMA, ACCEPTANCE_CERTIFICATE_SCHEMA].includes(receipt.schema) || receipt.package?.custody !== 'owned-run'
       || receipt.package.path !== 'Mandible.app' || !receipt.acceptance?.run_id
       || !receipt.retention?.project || !receipt.retention?.work_unit) throw new Error('Invalid accepted release receipt.');
   if (expectedCandidate && candidateKeys.some(key => expectedCandidate[key] !== receipt.candidate[key])) throw new Error('Accepted release belongs to a different candidate.');
   const handle = receipt.package.handle;
   if (!handle?.root || file !== path.join(path.dirname(handle.root), '.receipts', `${handle.runId}-accepted-release.json`)
       || receipt.acceptance.run_id !== handle.runId) throw new Error('Accepted release custody locator changed.');
+  if (isVersionedReleaseStorage(path.dirname(handle.root)) !== (receipt.schema === ACCEPTANCE_CERTIFICATE_SCHEMA)) {
+    throw new Error('Accepted release format does not match its custody namespace.');
+  }
   return receipt;
+}
+
+function verifyAcceptedReleaseEvidence(evidence) {
+  if (installedFileIdentity(evidence.receipt).sha256 !== evidence.sha256) throw new Error('Accepted release evidence bytes changed.');
 }
 
 /** Immutable evidence remains readable after intentional payload disposal. */
 export function readAcceptedReleaseReceipt(reference, expectedCandidate) {
   const receipt = readImmutableAcceptedRelease(reference, expectedCandidate);
-  if (installedFileIdentity(receipt.evidence.receipt).sha256 !== receipt.evidence.sha256) throw new Error('Accepted release evidence bytes changed.');
+  if (receipt.schema === ACCEPTED_RELEASE_SCHEMA) verifyAcceptedReleaseEvidence(receipt.evidence);
   return receipt;
 }
 
@@ -122,10 +138,18 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
   const resources = path.join(app, 'Contents', 'Resources');
   // Acceptance verified the inventory before exercise and revalidated the app
   // before sealing. Its full-app digest binds the payload and manifest together.
-  const shipped = readInstalledRelease(resources);
-  if (JSON.stringify(shipped) !== JSON.stringify(receipt.shipped) || shipped.target !== receipt.target
-      || shipped.provenance.commit !== receipt.candidate.pin_sha) throw new Error('Accepted application provenance changed.');
-  return { receipt, app, resources };
+  return { receipt, app, resources, release: readAcceptedInstalledRelease(receipt, resources) };
+}
+
+export function readAcceptedInstalledRelease(receipt, resources) {
+  const { release, sha256 } = readInstalledReleaseIdentity(resources);
+  const agrees = receipt.schema === ACCEPTANCE_CERTIFICATE_SCHEMA
+    ? sha256 === receipt.manifest_sha256
+    : JSON.stringify(release) === JSON.stringify(receipt.shipped);
+  if (!agrees || release.target !== receipt.target || release.provenance.commit !== receipt.candidate.pin_sha) {
+    throw new Error('Installed manifest differs from the exact accepted release.');
+  }
+  return release;
 }
 
 /** Explicit delivery-owner disposal; pending acceptances never expire as cache material. */
@@ -204,23 +228,47 @@ function pendingOwner(pending) {
   return { metadataFile, receiptFile, ownership: metadata.ownership };
 }
 
+function retainAcceptanceEvidence(bytes, receiptFile, runId) {
+  if (bytes.byteLength > ACCEPTANCE_CERTIFICATE_LIMIT) throw new Error('Accepted release evidence exceeds 64 KiB.');
+  const directory = path.join(path.dirname(receiptFile), 'evidence');
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (fs.realpathSync(directory) !== directory) throw new Error('Accepted release evidence directory changed.');
+  const evidence = { receipt: path.join(directory, `${runId}-acceptance.json`), sha256: hash(bytes) };
+  saveOwnedBytes(evidence.receipt, bytes);
+  verifyAcceptedReleaseEvidence(evidence);
+  return evidence;
+}
+
 /** Seal the exercised app in place; the result is valid only for this operation. */
-export async function retainAcceptedRelease({ pending, candidate, acceptance, evidence, expectedDigest, shipped }) {
+export async function retainAcceptedRelease({ pending, candidate, acceptance, evidence, certification, expectedDigest, shipped }) {
   validateCandidate(candidate);
   return withOwnedRunLock(pending.root, async () => {
     const { receiptFile, ownership } = pendingOwner(pending);
+    if (isVersionedReleaseStorage(path.dirname(pending.root)) !== Boolean(certification)) {
+      throw new Error('Accepted release format does not match its custody namespace.');
+    }
     if (fs.readdirSync(pending.root).some(name => !['Mandible.app', 'metadata.json'].includes(name))) throw new Error('Pending release contains unknown entries.');
     const consumers = inspectRunConsumers(pending.root);
     if (!consumers.idle) throw new Error(consumers.reason);
     if (applicationIdentity(pending.app) !== expectedDigest) throw new Error('Application changed during acceptance.');
-    const manifest = readInstalledRelease(pending.resources);
-    if (JSON.stringify(manifest) !== JSON.stringify(shipped) || manifest.provenance.commit !== candidate.pin_sha) throw new Error('Accepted application provenance changed.');
-    const receipt = { schema: ACCEPTED_RELEASE_SCHEMA, acceptance: { ...acceptance, run_id: ownership.runId }, candidate,
-      target: shipped.target, shipped, package: { custody: 'owned-run', handle: { root: pending.root, runId: ownership.runId }, path: 'Mandible.app', sha256: expectedDigest },
-      retention: { project: ownership.project, work_unit: ownership.workUnit, policy: 'Explicit owner disposal after delivery or abandonment; not cache material.' }, evidence };
-    fs.mkdirSync(path.dirname(receiptFile), { recursive: true, mode: 0o700 });
+    const manifest = readInstalledReleaseIdentity(pending.resources);
+    if (JSON.stringify(manifest.release) !== JSON.stringify(shipped) || manifest.release.provenance.commit !== candidate.pin_sha) throw new Error('Accepted application provenance changed.');
+    const base = { acceptance: { ...acceptance, run_id: ownership.runId }, candidate, target: shipped.target,
+      package: { custody: 'owned-run', handle: { root: pending.root, runId: ownership.runId }, path: 'Mandible.app', sha256: expectedDigest },
+      retention: { project: ownership.project, work_unit: ownership.workUnit } };
+    const receipt = certification
+      ? { ...certification, schema: ACCEPTANCE_CERTIFICATE_SCHEMA, ...base, contract: ACCEPTANCE_CONTRACT, manifest_sha256: manifest.sha256 }
+      : { schema: ACCEPTED_RELEASE_SCHEMA, ...base, shipped,
+        retention: { ...base.retention, policy: 'Explicit owner disposal after delivery or abandonment; not cache material.' },
+        evidence: retainAcceptanceEvidence(evidence, receiptFile, ownership.runId) };
     validateAcceptedReleaseReceipt(receipt, receiptFile, candidate);
-    saveOwnedMetadata(receiptFile, receipt);
+    if (receipt.schema === ACCEPTANCE_CERTIFICATE_SCHEMA) {
+      validateAcceptanceCertificate(receipt);
+      const bytes = boundedAcceptanceBytes(receipt);
+      fs.mkdirSync(path.dirname(receiptFile), { recursive: true, mode: 0o700 });
+      if (fs.realpathSync(path.dirname(receiptFile)) !== path.dirname(receiptFile)) throw new Error('Accepted release receipt directory changed.');
+      saveOwnedBytes(receiptFile, bytes);
+    } else saveOwnedMetadata(receiptFile, receipt);
     return { reference: referenceFor(receiptFile), receipt, root: pending.root, app: pending.app, resources: pending.resources, digest: expectedDigest };
   });
 }

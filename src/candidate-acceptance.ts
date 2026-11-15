@@ -15,10 +15,11 @@ import type { CandidateAcceptancePhase, CandidateAcceptanceProjection } from "./
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { getUserHome } from "./platform-paths.js";
-import { readAcceptanceFailure } from "../scripts/acceptance-result.mjs";
+import { compactAcceptanceResult, readAcceptanceFailure } from "../scripts/acceptance-result.mjs";
+import { ACCEPTANCE_CERTIFICATE_SCHEMA, ACCEPTANCE_RECEIPT_CAPABILITY } from "../scripts/acceptance-certificate.mjs";
 import { ACCEPTANCE_EXPECTED_TOTAL_MS, ACCEPTANCE_STAGES, acceptanceBackstop, parsePhaseLine, ProgressWatch, scriptIdleMs, stageWarning, totalWarning,
   type AcceptanceBackstop, type AcceptancePhaseEvent, type AcceptancePhaseName } from "../scripts/acceptance-progress.mjs";
-import { acceptanceFailure, compactFailure, describeAcceptanceFailure, failureText, sentence, stageActivity } from "../scripts/acceptance-failure.mjs";
+import { acceptanceFailure, describeAcceptanceFailure, failureText, sentence, stageActivity } from "../scripts/acceptance-failure.mjs";
 
 import { runSupervisedCommand, type SupervisedCommandFailure } from "../scripts/process-group-supervisor.mjs";
 
@@ -62,8 +63,6 @@ export interface CandidateAcceptanceOutcome {
 }
 
 export type CandidateAcceptanceExecutor = (input: CandidateAcceptanceInput) => Promise<CandidateAcceptanceOutcome>;
-
-const MAX_RESULT_CHARS = 64 * 1024;
 
 function subprocessFailureEvidence(error: unknown): Record<string, unknown> | null {
   if (!error || typeof error !== "object" || !("processGroupSettled" in error)) return null;
@@ -268,6 +267,7 @@ export class CandidateAcceptanceRuns {
       finalize = this.prepareFinalization?.(requestId, candidate);
       const input = job.input();
       return this.executor({ ...input, env: { ...input.env, MANDIBLE_ACCEPTANCE_ID: recordId, MANDIBLE_ACCEPTANCE_REQUEST: requestId,
+        [ACCEPTANCE_RECEIPT_CAPABILITY]: ACCEPTANCE_CERTIFICATE_SCHEMA,
         MANDIBLE_ACCEPTANCE_STARTED_AT: String(startedAt),
         MANDIBLE_ACCEPTANCE_TREE: candidate.tree_sha, MANDIBLE_ACCEPTANCE_BASE: candidate.base_sha, MANDIBLE_ACCEPTANCE_HEAD: candidate.head_sha },
         signal: controller.signal, onPhase: event => this.phase(requestId, event) });
@@ -280,34 +280,10 @@ export class CandidateAcceptanceRuns {
   private finish(requestId: string, recordId: string, outcome: CandidateAcceptanceOutcome, finalize?: (recordId: string) => void): void {
     if (this.stopped) return;
     let result: string | null;
-    try { result = outcome.result == null ? null : JSON.stringify(outcome.result) ?? null; }
+    try { result = outcome.result == null ? null : JSON.stringify(compactAcceptanceResult(outcome.result as Record<string, unknown>)); }
     catch (error) {
       result = null;
       outcome = { status: 'failed', result: null, error: failureText('environment', `The acceptance result could not be stored: ${error instanceof Error ? error.message : String(error)}`) };
-    }
-    if (result && result.length > MAX_RESULT_CHARS) {
-      const value = outcome.result as Record<string, unknown>;
-      const checks = value?.checks as { initial_transport_error?: { code?: unknown; message?: unknown }; failure_logs?: unknown; route_cost?: Record<string, unknown> } | undefined;
-      const text = (field: unknown, limit: number) => typeof field === 'string' ? field.slice(0, limit) : null;
-      const failureLogs = Array.isArray(checks?.failure_logs) ? checks.failure_logs
-        .filter(log => log && ['daemon', 'gateway', 'route-cost', 'source-preview'].includes(log.name)).slice(0, 4)
-        .map(log => ({ name: log.name, sha256: text(log.sha256, 64), bytes: typeof log.bytes === 'number' ? log.bytes : null,
-          excerpt: typeof log.excerpt === 'string' ? log.excerpt.slice(-4000) : null })) : undefined;
-      result = JSON.stringify({ truncated: true, status: text(value?.status, 16), candidate: text(value?.candidate, 128), binding: value?.binding, timing: value?.timing, phases: value?.phases, warnings: value?.warnings,
-        secondary_errors: Array.isArray(value?.secondary_errors) ? value.secondary_errors.map(item => text(item, 512)).slice(0, 8) : undefined,
-        subprocess: value?.subprocess, error: text(value?.error, 1024), failure: compactFailure(value?.failure), receipt: text(value?.receipt, 512), checks: {
-          ...(checks?.initial_transport_error ? { initial_transport_error: {
-            code: text(checks.initial_transport_error.code, 64), message: text(checks.initial_transport_error.message, 512),
-          } } : {}),
-          ...(failureLogs ? { failure_logs: failureLogs } : {}),
-          ...(checks?.route_cost ? { route_cost: {
-            complete: checks.route_cost.complete, diagnostic: checks.route_cost.diagnostic,
-            error: text(checks.route_cost.error, 512), counts: checks.route_cost.counts, progress: checks.route_cost.progress,
-            pending_confirmations: Array.isArray(checks.route_cost.pending_confirmations) ? checks.route_cost.pending_confirmations.slice(0, 32) : undefined,
-            routes_not_run: Array.isArray(checks.route_cost.routes_not_run) ? checks.route_cost.routes_not_run.slice(0, 32) : undefined,
-            source_stderr: text(checks.route_cost.source_stderr, 4000),
-          } } : {}),
-        } });
     }
     const close = this.db.prepare(
       "UPDATE auth_candidate_acceptances SET status = ?, finished_at = ?, result_json = ?, error = ? WHERE id = ? AND status = 'running'",

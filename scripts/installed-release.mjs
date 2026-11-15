@@ -81,7 +81,16 @@ export function releaseFile(root, relative, layout = JSON.parse(fs.readFileSync(
 }
 
 export function readInstalledRelease(root) {
-  const release = JSON.parse(fs.readFileSync(path.join(root, 'release.json'), 'utf8'));
+  return parseInstalledRelease(root, fs.readFileSync(path.join(root, 'release.json'), 'utf8'));
+}
+
+export function readInstalledReleaseIdentity(root) {
+  const bytes = fs.readFileSync(path.join(root, 'release.json'));
+  return { release: parseInstalledRelease(root, bytes.toString('utf8')), sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
+function parseInstalledRelease(root, text) {
+  const release = JSON.parse(text);
   if (release.schema !== RELEASE_SCHEMA || !/^[a-f0-9]{40}$/.test(release.provenance?.commit ?? '')
       || !/^[a-f0-9]{64}$/.test(release.provenance?.source_digest ?? '')
       || release.target !== `${process.platform}-${process.arch}` || typeof release.version !== 'string'

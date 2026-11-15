@@ -201,7 +201,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       const pending = await createPendingRelease({ storage: path.join(home, 'accepted-releases'), ownership: { runId: randomUUID(), instanceId: 'fixture', project: 'mandible', workUnit: 'fixture' } });
       fs.cpSync(built, pending.app, { recursive: true, verbatimSymlinks: true });
       const { reference } = await retainAcceptedRelease({ pending,
-        candidate, acceptance: { record_id: null, request_id: null }, evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 },
+        candidate, acceptance: { record_id: null, request_id: null }, evidence: fs.readFileSync(evidence),
         expectedDigest: applicationIdentity(pending.app), shipped: verifyInstalledRelease(pending.resources) });
       references.push(reference);
       checkDeadline(`generation ${pin} retention`);

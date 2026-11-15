@@ -74,13 +74,12 @@ async function release(home: string, db: Database, id: string, status: string, p
   const program = path.join(pending.resources, 'program'); fs.writeFileSync(program, 'accepted');
   const shipped = { schema: 'mandible-installed-release@1', version: '1', target: `${process.platform}-${process.arch}`, layout: { kind: 'macos-app', roots: { resources: '.' } }, provenance: { commit: candidate.pin_sha, source_digest: 'e'.repeat(64) }, entrypoints: { daemon: 'program' }, native: {}, files: { program: installedFileIdentity(program) } } as any;
   fs.writeFileSync(path.join(pending.resources, 'release.json'), JSON.stringify(shipped));
-  const evidence = path.join(home, `${id}-evidence.json`); fs.writeFileSync(evidence, '{}');
-  const accepted = await retainAcceptedRelease({ pending, candidate, shipped, acceptance: { record_id: id, request_id: id }, evidence: { receipt: evidence, sha256: installedFileIdentity(evidence).sha256 }, expectedDigest: applicationIdentity(pending.app) });
+  const accepted = await retainAcceptedRelease({ pending, candidate, shipped, acceptance: { record_id: id, request_id: id }, evidence: Buffer.from('{}'), expectedDigest: applicationIdentity(pending.app) });
   const metadataFile = path.join(pending.root, 'metadata.json');
   const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8')); metadata.ownership.processOwner = producer; saveOwnedMetadata(metadataFile, metadata);
   db.prepare("INSERT INTO auth_requests (id, status, merge_candidate_pin_sha, merge_candidate_tree_sha, merge_preflight_base_sha, merge_head_sha, command, title, created_at, updated_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, 'true', 'fixture', 1, 1, 100)").run(id, status, candidate.pin_sha, candidate.tree_sha, candidate.base_sha, candidate.head_sha);
   db.prepare('INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at, result_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2, ?)').run(id, id, ...Object.values(candidate), 'passed', 1, JSON.stringify({ receipt: accepted.reference }));
-  return { ...accepted, metadataFile, evidence };
+  return { ...accepted, metadataFile, evidence: accepted.receipt.evidence.receipt };
 }
 
 function retentionDb(file: string) {

@@ -19,9 +19,11 @@ import { reconcileGeneratedScratch, recordScratchProcess } from './generated-scr
 import { generatedStorage } from './generated-storage.mjs';
 import Database from '../src/sqlite.ts';
 import { readBuildRevision } from './build-revision.mjs';
-import { acceptanceResultPath } from './acceptance-result.mjs';
+import { acceptanceResultPath, compactAcceptanceResult } from './acceptance-result.mjs';
+import { ACCEPTANCE_CERTIFICATE_SCHEMA, ACCEPTANCE_CONTRACT, ACCEPTANCE_RECEIPT_CAPABILITY, acceptanceReceiptSchema, boundedAcceptanceBytes, certifyAcceptance } from './acceptance-certificate.mjs';
+import { ACCEPTED_RELEASE_DIRECTORY, VERSIONED_RELEASE_DIRECTORY } from './accepted-release-storage.mjs';
 import { ACCEPTANCE_CLEANUP_MS, ACCEPTANCE_STAGES, acceptancePhases } from './acceptance-progress.mjs';
-import { acceptanceFailure, compactFailure, describeAcceptanceFailure, sentence } from './acceptance-failure.mjs';
+import { acceptanceFailure, describeAcceptanceFailure, sentence } from './acceptance-failure.mjs';
 import { observeRuntimeHealthCoverage, RuntimeHealthObservationError, EVENT_LOOP_STALL_BUDGET_MS } from '../src/runtime-health-contract.ts';
 import { gatewayCaddyfile, GATEWAY_GRACE_SECONDS } from './gateway-config.mjs';
 import { resolveAppSigning, requireNativeAppSigning } from './app-signing.mjs';
@@ -84,21 +86,7 @@ export function acceptanceSummary(result) {
   return `${result.candidate}: ${result.status}${result.error ? ` — ${result.error}` : ''}; ${phases.join('; ')}`;
 }
 
-export function compactAcceptanceResult(result) {
-  if (JSON.stringify(result).length <= 60 * 1024) return result;
-  const checks = result.checks ?? {};
-  const route = checks.route_cost;
-  return { schema: result.schema, truncated: true, status: result.status, candidate: result.candidate, binding: result.binding, scope: result.scope,
-    timing: result.timing, phases: result.phases, warnings: result.warnings, error: result.error?.slice(0, 1024), failure: compactFailure(result.failure), cleanup_error: result.cleanup_error?.slice(0, 512), receipt: result.receipt,
-    checks: { readiness: checks.readiness, desktop_interaction: checks.desktop_interaction, health_coverage: checks.health_coverage,
-      log_digest: checks.log_digest, log_bytes: checks.log_bytes, cleanup: checks.cleanup,
-      initial_transport_error: checks.initial_transport_error,
-      failure_logs: checks.failure_logs?.map(log => ({ ...log, excerpt: log.excerpt.slice(-1000) })),
-      route_cost: route ? { complete: route.complete, diagnostic: route.diagnostic, error: route.error?.slice(0, 512),
-        progress: route.progress, counts: route.counts, pending_confirmations: route.pending_confirmations?.slice(0, 32),
-        routes_not_run: route.routes_not_run?.slice(0, 32), source_stderr: route.source_stderr?.slice(-1000) } : route,
-    } };
-}
+export { compactAcceptanceResult } from './acceptance-result.mjs';
 
 /**
  * The app's completion time, in whole milliseconds, which must fall within the
@@ -393,13 +381,13 @@ export async function stopOwned(child, label = 'owned process') {
 }
 
 /** Retain or dispose the package, seal the receipt and delete the run's scratch, within the fixed cleanup allowance. */
-export async function finalizeAcceptance({ metadataFile, result, phases, candidateBinding, testedPackageDigest, pendingPackage, diagnostic, diagnostics, cache, run, ownership }) {
+export async function finalizeAcceptance({ metadataFile, result, phases, candidateBinding, testedPackageDigest, pendingPackage, diagnostic, diagnostics,
+  receiptCapability, acceptance = { record_id: null, request_id: null }, run, ownership }) {
   const phase = phases.begin('finalization');
   const until = Date.now() + ACCEPTANCE_CLEANUP_MS;
   let ownedReceipt;
   let accepted;
   try {
-    let acceptedReference;
     let diagnosticDestination;
     if (diagnostic) {
       for (const name of ['daemon', 'desktop', 'gateway']) {
@@ -410,46 +398,43 @@ export async function finalizeAcceptance({ metadataFile, result, phases, candida
       diagnosticDestination = await retainDiagnosticEvidence(run, ownership);
       result.diagnostic.evidence_root = diagnosticDestination;
     }
-    if (result.status === 'passed' && !diagnostic) {
-      try {
-        const evidence = path.join(cache, '.receipts', `${ownership.runId}-acceptance.json`);
-        accepted = await retainAcceptedRelease({ pending: pendingPackage, candidate: candidateBinding,
-          acceptance: { record_id: process.env.MANDIBLE_ACCEPTANCE_ID || null, request_id: process.env.MANDIBLE_ACCEPTANCE_REQUEST || null },
-          evidence: { receipt: evidence, sha256: sha256(evidence) }, expectedDigest: testedPackageDigest, shipped: result.provenance.shipped });
-        acceptedReference = accepted.reference;
-      } catch (error) { if (error.code === 'PROCESS_LOCK_LOST') throw error; result.status = 'failed'; result.cleanup_error = error.message; }
-    }
-    if (pendingPackage && !accepted) {
-      try {
-        result.checks.package_cleanup = await disposePendingRelease(pendingPackage, testedPackageDigest, 'Candidate acceptance did not pass.');
-        if (result.checks.package_cleanup.action !== 'delete-owned' || result.checks.package_cleanup.remaining?.length) throw new Error('some of its files remain.');
-      } catch (error) {
-        if (error.code === 'PROCESS_LOCK_LOST') throw error;
-        result.status = 'failed';
-        result.cleanup_error = [result.cleanup_error, `The built package could not be fully deleted: ${error.message}`].filter(Boolean).join('; ');
-        result.checks.package_cleanup ??= { action: 'skip', reason: error.message, handle: { root: pendingPackage.root, runId: pendingPackage.runId } };
-      }
-    }
     const final = finalizeOwnedRun(metadataFile, { expectedRevision: ownership.revision, outcome: result.status === 'passed' ? 'assessed' : 'failed',
       ...(diagnosticDestination ? { disposition: 'transferred', destination: diagnosticDestination, transferReference: `diagnostic:${ownership.runId}` } : {}),
       summary: acceptanceSummary(result) });
     const receipt = final.ownership.receipt;
     ownedReceipt = receipt;
-    result.receipt = acceptedReference || receipt;
+    result.receipt = receipt;
     phases.timing();
     saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
     result.checks.cleanup = cleanupOwnedRun(metadataFile, { apply: true });
     if (result.checks.cleanup.action !== 'delete-owned' || result.checks.cleanup.remaining?.length) result.status = 'failed';
+    if (result.status === 'passed' && !diagnostic && Date.now() < until) {
+      const schema = acceptanceReceiptSchema(receiptCapability);
+      const certification = certifyAcceptance(result);
+      const seal = { pending: pendingPackage, candidate: candidateBinding, acceptance,
+        expectedDigest: testedPackageDigest, shipped: result.provenance.shipped };
+      accepted = await retainAcceptedRelease(schema === ACCEPTANCE_CERTIFICATE_SCHEMA ? { ...seal, certification }
+        : { ...seal, evidence: boundedAcceptanceBytes({ schema: ACCEPTANCE_CONTRACT, status: 'passed', candidate: candidateBinding,
+          acceptance: { ...acceptance, run_id: ownership.runId }, package_sha256: testedPackageDigest, ...certification }) });
+      result.receipt = accepted.reference;
+    }
     if (Date.now() >= until) { result.status = 'failed'; result.cleanup_error = `Cleanup took longer than the ${ACCEPTANCE_CLEANUP_MS / 1000} seconds acceptance allows it.`; }
-    result.receipt = acceptedReference || receipt;
-
   } catch (error) { if (error.code === 'PROCESS_LOCK_LOST') throw error; result.status = 'failed'; result.cleanup_error = error.message; }
-  finally {
-    if (result.checks.cleanup?.action === 'delete-owned' && !result.checks.cleanup.remaining?.length && !result.cleanup_error) phase.pass();
-    else phase.fail(result.cleanup_error ?? 'Acceptance could not delete all of its scratch files.');
-    phases.timing();
-    if (ownedReceipt) saveOwnedMetadata(ownedReceipt, { ...JSON.parse(fs.readFileSync(ownedReceipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
+  if (pendingPackage && !accepted) {
+    try {
+      result.checks.package_cleanup = await disposePendingRelease(pendingPackage, testedPackageDigest, 'Candidate acceptance did not pass.');
+      if (result.checks.package_cleanup.action !== 'delete-owned' || result.checks.package_cleanup.remaining?.length) throw new Error('some of its files remain.');
+    } catch (error) {
+      if (error.code === 'PROCESS_LOCK_LOST') throw error;
+      result.status = 'failed';
+      result.cleanup_error = [result.cleanup_error, `The built package could not be fully deleted: ${error.message}`].filter(Boolean).join('; ');
+      result.checks.package_cleanup ??= { action: 'skip', reason: error.message, handle: { root: pendingPackage.root, runId: pendingPackage.runId } };
+    }
   }
+  if (result.checks.cleanup?.action === 'delete-owned' && !result.checks.cleanup.remaining?.length && !result.cleanup_error) phase.pass();
+  else phase.fail(result.cleanup_error ?? 'Acceptance could not delete all of its scratch files.');
+  phases.timing();
+  if (ownedReceipt) saveOwnedMetadata(ownedReceipt, { ...JSON.parse(fs.readFileSync(ownedReceipt, 'utf8')), acceptance: diagnostic ? diagnosticReport(result) : result });
   return result;
 }
 
@@ -483,6 +468,8 @@ async function main(startedAt) {
   const diagnostic = option('--diagnostic-receipt') || option('--diagnostic-app')
     ? diagnosticReplayPackage(option('--diagnostic-receipt'), option('--diagnostic-app')) : null;
   const diagnosticDuration = Number(option('--duration') ?? 30_000);
+  const receiptCapability = process.env[ACCEPTANCE_RECEIPT_CAPABILITY];
+  const receiptSchema = acceptanceReceiptSchema(receiptCapability);
   if (diagnostic && !(diagnosticDuration > 0 && Number.isFinite(diagnosticDuration))) throw new Error('Diagnostic replay --duration must be a positive number of milliseconds.');
   if (!diagnostic) requireNativeAppSigning(resolveAppSigning(root));
   const candidate = diagnostic?.candidate || command('git', ['rev-parse', 'HEAD']);
@@ -514,7 +501,7 @@ async function main(startedAt) {
   createAcceptanceHome(home);
   const evidence = acceptanceResultPath(cache, ownership.runId);
   fs.mkdirSync(path.dirname(evidence), { recursive: true });
-  const result = { schema: 'mandible-candidate-acceptance@1', scope: acceptanceScope, status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
+  const result = { schema: ACCEPTANCE_CONTRACT, scope: acceptanceScope, status: 'failed', candidate, runtime, run, checks: {}, provenance: {} };
   result.binding = { recordId: ownership.runId, runId: ownership.runId, requestId: process.env.MANDIBLE_ACCEPTANCE_REQUEST ?? null,
     projectId: project, workUnitId: workUnit, ...candidateBinding, started_at: startedAt };
   result.receipt = evidence;
@@ -563,8 +550,10 @@ async function main(startedAt) {
     builtApp = path.join(root, 'src-tauri', 'target', 'release', 'bundle', 'macos', 'Mandible.app');
     }
     const verification = phases.begin('package_verification');
-    if (!diagnostic) pendingPackage = await createPendingRelease({
-      storage: path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases'), ownership });
+    if (!diagnostic) {
+      const storage = path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), ACCEPTED_RELEASE_DIRECTORY);
+      pendingPackage = await createPendingRelease({ storage: receiptSchema === ACCEPTANCE_CERTIFICATE_SCHEMA ? path.join(storage, VERSIONED_RELEASE_DIRECTORY) : storage, ownership });
+    }
     const app = pendingPackage?.app ?? path.join(run, 'Mandible.app');
     fs.cpSync(builtApp, app, { recursive: true, verbatimSymlinks: true });
     verification.watch.advance('the package was copied');
@@ -764,7 +753,8 @@ async function main(startedAt) {
       saveOwnedMetadata(evidence, result);
       try {
         const finalized = await finalizeAcceptance({ metadataFile, result, phases, candidateBinding, testedPackageDigest, pendingPackage,
-          diagnostic, diagnostics, cache, run, ownership });
+          diagnostic, diagnostics, receiptCapability, run, ownership,
+          acceptance: { record_id: process.env.MANDIBLE_ACCEPTANCE_ID || null, request_id: process.env.MANDIBLE_ACCEPTANCE_REQUEST || null } });
         Object.assign(result, finalized, { checks: { ...result.checks, ...finalized.checks } });
       } catch (error) {
         if (error.code === 'PROCESS_LOCK_LOST') throw error;
@@ -773,23 +763,21 @@ async function main(startedAt) {
         result.checks.finalization_stderr = error.stderr?.slice(-4000);
         const receipt = path.join(cache, '.receipts', `${ownership.runId}.json`);
         if (fs.existsSync(receipt)) result.receipt = receipt;
-        const retainedReceipt = path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases', '.receipts', `${ownership.runId}-accepted-release.json`);
-        if (!fs.existsSync(retainedReceipt)) saveOwnedMetadata(evidence, result);
+        saveOwnedMetadata(evidence, result);
         if (fs.existsSync(receipt)) saveOwnedMetadata(receipt, { ...JSON.parse(fs.readFileSync(receipt, 'utf8')), acceptance: result });
       }
     }
     phases.timing();
     if (result.status === 'failed') {
       recordFailure(new Error(result.cleanup_error || 'acceptance could not delete all of its scratch files.'), 'finalization');
-      const sealed = path.join(process.env.MANDIBLE_HOME || path.join(os.userInfo().homedir, '.mandible'), 'accepted-releases', '.receipts', ownership.runId + '-accepted-release.json');
-      if (!fs.existsSync(sealed)) saveOwnedMetadata(evidence, compactAcceptanceResult(result));
+      saveOwnedMetadata(evidence, compactAcceptanceResult(result));
     }
     process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt);
   }
   if (diagnostic) {
     Object.assign(result, diagnosticReport(result));
   }
-  process.stdout.write(`${JSON.stringify(compactAcceptanceResult(result), null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify(compactAcceptanceResult(result))}\n`);
   process.exitCode = result.status === 'passed' ? 0 : 1;
   });
 }

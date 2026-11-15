@@ -44,10 +44,14 @@ export function createOwnedRun({ root, instanceId, project, workUnit, outputs, d
 }
 
 export function saveOwnedMetadata(file, metadata) {
+  saveOwnedBytes(file, `${JSON.stringify(metadata, null, 2)}\n`);
+}
+
+export function saveOwnedBytes(file, bytes) {
   assertLifecycleLockHeld();
   const temp = `${file}.partial-${process.pid}`;
   const fd = fs.openSync(temp, 'wx', 0o600);
-  try { fs.writeFileSync(fd, `${JSON.stringify(metadata, null, 2)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(temp, file);
   const directoryFd = fs.openSync(path.dirname(file), 'r');
   try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
