@@ -1,7 +1,6 @@
 import { migratedMemoryDb } from './helpers/ledger-fixtures.js';
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { attributionForRequest, authorizeOperatorSetup, isLocalHumanRequest, requireIdentity, requireOperator,
-  requireProtectedOperator } from "../src/client-auth/authz.js";
+import { attributionForRequest, authorizeOperatorSetup, isLocalHumanRequest, requireIdentity, requireOperator } from "../src/client-auth/authz.js";
 import { type Db } from "../src/db.js";
 import type { RequestLike, ResolvedClientIdentity } from "../src/server.js";
 import { addBinding, createUser, setupOperator } from "../src/users/store.js";
@@ -21,14 +20,13 @@ function socketRequest(user: { id: string; slug: string }, managed = false): Req
   } as RequestLike;
 }
 
-it("grants local human operator access while withholding protected authority", () => {
+it("grants local human operator access", () => {
   const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
   const req = socketRequest(operator);
   expect(isLocalHumanRequest(req)).toBe(true);
   expect(requireOperator(db, req).user_id).toBe(operator.id);
   expect(attributionForRequest(db, req)).toEqual({ user_id: operator.id, evidence_method: "local_default" });
   expect(requireIdentity(req).user_id).toBe(operator.id);
-  expect(() => requireProtectedOperator(db, req)).toThrow();
 });
 
 it("does not turn a managed local claim into operator authority", () => {
@@ -63,15 +61,13 @@ it("attributes a validated managed app/session alias before a provider task exis
   expect(() => authorizeOperatorSetup(db, mislabeledOperator)).toThrow();
 });
 
-it("allows first-run human setup and requires fresh presence thereafter", () => {
+it("allows first-run human setup and requires the operator thereafter", () => {
   const initial = socketRequest({ id: "", slug: "" });
   initial.client_identity = null;
   expect(() => authorizeOperatorSetup(db, initial)).not.toThrow();
   expect(() => authorizeOperatorSetup(db, { ...initial, managed_client: true } as RequestLike)).toThrow();
   const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
-  expect(() => authorizeOperatorSetup(db, socketRequest(operator))).toThrow();
-  const durable = socketRequest(operator);
-  durable.client_identity = { ...durable.client_identity!, method: "api_token", source: "http_bearer",
-    credential_id: "verified-credential" };
-  expect(() => authorizeOperatorSetup(db, durable)).toThrow();
+  expect(() => authorizeOperatorSetup(db, initial)).toThrow();
+  expect(() => authorizeOperatorSetup(db, socketRequest(operator))).not.toThrow();
+  expect(() => authorizeOperatorSetup(db, socketRequest(operator, true))).toThrow();
 });

@@ -5,12 +5,11 @@
  * (submission, candidate refresh, and approval just before execution). It
  * walks the base's first-parent history back to the newest recorded Mandible
  * merge into that repo and branch, the last tip Mandible knows, so it is
- * incremental and needs no state of its own beyond the stored result.
- * Recorded merges therefore pass whatever key signed them. Every commit above
- * that tip is one Mandible did not record, and must be signed with an operator
- * `ssh_key` (the `unrecorded_commit` rule in src/protected-branch-signers.ts);
- * anything else, including a delegated-key signature, is listed on the
- * request.
+ * incremental and needs no state of its own beyond the stored result. A
+ * recorded merge is the baseline only when it is the approved merge of the
+ * request that recorded it; one that is not is audited like any other commit.
+ * Every commit above the baseline must be signed with an operator `ssh_key`
+ * (src/protected-branch-signers.ts); anything else is listed on the request.
  */
 
 import { childOutput } from "./child-observation.js";
@@ -29,6 +28,8 @@ export interface ProtectedBaseAuditInput {
   baseSha: string;
   /** Recorded Mandible merge commits into this repo and branch, with their completion times. */
   recordedMerges: ReadonlyMap<string, number>;
+  /** Whether a recorded merge commit is the approved merge of the request that recorded it. */
+  isApprovedMerge(sha: string): Promise<boolean>;
   now: number;
 }
 
@@ -57,7 +58,7 @@ export async function auditProtectedBase(db: Db, input: ProtectedBaseAuditInput)
       .split(/\s+/).filter(Boolean);
     const above: string[] = [];
     for (const sha of history) {
-      if (input.recordedMerges.has(sha)) {
+      if (input.recordedMerges.has(sha) && await input.isApprovedMerge(sha)) {
         audit.baseline_sha = sha;
         break;
       }
@@ -66,7 +67,7 @@ export async function auditProtectedBase(db: Db, input: ProtectedBaseAuditInput)
     audit.truncated = !audit.baseline_sha && above.length > PROTECTED_BASE_AUDIT_LIMIT;
     const checked = above.slice(0, PROTECTED_BASE_AUDIT_LIMIT);
     audit.checked_commits = checked.length;
-    audit.unexpected = (await readCommitSignatures(db, input.cwd, checked, "unrecorded_commit")).flatMap((commit): ProtectedBaseAuditCommit[] =>
+    audit.unexpected = (await readCommitSignatures(db, input.cwd, checked)).flatMap((commit): ProtectedBaseAuditCommit[] =>
       commit.status === "operator" ? [] : [{
         sha: commit.sha,
         subject: commit.subject,
@@ -124,7 +125,7 @@ export function unseenBaseAuditFindings(
 export function describeBaseAuditFindings(findings: Pick<ProtectedBaseAudit, "unexpected" | "missing_merges">): string {
   return [
     ...findings.unexpected.map((commit) =>
-      `${commit.sha.slice(0, 10)} ${commit.subject} (${commit.signer ? `signed by ${commit.signer}, not an operator hardware key` : "unsigned"})`),
+      `${commit.sha.slice(0, 10)} ${commit.subject} (${commit.signer ? `signed by ${commit.signer}, not an operator signer` : "unsigned"})`),
     ...findings.missing_merges.map((sha) => `${sha.slice(0, 10)} recorded Mandible merge is no longer in the branch history`),
   ].join("\n");
 }

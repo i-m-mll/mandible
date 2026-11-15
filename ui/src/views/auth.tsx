@@ -25,7 +25,8 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { IconTabList, type IconTab } from '../components/shared/IconTabList';
 
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
-import { entityHref } from '../routing';
+import { entityHref, viewHref } from '../routing';
+import { approvalRefusal, approveLabel, approveTitle } from './auth-approval';
 import { formatRelativeTime } from '../lib/format';
 import { createCoalescedRefresh } from '../lib/coalesced-refresh';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
@@ -49,6 +50,8 @@ import {
   type AuthHook,
   type AttributionReadProjection,
   type MergeSignatureClaim,
+  type ApprovalTier,
+  ApiError,
   type InstanceInfo,
   type ReadUserIdentity,
 } from '../api';
@@ -82,6 +85,7 @@ type AuthActionRetry =
 
 type AuthActionError = {
   message: string;
+  code: string | null;
   retry: AuthActionRetry;
 };
 
@@ -147,14 +151,11 @@ export type AuthRequest = {
   resolved_at?: number | string | null;
   depends_on_ids?: string[];
   dependencies?: AuthDependencyProjection[];
-  approval_source?: string;
-  approval_lease_id?: string | null;
   requested_by_user_id?: string | null;
   requester_evidence_method?: string | null;
   requester_credential_id?: string | null;
   approved_by_user_id?: string | null;
   execution_evidence_id?: string | null;
-  clearance_use_id?: string | null;
   supersedes_request_id?: string | null;
   superseded_by_request_id?: string | null;
   lifecycle_events?: Array<{
@@ -169,6 +170,9 @@ export type AuthRequest = {
   approver?: ReadUserIdentity | null;
   execution_evidence?: AttributionReadProjection | null;
   merge_signature?: MergeSignatureClaim;
+  approval_tier?: ApprovalTier;
+  /** The lifecycle revision shown; approving sends it so the server approves only what was reviewed. */
+  lifecycle_revision?: number | null;
   // Issue 7d83fe5 — runtime self-update acceptance of the current candidate.
   candidate_acceptance?: CandidateAcceptanceProjection | null;
   publication_blocker?: AuthPublicationBlocker | null;
@@ -287,6 +291,17 @@ function getAuthType(request: AuthRequest): AuthRequestType {
   return request.type ?? 'merge';
 }
 
+/** A request the daemon did not classify is shown as a courtesy approval, which claims nothing. */
+function getApprovalTier(request: AuthRequest): ApprovalTier {
+  return request.approval_tier ?? 'courtesy';
+}
+
+const COURTESY_APPROVER_BADGE = {
+  strength: 'claimed',
+  label: 'courtesy',
+  title: 'Courtesy approval: recorded as an interface action, not operator-verified',
+} as const;
+
 
 const AUTH_DIFF_VIEW_CLASS_NAMES: DiffViewClassNames = {
   toolbar: 'auth-detail__diff-toolbar',
@@ -389,12 +404,6 @@ function getAuthExecutionCallout(status: string, consoleText: string): AuthExecu
   if (text.includes('merge conflict') || text.includes('conflicts remain') || text.includes('manual resolution')) {
     return { text: 'Merge needs attention in the terminal', spinner: false };
   }
-  if (text.includes('waiting for yubikey touch')) {
-    return { text: 'Touch your YubiKey now', spinner: true };
-  }
-  if (text.includes('delegated signing key ready')) {
-    return { text: 'Authentication complete; starting git work', spinner: true };
-  }
   if (text.includes('reusing submit-time merge preflight')) {
     return { text: 'Using submit-time merge check', spinner: true };
   }
@@ -404,16 +413,23 @@ function getAuthExecutionCallout(status: string, consoleText: string): AuthExecu
   if (text.includes('checking git locks')) {
     return { text: 'Checking git lock state', spinner: true };
   }
-  if (text.includes('checking signing configuration')) {
-    return { text: 'Checking signing configuration', spinner: true };
-  }
-  if (text.includes('creating signed merge commit')) {
-    return { text: 'Creating signed merge commit', spinner: true };
+  if (text.includes('publishing approval-signed merge commit')) {
+    return { text: 'Publishing the signed merge commit', spinner: true };
   }
   if (text.includes('signed merge complete') || text.includes('[hook:')) {
     return { text: 'Signed merge complete; running follow-up actions', spinner: true };
   }
   return { text: 'Preparing auth merge', spinner: true };
+}
+
+type ApprovalPhase = 'updating_candidate' | 'awaiting_signature';
+
+function approvalPhaseLabel(phase: ApprovalPhase | undefined): string {
+  switch (phase) {
+    case 'updating_candidate': return 'Base moved; updating the merge…';
+    case 'awaiting_signature': return 'Touch ID to approve. If the system sheet is not in front, click it.';
+    default: return 'Checking the request…';
+  }
 }
 
 function getStatusLabel(request: AuthRequest): string {
@@ -1165,9 +1181,6 @@ function AuthRequestDetail({
         <MetadataRow label="Updated" value={formatMetadataTimestamp(request.updated_at ?? null)} />
         <MetadataRow label="Last executed" value={lastExecutedAt} />
         <MetadataRow label="Resolved" value={resolvedAt} />
-        <MetadataRow label="Approval source" value={request.approval_source ?? null} />
-        <MetadataRow label="Approval lease" value={request.approval_lease_id ?? null} />
-        <MetadataRow label="Clearance use" value={request.clearance_use_id ?? null} />
         <MetadataRow label="Requester evidence" value={request.requester_evidence_method ?? null} />
         <MetadataRow label="Requester credential" value={request.requester_credential_id ?? null} />
         <MetadataRow label="Requester" value={requester?.display_name ?? request.requested_by_user_id ?? null} />
@@ -1306,8 +1319,19 @@ function AuthRequestDetail({
                         user={approver}
                         attribution={request.execution_evidence}
                         source="auth_queue"
+                        evidenceBadge={getApprovalTier(request) === 'courtesy' ? COURTESY_APPROVER_BADGE : undefined}
                       />
                     </div>
+                  )}
+                  {signatureClaim.state === 'verified' && (
+                    <span className="auth-detail__verified-signature" title="The approval key signed this merge after a Touch ID match.">
+                      Signed with Touch ID
+                    </span>
+                  )}
+                  {approver && getApprovalTier(request) === 'courtesy' && (
+                    <span className="auth-detail__courtesy-approval" title="Any process running as you can perform a courtesy approval through Mandible's local API.">
+                      Courtesy approval, not operator-verified
+                    </span>
                   )}
                   {signatureClaim.state === 'unverified' && (
                     <span className="auth-detail__unverified-signature">
@@ -1399,7 +1423,7 @@ function AuthRequestDetail({
             ) : (
               <>
                 <p className="auth-failure__summary">
-                  These commits on the base are neither recorded Mandible merges nor signed with an operator hardware key.
+                  These commits on the base are neither recorded Mandible merges nor signed by an operator signer.
                 </p>
                 {baseAudit.unexpected.map((commit) => (
                   <p key={commit.sha} className="auth-failure__summary">
@@ -1420,11 +1444,11 @@ function AuthRequestDetail({
         )}
 
         {executionCallout && (
-          <div className="auth-yubikey-warning">
+          <div className="auth-execution-callout">
             {executionCallout.spinner && (
-              <span className="auth-yubikey-warning__spinner" aria-hidden="true" />
+              <span className="auth-execution-callout__spinner" aria-hidden="true" />
             )}
-            <span className="auth-yubikey-warning__text">
+            <span className="auth-execution-callout__text">
               {executionCallout.text}
             </span>
           </div>
@@ -2371,6 +2395,27 @@ export function AuthQueueView({
     },
     [],
   );
+  // The daemon reports where a click-to-sheet approval stands. It renders in
+  // place: nothing here may raise a window or take focus from the Touch ID sheet,
+  // because the sheet stops matching while it is not frontmost.
+  const [approvalPhases, setApprovalPhases] = useState<Map<string, ApprovalPhase>>(() => new Map());
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<{ request_id?: unknown; phase?: unknown }>).detail;
+      if (typeof detail?.request_id !== 'string' || (detail.phase !== 'updating_candidate' && detail.phase !== 'awaiting_signature')) return;
+      const { request_id: requestId, phase } = detail;
+      if (!inFlightRef.current.has(requestId)) return;
+      setApprovalPhases((prev) => new Map(prev).set(requestId, phase));
+    };
+    window.addEventListener('auth:approval_phase', listener);
+    return () => window.removeEventListener('auth:approval_phase', listener);
+  }, []);
+  useEffect(() => {
+    setApprovalPhases((prev) => {
+      if ([...prev.keys()].every((id) => inFlight.has(id))) return prev;
+      return new Map([...prev].filter(([id]) => inFlight.has(id)));
+    });
+  }, [inFlight]);
   const [actionLists, setActionLists] = useState<Map<string, AuthRequestAction[]>>(() => new Map());
   const [inFlightActionIds, setInFlightActionIds] = useState<Set<string>>(() => new Set());
   const inFlightActionIdsRef = useRef<Set<string>>(new Set());
@@ -2423,9 +2468,10 @@ export function AuthQueueView({
     retry: AuthActionRetry,
   ) => {
     const message = error instanceof Error ? error.message : fallback;
+    const code = error instanceof ApiError ? error.code : null;
     setActionErrors((prev) => {
       const next = new Map(prev);
-      next.set(requestId, { message, retry });
+      next.set(requestId, { message, code, retry });
       return next;
     });
   }, []);
@@ -3013,11 +3059,13 @@ export function AuthQueueView({
             className="btn btn--success btn--submitting"
             disabled
           >
-            Verify signing key; touch it if prompted…
+            {approvalPhaseLabel(approvalPhases.get(id))}
           </button>
-          <button type="button" className="btn btn--ghost" onClick={() => {
-            void cancelApprovalProof(id).catch((error) => setActionError(id, error, 'Could not cancel signing.', { kind: 'approve' }));
-          }}>Cancel signing</button>
+          {getApprovalTier(request) === 'signed' && (
+            <button type="button" className="btn btn--ghost" onClick={() => {
+              void cancelApprovalProof(id).catch((error) => setActionError(id, error, 'Could not cancel signing.', { kind: 'approve' }));
+            }}>Cancel signing</button>
+          )}
         </div>
       );
     }
@@ -3052,9 +3100,9 @@ export function AuthQueueView({
           disabled={actionDisabled || !approvalAllowed || dependencyBlocked}
           title={dependencyBlocked
             ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
-            : request.publication_blocker?.message ?? (!approvalAllowed ? 'Approval is unavailable in this instance.' : undefined)}
+            : request.publication_blocker?.message ?? (!approvalAllowed ? 'Approval is unavailable in this instance.' : approveTitle(getApprovalTier(request)))}
         >
-          {actionDisabled ? 'Verify signing key…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
+          {actionDisabled ? 'Checking the request…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : approveLabel(getApprovalTier(request))}
         </button>
         <button
           type="button"
@@ -3308,9 +3356,9 @@ export function AuthQueueView({
               executionOutput={outputs[id]}
               notice={actionError ? (
                 <DetailPaneNotice
-                  severity="error"
+                  severity={approvalRefusal(actionError.code)?.severity ?? 'error'}
                   density="compact"
-                  title="Approval action failed"
+                  title={approvalRefusal(actionError.code)?.title ?? 'Approval action failed'}
                   actions={(
                     <>
                       <button
@@ -3330,7 +3378,10 @@ export function AuthQueueView({
                     </>
                   )}
                 >
-                  {actionError.message}
+                  {approvalRefusal(actionError.code)?.body ?? actionError.message}
+                  {approvalRefusal(actionError.code)?.reenroll && (
+                    <>{' '}<a href={viewHref('settings', { section: 'settings-signing' })}>Open approval settings</a></>
+                  )}
                 </DetailPaneNotice>
               ) : null}
               actionBundle={(

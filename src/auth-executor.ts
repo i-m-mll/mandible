@@ -16,7 +16,7 @@ export interface AuthExecutionResult {
 }
 
 // Maximum time to wait for a single auth command (10 minutes).
-// Merges requiring YubiKey touch typically complete in seconds; 10 min
+// Merges typically complete in seconds; 10 min
 // is generous enough for slow git operations while preventing infinite hangs.
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -35,9 +35,9 @@ export interface ExecuteAuthCommandOptions {
  * Strip agent-key signing overrides from the environment.
  *
  * When Claude Code is running, CLAUDECODE=1 triggers GIT_CONFIG_COUNT/KEY/VALUE
- * env vars that override git's signing key to the agent key. Auth-merge commands
- * MUST use the user's YubiKey (from git config), so we strip these variables to
- * prevent the agent key from silently signing protected-branch merges.
+ * env vars that override git configuration for the agent. Auth-merge commands
+ * publish a commit the approval key already signed and must not run under an
+ * agent's git configuration, so we strip these variables.
  */
 function cleanEnvForAuth(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const cleaned = { ...env };
@@ -50,8 +50,6 @@ function cleanEnvForAuth(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       delete cleaned[key];
     }
   }
-
-  cleaned.AUTH_MERGE_AUTO_CONFIRM = "1";
 
   return cleaned;
 }

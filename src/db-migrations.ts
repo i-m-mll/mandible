@@ -38,7 +38,7 @@ import {
   USER_SETTINGS_SCHEMA_SQL,
 } from "./db-baseline.js";
 import type { Db } from "./db.js";
-import { AUTH_SNAPSHOT_SHAPE_V212, AUTH_SNAPSHOT_SHAPE_V221, AUTH_SNAPSHOT_SHAPE_V238, authRequestSnapshot } from "./auth-request-snapshot.js";
+import { AUTH_SNAPSHOT_SHAPE_V212, AUTH_SNAPSHOT_SHAPE_V221, AUTH_SNAPSHOT_SHAPE_V238, AUTH_SNAPSHOT_SHAPE_V240, authRequestSnapshot } from "./auth-request-snapshot.js";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { CONVERSATION_CONTROL_SCHEMA_V163_SQL, CONVERSATION_CONTROL_PENDING_IDENTITY_MIGRATION_SQL, CONVERSATION_CONTROL_KNOWN_OWNERSHIP_MIGRATION_SQL } from "./conversation-control/schema.js";
@@ -59,6 +59,7 @@ import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.j
 import { PROTECTED_BASE_AUDIT_SCHEMA_SQL } from "./protected-base-audit-schema.js";
 import { ISSUE_SEARCH_SCHEMA_SQL } from "./ledger/issue-search.js";
 import { DOTFILES_INSTRUCTION_HOOK_MIGRATION_SQL } from "./dotfiles-instruction-hook.js";
+import { OPERATOR_SIGNING_CUSTODY_MIGRATION_SQL } from "./operator-signing/schema.js";
 
 const SCHEMA_VERSION_KEY = "schema_version";
 
@@ -492,6 +493,64 @@ const RETIRE_LEGACY_ARTIFACT_MODEL: string[] = [
   "DROP TABLE artifacts",
 
   "DROP TABLE artifact_retirement_guard",
+];
+
+/**
+ * Delegation (clearances, delegated signing leases, the standing delegated
+ * key and its YubiKey recipient) is gone. Its tables and request columns are
+ * dropped; its credentials stay as revoked history. A request or evidence row
+ * that ever used delegation would lose its meaning here, so their presence
+ * aborts the migration instead. A metadata backup restored through these
+ * migrations never carries the delegation tables, hence `IF EXISTS`.
+ */
+const REMOVE_DELEGATION_MIGRATION_SQL: string[] = [
+  `CREATE TEMP TABLE delegated_history_guard (
+     rows INTEGER CONSTRAINT delegated_history_would_be_lost CHECK(rows = 0)
+   )`,
+  `INSERT INTO temp.delegated_history_guard
+     SELECT (SELECT COUNT(*) FROM auth_requests WHERE approval_lease_id IS NOT NULL OR clearance_use_id IS NOT NULL)
+          + (SELECT COUNT(*) FROM attribution_evidence WHERE lease_id IS NOT NULL)`,
+  "DROP TABLE temp.delegated_history_guard",
+  `CREATE TEMP TABLE auth_snapshot_rebase AS
+     SELECT r.id FROM auth_requests r
+     JOIN auth_request_lifecycle_events e ON e.auth_request_id = r.id
+      AND e.revision = (SELECT MAX(revision) FROM auth_request_lifecycle_events WHERE auth_request_id = r.id)
+     WHERE r.status NOT IN ('approved', 'executing')
+       AND e.snapshot_sha256 = mandible_sha256(mandible_auth_request_snapshot_v238(r.id))`,
+  "DROP TRIGGER IF EXISTS auth_requests_clearance_review_frozen",
+  "DROP TRIGGER IF EXISTS auth_prerequisites_clearance_review_frozen",
+  "DROP TABLE IF EXISTS auth_clearance_uses",
+  "DROP TABLE IF EXISTS auth_clearances",
+  "DROP TABLE IF EXISTS delegated_signing_runtime_bindings",
+  "DROP INDEX IF EXISTS idx_attribution_evidence_lease",
+  "ALTER TABLE attribution_evidence DROP COLUMN lease_id",
+  "ALTER TABLE auth_requests DROP COLUMN clearance_use_id",
+  "ALTER TABLE auth_requests DROP COLUMN approval_lease_id",
+  "ALTER TABLE auth_requests DROP COLUMN approval_source",
+  "DROP TABLE IF EXISTS delegated_signing_leases",
+  `UPDATE user_credentials SET status = 'revoked', revoked_at = CAST(unixepoch('subsec') * 1000 AS INTEGER)
+     WHERE type IN ('delegated_ssh_key', 'yubikey_recipient') AND status = 'active'`,
+  "DELETE FROM settings WHERE key = 'auth_auto_approve_duration_minutes'",
+  `WITH rebased AS (
+     SELECT r.id, ar.status, ar.custody_work_unit_id, wu.custody_generation,
+       mandible_auth_request_snapshot_v240(r.id) AS snapshot_json,
+       (SELECT MAX(revision) + 1 FROM auth_request_lifecycle_events WHERE auth_request_id = r.id) AS revision
+     FROM temp.auth_snapshot_rebase r
+     JOIN auth_requests ar ON ar.id = r.id
+     LEFT JOIN work_units wu ON wu.id = ar.custody_work_unit_id
+   )
+   INSERT INTO auth_request_lifecycle_events (
+     id, auth_request_id, revision, event_type, prior_status, next_status,
+     snapshot_json, snapshot_sha256, reason, custody_work_unit_id, custody_generation,
+     authority_path, occurred_at
+   )
+   SELECT lower(hex(randomblob(16))), id, revision, 'revised', status, status,
+     snapshot_json, mandible_sha256(snapshot_json),
+     'Schema v240 removed the delegation columns from the request snapshot.',
+     custody_work_unit_id, CASE WHEN custody_work_unit_id IS NULL THEN NULL ELSE custody_generation END,
+     'legacy', CAST(unixepoch('subsec') * 1000 AS INTEGER)
+   FROM rebased`,
+  "DROP TABLE temp.auth_snapshot_rebase",
 ];
 
 export const MIGRATIONS: readonly Migration[] = [
@@ -2334,6 +2393,8 @@ export const MIGRATIONS: readonly Migration[] = [
      FROM rebased`,
     "DROP TABLE temp.auth_snapshot_rebase",
   ] },
+  { version: 239, name: "operator_signing_custody", statements: OPERATOR_SIGNING_CUSTODY_MIGRATION_SQL, requires_foreign_keys_off: true },
+  { version: 240, name: "remove_delegation", statements: REMOVE_DELEGATION_MIGRATION_SQL, requires_foreign_keys_off: true },
 ];
 
 /**
@@ -2605,6 +2666,7 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
   db.function("mandible_auth_request_snapshot_v212", {}, (id: unknown) => authRequestSnapshot(db, String(id), AUTH_SNAPSHOT_SHAPE_V212));
   db.function("mandible_auth_request_snapshot_v221", {}, (id: unknown) => authRequestSnapshot(db, String(id), AUTH_SNAPSHOT_SHAPE_V221));
   db.function("mandible_auth_request_snapshot_v238", {}, (id: unknown) => authRequestSnapshot(db, String(id), AUTH_SNAPSHOT_SHAPE_V238));
+  db.function("mandible_auth_request_snapshot_v240", {}, (id: unknown) => authRequestSnapshot(db, String(id), AUTH_SNAPSHOT_SHAPE_V240));
   assertMigrationSequence();
   if (BASELINE_SCHEMA_VERSION !== CURRENT_SCHEMA_VERSION) {
     throw new Error(

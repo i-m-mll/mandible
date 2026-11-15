@@ -70,7 +70,6 @@ const ID_KINDS = {
   },
   auth_request: byId("auth_requests"),
   auth_action: byId("auth_request_actions"),
-  auth_clearance: byId("auth_clearances"),
   binding: { ...byId("user_bindings"), readableBy: "user_id = ?" },
   body_revision: byId("ledger_body_revisions"),
   // Legacy Briefing ids store the `briefing:` typed-ref prefix themselves.
@@ -391,7 +390,6 @@ const bindReadable = (kind: IdKind): RefResolver => (ref, caller) => {
 /** Route-input resolvers, bound to the daemon database, for `RouteOptions.refs`. */
 export const entityRefs = {
   authRequest: bind("auth_request"),
-  authClearance: bind("auth_clearance"),
   binding: bindReadable("binding"),
   bodyRevision: bind("body_revision"),
   briefingRound: bind("briefing_round"),

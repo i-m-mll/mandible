@@ -21,8 +21,16 @@ takes precedence over an inherited same-provider `CODEX_SESSION_ID`.
 
 Local socket calls ignore bearer tokens, including inherited `MANDIBLE_TOKEN`.
 A session claim is not human proof. Responsibility changes require an explicit
-operation with a reason and observed generation or checkpoint; protected
-effects require the configured operator's action-bound key proof. Browser
+operation with a reason and observed generation or checkpoint. Signed actions
+(protected merges and changes to the approval key, external signers, or
+protected branches) require a signature from the operator's approval key, which
+the Secure Enclave makes only after a Touch ID match. Every other operator
+action is a courtesy action: any caller this page describes, including a
+same-user agent on the socket, can perform it, so it is recorded as an
+interface action and never as operator-verified. Touch ID proves a matching
+finger touched, not what the operator meant to approve, and nothing here stops
+a same-user process that bypasses Mandible; see
+[Approvals and the Touch ID gate](approvals.md). Browser
 requests retain host, origin, and CSRF checks. Explicit remote or scoped
 transports retain their credential boundaries. See
 [Architecture](/docs/concepts/architecture).

@@ -167,10 +167,9 @@ function copyPreservingModes(src: string, dest: string): void {
  * Resolve a config entry under the durable root, copying it forward from the
  * first legacy location that still has it.
  *
- * Handles directories as well as files because two config entries are
- * directories with state that cannot be regenerated without cost:
- * `client-auth/` (losing the pepper invalidates every stored API token) and
- * `delegated-signing/` (the delegated key material). The legacy copy is left in
+ * Handles directories as well as files because `client-auth/` is a directory
+ * with state that cannot be regenerated without cost: losing the pepper
+ * invalidates every stored API token. The legacy copy is left in
  * place — this is a copy-forward, never a move — and a failed copy removes its
  * own partial output and falls through to a fresh entry rather than handing the
  * caller a half-populated secret directory.

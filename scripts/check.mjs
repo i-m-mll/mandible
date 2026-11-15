@@ -93,7 +93,7 @@ const checks = {
   // `IF NOT EXISTS` never alters an existing database.
   'service modules carry no fallback schema DDL'() {
     const ddl = /CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS/i;
-    return ['src/auth-hooks.ts', 'src/auth-auto-approve.ts', 'src/work-scanner.ts', 'src/auth-queue.ts']
+    return ['src/auth-hooks.ts', 'src/work-scanner.ts', 'src/auth-queue.ts']
       .filter((file) => ddl.test(read(file)))
       .map((file) => `${file}: CREATE ... IF NOT EXISTS; add a migration in src/db-migrations.ts instead`);
   },

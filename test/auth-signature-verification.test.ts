@@ -9,7 +9,6 @@ import {
   authorizedMergeSignerLines,
   extractSuccessfulMergeCommitSha,
   verifyMergeCommitSignature,
-  verifySuccessfulMergeCommitSignature,
 } from "../src/auth-signature-verification.js";
 import { type Db } from "../src/db.js";
 import { AttributionReadResolver } from "../src/identity/read-projection.js";
@@ -153,22 +152,6 @@ describe("merge signature verification", () => {
     expect(await verifyMergeCommitSignature(db, repo, mergeSha)).toMatchObject({
       verified: false,
       reason: "no_active_registered_signing_credentials",
-    });
-  });
-
-  it("rejects a signed commit marker that is not the target branch head", async () => {
-    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
-    addCredential(db, operator.id, {
-      type: "ssh_key",
-      fingerprint,
-      public_material: publicMaterial,
-    });
-    const targetHead = git(repo, ["rev-parse", `${mergeSha}^1`]);
-
-    expect(await verifySuccessfulMergeCommitSignature(db, repo, mergeSha, targetHead)).toMatchObject({
-      verified: false,
-      commit_sha: mergeSha,
-      reason: "merge_commit_not_target_head",
     });
   });
 

@@ -22,8 +22,7 @@ different tools or a separate PR process.
 
 Protected-merge authorization and signature verification are product mechanisms,
 not merely conventions. A merge request requires an authorized approval and an
-attestable signature from an active credential associated with the approving
-user; delegated approval has its own credential and authorization rules. The
+attestable signature from the approving operator's approval key. The
 [protected-branch guard](protected-branch-guard.md) describes signature
 attestation, and the [interface contract](../cli/instructions-contract.md)
 describes the request lifecycle. Feature-commit signing and attribution remain

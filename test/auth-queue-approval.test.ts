@@ -10,19 +10,18 @@ import { publishFixtureExecution, approveFixtureRequest } from "./helpers/auth-q
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import * as operatorProof from "../src/auth-operator-proof.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { SseEvent } from "../src/types.js";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { setDb } from "../src/db.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
-import { addCredential, addDelegatedSigningLease, createUser } from "../src/users/store.js";
+import { addCredential } from "../src/users/store.js";
 import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { createLedgerIssue as createSharedLedgerIssue, createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
-import { advanceMainViaAuthorizedMerge, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createMigratedDb, createNoopHookManager, createQueue, executionEvidenceChain, git, registerTestDelegatedLease, registerWorkRepo, uniqueMissingPath, waitForStatus, writeFile } from "./helpers/auth-queue-fixtures.js";
+import { advanceMainViaAuthorizedMerge, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createMigratedDb, createNoopHookManager, createQueue, executionEvidenceChain, git, registerWorkRepo, uniqueMissingPath, waitForStatus, writeFile } from "./helpers/auth-queue-fixtures.js";
+import { approveAsFixtureOperator, fixtureOperatorSigning, operatorCaller, SoftwareOperatorSigner } from "./helpers/operator-signing-fixtures.js";
 
 function createMigratedDbWithAgent() {
   return createSharedMigratedDb({
@@ -37,14 +36,14 @@ describe("auth queue", () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     let queue: AuthQueue | undefined;
-    const proof = vi.spyOn(operatorProof, "signOperatorChallenge");
+    const signer = new SoftwareOperatorSigner();
     try {
       writeFile(repo, "notes.txt", "original notes\n");
       git(repo, ["add", "notes.txt"]); git(repo, ["commit", "-m", "Tracked review notes"]);
       commitOnBranch(repo, "feature/readiness", { "feature.txt": "reviewed feature\n" });
       registerWorkRepo(db, repo);
-      const signing = configureSigningCredential(db, repo, "ssh_key");
-      queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
+      const signing = configureSigningCredential(db, repo);
+      queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false, operatorSigning: fixtureOperatorSigning(db, signer) });
       const request = await queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge", command: "mandible auth merge feature/readiness --into main",
         title: "Review retained candidate", cwd: repo, repo: path.basename(repo), base_branch: "main", head_branch: "feature/readiness",
         merge_head_sha: git(repo, ["rev-parse", "feature/readiness"]) });
@@ -58,17 +57,60 @@ describe("auth queue", () => {
       expect(blocker!.message).toContain(fs.realpathSync(repo));
       expect(blocker!.message).toContain("unstaged [ M]: shared.txt");
       expect(blocker!.message).toContain("staged [M ]: notes.txt");
-      await expect(queue.approveWithOperatorProof(request.id, signing.operatorId)).rejects.toMatchObject({
+      await expect(approveAsFixtureOperator(queue, request.id, signing.operatorId)).rejects.toMatchObject({
         code: "merge_check_failed", message: expect.stringContaining("shared.txt"),
       });
-      expect(proof).not.toHaveBeenCalled();
+      expect(signer.touches).toEqual([]);
       expect(await queue.getRequest(request.id)).toMatchObject({ status: "pending", approved_by_user_id: null,
         execution_evidence_id: null, merge_candidate_pin_sha: pin, merge_preflight_base_sha: base });
       expect(git(repo, ["rev-parse", "main"])).toBe(base);
       expect(fs.readFileSync(path.join(repo, ".git", "index"))).toEqual(index);
       expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("Unstaged edit added during review\n");
       expect(fs.readFileSync(path.join(repo, "notes.txt"), "utf8")).toBe("Staged edit added during review\n");
-    } finally { proof.mockRestore(); await queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+    } finally { await queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
+  });
+
+  it("signs the exact merge commit with one touch, and a cancelled sheet leaves nothing behind", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    let queue: AuthQueue | undefined;
+    const signer = new SoftwareOperatorSigner();
+    try {
+      commitOnBranch(repo, "feature/one-touch", { "feature.txt": "one touch\n" });
+      registerWorkRepo(db, repo);
+      const signing = configureSigningCredential(db, repo);
+      git(repo, ["config", "--unset", "user.signingkey"]);
+      queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false,
+        operatorSigning: fixtureOperatorSigning(db, signer), executor: async (options) => publishFixtureExecution(queue!, options) });
+      const request = await queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge", command: "mandible auth merge feature/one-touch --into main",
+        title: "One touch", cwd: repo, repo: path.basename(repo), base_branch: "main", head_branch: "feature/one-touch",
+        merge_head_sha: git(repo, ["rev-parse", "feature/one-touch"]) });
+      const base = git(repo, ["rev-parse", "main"]);
+      const objects = () => git(repo, ["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"]);
+      const evidence = () => db.prepare("SELECT count(*) AS n FROM attribution_evidence").get();
+      const [objectsBefore, evidenceBefore] = [objects(), evidence()];
+
+      for (const result of ["cancelled", "biometry_unavailable", "key_invalidated"] as const) {
+        signer.next.push({ result });
+        await expect(queue.approveAsOperator(request.id, operatorCaller(signing.operatorId), queue.lifecycleRevision(request.id)!)).rejects.toMatchObject({ refusal: { code: result } });
+        expect(await queue.getRequest(request.id)).toMatchObject({ status: "pending", approved_by_user_id: null, execution_evidence_id: null });
+        expect([objects(), evidence(), git(repo, ["rev-parse", "main"])]).toEqual([objectsBefore, evidenceBefore, base]);
+      }
+
+      await queue.approveAsOperator(request.id, operatorCaller(signing.operatorId), queue.lifecycleRevision(request.id)!);
+      await waitForStatus(queue, request.id, "completed");
+      expect(signer.touches).toHaveLength(4);
+      const touch = signer.touches[1]!;
+      expect(touch).toMatchObject({ namespace: "git", reason: `approve merging feature/one-touch into main of ${path.basename(repo)} at ${base.slice(0, 7)} (request ${request.id.slice(0, 8)})` });
+      const tip = git(repo, ["rev-parse", "main"]);
+      const published = git(repo, ["cat-file", "commit", tip]);
+      expect(published.replace(/^gpgsig [^]*?-----END SSH SIGNATURE-----\n/m, "")).toBe(touch.message.toString("utf8").trimEnd());
+      expect(touch.message.toString("utf8")).toMatch(new RegExp(`^tree ${request.merge_candidate_tree_sha}\nparent ${base}\nparent ${request.merge_head_sha}\n`));
+      expect(touch.message.toString("utf8").endsWith(`\n\n${request.commit_message}`)).toBe(true);
+      const signers = path.join(repo, ".git", "approval-signers");
+      fs.writeFileSync(signers, `${signing.credentialId} ${fs.readFileSync(`${signing.keyPath}.pub`, "utf8").trim()}\n`);
+      expect(git(repo, ["-c", "gpg.format=ssh", "-c", `gpg.ssh.allowedSignersFile=${signers}`, "verify-commit", tip])).toBe("");
+    } finally { await queue?.dispose(); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
   });
 
   it("executes from the re-resolved target root with verified credential-signature evidence", async () => {
@@ -81,13 +123,17 @@ describe("auth queue", () => {
       git(repo, ["worktree", "add", "-b", "feature/signed-interactive", featureWorktree]);
       git(featureWorktree, ["commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234"]);
       registerWorkRepo(db, repo);
-      const signing = configureSigningCredential(db, repo, "ssh_key");
+      const signing = configureSigningCredential(db, repo);
+      // Ambient git signing names a key Mandible does not know; approval never reads it.
+      git(repo, ["config", "user.signingkey", "/nonexistent/ambient-signing-key"]);
+      git(repo, ["config", "commit.gpgsign", "true"]);
       const queue = new AuthQueue({
         db,
         broadcast: (event) => events.push(event),
         executor: async (options) => {
           cwds.push(options.cwd);
           expect(options.mandibleArgs).toEqual(["auth", "merge", "feature/signed-interactive", "--into", "main"]);
+          expect(options.env?.MANDIBLE_AUTH_SIGNED_MERGE_SHA).toMatch(/^[0-9a-f]{40}$/);
           return publishFixtureExecution(queue, options);
         },
         hookManager: createNoopHookManager(),
@@ -122,6 +168,7 @@ describe("auth queue", () => {
       expect(signatureDetails.commit_sha).toBe(git(repo, ["rev-parse", "main"]));
       expect(signatureDetails.target_head_sha).toBe(signatureDetails.commit_sha);
       expect(chain.authorization.evidence_method).toBe("credential_signature");
+      expect(JSON.parse(chain.authorization.details_json).signed_commit_sha).toBe(signatureDetails.commit_sha);
       expect(queue.getSignatureVerification(request.id)).toMatchObject({
         verified: true,
         credential_id: signing.credentialId,
@@ -207,7 +254,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/sibling", { "sibling.txt": "sibling\n" });
       registerWorkRepo(db, repo);
       git(repo, ["config", "core.hooksPath", ".git/hooks"]);
-      configureSigningCredential(db, repo, "ssh_key");
+      configureSigningCredential(db, repo);
 
       const queue = new AuthQueue({
         db,
@@ -279,7 +326,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/base-conflict", { "shared.txt": "feature\n" });
       commitOnBranch(repo, "feature/conflicting-sibling", { "shared.txt": "conflicting main change\n" });
       registerWorkRepo(db, repo);
-      configureSigningCredential(db, repo, "ssh_key");
+      configureSigningCredential(db, repo);
 
       const queue = new AuthQueue({
         db,
@@ -342,7 +389,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/atomic-eligibility", { "atomic.txt": "atomic\n" });
       registerWorkRepo(db, repo);
       git(repo, ["config", "core.hooksPath", ".git/hooks"]);
-      configureSigningCredential(db, repo, "ssh_key");
+      configureSigningCredential(db, repo);
       const queue = new AuthQueue({
         db,
         executor: async (options) => {
@@ -424,331 +471,6 @@ describe("auth queue", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("does not globally auto-approve new requests while a delegated lease is active", async () => {
-    const calls: Array<NodeJS.ProcessEnv | undefined> = [];
-    const db = createMigratedDb();
-    const approverUserId = registerTestDelegatedLease(db, "lease-1");
-    const queue = new AuthQueue({
-      db,
-      autoApprover: {
-        getActiveApprovalContext: () => ({
-          source: "auto_lease",
-          leaseId: "lease-1",
-          approverUserId,
-          env: {
-            SSH_AUTH_SOCK: "/tmp/mandible-agent.sock",
-            GIT_CONFIG_COUNT: "1",
-            GIT_CONFIG_KEY_0: "user.signingkey",
-            GIT_CONFIG_VALUE_0: "/tmp/delegated.pub",
-          },
-        }),
-      },
-      executor: async (options) => {
-        calls.push(options.env);
-        return {
-          exit_code: 0,
-          signal: null,
-          stdout: "ok\n",
-          stderr: "",
-          output: "ok\n",
-          started_at: Date.now(),
-          finished_at: Date.now(),
-        };
-      },
-    });
-
-    const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
-      command: "echo daemon",
-      title: "Daemon",
-      execution_mode: "daemon",
-    }));
-
-    expect(request.status).toBe("pending");
-    expect(request.approval_source).toBe("manual");
-    expect(request.approval_lease_id).toBeNull();
-    expect(calls).toHaveLength(0);
-    (await queue.dispose());
-    db.close();
-  });
-
-  it("records delegated_lease execution evidence for an explicit delegated approval", async () => {
-    const repo = createAuthCheckRepo();
-    const db = createMigratedDb();
-    const approverUserId = registerTestDelegatedLease(db, "lease-reuse");
-    try {
-      commitOnBranch(repo, "feature/lease-reuse", { "reuse.txt": "reuse\n" });
-      registerWorkRepo(db, repo);
-      const signing = configureSigningCredential(db, repo, "delegated_ssh_key");
-      db.prepare("UPDATE delegated_signing_leases SET credential_id = ? WHERE id = 'lease-reuse'").run(signing.credentialId);
-      const delegatedApproval = {
-        source: "auto_lease" as const,
-        leaseId: "lease-reuse",
-        approverUserId,
-        env: {
-          SSH_AUTH_SOCK: "/tmp/reused.sock",
-          GIT_CONFIG_COUNT: "1",
-          GIT_CONFIG_KEY_0: "user.signingkey",
-          GIT_CONFIG_VALUE_0: "/tmp/delegated.pub",
-        },
-      };
-      const queue = new AuthQueue({
-        db,
-        autoApprover: {
-          getActiveApprovalContext: () => delegatedApproval,
-        },
-        executor: async (options) => {
-          expect((await queue.getRequest(options.request_id))?.execution_evidence_id).toBeNull();
-          return publishFixtureExecution(queue, options);
-        },
-        hookManager: createNoopHookManager(),
-      });
-
-      const submitted = (await queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", "feature/lease-reuse"]),
-        type: "merge",
-        command: "mandible auth merge feature/lease-reuse --into main",
-        title: "Merge feature/lease-reuse",
-        repo: path.basename(repo),
-        base_branch: "main",
-        head_branch: "feature/lease-reuse",
-        cwd: repo,
-      }));
-      expect(submitted.status).toBe("pending");
-      (await queue.approve(submitted.id, delegatedApproval));
-      const resolved = await waitForStatus(queue, submitted.id, "completed");
-      const evidence = executionEvidenceChain(db, resolved!.execution_evidence_id!);
-      expect(evidence.signature.evidence_method).toBe("credential_signature");
-      expect(JSON.parse(evidence.signature.details_json)).toMatchObject({
-        verified: true,
-        authorization_evidence_method: "delegated_lease",
-      });
-      expect(evidence.authorization).toMatchObject({
-        evidence_method: "delegated_lease",
-        lease_id: "lease-reuse",
-      });
-      expect(JSON.parse(evidence.authorization.details_json)).toMatchObject({
-        authorizer_user_id: approverUserId,
-      });
-      (await queue.dispose());
-    } finally {
-      db.close();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps manual approval on the direct path when delegated signing is configured", async () => {
-    const repo = createAuthCheckRepo();
-    const db = createMigratedDb();
-    const approverUserId = registerTestDelegatedLease(db, "presence-1");
-    const order: string[] = [];
-    const events: SseEvent[] = [];
-    try {
-      commitOnBranch(repo, "feature/presence", { "presence.txt": "presence\n" });
-      registerWorkRepo(db, repo);
-
-      const queue = new AuthQueue({
-        db,
-        broadcast: (event) => events.push(event),
-        autoApprover: {
-          getActiveApprovalContext: () => null,
-          getDelegatedSigningStatus: () => ({
-            provider: "yubikey-age",
-            configured: true,
-            public_key: "ssh-ed25519 delegated",
-            public_key_path: "/tmp/delegated.pub",
-            encrypted_passphrase_path: "/tmp/delegated.age",
-            recipient_path: "/tmp/recipient.txt",
-            missing_tools: [],
-          }),
-          presenceChallenge: async () => {
-            order.push("challenge");
-            throw new Error("manual approval must not request delegated presence");
-          },
-        },
-        executor: async (options) => {
-          order.push("executor");
-          expect((await queue.getRequest(options.request_id))?.execution_evidence_id).toBeTruthy();
-          expect(options.env?.SSH_AUTH_SOCK).toBeUndefined();
-          expect(options.env?.GIT_CONFIG_VALUE_0).toBeUndefined();
-          return publishFixtureExecution(queue, options);
-        },
-        hookManager: createNoopHookManager(),
-      });
-
-      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", "feature/presence"]),
-        type: "merge",
-        command: "mandible auth merge feature/presence --into main",
-        title: "Merge feature/presence",
-        repo: path.basename(repo),
-        base_branch: "main",
-        head_branch: "feature/presence",
-        cwd: repo,
-      }));
-      await approveFixtureRequest(queue, request.id);
-      const resolved = await waitForStatus(queue, request.id, "completed");
-
-      expect(order).toEqual(["executor"]);
-      expect(resolved?.approval_source).toBe("manual");
-      expect(resolved?.approval_lease_id).toBeNull();
-      const evidence = executionEvidenceChain(db, resolved!.execution_evidence_id!);
-      expect(evidence.signature.evidence_method).toBe("credential_signature");
-      expect(JSON.parse(evidence.signature.details_json)).toMatchObject({
-        verified: true,
-        authorization_evidence_method: "credential_signature",
-      });
-      expect(evidence.authorization).toMatchObject({
-        evidence_method: "credential_signature",
-        lease_id: null,
-      });
-      expect(JSON.parse(evidence.authorization.details_json)).toMatchObject({
-        authorizer_user_id: approverUserId,
-      });
-      const output = events
-        .filter((event) => event.event === "auth:output")
-        .map((event) => ((event.data as { text?: string }).text ?? ""))
-        .join("");
-      expect(output).not.toContain("waiting for YubiKey touch");
-      expect(output).not.toContain("delegated signing key ready");
-      (await queue.dispose());
-    } finally {
-      db.close();
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  it.each([
-    ["missing", "presence-missing", /lease is missing/],
-    ["expired", "presence-expired", /not currently valid/],
-  ] as const)(
-    "rejects a %s explicit delegated lease with SSH_AUTH_SOCK before execution",
-    async (kind, leaseId, expectedError) => {
-      const repo = createAuthCheckRepo();
-      const db = createMigratedDb();
-      const now = Date.now();
-      const operatorId = registerTestDelegatedLease(db, "presence-valid", now);
-      if (kind === "expired") {
-        db.prepare(
-          "UPDATE delegated_signing_leases SET id = ?, expires_at = ? WHERE id = 'presence-valid'",
-        ).run(leaseId, now - 1);
-      }
-      let executed = false;
-      try {
-        commitOnBranch(repo, `feature/${kind}-lease`, { [`${kind}.txt`]: `${kind}\n` });
-        registerWorkRepo(db, repo);
-        const queue = new AuthQueue({
-          db,
-          now: () => now,
-          executor: async () => {
-            executed = true;
-            throw new Error("executor must not run");
-          },
-          hookManager: createNoopHookManager(),
-        });
-        const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", `feature/${kind}-lease`]),
-          type: "merge",
-          command: `mandible auth merge feature/${kind}-lease --into main`,
-          title: `${kind} delegated lease`,
-          repo: path.basename(repo),
-          base_branch: "main",
-          head_branch: `feature/${kind}-lease`,
-          cwd: repo,
-        }));
-
-        await expect((async () => (await queue.approve(request.id, {
-          source: "auto_lease",
-          leaseId,
-          approverUserId: operatorId,
-          env: { SSH_AUTH_SOCK: `/tmp/${kind}.sock` },
-        }))())).rejects.toThrow(expectedError);
-        expect((await queue.getRequest(request.id))?.status).toBe("pending");
-        expect(executed).toBe(false);
-        (await queue.dispose());
-      } finally {
-        db.close();
-        fs.rmSync(repo, { recursive: true, force: true });
-      }
-    },
-  );
-
-  it.each(["approver", "lease"] as const)(
-    "rejects a refreshed delegated signing %s that differs from the approved request",
-    async (mismatch) => {
-      const repo = createAuthCheckRepo();
-      const db = createMigratedDb();
-      const operatorId = registerTestDelegatedLease(db, "presence-valid");
-      const other = createUser(db, {
-        slug: `presence-other-${mismatch}`,
-        kind: "human",
-        display_name: "Other Presence User",
-      });
-      const otherCredential = addCredential(db, other.id, {
-        type: "delegated_ssh_key",
-        fingerprint: `SHA256:${"B".repeat(43)}`,
-        public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"B".repeat(20)} other`,
-      });
-      addDelegatedSigningLease(db, {
-        id: "presence-other-lease",
-        credential_id: otherCredential.id,
-        owner_user_id: other.id,
-        minted_at: Date.now() - 1000,
-        expires_at: Date.now() + 60_000,
-        mint_method: "fresh_presence",
-      });
-      let executed = false;
-      try {
-        commitOnBranch(repo, `feature/presence-${mismatch}`, { [`${mismatch}.txt`]: `${mismatch}\n` });
-        registerWorkRepo(db, repo);
-        const queue = new AuthQueue({
-          db,
-          autoApprover: {
-            getActiveApprovalContext: () => null,
-            getDelegatedSigningStatus: () => ({
-              provider: "yubikey-age",
-              configured: true,
-              public_key: "ssh-ed25519 delegated",
-              public_key_path: "/tmp/delegated.pub",
-              encrypted_passphrase_path: "/tmp/delegated.age",
-              recipient_path: "/tmp/recipient.txt",
-              missing_tools: [],
-            }),
-            presenceChallenge: async () => ({
-              source: "presence_challenge",
-              leaseId: mismatch === "lease" ? "presence-other-lease" : "presence-valid",
-              approverUserId: mismatch === "approver" ? other.id : operatorId,
-              env: { SSH_AUTH_SOCK: "/tmp/wrong-presence.sock" },
-            }),
-          },
-          executor: async () => {
-            executed = true;
-            throw new Error("executor must not run");
-          },
-          hookManager: createNoopHookManager(),
-        });
-        const request = (await queue.submit({ ...AUTH_MERGE_REVIEW,  merge_head_sha: git(repo, ["rev-parse", `feature/presence-${mismatch}`]),
-          type: "merge",
-          command: `mandible auth merge feature/presence-${mismatch} --into main`,
-          title: `Presence ${mismatch} mismatch`,
-          repo: path.basename(repo),
-          base_branch: "main",
-          head_branch: `feature/presence-${mismatch}`,
-          cwd: repo,
-        }));
-        (await queue.approve(request.id, {
-          source: "presence_challenge",
-          leaseId: "presence-valid",
-          approverUserId: operatorId,
-          env: {},
-        }));
-        const failed = await waitForStatus(queue, request.id, "failed");
-        expect(executed).toBe(false);
-        expect(failed.error).toMatch(mismatch === "approver" ? /approver does not match/ : /lease is not valid/);
-        (await queue.dispose());
-      } finally {
-        db.close();
-        fs.rmSync(repo, { recursive: true, force: true });
-      }
-    },
-  );
-
   // Issue 08a5f04 — legacy submissions through the route: the legacy
   // single-source shape (no base_branch) is rewritten to the canonical command
   // at POST, never at approval, and both it and the canonical form approve.
@@ -792,7 +514,7 @@ describe("auth queue", () => {
       }),
       hookManager: createNoopHookManager(),
     });
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
     try {
       const submissions = [
         { command: "mandible auth merge feature/channel-legacy", head_branch: "feature/channel-legacy" },

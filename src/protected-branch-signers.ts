@@ -5,19 +5,8 @@
  * (src/protected-branch-guard.ts, issue 5886596) and the base-history audit
  * (src/protected-base-audit.ts, issue 117ba80) both read it.
  *
- * Only the configured operator's active credentials ever count; agent users
- * and other people's keys never do. The two consumers deliberately differ in
- * one way:
- *
- * - `ref_update` (the hook) accepts `ssh_key` and `delegated_ssh_key`. The
- *   hook sees a ref update before Mandible records the merge, so it cannot
- *   tell a Mandible merge from any other commit, and clearance and delegated
- *   merges are signed with the operator's delegated key.
- * - `unrecorded_commit` (the audit) accepts `ssh_key` only. The audit has
- *   Mandible's record of its merges, and a recorded merge passes whatever key
- *   signed it. A commit Mandible did not record passes only with an operator
- *   hardware key: a delegated-key signature on it means that key was used
- *   outside a Mandible merge.
+ * Only the configured operator's active `ssh_key` credentials ever count;
+ * agent users and other people's keys never do.
  */
 
 import { observeChild } from "./child-observation.js";
@@ -35,29 +24,20 @@ import {
 import type { Db } from "./db.js";
 import { getOperatorId } from "./users/store.js";
 
-export type ProtectedSignerUse = "ref_update" | "unrecorded_commit";
-
-const COUNTED_CREDENTIAL_TYPES: Record<ProtectedSignerUse, readonly string[]> = {
-  ref_update: ["ssh_key", "delegated_ssh_key"],
-  unrecorded_commit: ["ssh_key"],
-};
-
-/** The operator's active credentials that count for `use`, oldest first. */
-export function operatorSigningCredentials(db: Db, use: ProtectedSignerUse): SigningCredentialRow[] {
+/** The operator's active signing credentials, oldest first. */
+export function operatorSigningCredentials(db: Db): SigningCredentialRow[] {
   const operatorId = getOperatorId(db);
   if (!operatorId) return [];
-  const types = COUNTED_CREDENTIAL_TYPES[use];
-  return activeSigningCredentials(db)
-    .filter((credential) => credential.user_id === operatorId && types.includes(credential.type));
+  return activeSigningCredentials(db).filter((credential) => credential.user_id === operatorId);
 }
 
 /**
- * `allowed_signers` lines for the credentials that count for `use`. The
+ * `allowed_signers` lines for the operator's signing credentials. The
  * principal is the credential id, so a verified signature names the exact
  * credential.
  */
-export function operatorAllowedSignerLines(db: Db, use: ProtectedSignerUse): string[] {
-  return signerLines(operatorSigningCredentials(db, use));
+export function operatorAllowedSignerLines(db: Db): string[] {
+  return signerLines(operatorSigningCredentials(db));
 }
 
 function signerLines(credentials: readonly SigningCredentialRow[]): string[] {
@@ -90,8 +70,7 @@ const FIELD = "\x1f";
 const RECORD = "\x1e";
 
 /**
- * Classify each commit's signature against the operator credentials that
- * count for `use`, with one `git log` call. Throws when Git cannot read the
+ * Classify each commit's signature against the operator credentials, with one `git log` call. Throws when Git cannot read the
  * commits or no trusted ssh-keygen is available; callers decide how to
  * surface that.
  */
@@ -99,12 +78,11 @@ export async function readCommitSignatures(
   db: Db,
   cwd: string,
   shas: readonly string[],
-  use: ProtectedSignerUse,
 ): Promise<CommitSignature[]> {
   if (shas.length === 0) return [];
   const sshKeygen = trustedSshKeygenPath();
   if (!sshKeygen) throw new Error("trusted_ssh_keygen_unavailable");
-  const keys = operatorSigningCredentials(db, use);
+  const keys = operatorSigningCredentials(db);
   const lines = signerLines(keys);
   const dir = mkdtempSync(join(tmpdir(), "mandible-operator-signers-"));
   const allowedSigners = join(dir, "allowed_signers");
@@ -122,7 +100,7 @@ export async function readCommitSignatures(
     if (result.status !== 0) {
       throw new Error(`git log failed: ${(result.stderr ?? "").trim() || `exit ${result.status}`}`);
     }
-    const currentKeys = operatorSigningCredentials(db, use);
+    const currentKeys = operatorSigningCredentials(db);
     return result.stdout.split(RECORD).map((record) => record.replace(/^\n/, "")).filter(Boolean).map((record) => {
       const [sha = "", code = "", principal = "", fingerprint = "", subject = ""] = record.split(FIELD);
       const credential = currentKeys.find((key) => key.credential_id === principal && signerLines([key])[0] === lines.find(line => line.startsWith(`${principal} `))) ?? null;

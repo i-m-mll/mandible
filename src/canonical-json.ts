@@ -5,9 +5,9 @@
  * equal values always produce the same bytes regardless of insertion order.
  * Everything else follows `JSON.stringify`.
  *
- * This is a digest-input format. Four independent copies of it existed before
- * this module (auth clearance, Briefing publication, legacy Briefing
- * migration, and ledger id derivation); any divergence between them would have
+ * This is a digest-input format. Independent copies of it existed before
+ * this module (Briefing publication, legacy Briefing migration, and ledger id
+ * derivation); any divergence between them would have
  * silently produced different digests for the same value.
  */
 export function canonicalJson(value: unknown): string {

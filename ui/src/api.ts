@@ -1,5 +1,5 @@
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
-import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, type DashboardBadgeCounts } from '../../src/contracts';
+import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, OPERATOR_PROOF_WINDOW_MS, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
 import { detailKeys, detailKeysForEvent } from './query/detailKeys';
 import { isSpaceDocumentQuery, projectionAffectedByEvent, spacePacketMatches } from './query/resourceInvalidation';
@@ -1079,12 +1079,16 @@ export async function cancelApprovalProof(requestId: string): Promise<void> {
   if (!response.ok) throw new Error('Could not cancel operator signing.');
 }
 
-export async function approveAuthRequest(requestId: string): Promise<void> {
+/** Approve the request at `lifecycleRevision`, the revision that was shown; the server refuses any other. */
+export async function approveAuthRequest(requestId: string, lifecycleRevision: number | null): Promise<void> {
   // Bug: 58d93ee — extract server error message so the dashboard can surface it
   // (e.g. invalid_command: "Auth request has no command set")
   // Bug: 737df04 — wrap in AbortController so the fetch does not hang indefinitely
-  // if Mandible is mid-startup-scan and the event loop is saturated.
-  const APPROVE_TIMEOUT_MS = 65_000;
+  // if Mandible is mid-startup-scan and the event loop is saturated. The
+  // server closes the Touch ID sheet after OPERATOR_PROOF_WINDOW_MS; the extra
+  // allowance covers preparing the candidate before the sheet opens. On
+  // timeout the sheet is cancelled too, so no sheet outlives this click.
+  const APPROVE_TIMEOUT_MS = OPERATOR_PROOF_WINDOW_MS + 15_000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), APPROVE_TIMEOUT_MS);
 
@@ -1094,11 +1098,13 @@ export async function approveAuthRequest(requestId: string): Promise<void> {
     response = await browserSessionFetch(path, {
       method: 'POST',
       headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lifecycle_revision: lifecycleRevision }),
       signal: controller.signal,
     });
   } catch (e) {
     clearTimeout(timeoutId);
     if (e instanceof Error && e.name === 'AbortError') {
+      await cancelApprovalProof(requestId).catch(() => undefined);
       throw new Error('Approve timed out — Mandible may be starting up. Try again in a moment.');
     }
     throw e;
@@ -1107,14 +1113,16 @@ export async function approveAuthRequest(requestId: string): Promise<void> {
 
   if (!response.ok) {
     let message = `POST ${path} failed: ${response.status}`;
+    let code: string | null = null;
     try {
-      const body = await response.json() as { error?: string; message?: string };
+      const body = await response.json() as { error?: string; message?: string; code?: string };
+      code = body.code ?? null;
       if (body.error) message = body.error;
       else if (body.message) message = body.message;
     } catch {
       // ignore parse errors — keep the generic message
     }
-    throw new Error(message);
+    throw new ApiError(message, response.status, code);
   }
 }
 
@@ -1126,34 +1134,31 @@ export async function retryAuthRequest(requestId: string): Promise<void> {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/retry`);
 }
 
-export type DelegatedSigningStatus = {
-  provider: string;
-  configured: boolean;
-  public_key: string | null;
-  public_key_path: string;
-  encrypted_passphrase_path: string;
-  recipient_path: string;
-  missing_tools: string[];
-};
-
 export type OperatorSigningCredential = {
   id: string;
   type: string;
   fingerprint: string;
   label: string | null;
+  custody: 'enclave' | 'external' | null;
+  public_material: string | null;
+};
+
+export type ApprovalKeyState = 'usable' | 'key_missing' | 'key_invalidated' | 'biometry_unavailable'
+  | 'biometry_locked_out' | 'no_interactive_session' | 'failed';
+
+export type OperatorTrustChange = {
+  id: string;
+  kind: 'approval_key_enrollment' | 'signer_add' | 'signer_revoke' | 'protected_branches';
+  authorization: 'signed' | 'bootstrap';
+  statement: string;
+  created_at: number;
 };
 
 export type OperatorSigningKeyStatus = {
-  audit: {
-    status: 'ok' | 'no_operator' | 'unconfigured' | 'unresolvable' | 'missing_credential';
-    configured: boolean;
-    fingerprint: string | null;
-    operator_slug: string | null;
-    reason: string | null;
-    hint: string | null;
-  };
+  operator_slug: string | null;
+  approval_keys: Array<OperatorSigningCredential & { state: ApprovalKeyState; detail: string | null }>;
   credentials: OperatorSigningCredential[];
-  git_config_read: boolean;
+  trust_changes: OperatorTrustChange[];
 };
 
 export async function getOperatorSigningKeyStatus(): Promise<OperatorSigningKeyStatus> {
@@ -1161,78 +1166,16 @@ export async function getOperatorSigningKeyStatus(): Promise<OperatorSigningKeyS
   return (await parseMaybeJson(response)) as OperatorSigningKeyStatus;
 }
 
-export async function registerOperatorSigningKey(input:
-  | { source: 'configured' }
-  | { source: 'public_key'; public_key: string }
-): Promise<{ credential: OperatorSigningCredential; unchanged: boolean }> {
-  const response = await apiPost('/api/users/operator/signing-key', input);
+/** Add a verify-only external signer; the approval key signs the change. */
+export async function registerOperatorSigningKey(publicKey: string): Promise<{ credential: OperatorSigningCredential; unchanged: boolean }> {
+  const response = await apiPost('/api/users/operator/signing-key', { public_key: publicKey });
   return (await parseMaybeJson(response)) as { credential: OperatorSigningCredential; unchanged: boolean };
 }
 
-export async function getDelegatedSigningStatus(): Promise<DelegatedSigningStatus> {
-  const response = await apiGet('/api/auth/clearances/signing');
-  return (await parseMaybeJson(response)) as DelegatedSigningStatus;
-}
-
-export async function setupDelegatedSigning(input: {
-  name?: string;
-  email?: string;
-  age_recipient?: string;
-  overwrite?: boolean;
-}): Promise<DelegatedSigningStatus> {
-  const response = await apiPost('/api/auth/clearances/signing/setup', input);
-  return (await parseMaybeJson(response)) as DelegatedSigningStatus;
-}
-
-export async function removeDelegatedSigning(): Promise<DelegatedSigningStatus> {
-  const response = await apiDelete('/api/auth/clearances/signing');
-  return (await parseMaybeJson(response)) as DelegatedSigningStatus;
-}
-
-export type AuthClearance = {
-  id: string;
-  issuer_user_id: string;
-  grantee_user_id: string;
-  grantee_credential_id: string | null;
-  retired_at: number | null;
-  retirement_reason: string | null;
-  project_id: string;
-  base_branch: string;
-  issue_id: string | null;
-  head_branch: string | null;
-  action: 'merge';
-  issued_at: number;
-  expires_at: number;
-  max_uses: number;
-  consumed_uses: number;
-  revoked_at: number | null;
-  runtime_epoch: string;
-};
-
-export async function getAuthClearances(): Promise<AuthClearance[]> {
-  const response = await apiGet('/api/auth/clearances');
-  const body = await parseMaybeJson(response) as { clearances?: AuthClearance[] };
-  return body.clearances ?? [];
-}
-
-export async function createAuthClearance(input: {
-  request_id?: string;
-  grantee: string;
-  project?: string;
-  base?: string;
-  issue?: string;
-  head?: string;
-  action?: 'merge';
-  duration_minutes?: number;
-  max_uses?: number;
-}): Promise<AuthClearance> {
-  const response = await apiPost('/api/auth/clearances', input);
-  return ((await parseMaybeJson(response)) as { clearance: AuthClearance }).clearance;
-}
-
-export async function revokeAuthClearance(id: string): Promise<AuthClearance> {
-  const response = await apiPost(`/api/auth/clearances/${encodeURIComponent(id)}/revoke`);
-  return ((await parseMaybeJson(response)) as { clearance: AuthClearance }).clearance;
+/** Create and enroll a new approval key through the approval helper. */
+export async function enrollApprovalKey(input: { confirm_bootstrap?: boolean } = {}): Promise<{ credential: OperatorSigningCredential; trust_change: OperatorTrustChange }> {
+  const response = await apiPost('/api/users/operator/approval-key', input);
+  return (await parseMaybeJson(response)) as { credential: OperatorSigningCredential; trust_change: OperatorTrustChange };
 }
 
 export async function getWorkRepos<T>(): Promise<T[]> {
@@ -1515,6 +1458,7 @@ export type { LedgerActorType } from '../../src/ledger/types';
 export type {
   ReadUserIdentity,
   MergeSignatureClaim,
+  ApprovalTier,
   AttributionReadProjection,
 } from '../../src/identity/contracts';
 export type { WorkUnitLiveness as LedgerIssueDetailLiveness } from '../../src/contracts';

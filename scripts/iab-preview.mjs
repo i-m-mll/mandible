@@ -1856,12 +1856,6 @@ export function sanitizePreviewDatabase(databasePath) {
   try {
     const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
     db.transaction(() => {
-      // Credential and clearance rows are immutable attribution history. Their
-      // reusable secrets/private keys live outside SQLite, while retained ledger
-      // rows reference these IDs with ON DELETE RESTRICT.
-      if (tables.has("delegated_signing_runtime_bindings")) {
-        db.prepare("DELETE FROM delegated_signing_runtime_bindings").run();
-      }
       if (tables.has("settings")) {
         db.prepare("DELETE FROM settings WHERE key LIKE '%token%' OR key LIKE '%secret%' OR key LIKE '%credential%'").run();
       }

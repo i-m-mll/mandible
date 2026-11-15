@@ -10,7 +10,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import { normalizeAuthActionInput } from "../src/auth-actions.js";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import type { Db } from "../src/db.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { systemAction } from "../src/identity/resolver.js";
@@ -515,7 +514,7 @@ describe("auth request action routes", () => {
       const refs = seedBriefingPromotion(db);
       const router = actionRouter(db);
       const queue = new AuthQueue({ db });
-      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+      registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
       const response = await router.invoke({
         method: "POST",
         url: "/api/auth/v2/request",
@@ -562,7 +561,7 @@ describe("auth request action routes", () => {
       const refs = seedBriefingPromotion(db);
       const router = actionRouter(db);
       const queue = new AuthQueue({ db });
-      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+      registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
       const response = await router.invoke({
         method: "POST",
         url: "/api/auth/v2/request",
@@ -597,7 +596,7 @@ describe("auth request action routes", () => {
     try {
       const router = actionRouter(db);
       const queue = new AuthQueue({ db });
-      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+      registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
       const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
         command: "echo route",
         title: "Route veto",
@@ -639,7 +638,7 @@ describe("auth request action routes", () => {
     try {
       const router = actionRouter(db);
       const queue = new AuthQueue({ db });
-      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+      registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
 
       const response = await router.invoke({
         method: "POST",

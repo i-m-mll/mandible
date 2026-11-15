@@ -4,7 +4,6 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { expect, it } from "vitest";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthHookManager } from "../src/auth-hooks.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
@@ -139,7 +138,7 @@ it("serves the report through `mandible auth show`", async () => {
   const token = auth.mintApiToken(getOperator(db)!.id).token;
   const queue = new AuthQueue({ db, hookManager: new AuthHookManager(db), backgroundMaintenance: false });
   const router = new Router({ clientAuth: auth });
-  registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => db));
+  registerAuthRoutes(router, queue, inlineLedgerReader(() => db));
   const server = http.createServer(async (req, res) => {
     if (req.url === "/api/instance") {
       res.setHeader("Content-Type", "application/json");

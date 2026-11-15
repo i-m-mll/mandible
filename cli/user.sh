@@ -86,173 +86,6 @@ git_config_value() {
   git config --get "$1" 2>/dev/null || true
 }
 
-# Issue 2205073 — read one git config value with the dotfiles agent-signing
-# GIT_CONFIG_* overrides stripped, so the operator's own configuration is what
-# is read rather than whatever key the current agent environment injects.
-#
-# $1 selects the scope, and the scope is the whole point (review F5):
-#   global    — only the operator's global git config. A registry credential is
-#               global by construction (it is the operator's identity in every
-#               repository), so onboarding may only auto-register from here.
-#   effective — whatever this repository resolves, repo-local scope included.
-#               Explicit commands may use it; they must say which scope won.
-# $2 is the config key.
-git_config_value_without_overrides() {
-  local scope="$1" key="$2"
-  (
-    unset GIT_CONFIG_COUNT
-    unset GIT_CONFIG_PARAMETERS
-    local var
-    for var in $(env | sed -n 's/^\(GIT_CONFIG_\(KEY\|VALUE\)_[0-9][0-9]*\)=.*/\1/p'); do
-      unset "$var"
-    done
-    if [[ "$scope" == "global" ]]; then
-      git config --global --get "$key" 2>/dev/null || true
-    else
-      git config --get "$key" 2>/dev/null || true
-    fi
-  )
-}
-
-# Issue 2205073 — derive the OpenSSH public material and SHA256 fingerprint of
-# the configured git user.signingkey. Sets SIGNING_KEY_MATERIAL,
-# SIGNING_KEY_FINGERPRINT and SIGNING_KEY_SCOPE on success. Returns 1 when
-# user.signingkey is unset in the requested scope (nothing to register) and 2
-# when it is set but cannot be resolved; the reason is left in
-# SIGNING_KEY_ERROR. Callers decide whether that is fatal.
-#
-# $1 is the config scope: "global" (default) or "effective". SIGNING_KEY_SCOPE
-# reports where the resolved key actually came from — "global" or "non-global"
-# — so an explicit caller can name the scope it is about to promote into a
-# global operator credential.
-#
-# Accepts the three shapes git supports: a literal `key::` value, an inline
-# public key, or a path to a public or private key file.
-resolve_git_signing_key() {
-  local scope="${1:-global}"
-  SIGNING_KEY_MATERIAL=""
-  SIGNING_KEY_FINGERPRINT=""
-  SIGNING_KEY_ERROR=""
-  SIGNING_KEY_SCOPE=""
-  local signing_key key_path key_line global_key
-  signing_key="$(git_config_value_without_overrides "$scope" user.signingkey)"
-  if [[ -z "$signing_key" ]]; then
-    if [[ "$scope" == "global" ]]; then
-      SIGNING_KEY_ERROR="Git user.signingkey is not configured in global git config."
-    else
-      SIGNING_KEY_ERROR="Git user.signingkey is not configured."
-    fi
-    return 1
-  fi
-  if [[ "$scope" == "global" ]]; then
-    SIGNING_KEY_SCOPE="global"
-  else
-    global_key="$(git_config_value_without_overrides global user.signingkey)"
-    if [[ -n "$global_key" && "$signing_key" == "$global_key" ]]; then
-      SIGNING_KEY_SCOPE="global"
-    else
-      SIGNING_KEY_SCOPE="non-global"
-    fi
-  fi
-  if ! command -v ssh-keygen >/dev/null 2>&1; then
-    SIGNING_KEY_ERROR="ssh-keygen not found."
-    return 2
-  fi
-  case "$signing_key" in
-    key::*) key_line="${signing_key#key::}" ;;
-    ssh-*\ *|ecdsa-*\ *|sk-*\ *) key_line="$signing_key" ;;
-    *)
-      key_path="$signing_key"
-      [[ "$key_path" == "~/"* ]] && key_path="${HOME}/${key_path#\~/}"
-      if [[ ! -r "$key_path" ]]; then
-        SIGNING_KEY_ERROR="Configured git signing key is not readable: $signing_key"
-        return 2
-      fi
-      key_line="$(sed -n '1p' "$key_path")"
-      case "$key_line" in
-        ssh-*\ *|ecdsa-*\ *|sk-*\ *) ;;
-        *)
-          if [[ -r "${key_path}.pub" ]]; then
-            key_line="$(sed -n '1p' "${key_path}.pub")"
-          else
-            if ! key_line="$(ssh-keygen -y -f "$key_path" 2>/dev/null)"; then
-              SIGNING_KEY_ERROR="Could not derive the public key from git user.signingkey."
-              return 2
-            fi
-          fi
-          ;;
-      esac
-      ;;
-  esac
-  SIGNING_KEY_MATERIAL="$(printf '%s\n' "$key_line" | awk 'NF >= 2 { print $1 " " $2; exit }')"
-  if [[ -z "$SIGNING_KEY_MATERIAL" ]]; then
-    SIGNING_KEY_ERROR="Git user.signingkey did not resolve to an OpenSSH public key."
-    return 2
-  fi
-  SIGNING_KEY_FINGERPRINT="$(printf '%s\n' "$SIGNING_KEY_MATERIAL" \
-    | ssh-keygen -lf - -E sha256 2>/dev/null | awk 'NF >= 2 { print $2; exit }')"
-  if [[ "$SIGNING_KEY_FINGERPRINT" != SHA256:* ]]; then
-    SIGNING_KEY_ERROR="Could not fingerprint git user.signingkey."
-    return 2
-  fi
-  return 0
-}
-
-# Issue 2205073 — register the configured git signing key as an ssh_key
-# credential on $1 unless an active credential already carries its fingerprint.
-#
-# Without this, the signing credential is a hidden manual step: protected
-# merges succeed, but the approval-time base-transition check refuses to attest
-# them, and the second queued approval fails with no visible cause. Never fatal
-# — setup itself already succeeded by the time this runs.
-#
-# Review F5 — auto-registration reads GLOBAL git config only, matching the
-# startup audit in src/signing-credential-audit.ts. An operator credential is
-# global by construction: it is the identity every protected merge is attested
-# against. `git config --get` resolves repo-local configuration first, so
-# reading effective config here meant that running `mandible user setup` inside
-# any repository carrying a per-repo or agent signing key silently promoted
-# that key into an active, globally-scoped operator credential. A non-global
-# key is now reported with the explicit command that registers it, never
-# registered on its own.
-setup_signing_credential() {
-  local ref="$1" rc=0
-  resolve_git_signing_key global || rc=$?
-  if (( rc == 1 )); then
-    # No GLOBAL signing key. If this repository resolves one from a non-global
-    # scope, name it and hand over the explicit command rather than acting.
-    local local_key
-    local_key="$(git_config_value_without_overrides effective user.signingkey)"
-    if [[ -n "$local_key" ]]; then
-      err "${YELLOW}Signing credential not registered:${RESET} git user.signingkey is set here only outside global config (${local_key})."
-      err "Operator credentials are global. If that is your protected-merge key, register it explicitly: mandible user credential add ${ref} --from-git-signingkey"
-    fi
-    return 0  # No global signing key configured: nothing to register.
-  fi
-  if (( rc != 0 )); then
-    err "Signing credential not registered: ${SIGNING_KEY_ERROR}"
-    return 0
-  fi
-  local existing
-  if existing="$(api_read "/api/users/$(urlencode "$ref")/credentials" "credentials" 2>/dev/null)"; then
-    if printf '%s\n' "$existing" | jq -e \
-      --arg fp "$SIGNING_KEY_FINGERPRINT" \
-      '[.credentials[]? | select(.status == "active" and .fingerprint == $fp)] | length > 0' \
-      >/dev/null 2>&1; then
-      return 0  # Already registered: idempotent, no redundant action.
-    fi
-  fi
-  local payload response
-  payload="$(jq -n --arg fp "$SIGNING_KEY_FINGERPRINT" --arg material "$SIGNING_KEY_MATERIAL" \
-    '{type:"ssh_key", fingerprint:$fp, public_material:$material, label:"git user.signingkey"}')"
-  if response="$(api_send POST "/api/users/$(urlencode "$ref")/credentials" "$payload" 2>/dev/null)"; then
-    err "${GREEN}Signing credential registered from global git config (${SIGNING_KEY_FINGERPRINT}).${RESET}"
-  else
-    err "Could not register the git signing key as a credential. Run: mandible user credential add ${ref} --from-git-signingkey"
-  fi
-  return 0
-}
-
 cmd_setup() {
   local slug="" name="" email="" json=0 email_set=0 agents=0
   local binding
@@ -275,11 +108,6 @@ cmd_setup() {
   response="$(api_send POST "/api/users/setup" "$payload")" || die "${RED}Setup failed.${RESET}" 1
   err "${GREEN}Operator ready.${RESET}"
   (( agents == 0 )) || err "${GREEN}Agent users ready.${RESET}"
-  # Issue 2205073 — the protected-merge signing credential is part of operator
-  # setup, not a hidden manual follow-up step.
-  local operator_ref
-  operator_ref="$(printf '%s\n' "$response" | jq -r '.user.slug // .user.id // "operator"')"
-  setup_signing_credential "$operator_ref"
   emit "$response" "$json" '.user | "id: \(mandible_display_id)\nslug: \(.slug)\nname: \(.display_name)\nemail: \(.email // "-")"'
 }
 
@@ -358,30 +186,11 @@ cmd_credential() {
 }
 
 credential_add() {
-  local ref="" ctype="" fingerprint="" material="" label="" json=0 material_set=0 from_git=0
+  local ref="" ctype="" fingerprint="" material="" label="" json=0 material_set=0
   local binding
-  binding=$(mandible_bind_arguments "user.credential.add" '{"ctype":{"option":"type"},"fingerprint":{"option":"fingerprint"},"material":{"option":"public-material"},"material_set":{"option":"public-material","constant":"1"},"from_git":{"option":"from-git-signingkey","constant":"1"},"label":{"option":"label"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "user.credential.add" '{"ctype":{"option":"type"},"fingerprint":{"option":"fingerprint"},"material":{"option":"public-material"},"material_set":{"option":"public-material","constant":"1"},"label":{"option":"label"},"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
   eval "$binding"
   [[ -n "$ref" ]] || die "Usage: $(mandible_command_syntax user.credential.add)" 2
-  if (( from_git )); then
-    [[ -z "$ctype" && -z "$fingerprint" && $material_set -eq 0 ]] \
-      || die "--from-git-signingkey cannot be combined with --type, --fingerprint, or --public-material." 2
-    # Issue 2205073 — shared with `mandible user setup`, which auto-registers
-    # from global config only. This is the explicit command, so it honours the
-    # effective configuration of the current repository; review F5 requires it
-    # to say which scope the key came from, because the credential it creates
-    # is global regardless of where the key was configured.
-    resolve_git_signing_key effective || die "${SIGNING_KEY_ERROR}" 1
-    if [[ "$SIGNING_KEY_SCOPE" == "global" ]]; then
-      err "Registering git user.signingkey from global git config (${SIGNING_KEY_FINGERPRINT})."
-    else
-      err "${YELLOW}Registering git user.signingkey from a non-global git config scope (${SIGNING_KEY_FINGERPRINT}).${RESET} The credential applies to this user everywhere, not just this repository."
-    fi
-    material="$SIGNING_KEY_MATERIAL"
-    fingerprint="$SIGNING_KEY_FINGERPRINT"
-    ctype="ssh_key"
-    material_set=1
-  fi
   [[ -n "$ctype" && -n "$fingerprint" ]] \
     || die "Usage: $(mandible_command_syntax user.credential.add)" 2
   require_tools

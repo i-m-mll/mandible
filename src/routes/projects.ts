@@ -2,6 +2,7 @@ import { getDb } from "../db.js";
 import {
   addOrUpdateCheckout,
   addProject,
+  checkoutDefaultBranchChange,
   auditRegistry,
   listProjects,
   ProjectRegistryError,
@@ -10,8 +11,11 @@ import {
   resolveProjectRef,
   suggestProjectRefs,
   updateProject,
+  type AddOrUpdateCheckoutInput,
   type AddOrUpdateProjectInput,
 } from "../ledger/project-registry.js";
+import type { OperatorSigningAuthority } from "../operator-signing/authority.js";
+import { SignedActionRefused, sendSigningRefusal, signedOrThrow } from "../operator-signing/http.js";
 import type { LedgerNamespacePolicy } from "../ledger/types.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import { bodyRecord, sendJson } from "./http.js";
@@ -31,6 +35,10 @@ function parseNamespacePolicy(value: unknown): LedgerNamespacePolicy | undefined
 }
 
 function handleError(res: ResponseLike, error: unknown): void {
+  if (error instanceof SignedActionRefused) {
+    sendSigningRefusal(res, error.refusal);
+    return;
+  }
   if (error instanceof ClientAuthzError) {
     sendJson(res, error.status, { error: error.message, code: error.code });
     return;
@@ -67,7 +75,30 @@ function projectUpdateInput(body: Record<string, unknown>): AddOrUpdateProjectIn
   return input;
 }
 
-export function registerProjectRoutes(router: RouteRegistrar): void {
+function checkoutInput(body: Record<string, unknown>, root: string): AddOrUpdateCheckoutInput {
+  return {
+    root,
+    work_repo_id: optionalString(body, "work_repo_id") ?? null,
+    name: optionalString(body, "name"),
+    default_branch: optionalString(body, "default_branch"),
+    remote_url: optionalString(body, "remote_url") ?? null,
+  };
+}
+
+export function registerProjectRoutes(router: RouteRegistrar, operatorSigning: OperatorSigningAuthority | null): void {
+  /** Write a checkout; changing a registered checkout's default branch changes what is protected, so the operator signs it. */
+  const writeCheckout = async (req: Parameters<Parameters<RouteRegistrar["post"]>[1]>[0], projectRef: string, input: AddOrUpdateCheckoutInput) => {
+    const db = getDb();
+    const change = checkoutDefaultBranchChange(db, input);
+    if (!change) return addOrUpdateCheckout(db, projectRef, input);
+    requireOperator(db, req);
+    if (!operatorSigning) throw new SignedActionRefused({ code: "signing_failed", detail: "This instance has no approval signer." });
+    const { value } = signedOrThrow(await operatorSigning.authorizeTrustChange("protected_branches",
+      { checkout_root: change.root, default_branch: { from: change.from, to: change.to } },
+      `protect ${change.to || "no default branch"} instead of ${change.from || "no default branch"} in ${change.root}`, req.signal,
+      () => addOrUpdateCheckout(db, projectRef, input)));
+    return value;
+  };
   router.post('/api/projects/:ref/historical-roots',(req,res)=>{
     const parsed=HistoricalRootRequestSchema.safeParse(bodyRecord(req));
     if(!parsed.success) return sendJson(res,400,{code:'invalid_request',error:parsed.error.message});
@@ -108,21 +139,14 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
 
   // PATCH a checkout by root (registered under /checkouts to avoid the :ref
   // param route shadowing it).
-  router.post("/api/projects/checkouts", (req, res) => {
+  router.post("/api/projects/checkouts", async (req, res) => {
     try {
       const body = bodyRecord(req);
       const projectRef = optionalString(body, "project") ?? optionalString(body, "project_ref");
       const root = optionalString(body, "root");
       if (!projectRef) throw new ProjectRegistryError("project is required", "missing_project");
       if (!root) throw new ProjectRegistryError("root is required", "missing_root");
-      const result = addOrUpdateCheckout(getDb(), projectRef, {
-        root,
-        work_repo_id: optionalString(body, "work_repo_id") ?? null,
-        name: optionalString(body, "name"),
-        default_branch: optionalString(body, "default_branch"),
-        remote_url: optionalString(body, "remote_url") ?? null,
-      });
-      sendJson(res, 200, result);
+      sendJson(res, 200, await writeCheckout(req, projectRef, checkoutInput(body, root)));
     } catch (error) {
       handleError(res, error);
     }
@@ -178,19 +202,12 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     }
   }, { operation: { id: "patch:/api/projects/:ref", effects: ["ledger:write"], requestSchema: null, reportingCategory: "projects" }, fileRpc: "allow" });
 
-  router.post("/api/projects/:ref/checkouts", (req, res) => {
+  router.post("/api/projects/:ref/checkouts", async (req, res) => {
     try {
       const body = bodyRecord(req);
       const root = optionalString(body, "root");
       if (!root) throw new ProjectRegistryError("root is required", "missing_root");
-      const result = addOrUpdateCheckout(getDb(), req.params.ref, {
-        root,
-        work_repo_id: optionalString(body, "work_repo_id") ?? null,
-        name: optionalString(body, "name"),
-        default_branch: optionalString(body, "default_branch"),
-        remote_url: optionalString(body, "remote_url") ?? null,
-      });
-      sendJson(res, 200, result);
+      sendJson(res, 200, await writeCheckout(req, req.params.ref, checkoutInput(body, root)));
     } catch (error) {
       handleError(res, error);
     }

@@ -13,7 +13,6 @@ import { waitUntilPasses } from "./helpers/wait-until.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { acceptedReleaseReceiptFixture } from './helpers/accepted-release-fixture.js';
 import { acceptedReleaseSelection, bindAcceptedRelease } from '../src/accepted-release-selection.js';
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { collectAuthMergeReview } from "../src/auth-change-report.js";
 import { CandidateAcceptanceRuns, latestCandidateAcceptance, type CandidateAcceptanceInput, type CandidateAcceptanceOutcome } from "../src/candidate-acceptance.js";
 import { setDb } from "../src/db.js";
@@ -30,6 +29,7 @@ import {
   advanceMainViaAuthorizedMerge, approveFixtureRequest, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject,
   createMigratedDb, git, publishFixtureExecution, registerWorkRepo, trackTempPath, waitForStatus,
 } from "./helpers/auth-queue-fixtures.js";
+import { approveAsFixtureOperator } from "./helpers/operator-signing-fixtures.js";
 vi.mock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: vi.fn((await original<typeof import('node:child_process')>()).spawnSync) }));
 const actualSpawnSync = (await vi.importActual<typeof import('node:child_process')>('node:child_process')).spawnSync;
 
@@ -121,7 +121,7 @@ beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-self-update-home-"));
   vi.stubEnv("MANDIBLE_HOME", home);
   db = createMigratedDb();
-  operatorId = configureSigningCredential(db, repo, "ssh_key").operatorId;
+  operatorId = configureSigningCredential(db, repo).operatorId;
   fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n.mandible-test-signing-key*\n");
   registerWorkRepo(db, repo);
   projectId = createLedgerProject(db, repo).project.id;
@@ -172,7 +172,7 @@ describe("runtime handoff lock gate", () => {
     expect((await queue.getRequest(original.id))?.status).toBe("superseded");
     expect((await queue.getRequest(replacement.id))?.status).toBe("pending");
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
-    await expect(queue.approveWithOperatorProof(replacement.id, operatorId)).rejects.toThrow(/self-update from auth request f3ecce00/);
+    await expect(approveAsFixtureOperator(queue, replacement.id, operatorId)).rejects.toThrow(/self-update from auth request f3ecce00/);
 
     // A request admitted to the repo chain before the lock appeared is parked
     // if publication is blocked by the time its execution turn begins.
@@ -223,14 +223,14 @@ describe('automatic accepted-package binding', () => {
     const accepted = db.prepare("SELECT id FROM auth_candidate_acceptances WHERE auth_request_id = ? AND status = 'passed'").get(first.id) as { id: string };
     queue = new AuthQueue({ db, hookManager: createInstalledServiceHookManager(db, { serviceDefinitionInspector: inspector }), backgroundMaintenance: false,
       executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
-    await expect(queue.approveWithOperatorProof(first.id, operatorId)).rejects.toThrow('Accepted package selection is not ready');
+    await expect(approveAsFixtureOperator(queue, first.id, operatorId)).rejects.toThrow('Accepted package selection is not ready');
     const revision = queue.listLifecycleEvents(first.id).at(-1)!.revision;
     queue.addAction(first.id, { kind: 'checkpoint_add', target_issue_ref: issue.id,
       payload: { kind: 'accepted-release', payload: { acceptanceId: accepted.id, reference } } },
       { user_id: operatorId, credential_id: credentialId, evidence_method: 'api_token' }, revision, 1);
     expect(acceptedReleaseSelection(db, (await queue.getRequest(first.id))!, queue.listActions(first.id), false).selection.reference).toBe(reference);
     expect(queue.listLifecycleEvents(first.id).at(-1)!.authority_path).toBe('custodian');
-    await queue.approveWithOperatorProof(first.id, operatorId);
+    await approveAsFixtureOperator(queue, first.id, operatorId);
     expect((await queue.getRequest(first.id))!.approved_by_user_id).toBe(operatorId);
     // An upgraded authority's subsequent request requires no staging call.
     const second = await submit('feature/other');
@@ -325,7 +325,7 @@ describe('automatic accepted-package binding', () => {
     } else {
       expect(latest.status).toBe('failed');
       expect(queue.listActions(request.id)).toEqual(before);
-      await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow('acceptance');
+      await expect(approveAsFixtureOperator(queue, request.id, operatorId)).rejects.toThrow('acceptance');
     }
   });
 });
@@ -342,7 +342,7 @@ describe("candidate acceptance gate", () => {
     inspector.mockResolvedValue({ ok: true, observations: [absent.observation] });
     const message = "The production backend is not running, so its update cannot start yet.";
     expect(await queue.publicationBlockerForRequest((await queue.getRequest(request.id))!)).toEqual({ code: "missing_definition", message });
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(message);
+    await expect(approveAsFixtureOperator(queue, request.id, operatorId)).rejects.toThrow(message);
     expect((await queue.getRequest(request.id))!.status).toBe("pending");
     expect(await acceptanceOf(request.id)).toMatchObject({ state: "passed" });
   });
@@ -381,7 +381,7 @@ describe("candidate acceptance gate", () => {
     let release!: () => void;
     const busy = new Promise<void>(resolve => { release = resolve; });
     await execution.reserveRepoAdmission((await queue.getRequest(request.id))!, key => { execution.executionChains.set(key, busy); });
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveAsFixtureOperator(queue, request.id, operatorId);
     expect((await queue.getRequest(request.id))!.status).toBe("executing");
     expect(execution.executor).not.toHaveBeenCalled();
     // The state is observed again when this request reaches its execution turn.
@@ -412,7 +412,7 @@ describe("candidate acceptance gate", () => {
 
     setDb(db);
     const router = authenticatedTestRouter(getOperator(db)!);
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => db));
+    registerAuthRoutes(router, queue, inlineLedgerReader(() => db));
     for (const url of [`/api/auth/request/${request.id}`, "/api/auth/queue", "/api/auth/history"]) {
       inspector.mockClear();
       if (url === "/api/auth/history") db.prepare("UPDATE auth_requests SET status = 'failed', resolved_at = 1").run();
@@ -429,7 +429,7 @@ describe("candidate acceptance gate", () => {
       expect(inspector).toHaveBeenCalledTimes(1);
     }
     const protectedHead = git(repo, ["rev-parse", "main"]);
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(refusal.message);
+    await expect(approveAsFixtureOperator(queue, request.id, operatorId)).rejects.toThrow(refusal.message);
     expect((await queue.getRequest(request.id))!.status).toBe("pending");
 
     inspector.mockResolvedValue(await createServiceDefinitionInspector()());
@@ -463,7 +463,7 @@ describe("candidate acceptance gate", () => {
     runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
     await queue.drainCandidateAcceptances();
     expect(await acceptanceOf(request.id)).toMatchObject({ state: "passed" });
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/self-update from auth request f3ecce00/);
+    await expect(approveAsFixtureOperator(queue, request.id, operatorId)).rejects.toThrow(/self-update from auth request f3ecce00/);
     fs.unlinkSync(lock.lockPath);
     await queue.refreshPendingCandidates();
     expect(runs).toHaveLength(1);
@@ -484,7 +484,7 @@ describe("candidate acceptance gate", () => {
     expect(runs).toHaveLength(0);
     expect(latestCandidateAcceptance(db, request.id)).toBeNull();
     advanceMainViaAuthorizedMerge(db, repo, "feature/other", "merge-other");
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveAsFixtureOperator(queue, request.id, operatorId);
     expect((await queue.getRequest(request.id))?.status).toBe("executing");
     expect(runs).toHaveLength(0);
   });
@@ -496,7 +496,7 @@ describe("candidate acceptance gate", () => {
     commitOnBranch(repo, "feature/build-input", { [file]: "changed\n", "docs/note.md": "documentation\n" });
     const request = await submit("feature/build-input", { change_report: await reviewedChanges("feature/build-input") });
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/in progress/);
+    await expect(approveAsFixtureOperator(queue, request.id, operatorId)).rejects.toThrow(/in progress/);
   });
 
   it("requires acceptance for a source renamed into documentation", async () => {
@@ -523,12 +523,12 @@ describe("candidate acceptance gate", () => {
     // The manual command joins the open run instead of starting a second one.
     expect(await queue.runCandidateAcceptance(queue.getRequestReference(request.id.slice(0, 8))!)).toMatchObject({ state: "running" });
     expect(runs).toHaveLength(1);
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/in progress/);
+    await expect(approveAsFixtureOperator(queue, request.id, operatorId)).rejects.toThrow(/in progress/);
 
     runs[0]!.settle({ status: "failed", result: null, error: "Daemon readiness timed out" });
     await queue.drainCandidateAcceptances();
     expect((await acceptanceOf(request.id))).toMatchObject({ state: "failed", reason: "Daemon readiness timed out" });
-    await expect(queue.approveWithOperatorProof(request.id, operatorId)).rejects.toThrow(/failed\. Daemon readiness timed out\./);
+    await expect(approveAsFixtureOperator(queue, request.id, operatorId)).rejects.toThrow(/failed\. Daemon readiness timed out\./);
 
     await queue.runCandidateAcceptance((await queue.getRequest(request.id))!);
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
@@ -536,7 +536,7 @@ describe("candidate acceptance gate", () => {
     await queue.drainCandidateAcceptances();
     expect((await acceptanceOf(request.id))).toMatchObject({ state: "passed" });
 
-    await queue.approveWithOperatorProof(request.id, operatorId);
+    await approveAsFixtureOperator(queue, request.id, operatorId);
     expect((await queue.getRequest(request.id))?.status).toBe("executing");
   });
 

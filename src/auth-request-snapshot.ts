@@ -85,7 +85,14 @@ export const AUTH_SNAPSHOT_SHAPE_V238: AuthSnapshotShape = Object.freeze({
   actions: AUTH_SNAPSHOT_SHAPE_V221.actions,
 });
 
-export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE_V238;
+const RETIRED_V240 = ["approval_source", "approval_lease_id", "clearance_use_id"];
+
+export const AUTH_SNAPSHOT_SHAPE_V240: AuthSnapshotShape = Object.freeze({
+  request: Object.freeze(AUTH_SNAPSHOT_SHAPE_V238.request.filter((column) => !RETIRED_V240.includes(column))),
+  actions: AUTH_SNAPSHOT_SHAPE_V238.actions,
+});
+
+export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE_V240;
 
 // Columns added after receipts existed appear only when set, so receipts
 // recorded before them keep verifying.

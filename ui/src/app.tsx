@@ -1551,6 +1551,9 @@ function App(): JSX.Element {
       client.on('auth:resolved', authResolvedHandler),
       client.on('auth:finalized', handler),
       client.on('auth:lifecycle', handler),
+      client.on('auth:approval_phase', (payload) => {
+        window.dispatchEvent(new CustomEvent('auth:approval_phase', { detail: payload.data }));
+      }),
       client.on('work:branch:updated', handler),
       client.on('work:scan:completed', (payload) => {
         handler(payload);
@@ -1870,7 +1873,8 @@ function App(): JSX.Element {
 
   const handleApprove = async (requestId: string) => {
     try {
-      await approveAuthRequest(requestId);
+      const shown = state.authQueue.find((request) => request.id === requestId);
+      await approveAuthRequest(requestId, shown?.lifecycle_revision ?? null);
       // Set to 'approved' locally for immediate feedback; the SSE auth:resolved
       // event will update to 'completed' when the command finishes.
       authProjectionRefreshRef.current!.notePush();

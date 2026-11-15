@@ -14,7 +14,14 @@ import { appendAuthLifecycleEvent, listAuthLifecycleEvents } from '../src/auth-l
 import { authRequestSnapshot } from '../src/auth-request-snapshot.js';
 import { AuthHookManager } from '../src/auth-hooks.js';
 import { systemAction } from '../src/identity/resolver.js';
-import { addAttributionEvidence, createUser, addCredential } from '../src/users/store.js';
+import { addAttributionEvidence, createUser } from '../src/users/store.js';
+
+/** Raw insert: the fixture also runs against pre-head schemas. */
+function addTokenCredential(db: ReturnType<typeof createMigratedDb>, userId: string, fingerprint: string): { id: string } {
+  const id = randomUUID();
+  db.prepare("INSERT INTO user_credentials (id, user_id, type, fingerprint, created_at) VALUES (?, ?, 'api_token', ?, 1)").run(id, userId, fingerprint);
+  return { id };
+}
 import { CURRENT_SCHEMA_VERSION, migrate } from '../src/db-migrations.js';
 import { AuthQueue } from '../src/auth-queue.js';
 import { acceptedReleaseProducerReferencesAsync } from '../scripts/accepted-release-retention.mjs';
@@ -26,7 +33,7 @@ async function fixture(db = createMigratedDb()) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'failed-retirement-')));
   const id = randomUUID(); const execution = randomUUID(); const record = randomUUID();
   const owner = createUser(db, { slug: 'retirement-owner', display_name: 'Retirement owner', kind: 'agent' });
-  const credential = addCredential(db, owner.id, { type: 'api_token', fingerprint: 'retirement-held' });
+  const credential = addTokenCredential(db, owner.id, 'retirement-held');
   const currentActor: AuthLifecycleActor = { user_id: owner.id, credential_id: credential.id, evidence_method: 'api_token', authority_path: 'custodian' };
   const currentSchema = (db.pragma("table_info(work_units)") as Array<{ name: string }>).some(column => column.name === "responsibility_session_id");
   db.prepare(`INSERT INTO work_units (id, issue_id, repo_id, kind, state, auth_request_id, owner_user_id, ${currentSchema ? "responsibility_session_id" : "owner_credential_id"}, custody_generation, created_at) VALUES ('unit', 'fixture', 'fixture', 'solo', 'committed', ?, ?, ?, 3, 1)`)
@@ -203,7 +210,7 @@ it.each([221, 222])('migrates failed hook evidence unchanged from v%i and admits
 
 it('enforces real request custody and generation at the AuthQueue retirement entrypoint before marking custody', async () => {
   const f = await fixture();
-  const other = addCredential(f.db, f.owner.id, { type: 'api_token', fingerprint: 'retirement-other' });
+  const other = addTokenCredential(f.db, f.owner.id, 'retirement-other');
   const currentActor = f.currentActor;
   const event = listAuthLifecycleEvents(f.db, f.id).at(-1)!;
   const commit = 'f'.repeat(40);

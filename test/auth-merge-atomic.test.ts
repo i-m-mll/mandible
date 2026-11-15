@@ -5,7 +5,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { extractAtomicMergeState } from "../src/auth-signature-verification.js";
 import { configureDaemonLogger, flushDaemonLogger } from "../src/daemon-log.js";
@@ -18,6 +17,7 @@ import { describeAuthExecutionFailure } from "../src/contracts.js";
 import { createAuthCheckRepo, commitOnBranch } from "./helpers/auth-queue-fixtures.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { preparedGitFixture } from "./helpers/prepared-git-fixture.js";
+import { buildMergeCommit, signedCommitObject } from "../src/merge-commit.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
 const CHECKOUT_SYNC_CHECK = path.join(process.cwd(), "cli", "checkout-sync-check.sh");
@@ -92,6 +92,22 @@ function candidate(base: string, head: string, requestId = "atomic-test"): {
   return { tree, pin, ref };
 }
 
+/** The approval-time commit: built and signed outside the executor, written with no ref change. */
+function signedMerge(base: string, head: string, tree: string, signingKey: string | null = key,
+  message = "Merge branch 'feature/atomic'\n"): string {
+  const unsigned = buildMergeCommit({ tree, parents: [base, head], message,
+    identity: { name: "Approval Test", email: "approval@example.invalid" }, time: { seconds: 1_794_700_000, offset_minutes: -300 } });
+  let object = unsigned;
+  if (signingKey) {
+    const signed = spawnSync("ssh-keygen", ["-q", "-Y", "sign", "-n", "git", "-f", signingKey], { input: unsigned, encoding: "buffer" });
+    if (signed.status !== 0) throw new Error(signed.stderr.toString());
+    object = signedCommitObject(unsigned, signed.stdout.toString("utf8"));
+  }
+  const written = spawnSync("git", ["hash-object", "-t", "commit", "-w", "--stdin"], { cwd: repo, input: object, encoding: "utf8" });
+  if (written.status !== 0) throw new Error(written.stderr);
+  return written.stdout.trim();
+}
+
 function allowedSigner(keyPath = key, principal = "credential-test"): string {
   return `${principal} ${fs.readFileSync(`${keyPath}.pub`, "utf8").trim()}`;
 }
@@ -106,7 +122,6 @@ function atomicInvocation(
   const snippet = [
     "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
     `source ${JSON.stringify(AUTH_MERGE)}`,
-    "prompt_confirm() { printf 'y'; }",
     "run_merge_preflight() { :; }",
     ...(stubCheckpoint ? ["persist_atomic_marker() { printf '%s\\n' \"$1\" >&2; }"] : []),
     "collect_declared_issues() { :; }",
@@ -128,6 +143,7 @@ function atomicInvocation(
         MANDIBLE_AUTH_CANDIDATE_HEAD_SHA: head,
         MANDIBLE_AUTH_CANDIDATE_REF: cached.ref,
         MANDIBLE_AUTH_ALLOWED_SIGNERS: allowedSigner(),
+        MANDIBLE_AUTH_SIGNED_MERGE_SHA: extraEnv.MANDIBLE_AUTH_SIGNED_MERGE_SHA ?? signedMerge(base, head, cached.tree),
         ...extraEnv,
       },
     },
@@ -185,7 +201,8 @@ describe("atomic auth merge", () => {
   beforeEach(() => {
     atomicRepo.copyInto(repo);
     key = path.join(repo, ".git", "signing-key");
-    fs.appendFileSync(path.join(repo, ".git", "config"), `\n[user]\n signingkey = ${JSON.stringify(key)}\n`);
+    // Ambient git signing names a key that does not exist: publication never signs.
+    fs.appendFileSync(path.join(repo, ".git", "config"), "\n[user]\n signingkey = /nonexistent/ambient-signing-key\n");
   });
 
   it("creates the exact trusted merge commit, CAS-updates, safely syncs, and preserves untracked files", () => {
@@ -218,8 +235,8 @@ describe("atomic auth merge", () => {
     const invocation = atomicInvocation(base, head, cached, {
       MANDIBLE_AUTH_PREFLIGHT_BASE_SHA: base, MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT: "1",
     }, true);
-    invocation.args[1] = invocation.args[1]!.replace("run_merge_preflight() { :; }\n", "")
-      .replace("prompt_confirm() { printf 'y'; }", "prompt_confirm() { printf 'Edit during confirmation\\n' > shared.txt; printf 'y'; }");
+    invocation.args[1] = invocation.args[1]!.replace("run_merge_preflight() { :; }\n",
+      "eval \"cached_$(declare -f run_merge_preflight)\"\nrun_merge_preflight() { cached_run_merge_preflight \"$@\" || return; printf 'Edit after preflight\\n' > shared.txt; }\n");
     const result = spawnSync("bash", invocation.args, { ...invocation.options, encoding: "utf8", timeout: 10_000 });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(fs.realpathSync(repo));
@@ -229,27 +246,30 @@ describe("atomic auth merge", () => {
     expect(reason).toContain("Checkout blocked: unstaged [ M]: shared.txt");
     expect(git(["rev-parse", "main"])).toBe(base);
     expect(fs.readFileSync(path.join(repo, ".git", "index"))).toEqual(index);
-    expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("Edit during confirmation\n");
+    expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("Edit after preflight\n");
     expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
   });
 
-  it("preserves protected ref, index, files, and merge state when signing fails or is cancelled", () => {
+  it("publishes only the approval-signed reviewed merge, refusing an unsigned or different commit", () => {
     const base = git(["rev-parse", "main"]);
     const head = git(["rev-parse", "feature/atomic"]);
     const cached = candidate(base, head);
     const index = git(["write-tree"]);
-    const contents = fs.readFileSync(path.join(repo, "shared.txt"), "utf8");
-    const signer = path.join(repo, "cancelled-signer");
-    fs.writeFileSync(signer, "#!/bin/sh\necho 'signing cancelled' >&2\nexit 130\n", { mode: 0o755 });
-    git(["config", "gpg.ssh.program", signer]);
-    const result = runAtomic(base, head, cached);
-    expect(result.status).not.toBe(0);
-    expect(git(["rev-parse", "main"])).toBe(base);
-    expect(git(["write-tree"])).toBe(index);
-    expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe(contents);
-    expect(fs.existsSync(path.join(repo, "feature.txt"))).toBe(false);
-    expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(false);
-    expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
+    const cases: Array<[string, string]> = [
+      ["", "No approval-signed merge commit was supplied"],
+      [signedMerge(base, head, cached.tree, null), "not trusted for the approving user"],
+      [signedMerge(head, base, cached.tree), "is not the reviewed merge"],
+      [signedMerge(base, head, git(["rev-parse", `${base}^{tree}`])), "is not the reviewed merge"],
+    ];
+    for (const [sha, refusal] of cases) {
+      const result = runAtomic(base, head, cached, { MANDIBLE_AUTH_SIGNED_MERGE_SHA: sha });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(refusal);
+      expect(git(["rev-parse", "main"])).toBe(base);
+      expect(git(["write-tree"])).toBe(index);
+      expect(fs.existsSync(path.join(repo, "feature.txt"))).toBe(false);
+      expect(result.stderr).not.toContain("MANDIBLE_MERGE_APPLIED");
+    }
   });
 
   it("durably checkpoints PREPARED and APPLIED through the real output endpoint", async () => {
@@ -266,7 +286,7 @@ describe("atomic auth merge", () => {
     const router = new Router();
     // Issue e9cd064 — routes bound to the queue's database never reach the singleton.
     resetDb({ reason: "auth routes must use the queue's database" });
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
     const server = createServer({
       db,
       sse: new SseManager(),
@@ -526,7 +546,6 @@ describe("atomic auth merge", () => {
     const snippet = [
       "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
       `source ${JSON.stringify(AUTH_MERGE)}`,
-      "prompt_confirm() { printf 'y'; }",
       "run_merge_preflight() { :; }",
         "collect_declared_issues() { :; }",
       `main ${mainArgs}`,
@@ -595,7 +614,7 @@ describe("SHA-256 atomic auth merge", () => {
     const result = runAtomic(base, head, candidate(base, head));
 
     expect(base).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.status).toBe(0);
+    expect(result.status, String(result.stderr)).toBe(0);
     expect(git(["rev-parse", "main"])).toMatch(/^[0-9a-f]{64}$/);
   });
 });

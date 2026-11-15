@@ -8,7 +8,6 @@ import { inlineLedgerReader } from "../src/ledger-reads/index.js";
  */
 import { afterEach, describe, expect, it } from "vitest";
 
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { setDb } from "../src/db.js";
 import { getOperator } from "../src/users/store.js";
@@ -43,7 +42,7 @@ describe("failed auth execution", () => {
     setDb(db);
     cleanups.push(() => queue.dispose());
     const router = authenticatedTestRouter(getOperator(db)!);
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
     const read = async (url: string) => {
       const response = await router.invoke({ method: "GET", url });
       expect(response.status).toBe(200);

@@ -13,6 +13,7 @@ import { addCredential } from "../src/users/store.js";
 import { commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject, createMigratedDb, createNoopHookManager, git, registerWorkRepo } from "./helpers/auth-queue-fixtures.js";
 import { publishTestCandidate } from "./helpers/auth-delivery-fixtures.js";
 import type { AuthRequestInput } from "../src/types.js";
+import { approveAsFixtureOperator } from "./helpers/operator-signing-fixtures.js";
 
 let db: ReturnType<typeof createMigratedDb>, repo: string, queue: AuthQueue, operatorId: string, credentialId: string;
 let publication: string, issue: string, project: string;
@@ -26,7 +27,7 @@ beforeEach(() => {
   process.env.MANDIBLE_ARTIFACT_DIR = path.join(repo, ".git", "artifacts");
   fs.writeFileSync(path.join(repo, "doc.md"), original);
   git(repo, ["add", "doc.md"]); git(repo, ["commit", "-m", "Document base"]);
-  operatorId = configureSigningCredential(db, repo, "ssh_key").operatorId;
+  operatorId = configureSigningCredential(db, repo).operatorId;
   fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n.mandible-test-signing-key*\n");
   registerWorkRepo(db, repo);
   const registered = createLedgerProject(db, repo); project = registered.project.id;
@@ -56,8 +57,8 @@ async function advance(changes: Record<string,string>, modeChange = false) {
     git(repo,["add","doc.md"]); git(repo,["commit","--amend","--no-edit"]); git(repo,["checkout","main"]);
   }
   const sibling = (await queue.submit({ ...AUTH_MERGE_REVIEW, type:"merge",command:"mandible auth merge feature/sibling --into main",title:"Sibling",cwd:repo,repo:path.basename(repo),head_branch:"feature/sibling",base_branch:"main",merge_head_sha:git(repo,["rev-parse","feature/sibling"])}));
-  await queue.approveWithOperatorProof(sibling.id,operatorId);
-  const result = publishTestCandidate(repo,(await queue.getRequest(sibling.id))!);
+  await approveAsFixtureOperator(queue, sibling.id,operatorId);
+  const result = publishTestCandidate(db, repo,(await queue.getRequest(sibling.id))!);
   expect((await queue.setResult(sibling.id,0,result.output)).exit_code).toBe(0);
   (await queue.dispose()); queue = makeQueue();
   return result.mergeSha;
@@ -90,7 +91,7 @@ it.each(["bytes", "mode"])("rejects same-path clean signed target %s advancement
   const before = (await queue.getRequest(request.id))!;
   const repin = queue as unknown as { repinMergeCandidate(request:unknown,base:string,fingerprint:null):Promise<unknown> };
   await expect(repin.repinMergeCandidate(before,base,null)).rejects.toThrow("Destination changed");
-  await expect(queue.approveWithOperatorProof(request.id,operatorId)).rejects.toThrow("Destination changed");
+  await expect(approveAsFixtureOperator(queue, request.id,operatorId)).rejects.toThrow("Destination changed");
   expect((await queue.getRequest(request.id))).toMatchObject({status:"pending",merge_candidate_pin_sha:before.merge_candidate_pin_sha});
   expect(git(repo,["rev-parse","main"])).toBe(base);
 });
@@ -98,7 +99,7 @@ it.each(["bytes", "mode"])("rejects same-path clean signed target %s advancement
 it("allows unrelated signed base advancement and freezes the refreshed exact publication candidate", async () => {
   const request = (await submit());
   const base = await advance({"unrelated.txt":"independent\n"});
-  const approved = await queue.approveWithOperatorProof(request.id,operatorId);
+  const approved = await approveAsFixtureOperator(queue, request.id,operatorId);
   expect(approved).toMatchObject({status:"executing",merge_preflight_base_sha:base,space_publication_id:publication});
   expect(git(repo,["show",`${approved.merge_candidate_tree_sha}:doc.md`])).toBe(source.trim());
   expect(git(repo,["show",`${approved.merge_candidate_tree_sha}:unrelated.txt`])).toBe("independent");

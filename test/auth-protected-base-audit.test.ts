@@ -15,7 +15,6 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import type { Db } from "../src/db.js";
-import { addCredential, getOperator } from "../src/users/store.js";
 import {
   advanceMainViaAuthorizedMerge,
   approveFixtureRequest,
@@ -25,7 +24,6 @@ import {
   createMigratedDb,
   createNoopHookManager,
   git,
-  registerTestDelegatedLease,
   registerWorkRepo,
   writeFile,
 } from "./helpers/auth-queue-fixtures.js";
@@ -52,7 +50,7 @@ function fixture() {
     hookManager: createNoopHookManager(),
   });
   registerWorkRepo(db, repo);
-  configureSigningCredential(db, repo, "ssh_key");
+  configureSigningCredential(db, repo);
   const strangerKey = path.join(git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "stranger-key");
   execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", strangerKey]);
   const strangerFingerprint = execFileSync("ssh-keygen", ["-lf", `${strangerKey}.pub`, "-E", "sha256"], { encoding: "utf8" })
@@ -143,27 +141,6 @@ describe("protected-base history audit", () => {
     }
   });
 
-  it("refuses a delegated approval onto a base with unexpected history even though the request showed it", async () => {
-    const f = fixture();
-    try {
-      commitOnBranch(f.repo, "feature/landed", { "landed.txt": "landed\n" });
-      commitOnBranch(f.repo, "feature/topic", { "topic.txt": "topic\n" });
-      advanceMainViaAuthorizedMerge(f.db, f.repo, "feature/landed", "merge-landed");
-      const unsigned = directCommit(f.repo, "unsigned.txt", "Unsigned direct commit", "none");
-      const request = await f.submit("feature/topic");
-      expect(f.queue.baseAuditForRequest(request.id)?.status).toBe("unexpected");
-      const operatorId = registerTestDelegatedLease(f.db, "lease-unattended");
-
-      await expect(f.queue.approve(request.id, {
-        source: "auto_lease", leaseId: "lease-unattended", approverUserId: operatorId, env: {},
-      })).rejects.toThrow(new RegExp(`without a human reviewer[\\s\\S]*${unsigned.slice(0, 10)} Unsigned direct commit \\(unsigned\\)`));
-      expect((await f.queue.getRequest(request.id))?.status).toBe("pending");
-      expect(f.calls).toHaveLength(0);
-    } finally {
-      await f.cleanup();
-    }
-  });
-
   it("reports a recorded Mandible merge that the protected branch no longer contains", async () => {
     const f = fixture();
     try {
@@ -179,28 +156,6 @@ describe("protected-base history audit", () => {
       expect(f.queue.baseAuditForRequest(request.id)).toMatchObject({
         status: "unexpected", baseline_sha: first, unexpected: [], missing_merges: [second],
       });
-    } finally {
-      await f.cleanup();
-    }
-  });
-
-  // The Git hook accepts the delegated key, but the audit has Mandible's merge
-  // record: a delegated signature on an unrecorded commit means the key was
-  // used outside a Mandible merge.
-  it("lists an unrecorded commit signed with the operator's delegated key", async () => {
-    const f = fixture();
-    try {
-      commitOnBranch(f.repo, "feature/landed", { "landed.txt": "landed\n" });
-      commitOnBranch(f.repo, "feature/topic", { "topic.txt": "topic\n" });
-      advanceMainViaAuthorizedMerge(f.db, f.repo, "feature/landed", "merge-landed");
-      const operator = getOperator(f.db)!;
-      // Register the stranger key on the operator, but as a delegated signing key.
-      const material = fs.readFileSync(`${f.strangerKey}.pub`, "utf8").trim();
-      addCredential(f.db, operator.id, { type: "delegated_ssh_key", fingerprint: f.strangerFingerprint, public_material: material });
-      const delegated = directCommit(f.repo, "agent.txt", "Agent-signed direct commit", f.strangerKey);
-
-      const request = await f.submit("feature/topic");
-      expect(f.queue.baseAuditForRequest(request.id)?.unexpected.map((commit) => commit.sha)).toEqual([delegated]);
     } finally {
       await f.cleanup();
     }

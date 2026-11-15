@@ -12,6 +12,9 @@ import type { RouteRegistrar } from "../server.js";
 import type { InstanceRole } from "../types.js";
 import { readBody, sendJson } from "./http.js";
 import { notifyProtectionInputsChanged } from "../protection-inputs.js";
+import type { OperatorSigningAuthority } from "../operator-signing/authority.js";
+import { sendSigningRefusal } from "../operator-signing/http.js";
+import { parseProtectedBranchSetting, readProtectedBranchSetting } from "../protected-branches.js";
 import { CHILD_RETENTION_SETTINGS_SCHEMA, CHILD_RETENTION_SETTINGS_KEY } from "../conversations/retention-contract.js";
 import { readChildRetentionSettings, writeChildRetentionSettings } from "../conversations/retention-state.js";
 
@@ -232,7 +235,7 @@ function clientAuthSettingForbidden(): { error: string; code: string; hint: stri
   };
 }
 
-export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: InstanceRole = "main"): void {
+export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: InstanceRole = "main", operatorSigning: OperatorSigningAuthority | null = null): void {
   const db = getDb();
 
   server.get("/api/settings/integrations", (_req, res) => {
@@ -378,7 +381,7 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
   }, { operation: { id: "get:/api/settings/:key", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   // PUT /api/settings/:key — update a setting
-  server.put("/api/settings/:key", globalCapabilityRoute("change_settings", (req, res) => {
+  server.put("/api/settings/:key", globalCapabilityRoute("change_settings", async (req, res) => {
     const key = req.params.key;
     if (!key) {
       sendJson(res, 400, { error: "Missing key" });
@@ -402,12 +405,22 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       sendJson(res, 200, { ok: true, key, value: JSON.stringify(parsed.data) });
       return;
     }
-    const now = Date.now();
-    db.prepare(
+    const value = body.value;
+    const write = () => db.prepare(
       `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    ).run(key, body.value, now);
-    if (key === "protected_branches") notifyProtectionInputsChanged("setting:protected_branches");
+    ).run(key, value, Date.now());
+    if (key === "protected_branches") {
+      // The protected-branch list is what the gate covers: changing it is a signed action.
+      if (!operatorSigning) { sendJson(res, 409, { error: "This instance has no approval signer.", code: "operator_signature_signing_failed" }); return; }
+      const signed = await operatorSigning.authorizeTrustChange("protected_branches",
+        { from: readProtectedBranchSetting(db), to: parseProtectedBranchSetting(value) },
+        "change which branches Mandible protects", req.signal, write);
+      if (!signed.ok) { sendSigningRefusal(res, signed.error); return; }
+      notifyProtectionInputsChanged("setting:protected_branches");
+    } else {
+      write();
+    }
 
     // Dual-write tier 2 settings to dotfiles.conf
     const TIER2_MAP: Record<string, string> = {
@@ -425,5 +438,5 @@ export function registerSettingsRoutes(server: RouteRegistrar, instanceRole: Ins
       value: body.value,
       deprecated: DEPRECATED_REAPER_SETTINGS.has(key) || undefined,
     });
-  }), { operation: { id: "put:/api/settings/:key", effects: ({ params }) => ["protected_branches", "auth_auto_approve_duration_minutes"].includes(params.key) ? ["ledger:write", "auth:credentials"] : ["ledger:write"], requestSchema: null, reportingCategory: "settings" }, fileRpc: "deny" });
+  }), { operation: { id: "put:/api/settings/:key", effects: ({ params }) => params.key === "protected_branches" ? ["ledger:write", "auth:credentials"] : ["ledger:write"], requestSchema: null, reportingCategory: "settings" }, fileRpc: "deny" });
 }

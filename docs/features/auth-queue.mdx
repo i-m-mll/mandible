@@ -163,7 +163,7 @@ The dashboard and `mandible auth list` display the auth queue with all active re
 
 ### Available Actions
 
-**Approve** (`POST /api/auth/request/:id/approve`) — Verifies a fresh action-bound operator signature before starting execution. The request remains pending on failed, cancelled, expired, or changed proof. **Cancel signing** stops the pending challenge without rejecting the request. Output streams after execution starts.
+**Approve** (`POST /api/auth/request/:id/approve`) — For a protected merge, the approval key signs the exact merge commit with one Touch ID match; that signature is the published commit's signature. The request remains pending on a failed, cancelled, or expired signature, or when it changed while the sheet was up. **Cancel signing** stops the pending signature without rejecting the request. Any other request is a courtesy approval: the button reads **Approve as courtesy**, it takes one click, and it is recorded as an interface action, never as operator-verified. Output streams after execution starts. See [Approvals and the Touch ID gate](../approvals.md) for what Touch ID does and does not prove.
 
 **Reject** (`POST /api/auth/request/:id/reject`) — Declines the request with an optional reason. The submitting session is notified.
 

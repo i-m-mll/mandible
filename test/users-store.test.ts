@@ -57,7 +57,6 @@ describe("operator setup idempotency", () => {
 
 // Valid public-shape samples for the credential allowlist.
 const SSH_FINGERPRINT = `SHA256:${"A".repeat(43)}`;
-const AGE_RECIPIENT = `age1${"q".repeat(58)}`;
 
 describe("credential immutability and fingerprint uniqueness", () => {
   function operator() {
@@ -75,14 +74,14 @@ describe("credential immutability and fingerprint uniqueness", () => {
   it("permits revoke-then-re-add of the same fingerprint", () => {
     const op = operator();
     const cred = addCredential(db, op.id, {
-      type: "yubikey_recipient",
-      fingerprint: AGE_RECIPIENT,
+      type: "ssh_key",
+      fingerprint: SSH_FINGERPRINT,
     });
     revokeCredential(db, cred.id);
 
     const readded = addCredential(db, op.id, {
-      type: "yubikey_recipient",
-      fingerprint: AGE_RECIPIENT,
+      type: "ssh_key",
+      fingerprint: SSH_FINGERPRINT,
     });
     expect(readded.status).toBe("active");
     expect(readded.id).not.toBe(cred.id);

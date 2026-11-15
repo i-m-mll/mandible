@@ -22,8 +22,8 @@ import { addCredential, createUser, revokeCredential, setupOperator } from "../s
 
 // Issue 5886596 — the Git reference-transaction guard and the projection the
 // daemon writes for it. The guard runs against real repositories here, with
-// throwaway keys standing in for the operator, Mandible's delegated signer,
-// and an agent.
+// throwaway keys standing in for the operator's two signing keys and an
+// agent.
 const GUARD_HOOKS = fileURLToPath(new URL("../hooks/git", import.meta.url));
 
 interface Key {
@@ -40,10 +40,10 @@ let origin = "";
 let work = "";
 let worktree = "";
 let operatorKey: Key;
-let delegatedKey: Key;
+let secondKey: Key;
 let agentKey: Key;
 let operatorCredentialIds: string[] = [];
-let delegatedCredentialId = "";
+let secondCredentialId = "";
 let agentCredentialId = "";
 
 function gitEnv(): NodeJS.ProcessEnv {
@@ -100,7 +100,7 @@ beforeEach(() => {
   mandibleHome = path.join(tempDir, "mandible-home");
   guardDir = path.join(mandibleHome, "git-guard");
   operatorKey = makeKey("operator");
-  delegatedKey = makeKey("delegated");
+  secondKey = makeKey("second");
   agentKey = makeKey("agent");
 
   db = migratedFileDb(path.join(tempDir, "mandible.db"));
@@ -110,13 +110,13 @@ beforeEach(() => {
     fingerprint: operatorKey.fingerprint,
     public_material: operatorKey.publicMaterial,
   });
-  const delegated = addCredential(db, operator.id, {
-    type: "delegated_ssh_key",
-    fingerprint: delegatedKey.fingerprint,
-    public_material: delegatedKey.publicMaterial,
+  const second = addCredential(db, operator.id, {
+    type: "ssh_key",
+    fingerprint: secondKey.fingerprint,
+    public_material: secondKey.publicMaterial,
   });
-  operatorCredentialIds = [operatorCredential.id, delegated.id];
-  delegatedCredentialId = delegated.id;
+  operatorCredentialIds = [operatorCredential.id, second.id];
+  secondCredentialId = second.id;
   const agent = createUser(db, { slug: "agent-worker", kind: "agent", display_name: "Agent" });
   agentCredentialId = addCredential(db, agent.id, {
     type: "ssh_key",
@@ -169,10 +169,10 @@ describe("protected-branch guard projection", () => {
   it("rewrites the projection when protection inputs change, without polling", async () => {
     const projector = startProtectedBranchGuardProjection({ db, logger: () => undefined, dir: guardDir });
     try {
-      revokeCredential(db, delegatedCredentialId);
+      revokeCredential(db, secondCredentialId);
       addOrUpdateCheckout(db, "guarded", { root: work, default_branch: "release" });
       await new Promise((resolve) => setImmediate(resolve));
-      expect(fs.readFileSync(path.join(guardDir, ALLOWED_SIGNERS_FILE), "utf8")).not.toContain(delegatedCredentialId);
+      expect(fs.readFileSync(path.join(guardDir, ALLOWED_SIGNERS_FILE), "utf8")).not.toContain(secondCredentialId);
       expect(fs.readFileSync(path.join(guardDir, PROTECTED_REFS_FILE), "utf8")).toContain(
         `${commonDirOf(work)}\trefs/heads/release`,
       );
@@ -191,7 +191,7 @@ describe("protected-branch guard hook", () => {
   it("moves a protected branch only to operator-signed commits or upstream fast-forwards", () => {
     expect(git(worktree, signedBy(agentKey, ["commit", "-q", "--allow-empty", "-m", "agent work"])).status).toBe(0);
     expect(git(work, signedBy(operatorKey, ["merge", "-q", "--no-ff", "-m", "Merge feature", "feature"])).status).toBe(0);
-    expect(git(work, signedBy(delegatedKey, ["commit", "-q", "--allow-empty", "-m", "delegated merge"])).status).toBe(0);
+    expect(git(work, signedBy(secondKey, ["commit", "-q", "--allow-empty", "-m", "second key merge"])).status).toBe(0);
 
     const agentCommit = git(work, signedBy(agentKey, ["commit", "-q", "--allow-empty", "-m", "direct"]));
     expect(agentCommit.status).not.toBe(0);

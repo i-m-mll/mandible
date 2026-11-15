@@ -2,7 +2,7 @@
 
 The auth queue manages protected-branch merges and other authenticated actions. Agents submit requests; the user approves via the dashboard or terminal.
 
-Projects organize the local OS owner’s ledger and do not restrict local agents. Canonical project identity still scopes approval requests and clearances. Active identity, current responsibility, exact signed scope, global effect capabilities, transport credentials, browser-origin checks and preview limits remain enforced.
+Projects organize the local OS owner’s ledger and do not restrict local agents. Canonical project identity still scopes approval requests. Active identity, current responsibility, exact signed scope, global effect capabilities, transport credentials, browser-origin checks and preview limits remain enforced.
 
 ## Types
 
@@ -239,7 +239,7 @@ curl http://localhost:19420/api/auth/history?limit=10
 
 ### POST /api/auth/request/:id/approve
 
-Approve a pending request after fresh configured-operator signing proof. The signed challenge binds the exact request/action snapshot, nonce, and 60-second validity. Failed, cancelled, expired, or drifted proof leaves the request pending. Success transitions to `executing`. Protected merges require local isolated candidate publication; unsupported native preparation hooks fail before effects; native post hooks use the frozen convergence plan.
+Approve a pending request. The body is `{"lifecycle_revision": <n>}`, the request's `lifecycle_revision` as the caller last read it; a missing value returns `400 lifecycle_precondition_required`, and a request that has changed since returns `409 lifecycle_conflict` before any signature is asked for. While another signed action is waiting for Touch ID, the approval is refused with `operator_signature_signing_in_progress`. For a protected merge, Mandible builds the exact merge commit from the retained candidate (tree, base and head parents, reviewed message, operator identity, and the time of the click) and the operator's approval key signs it with one Touch ID match. That signature is the merge commit's signature; the executor publishes the signed commit and never invokes a signer. A cancelled, failed, or expired signature, or a request that changed while the sheet was up, leaves the request pending with nothing written. Any other approval is a courtesy approval: it needs no signature, its evidence records the caller with `verified: false`, and the dashboard labels it "Courtesy approval, not operator-verified". A refused signature returns `409` (`403` for `untrusted_signature`, `502` for `signing_failed`) with `code` set to `operator_signature_<reason>`, where the reason is what the approval helper reported: `cancelled`, `biometry_unavailable`, `biometry_locked_out`, `no_interactive_session`, `key_invalidated`, or `key_missing`; or `approval_key_required` when no key is enrolled. Every auth request carries `approval_tier`, `signed` or `courtesy`. Success transitions to `executing`. A caller with no attributable identity is refused with `403 attribution_required`. Protected merges require local isolated candidate publication; unsupported native preparation hooks fail before effects; native post hooks use the frozen convergence plan.
 
 **Response:** `202 Accepted`
 
@@ -249,34 +249,7 @@ Approve a pending request after fresh configured-operator signing proof. The sig
 
 ### POST /api/auth/request/:id/cancel-proof
 
-Cancel the configured operator's in-flight signing challenge. Requires `approve_auth`; unavailable through file RPC. Returns `200` with `{ "cancelled": true }`. It does not reject or withdraw the pending request, and cannot undo an already verified approval.
-
-### Scoped protected-merge clearances
-
-`GET /api/auth/clearances`, `GET /api/auth/clearances/:id`,
-`POST /api/auth/clearances`, and `POST /api/auth/clearances/:id/revoke` are
-operator-only and require operator proof. A signed clearance grants a bounded
-scope to an agent user. `POST /api/auth/request/:id/clearance/execute` uses
-the current responsible actor and an applicable clearance for that actor, not a
-prior requester's grant. Execution is merge-only, daemon-only, runtime-bound,
-and requires effect authority, exact candidate acceptance, and
-existing process and signer fences. Responsibility is rechecked before one use
-is atomically consumed. Old credential-bound scopes are retired and must be
-reissued, rather than widened.
-
-```json
-{
-  "request_id": "optional-auth-request-id",
-  "grantee": "agent-user-or-slug",
-  "project": "canonical-project-key",
-  "base": "main",
-  "action": "merge",
-  "issue": "exact-issue-ref",
-  "head": "feature/exact-head",
-  "duration_minutes": 60,
-  "max_uses": 1
-}
-```
+Cancel the configured operator's in-flight merge-commit signature. Requires `approve_auth`; unavailable through file RPC. Returns `200` with `{ "cancelled": true }`. It does not reject or withdraw the pending request, and cannot undo an already verified approval.
 
 ### POST /api/auth/request/:id/reject
 

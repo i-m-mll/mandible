@@ -16,7 +16,7 @@ it('associates evidenced histories through sidebar resolution without granting c
     const checkout=addOrUpdateCheckout(db,project.id,{root:'/new/moved'}).checkout;
     const insert=db.prepare("INSERT INTO conversations(id,source,source_path,source_hash,source_mtime,title,started_at,session_id,cwd,block_count) VALUES (?,'codex',?,'hash',1,'conversation','2026-10-01',?,?,1)");
     for(const [id,cwd] of [['old','/old/moved/worktrees/topic'],['earlier','/earlier/moved'],['neighbor','/old/moved-other'],['current','/new/moved']]) insert.run(id,`/native/${id}`,id,cwd);
-    const router=new Router();registerProjectRoutes(router);registerConversationRoutes(router,inlineLedgerReader());
+    const router=new Router();registerProjectRoutes(router, null);registerConversationRoutes(router,inlineLedgerReader());
     const url=`/api/projects/${project.id}/historical-roots`;
     const body={root:'/old/moved/',evidence:'Verified project relocation receipt'};
     const dry=await router.invoke({method:'POST',url,body});

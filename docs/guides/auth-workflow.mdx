@@ -24,7 +24,7 @@ This guide walks through the complete lifecycle of an authenticated operation, f
 
 The agent has been working in a feature branch worktree — say `feature/add-dark-mode`. It has made commits using the agent signing key, with the work unit linked to its tracking issue in the ledger. The work is done, tests pass, and the agent is ready to merge into the protected branch.
 
-At this point, the agent cannot merge directly. The protected branch requires user authentication (a YubiKey signature). If the agent needs to check whether a request already exists and does not know the request ID, it first runs `mandible auth list --repo <repo> --head <branch> --base <branch>`. If other requests are already queued for the repo, it can run `mandible auth check --branch <branch> --repo <repo>` to confirm pairwise independence before submitting. Then it submits an auth request.
+At this point, the agent cannot merge directly. The protected branch moves only to a commit signed by the operator's approval key, which needs a Touch ID match. If the agent needs to check whether a request already exists and does not know the request ID, it first runs `mandible auth list --repo <repo> --head <branch> --base <branch>`. If other requests are already queued for the repo, it can run `mandible auth check --branch <branch> --repo <repo>` to confirm pairwise independence before submitting. Then it submits an auth request.
 
 ## 2. Submitting the Auth Request
 
@@ -159,7 +159,9 @@ If something looks wrong, the user can:
 
 The user clicks Approve. This triggers `POST /api/auth/request/:id/approve`.
 
-Mandible signs a fresh challenge with the configured operator key and verifies it against active registered operator credentials. The challenge includes the exact request and staged-action snapshot, a nonce, and a 60-second expiry. The request stays `pending` until verification succeeds. Cancel signing, a missing key, an expired challenge, or changed reviewed bytes leave it unexecuted. The dashboard offers **Cancel signing** while proof is pending.
+Mandible builds the exact merge commit from the merge tree retained at submission and asks the approval key to sign it. The Touch ID sheet appears; one touch produces the commit's signature, which Mandible verifies against the enrolled key before writing the signed commit object. No branch refers to it yet. If the protected base moved since submission, Mandible first recomputes the candidate (the dashboard shows "Base moved; updating the merge…") and signs the merge on the new base. The request stays `pending` until the signature verifies; cancelling the sheet, a missing key, a 60-second expiry, or changed reviewed bytes leave it unexecuted with nothing written. While the sheet is up the dashboard shows the waiting state in place and takes no focus, because Touch ID stops matching while the sheet is not frontmost; click the sheet if it is behind another window. **Cancel signing** stops the pending signature.
+
+The button says **Approve with Touch ID** for a protected merge. Any other request shows **Approve as courtesy**: one click, recorded as an interface action and labelled "Courtesy approval, not operator-verified" afterwards. Cancel any Touch ID prompt that did not follow your own click; the enclave proves a finger touched, not what you meant to approve. See [Approvals and the Touch ID gate](../approvals.md) for what the gate does and does not prove.
 
 After verification, the request transitions to `executing`. Ordinary local browsing requires no proof or login.
 
@@ -167,13 +169,9 @@ After verification, the request transitions to `executing`. Ordinary local brows
 
 Mandible spawns the merge command as a child process. The execution environment is carefully prepared:
 
-### Environment Sanitization
+### Signed Commit
 
-The daemon strips agent signing overrides from the environment before running the merge command. This ensures the merge uses your signing key (YubiKey) rather than the agent's software key.
-
-### YubiKey Authentication
-
-A hardware-backed operator key requires its physical signing interaction. Approval evidence records a verified credential signature; a click is never recorded as hardware presence.
+The merge command never signs and reads no git signing configuration. It receives the commit the approval key already signed, checks its tree and parents against the reviewed merge, and verifies its signature against the approving key. Approval evidence records a verified credential signature; a click is never recorded as one.
 
 Every protected merge creates and verifies a signed commit from the exact reviewed tree and parents before changing the protected ref, index, files, or merge state. Publication advances the ref with an expected-old-value check, then synchronizes the checkout without overwriting untracked collisions. Native preparation hooks are refused before signing when isolated candidate preparation cannot preserve their semantics. Native post-commit and post-merge hooks join the durable convergence plan with their executable digest and original arguments. Changed hook bytes or a later protected checkout fail visibly instead of replaying an old native hook on new files. Direct protected-checkout signing and interrupted `git merge --continue` are unsupported.
 
@@ -194,7 +192,7 @@ Merge made by the 'ort' strategy.
 
 ### Timeout
 
-If the merge doesn't complete within 10 minutes (e.g., the YubiKey isn't connected, git hangs on a network operation), the process is killed with SIGTERM, followed by SIGKILL after 5 seconds. The request is marked as failed.
+If the merge doesn't complete within 10 minutes (e.g., git hangs on a network operation), the process is killed with SIGTERM, followed by SIGKILL after 5 seconds. The request is marked as failed.
 
 ## 7. Post-Merge Hooks
 
@@ -257,9 +255,9 @@ If the merge has conflicts, the command exits with a non-zero code. The request 
 - Have the agent resolve conflicts on the feature branch.
 - Retry the request after resolution.
 
-### YubiKey Not Present
+### Approval Key Unavailable
 
-Operator challenge signing has a 60-second limit and can be cancelled. Missing or unavailable credentials leave the request pending. Signed candidate failure leaves the protected checkout unchanged. A request with retained prepared publication state requires receipt recovery or operator inspection; retry cannot erase that state and repeat publication.
+The approval signature has a 60-second limit and can be cancelled. The dialog shows what the approval helper reported: cancelled, Touch ID unavailable (for example with the lid closed), Touch ID locked, no login session, or a key that needs re-enrollment in Settings. Each leaves the request pending with nothing written. Signed candidate failure leaves the protected checkout unchanged. A request with retained prepared publication state requires receipt recovery or operator inspection; retry cannot erase that state and repeat publication.
 
 ### Daemon Crash During Execution
 

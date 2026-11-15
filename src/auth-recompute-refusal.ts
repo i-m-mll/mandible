@@ -21,11 +21,6 @@ export interface RecomputeRefusal {
   detail?: Record<string, unknown>;
 }
 
-export interface RecomputeRefusalContext {
-  /** Registry ref for the operator, used in the credential-registration hint. */
-  operatorRef?: string | null;
-}
-
 export const STRICT_RECOMPUTE_MESSAGE =
   "Reviewed merge inputs or retained candidate changed; requeue and reapprove this request.";
 
@@ -41,14 +36,13 @@ const UNREGISTERED_KEY_REASONS = new Set([
 
 export function describeRecomputeRefusal(
   refusal: RecomputeRefusal | null | undefined,
-  context: RecomputeRefusalContext = {},
 ): string {
   if (!refusal) return STRICT_RECOMPUTE_MESSAGE;
-  const explanation = explain(refusal, context);
+  const explanation = explain(refusal);
   return `${STRICT_RECOMPUTE_MESSAGE} Refusal: ${refusal.reason}. ${explanation}`;
 }
 
-function explain(refusal: RecomputeRefusal, context: RecomputeRefusalContext): string {
+function explain(refusal: RecomputeRefusal): string {
   const detail = refusal.detail ?? {};
   switch (refusal.reason) {
     case "strict_pin_requested":
@@ -89,7 +83,7 @@ function explain(refusal: RecomputeRefusal, context: RecomputeRefusalContext): s
         `or preflight record no longer matches the reviewed inputs. ${REQUEUE}`
       );
     case "base_transition_unaccounted":
-      return explainBaseTransition(detail, context);
+      return explainBaseTransition(detail);
     case "recomputed_preflight_unavailable":
       return (
         `The recomputed merge preflight did not complete (status: ${text(detail.status) ?? "unknown"}` +
@@ -111,10 +105,7 @@ function explain(refusal: RecomputeRefusal, context: RecomputeRefusalContext): s
   }
 }
 
-function explainBaseTransition(
-  detail: Record<string, unknown>,
-  context: RecomputeRefusalContext,
-): string {
+function explainBaseTransition(detail: Record<string, unknown>): string {
   const reason = text(detail.transition_reason) ?? "unknown";
   const commit = shortSha(detail.commit);
   const range =
@@ -128,8 +119,14 @@ function explainBaseTransition(
       if (UNREGISTERED_KEY_REASONS.has(signatureReason)) {
         return (
           `${range}: merge commit ${commit} on the base is signed by ${key}, which is not an active ` +
-          `registered signing credential (${signatureReason}). Register the protected-merge signing key, ` +
-          `then approve again: \`mandible user credential add ${operatorRef(context)} --from-git-signingkey\`.`
+          `registered signing credential (${signatureReason}). If it is your key, add its public key as an ` +
+          `external signer in Settings, then approve again.`
+        );
+      }
+      if (signatureReason === "not_the_signed_merge" || signatureReason === "signer_is_not_approving_credential") {
+        return (
+          `${range}: merge commit ${commit} is not the merge commit its recorded approval signed with the approval key ` +
+          `(${signatureReason}). Verify how that commit reached the branch before re-approving.`
         );
       }
       if (signatureReason === "signer_is_not_approving_user") {
@@ -140,8 +137,8 @@ function explainBaseTransition(
       }
       return (
         `${range}: the signature on merge commit ${commit} (${key}) did not verify against the approving ` +
-        `user's active credentials (${signatureReason}). If this is your protected-merge signing key, ` +
-        `register it: \`mandible user credential add ${operatorRef(context)} --from-git-signingkey\`.`
+        `user's active credentials (${signatureReason}). If it is your key, add its public key as an ` +
+        "external signer in Settings."
       );
     }
     case "commit_not_a_recorded_queue_merge":
@@ -198,11 +195,6 @@ function explainBaseTransition(
     default:
       return `${range} (${reason}). ${REQUEUE}`;
   }
-}
-
-function operatorRef(context: RecomputeRefusalContext): string {
-  const ref = context.operatorRef?.trim();
-  return ref && ref.length > 0 ? ref : "operator";
 }
 
 function text(value: unknown): string | null {

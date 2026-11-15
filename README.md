@@ -17,7 +17,7 @@ Mandible is an operations manager for AI agents. It consists of:
 
 ## Feature highlights
 
-- **Approval-gated merges**: agents submit merge requests with a change message; you approve with your hardware signing key, the merge commit is signed with that key, and issue closures and post-merge hooks follow.
+- **Approval-gated merges**: agents submit merge requests with a change message; you approve with one Touch ID match, which signs the merge commit with your Secure Enclave approval key, and issue closures and post-merge hooks follow.
 - **Structured issues**: kinds, priorities, typed relationships, checkpoints outside the comment stream, working notes, full revision history, and keyword search.
 - **Umbrella issues** for coordinating lanes of agent work, with a delegation manifest that reports what changed since the coordinator last looked.
 - **Work units** join an issue, a branch, and the agent on it; a stopped agent's work can be taken over, a live agent's never.
@@ -89,7 +89,7 @@ A merge request binds to one committed, issue-linked work unit owned by the subm
 
 **Change message.** Every merge request carries one canonical change message: the agent writes the outcome, a `Why:` paragraph, and optional `Caveats:` for anything to be done by hand after the merge; the CLI adds the subject prefix and the `Verification:` section. The daemon stores the exact bytes and their digest, freezes them after approval, and commits exactly those bytes.
 
-**Approval and execution.** Approving verifies a fresh signature from an active operator credential over the exact reviewed request; a hardware-backed key needs its physical touch. The merge then builds the signed commit from the reviewed tree and parents before touching the protected ref, with the agent's signing overrides stripped from the environment. The protected base is audited back to the newest recorded Mandible merge, and commits that are neither Mandible merges nor operator-signed are listed on the request. Merged branches go to reversible trash custody (`mandible trash`), which keeps a worktree's unique bytes, including ignored files.
+**Approval and execution.** Approving a protected merge takes one Touch ID match: the approval key signs the exact merge commit, built from the reviewed tree and parents, and Mandible verifies the signature before anything is written. The executor then publishes that commit by compare-and-swap and never invokes a signer. The protected base is audited back to the newest recorded Mandible merge, and commits that are neither Mandible merges nor operator-signed are listed on the request. Merged branches go to reversible trash custody (`mandible trash`), which keeps a worktree's unique bytes, including ignored files.
 
 Pending requests can be withdrawn by their requester or atomically superseded by a replacement that carries or disposes of every staged action. A later merge that makes a queued request conflict moves it to `needs_rebase`. Results reach the submitting session through SSE and a session notification.
 
@@ -97,9 +97,9 @@ Pending requests can be withdrawn by their requester or atomically superseded by
 
 Operator-registered hooks run after a successful operation, matched by repository pattern and request type, in a scrubbed allowlist environment. Each execution is recorded before it starts with the exact command bytes, retried up to three times, and never reruns the merge. A request therefore reports convergence as `complete`, `pending`, or `failed`; a failed required hook withholds the deferred issue closures until it succeeds. Registering a hook needs the `change_settings` capability. See [Auth queue](docs/features/auth-queue.mdx) and [Approvals end to end](docs/guides/auth-workflow.mdx).
 
-#### Clearances and the branch guard
+#### The branch guard
 
-A clearance is an operator-issued, bounded grant that lets one agent credential execute one scoped protected merge. The Git `reference-transaction` hook in `hooks/git/` refuses any update to a protected branch that is not an approved Mandible merge or an operator-signed commit; see [Protected-branch guard](docs/protected-branch-guard.md).
+The Git `reference-transaction` hook in `hooks/git/` refuses any update to a protected branch that is not an approved Mandible merge or an operator-signed commit; see [Protected-branch guard](docs/protected-branch-guard.md).
 
 #### Updating Mandible itself
 
@@ -217,7 +217,7 @@ ordinary public-release updater remain follow-up work.
 
 - macOS; the packaged runtime is currently qualified on macOS 15 arm64.
 - Bun at the exact pinned build that `scripts/bun-runtime.sh` selects and verifies, with the SQLite dependency it provisions; see [Bun foundation](docs/bun-foundation.md).
-- git. A hardware-backed SSH signing key for approvals. Zellij or tmux for pane navigation. Rust and the Tauri CLI for the desktop app.
+- git. A Mac with Touch ID for approvals. Zellij or tmux for pane navigation. Rust and the Tauri CLI for the desktop app.
 
 ### Build from source (development)
 
@@ -233,7 +233,7 @@ bun run build            # daemon and app
 
 ```bash
 bun run start            # daemon on 127.0.0.1:29420; creates ~/.mandible/mandible.db and migrates it
-mandible user setup      # the local operator; registers the global git signing key as a credential
+mandible user setup      # the local operator
 ```
 
 Browsers and the desktop use the HTTPS front door. Initialize it once with `bun run local-front-door -- initialize`, install the pinned Caddy with `bun run local-front-door -- install`, trust the local certificate root with `bun scripts/local-ca-trust.mjs setup`, then run it with `bun run local-front-door -- run` and open `https://app.mandible.localhost:19420`. Opening the app as the logged-in OS user never requires a login, and access never expires. See [Local browser access](docs/guides/local-browser-sessions.mdx).
@@ -243,7 +243,9 @@ installations use the guarded [runtime handoff](docs/runtime-handoff.md) and
 [exact-candidate acceptance](docs/candidate-acceptance.md) contracts. Opening a
 second app does not replace an existing live source installation.
 
-The operator's signing key must be registered as an active `ssh_key` credential, or approvals refuse. `mandible user setup` reads the global `user.signingkey` only; register another key with `mandible user credential add <operator> --from-git-signingkey`.
+Protected merges and changes to the trust set (approval key, external signers, protected branches) are signed actions: the operator's approval key, held in the Secure Enclave and enrolled in Settings, signs each one after a Touch ID match. There is no password approval. Every other operator action is a courtesy action: one click, recorded with the caller's resolved identity, and never shown as operator-verified, because any process running as the operator can perform it. Mandible never reads the git signing configuration.
+
+The gate has limits. The enclave proves that a matching finger touched, not what the operator believed they were approving, and the "Mandible" name on the sheet proves nothing, so cancel any Touch ID prompt that did not follow your own click. A same-user process that bypasses Mandible (replacing its files or moving a branch with plain git) is not stopped locally; the remote push gate and the signature audit remain. The approval key does not survive erasing the Mac or a new Mac, and re-enrolling without a usable key is a recorded bootstrap event. See [Approvals and the Touch ID gate](docs/approvals.md).
 
 ### State on disk
 

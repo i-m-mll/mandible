@@ -154,7 +154,6 @@ const READS: Record<string, RouteEntry> = {
   "GET /api/auth/request/:id/actions": (fx) => [req(`/api/auth/request/${fx.authRequest}/actions`)],
   "GET /api/auth/request/:id/candidate-acceptance": (fx) => [req(`/api/auth/request/${fx.acceptedAuthRequest}/candidate-acceptance`)],
   "GET /api/auth/history": () => [req("/api/auth/history"), req("/api/auth/history?limit=200")],
-  "GET /api/auth/clearances/:id": (fx) => fx.clearance ? [req(`/api/auth/clearances/${fx.clearance}`)] : [],
   "GET /api/work/repos": () => [req("/api/work/repos"), req("/api/work/repos?include_excluded=true")],
   "GET /api/work/repos/:id/branches": (fx) => [req(`/api/work/repos/${enc(fx.workRepo)}/branches`)],
   "GET /api/work/repos/:id/worktrees": (fx) => [req(`/api/work/repos/${enc(fx.workRepo)}/worktrees`)],
@@ -255,7 +254,6 @@ const READS: Record<string, RouteEntry> = {
   "GET /api/conversations/:id/control/settings": (fx) => [req(`/api/conversations/${fx.bigConversation}/control/settings`)],
   "GET /api/conversations/:id/control/options": (fx) => [req(`/api/conversations/${fx.bigConversation}/control/options`)],
 
-  "GET /api/auth/clearances": () => "requires the durable Keychain client credential",
   "GET /api/users/operator/signing-key": () => "requires the durable Keychain client credential",
   "GET /api/work-units/custody-check": () => "requires the durable Keychain client credential",
   "GET /api/client-auth/forward-auth": () => "front-door forward-auth check; needs a browser session cookie",
@@ -646,7 +644,6 @@ export function readFixtures(dbPath: string) {
       GROUP BY r.id ORDER BY count(*) DESC, r.created_at DESC LIMIT 1`));
   const acceptedAuthRequest = lazy((db) => one<{ request_id: string }>(db, "accepted auth request", `
       SELECT auth_request_id AS request_id FROM auth_candidate_acceptances ORDER BY started_at DESC LIMIT 1`));
-  const clearance = lazy((db) => maybe<{ id: string }>(db, "SELECT id FROM auth_clearances ORDER BY issued_at DESC LIMIT 1"));
   const branch = lazy((db) => one<{ branch: string }>(db, "branch", `
       SELECT branch FROM branches WHERE repo_root = ? AND is_worktree = 1 ORDER BY updated_at DESC LIMIT 1`, checkout().root));
   const workUnit = lazy((db) => one<{ id: string; repo_id: string; branch: string }>(db, "work unit", `
@@ -729,7 +726,6 @@ export function readFixtures(dbPath: string) {
     searchWord,
     get authRequest() { return authRequest().id; },
     get acceptedAuthRequest() { return acceptedAuthRequest().request_id; },
-    get clearance() { return clearance()?.id ?? null; },
     get branch() { return branch().branch; },
     get workUnit() { return workUnit().id; },
     get workUnitRepo() { return workUnit().repo_id; },

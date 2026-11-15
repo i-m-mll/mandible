@@ -1,12 +1,12 @@
 # Mandible
 
-Mandible is a local-first control plane for AI coding agents. It runs as a daemon on your workstation, tracking agent sessions across Claude Code, Codex, and Gemini, gating protected-branch merges behind hardware key authentication, and providing a web dashboard for managing it all from one place.
+Mandible is a local-first control plane for AI coding agents. It runs as a daemon on your workstation, tracking agent sessions across Claude Code, Codex, and Gemini, gating protected-branch merges behind a Touch ID signature, and providing a web dashboard for managing it all from one place.
 
 Everything stays on your machine. No cloud services, no external databases, no telemetry. Mandible uses a local SQLite database and communicates with agents through their indexed conversations, lifecycle hooks, a CLI wrapper, and an embedded console with the Claude Agent SDK.
 
 ## What it does
 
-**[Auth queue](/docs/features/auth-queue)** --- Agents submit merge requests for protected branches. You review diffs, specs, and linked issues in the dashboard, then approve with a YubiKey touch. The merge happens with your GPG signature, the result is delivered to the agent's next session.
+**[Auth queue](/docs/features/auth-queue)** --- Agents submit merge requests for protected branches. You review diffs, specs, and linked issues in the dashboard, then approve with one Touch ID match, whose signature is the merge commit's signature. The result is delivered to the agent's next session.
 
 **[Session tracking](/docs/features/sessions)** --- Every running agent session is tracked with PID-level liveness monitoring, terminal multiplexer integration, and automatic dead-session reaping. The dashboard shows what's running, where, and on what branch.
 

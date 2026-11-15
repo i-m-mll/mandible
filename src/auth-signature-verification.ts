@@ -6,6 +6,8 @@ import { join } from "node:path";
 
 import type { Db } from "./db.js";
 import { gitObjectAnswer, rememberedObjectFact } from "./git-object-facts.js";
+import { getAttributionEvidence } from "./users/store.js";
+import type { AttributionEvidence } from "./users/types.js";
 
 export interface SigningCredentialRow {
   credential_id: string;
@@ -84,7 +86,7 @@ export function activeSigningCredentials(db: Db): SigningCredentialRow[] {
      JOIN users AS owner ON owner.id = credential.user_id
      WHERE credential.status = 'active'
        AND owner.status = 'active'
-       AND credential.type IN ('ssh_key', 'delegated_ssh_key')
+       AND credential.type = 'ssh_key'
        AND credential.public_material IS NOT NULL
      ORDER BY credential.created_at ASC, credential.id ASC`,
   ).all() as SigningCredentialRow[];
@@ -108,12 +110,6 @@ export function authorizedMergeSignerLines(
       const line = allowedSignerLine(credential);
       return line ? [line] : [];
     });
-}
-
-export function authorizedOperatorSignerLines(db: Db, userId: string): string[] {
-  return activeSigningCredentials(db)
-    .filter((credential) => credential.user_id === userId && credential.type === "ssh_key")
-    .flatMap((credential) => { const line = allowedSignerLine(credential); return line ? [line] : []; });
 }
 
 function unverified(
@@ -263,38 +259,52 @@ async function commitExists(cwd: string, commitSha: string): Promise<boolean> {
   }
 }
 
-export async function verifyAuthorizedMergeCommitSignature(
-  db: Db,
-  cwd: string | null,
-  commitSha: string | null,
-  approverUserId: string,
-  credentialId?: string | null,
-): Promise<MergeSignatureVerification> {
-  const verification = (await verifyMergeCommitSignature(db, cwd, commitSha));
-  if (!verification.verified) return verification;
-  if (verification.user_id !== approverUserId) {
-    return unverified(commitSha, "signer_is_not_approving_user", verification.fingerprint);
-  }
-  if (credentialId && verification.credential_id !== credentialId) {
-    return unverified(commitSha, "signer_is_not_delegated_credential", verification.fingerprint);
-  }
-  return verification;
+export interface ApprovedMergeRequest {
+  id: string;
+  approved_by_user_id: string | null;
+  execution_evidence_id: string | null;
 }
 
-/** Bind the recorded merge result to the target branch head before trusting its signature. */
-export async function verifySuccessfulMergeCommitSignature(
+/** The approval's own evidence: a publication record names the approval it completed. */
+function approvalEvidence(db: Db, evidenceId: string | null): AttributionEvidence | null {
+  let evidence = evidenceId ? getAttributionEvidence(db, evidenceId) : null;
+  for (let hop = 0; hop < 4 && evidence?.details.publication_verified === true; hop += 1) {
+    const authorization = evidence.details.authorization_evidence_id;
+    evidence = typeof authorization === "string" ? getAttributionEvidence(db, authorization) : null;
+  }
+  return evidence;
+}
+
+/**
+ * Whether `commitSha` is the approved merge of `request`: the exact commit
+ * its approval signed (`signed_commit_sha` on the approval evidence), with a
+ * signature that verifies against the approving credential. Approvals recorded
+ * before the merge commit itself was signed carry no `signed_commit_sha`; for
+ * them any active signing credential of the approving user counts.
+ */
+export async function verifyApprovedMerge(
   db: Db,
   cwd: string | null,
+  request: ApprovedMergeRequest,
   commitSha: string | null,
-  targetHeadSha: string | null,
 ): Promise<MergeSignatureVerification> {
-  if (commitSha && !targetHeadSha) {
-    return unverified(commitSha, "target_head_unavailable");
+  const approver = request.approved_by_user_id;
+  if (!approver) return unverified(commitSha, "missing_approving_user");
+  const approval = approvalEvidence(db, request.execution_evidence_id);
+  const signed = approval?.details.signed_commit_sha;
+  if (signed !== undefined && (approval!.evidence_method !== "credential_signature"
+    || approval!.details.auth_request_id !== request.id || !isValidCommitSha(signed) || signed !== commitSha)) {
+    return unverified(commitSha, "not_the_signed_merge");
   }
-  if (commitSha && targetHeadSha && commitSha !== targetHeadSha) {
-    return unverified(commitSha, "merge_commit_not_target_head");
+  const verification = await verifyMergeCommitSignature(db, cwd, commitSha);
+  if (!verification.verified) return verification;
+  if (verification.user_id !== approver) {
+    return unverified(commitSha, "signer_is_not_approving_user", verification.fingerprint);
   }
-  return (await verifyMergeCommitSignature(db, cwd, commitSha));
+  if (signed !== undefined && verification.credential_id !== approval!.credential_id) {
+    return unverified(commitSha, "signer_is_not_approving_credential", verification.fingerprint);
+  }
+  return verification;
 }
 
 type AtomicMarker = {

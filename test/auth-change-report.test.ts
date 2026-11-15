@@ -13,7 +13,6 @@ import {
 } from "../src/auth-change-report.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
-import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { setDb } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
@@ -355,7 +354,7 @@ describe("auth change reports", () => {
       .run(crypto.randomUUID(), project.project.project_key, issue.id, operator.id, null);
     const queue = new AuthQueue({ db, backgroundMaintenance: false, broadcast: () => {} });
     const router = new Router({ clientAuth: authenticator });
-    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }), undefined, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
     const submit = (body: Record<string, unknown>) => router.invoke({
       method: "POST",
       url: "/api/auth/v2/request",

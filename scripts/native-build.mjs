@@ -75,22 +75,22 @@ export function stageNativeBuild({ worktree, root, candidate }) {
   const payload = path.join(generated, 'app-payload/Contents');
   const binaries = path.join(generated, 'binaries');
   const sqliteLibrary = path.join(generated, 'libsqlite3.dylib');
-  const trustHelper = path.join(generated, 'local-ca-trust-helper');
   const resources = { [path.join(payload, 'Resources') + '/']: './' };
   config.build = { ...config.build, beforeBuildCommand: null, beforeDevCommand: null, beforeBundleCommand: null, frontendDist: bootstrap };
   config.bundle = { ...config.bundle, resources, targets: ['app'],
     externalBin: config.bundle.externalBin.map(file => path.join(binaries, path.basename(file))),
     macOS: { ...config.bundle.macOS, signingIdentity: '-', frameworks: [sqliteLibrary],
-      files: { ...config.bundle.macOS.files, 'Library/LaunchAgents': path.join(payload, 'Library/LaunchAgents') } } };
+      files: { ...config.bundle.macOS.files, 'Library/LaunchAgents': path.join(payload, 'Library/LaunchAgents'),
+        'Helpers/MandibleApproval.app': path.join(payload, 'Helpers/MandibleApproval.app') } } };
   fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
   const bun = command('/bin/sh', [path.join(worktree, 'scripts/bun-runtime.sh')], worktree);
   const temporary = path.join(buildRoot, 'tmp'); fs.mkdirSync(temporary, { recursive: true });
   const env = { ...process.env, PATH: `${path.dirname(bun)}:${process.env.PATH}`,
     CARGO_TARGET_DIR: path.join(buildRoot, 'target'), CARGO_BUILD_BUILD_DIR: path.join(buildRoot, 'intermediates'),
-    TMPDIR: temporary, TMP: temporary, TEMP: temporary, MANDIBLE_DESKTOP_TRUST_CACHE: path.join(buildRoot, 'swift-cache'),
+    TMPDIR: temporary, TMP: temporary, TEMP: temporary, MANDIBLE_DESKTOP_SWIFT_CACHE: path.join(buildRoot, 'swift-cache'),
     CARGO_PROFILE_DEV_DEBUG: '0', MANDIBLE_DESKTOP_BOOTSTRAP_DIR: bootstrap,
     MANDIBLE_DESKTOP_PAYLOAD_CONTENTS: payload, MANDIBLE_DESKTOP_BINARIES_DIR: binaries,
-    MANDIBLE_DESKTOP_SQLITE_LIBRARY: sqliteLibrary, MANDIBLE_DESKTOP_TRUST_HELPER: trustHelper };
+    MANDIBLE_DESKTOP_SQLITE_LIBRARY: sqliteLibrary, MANDIBLE_DESKTOP_HELPERS: generated };
   const toolchain = nativeToolchain(worktree);
   const fingerprint = createHash('sha256').update(JSON.stringify({ candidate, config, toolchain,
     profile: 'dev-debug-0', cargoBuildDir: env.CARGO_BUILD_BUILD_DIR, cargoTargetDir: env.CARGO_TARGET_DIR })).digest('hex');
