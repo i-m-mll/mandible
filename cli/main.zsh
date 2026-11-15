@@ -17,6 +17,7 @@
 #   auth request [branch] [opts]     Submit an approval request
 #   auth withdraw <id> --reason ... --expected-revision N --expected-custody-generation N
 #   auth approve <id> --revision N   Approve a request as the operator (Touch ID for merges)
+#   auth deliver <branch> [opts]     Operator's one-command delivery: request, approve, merge
 #   auth candidate-repair inspect|apply <id> [opts]
 #   auth replay-archives <id>        Replay Codex archive attempts
 #   auth acceptance run|show <id>    Run or show candidate acceptance of a self-update
@@ -119,6 +120,7 @@ case "${1:-}" in
       responsibility) shift; exec "$MANDIBLE_CLI_DIR/auth-responsibility.sh" "$@" ;;
       withdraw) shift; exec "$MANDIBLE_CLI_DIR/auth-withdraw.sh" "$@" ;;
       approve) shift; exec "$MANDIBLE_CLI_DIR/auth-approve.sh" "$@" ;;
+      deliver) shift; exec "$MANDIBLE_CLI_DIR/auth-deliver.sh" "$@" ;;
       candidate-repair) shift; exec "$MANDIBLE_CLI_DIR/auth-candidate-repair.sh" "$@" ;;
       replay-archives) shift; exec "$MANDIBLE_CLI_DIR/auth-replay-archives.sh" "$@" ;;
       acceptance) shift; exec "$MANDIBLE_CLI_DIR/auth-acceptance.sh" "$@" ;;

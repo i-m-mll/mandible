@@ -46,7 +46,9 @@ The approval dialog follows what the approval helper reports:
 
 `mandible auth approve <request> --revision <n>` is the operator's own approval from a terminal. It approves exactly what the button approves, protected merges and courtesy approvals alike. `<n>` is the revision `mandible auth show <request>` prints; the command never approves whatever the request has become since. A protected merge raises the same single Touch ID sheet, then the command waits for the request to settle and prints its result: exit 0 when it completed, 1 otherwise, 2 for a usage error. Interrupting it cancels the sheet and leaves the request pending.
 
-The command refuses agent and managed sessions before it contacts Mandible, and Mandible itself refuses approval from any agent identity, so an agent cannot approve through it. The touch remains the gate: without it nothing is signed.
+`mandible auth deliver <branch> --title <text> --message <text> --verification <text>` is the operator's whole delivery of a branch from its checkout: it uses `--issue`, or the open issue with exactly that title, or files one (kind `feature` unless `--kind` says otherwise); activates the work unit; withdraws a pending request for the same branches; submits a request that closes the issue; and approves it with one touch. It ends merged, or with no pending request left and the issue open for a rerun.
+
+Both commands refuse agent and managed sessions before they contact Mandible, and Mandible itself refuses approval from any agent identity, so an agent cannot approve through them. The touch remains the gate: without it nothing is signed.
 
 ## What the gate proves, and what it does not
 

@@ -59,6 +59,8 @@ mandible auth request --type <type> --command <command> --cwd <path> --repo <ref
   [--timeout N] [--no-watch] [--force|-f]
 mandible auth withdraw <request-id> --reason <text> --expected-revision <n> --expected-custody-generation <n> [--json]
 mandible auth approve <request> --revision <n>    # operator only; refuses agent sessions
+mandible auth deliver <branch> --title <text> (--message T | --message-file F) --verification T
+  [--issue <id>] [--kind <kind>] [--dirty-policy block|allow-untracked|stash|branch-off]    # operator only
 mandible auth merge <branch> [opts]    # executes the merge; invoked by daemon
 
 ## LEDGER MECHANISM CLIENT
