@@ -51,6 +51,24 @@ describe("auth queue", () => {
     }
   });
 
+  it("treats a byte-identical tracked file with stale index stat data as clean without writing the index", async () => {
+    const repo = createAuthCheckRepo();
+    try {
+      commitOnBranch(repo, "feature/stale-stat", { "shared.txt": "changed by the merge\n" });
+      const base = git(repo, ["rev-parse", "main"]);
+      const target = git(repo, ["merge-tree", "--write-tree", "main", "feature/stale-stat"]).split("\n")[0];
+      const trackedFile = path.join(repo, "shared.txt");
+      const future = new Date(Date.now() + 10_000);
+      fs.utimesSync(trackedFile, future, future);
+      const indexPath = git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
+      const index = fs.readFileSync(indexPath);
+      expect(await checkCheckoutReadiness(repo, { baseBranch: "main", base, target })).toEqual({ status: "clean" });
+      expect(fs.readFileSync(indexPath)).toEqual(index);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("preserves renamed NUL-delimited paths and malformed merge markers in linked checkouts", async () => {
     const repo = createAuthCheckRepo();
     const linked = uniqueMissingPath("mandible-readiness-linked");

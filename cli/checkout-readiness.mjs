@@ -59,12 +59,10 @@ async function checkCandidateSync(root, indexPath, candidate, options) {
     const privateIndex = join(privateDirectory, 'index');
     await copyFile(indexPath, privateIndex);
     const privateOptions = { ...options, env: { ...options.env, GIT_INDEX_FILE: privateIndex } };
-    const sync = await observe('git', ['read-tree', '-m', '-u', '-n', candidate.base, candidate.target], privateOptions);
-    if (sync.status === 0) result = { status: 'clean' };
-    else {
-      const diagnostic = await observe('bash', [fileURLToPath(new URL('./checkout-sync-check.sh', import.meta.url)), root, candidate.base, candidate.target], privateOptions);
-      result = { status: 'error', exitCode: 1, message: diagnostic.stdout.trim() || `Checkout ${quote(root)} cannot be synced: ${sync.stderr.trim() || String(sync.error)}` };
-    }
+    const check = await observe('bash', [fileURLToPath(new URL('./checkout-sync-check.sh', import.meta.url)), root, candidate.base, candidate.target], privateOptions);
+    if (check.status === 0) result = { status: 'clean' };
+    else if (check.status === 1) result = { status: 'error', exitCode: 1, message: check.stdout.trim() };
+    else result = { status: 'error', exitCode: 2, message: `Checkout sync check failed for ${quote(root)}: ${check.stderr.trim() || String(check.error)}` };
   } catch (error) {
     result = { status: 'error', exitCode: 2, message: `Could not create a private Git index for checkout ${quote(root)}: ${error.message}` };
   }
