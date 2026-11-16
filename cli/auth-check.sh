@@ -28,13 +28,6 @@ eval "$binding"
 # The daemon resolves a relative path against its own working directory.
 [[ -z "$cwd_override" ]] || cwd_override=$(api_resolve_user_path "$cwd_override")
 
-detect_protected_branch() {
-  if git show-ref --verify --quiet refs/heads/develop 2>/dev/null; then
-    echo "develop"
-  else
-    echo "main"
-  fi
-}
 
 if [[ -z "$branch" ]]; then
   branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)

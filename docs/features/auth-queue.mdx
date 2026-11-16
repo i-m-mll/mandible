@@ -30,7 +30,7 @@ pending → needs_rebase (post-merge revalidation found a new conflict)
 pending → rejected
 pending → withdrawn (current responsible actor)
 pending → superseded (one explicit atomic replacement)
-pending → expired (TTL exceeded, default 24 hours)
+pending → expired (TTL exceeded, default 7 days)
 failed → pending (via retry)
 expired → pending (via retry)
 needs_rebase → pending (via retry after rebasing or integration)
@@ -44,7 +44,7 @@ needs_rebase → pending (via retry after rebasing or integration)
 - **completed** — Execution succeeded (`exit_code` 0). Completed requests are immutable history; a new attempt requires a new request.
 - **failed** — Execution exited non-zero. `failure_reason` says why in one line, for example `signing failed: user presence not confirmed; no ref changed`. Retry returns the request to `pending` for a new approval. Every execution stays in the request's lifecycle revisions, and `execution_attempts` on the request lists them, so a failure remains visible after a successful retry.
 - **rejected** — The user explicitly declined the request.
-- **expired** — The request sat in `pending` for longer than the TTL (24 hours by default) without action. Expiry is checked every 30 seconds.
+- **expired** — The request sat in `pending` for longer than the TTL (7 days by default) without action. Expiry is checked every 30 seconds.
 - **withdrawn** — The current responsible actor withdrew a still-pending request with a reason.
 - **superseded** — An explicit replacement atomically made this request inert, or a successful request proved an exact sibling obsolete.
 

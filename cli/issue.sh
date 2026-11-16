@@ -1035,9 +1035,10 @@ cmd_new() {
   local priority=""
   local -a labels=()
   local project_ref=""
+  local json=0
 
   local binding
-  binding=$(mandible_bind_arguments "issue.new" '{"title":{"option":["t","title"]},"body":{"option":["m","message"]},"kind":{"option":"kind"},"priority":{"option":"priority"},"labels":{"option":"label","array":true},"project_ref":{"option":"project"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "issue.new" '{"title":{"option":["t","title"]},"body":{"option":["m","message"]},"kind":{"option":"kind"},"json":{"option":"json","constant":"1"},"priority":{"option":"priority"},"labels":{"option":"label","array":true},"project_ref":{"option":"project"}}' "$@") || return $?
   eval "$binding"
 
   if [[ -z "$title" || -z "$body" || -z "$kind" ]]; then
@@ -1073,6 +1074,10 @@ cmd_new() {
   response=$(cat "$tmp_response")
   rm -f "$tmp_response"
   [[ "$status" =~ ^2 ]] || die_api_status "Failed to create issue" "$status" "$response"
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+    return
+  fi
   id=$(printf '%s\n' "$response" | jq -r '.display_id // .id')
   err "${GREEN}Created issue ${id}${RESET}"
 }

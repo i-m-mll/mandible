@@ -343,7 +343,7 @@ function completionSignal(): { promise: Promise<void>; resolve(): void } {
 }
 
 export class AuthQueueError extends Error {
-  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "operator_recovery_required" | "lifecycle_precondition_required" | "lifecycle_conflict" | "recovery_refused";
+  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "operator_recovery_required" | "lifecycle_precondition_required" | "lifecycle_conflict" | "recovery_refused" | "operator_required";
   readonly status?: AuthRequestStatus;
   readonly details?: unknown;
 
@@ -2661,11 +2661,11 @@ export class AuthQueue {
   private resolveApproverUserId(candidate?: string): string {
     const operator = getOperator(this.db);
     if (!operator || operator.status !== "active") {
-      throw new Error("Auth approval requires an active configured operator.");
+      throw new AuthQueueError("operator_required", "Auth approval requires an active configured operator.");
     }
     const userId = candidate?.trim() || operator.id;
     if (userId !== operator.id) {
-      throw new Error("Auth approval identity does not match the configured operator.");
+      throw new AuthQueueError("operator_required", "Only the configured operator can approve auth requests.");
     }
     return operator.id;
   }

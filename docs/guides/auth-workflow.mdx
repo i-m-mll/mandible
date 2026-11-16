@@ -135,7 +135,7 @@ The Mandible dashboard shows the auth queue with all pending requests. The new r
 - A diff summary showing what changed.
 - The specification explaining the intent.
 - Linked issue IDs.
-- A timestamp and expiry countdown (24 hours from submission).
+- A timestamp and expiry countdown (7 days from submission).
 
 The dashboard receives the `auth:new` SSE event in real time, so it updates instantly.
 
@@ -162,6 +162,8 @@ The user clicks Approve. This triggers `POST /api/auth/request/:id/approve`.
 Mandible builds the exact merge commit from the merge tree retained at submission and asks the approval key to sign it. The Touch ID sheet appears; one touch produces the commit's signature, which Mandible verifies against the enrolled key before writing the signed commit object. No branch refers to it yet. If the protected base moved since submission, Mandible first recomputes the candidate (the dashboard shows "Base moved; updating the merge…") and signs the merge on the new base. The request stays `pending` until the signature verifies; cancelling the sheet, a missing key, a 60-second expiry, or changed reviewed bytes leave it unexecuted with nothing written. While the sheet is up the dashboard shows the waiting state in place and takes no focus, because Touch ID stops matching while the sheet is not frontmost; click the sheet if it is behind another window. **Cancel signing** stops the pending signature.
 
 The button says **Approve**. For a protected merge it asks for Touch ID; with Touch ID not set up, the approval is refused before any work and links to Settings → Approvals. Any other request takes one click, recorded as an interface action and labelled "Courtesy approval" afterwards. Cancel any Touch ID prompt that did not follow your own click; the enclave proves a finger touched, not what you meant to approve. See [Approvals and the Touch ID gate](../approvals.md) for what the gate does and does not prove.
+
+The operator can approve from their own terminal instead: `mandible auth approve <request> --revision <n>`, with the revision `mandible auth show` prints. It raises the same sheet, waits for the request to settle, and refuses agent sessions.
 
 After verification, the request transitions to `executing`. Ordinary local browsing requires no proof or login.
 
@@ -265,7 +267,7 @@ If the Mandible daemon is killed mid-execution (e.g., by its own post-merge hook
 
 ### Request Expires
 
-If nobody acts on a request for 24 hours, it expires automatically. The submitting session is notified of the expiry. It can resubmit if the work is still relevant.
+If nobody acts on a request for 7 days, it expires automatically. The submitting session is notified of the expiry. It can resubmit if the work is still relevant.
 
 ## Checking Status Manually
 

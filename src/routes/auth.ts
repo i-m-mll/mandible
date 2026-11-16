@@ -276,6 +276,7 @@ export function registerAuthRoutes(
       const request = (await authQueue.submit(payload, requester.userId));
       res.status(201).json({
         request_id: request.id,
+        lifecycle_revision: authQueue.lifecycleRevision(request.id),
         files_changed: request.files_changed,
         additions: request.additions,
         deletions: request.deletions,
@@ -1299,7 +1300,7 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
       return;
     }
     if (error.code === "requester_control_required" || error.code === "custody_required" ||
-        error.code === "operator_recovery_required") {
+        error.code === "operator_recovery_required" || error.code === "operator_required") {
       res.status(403).json({ error: error.message, code: error.code });
       return;
     }

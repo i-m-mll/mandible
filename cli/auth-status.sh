@@ -27,3 +27,68 @@ mandible_auth_report() {
   esac
   return "$classification"
 }
+
+# Wait for one request to reach a terminal status and report it; returns 0 only
+# for completed. The request is read once the subscription is registered (the
+# stream's ": connected" comment), so a resolution that lands between the
+# caller's submission and the subscription is still reported. The stream is
+# read through a FIFO so the watcher stops curl as soon as it has a result,
+# rather than waiting for curl's next write to fail. Requires api.sh.
+mandible_auth_watch() {
+  local request_id="$1" timeout="$2" short_id fifo config="" token traced=0 result="" final line json curl_pid
+  local curl_args=()
+  short_id="$(api_short_id "$request_id")"
+  case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
+  token="$(api_client_token POST)"
+  if [[ -n "$token" ]]; then
+    config="$(api_temp_file)"
+    printf 'header = "Authorization: Bearer %s"\n' "$token" > "$config"
+  fi
+  token=""
+  (( traced == 0 )) || set -x
+  curl_args=(-sN --max-time "$timeout" -X POST -H 'Content-Type: application/json' --data-binary '{"topics":["auth:"]}')
+  api_is_local_socket && curl_args+=(--unix-socket "$MANDIBLE_SOCKET")
+  [[ -z "$config" ]] || curl_args+=(--config "$config")
+  fifo="$(api_temp_file)"
+  rm -f "$fifo"
+  mkfifo -m 600 "$fifo"
+  curl "${curl_args[@]}" "$(api_base)/api/events/subscribe" > "$fifo" 2>/dev/null &
+  curl_pid=$!
+  while IFS= read -r line; do
+    if [[ "$line" == ": connected"* ]]; then
+      json=$(api_get "/api/auth/request/$(urlencode "$request_id")" 2>/dev/null) || continue
+    elif [[ "$line" == data:* ]]; then
+      json="${line#data: }"
+      [[ "$(printf '%s' "$json" | jq -r '.type // empty' 2>/dev/null)" == auth:resolved ]] || continue
+      [[ "$(printf '%s' "$json" | jq -r '.data.request_id // .data.id // empty' 2>/dev/null)" == "$request_id" ]] || continue
+      json=$(printf '%s' "$json" | jq -c '.data') || continue
+    else
+      continue
+    fi
+    result=0
+    mandible_auth_report "$short_id" "$json" || result=$?
+    [[ "$result" == 2 ]] && { result=""; continue; }
+    break
+  done < "$fifo"
+  kill "$curl_pid" 2>/dev/null || true
+  wait "$curl_pid" 2>/dev/null || true
+  rm -f "$fifo"
+  [[ -z "$config" ]] || rm -f "$config"
+  if [[ -n "$result" ]]; then
+    [[ "$result" == 0 ]] && return 0
+    return 1
+  fi
+  # Reconcile once after the stream ends, with the same classification.
+  final=$(api_get "/api/auth/request/$(urlencode "$request_id")" 2>/dev/null || true)
+  if [[ -n "$final" ]]; then
+    result=0
+    mandible_auth_report "$short_id" "$final" || result=$?
+    [[ "$result" == 0 ]] && return 0
+    if [[ "$result" == 2 ]]; then
+      printf 'Auth request %s: still in progress (%s) after SSE ended; check dashboard.\n' "$short_id" "$(printf '%s' "$final" | jq -r '.status')" >&2
+    fi
+    return 1
+  fi
+  printf 'Auth request %s: SSE connection lost, status unknown. Check dashboard.\n' "$short_id" >&2
+  return 1
+}

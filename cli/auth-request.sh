@@ -70,6 +70,7 @@
 #   --dirty-branch-prefix <prefix>
 #                           Branch prefix for --dirty-policy branch-off (default from mandible.toml or shelve/protected-root)
 #   --timeout <seconds>     SSE listen timeout (default: 14400 / 4 hours)
+#   --json                  With --no-watch: print the submission response as JSON
 #   --force / -f             Skip CWD validation checks
 #   --no-watch              Submit only, don't poll
 #
@@ -140,6 +141,7 @@ cwd_override=""
 target_override=""
 timeout=14400
 no_watch=0
+json=0
 force=false
 dirty_policy=""
 dirty_branch_prefix=""
@@ -148,7 +150,7 @@ promote_briefing_group=""
 promote_briefing_expected_base=""
 promote_briefing_proposal=""
 
-binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"TEARDOWN_PREVIEW_BRANCHES":{"option":"teardown-preview","array":true},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
+binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"TEARDOWN_PREVIEW_BRANCHES":{"option":"teardown-preview","array":true},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"json":{"option":"json","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
 eval "$binding"
 # The daemon resolves a relative path against its own working directory.
 [[ -z "$cwd_override" ]] || cwd_override=$(api_resolve_user_path "$cwd_override")
@@ -164,6 +166,10 @@ fi
 # Issue 7d64d8f — the canonical change message has exactly one source.
 if [[ -n "$change_message_text" && -n "$change_message_file" ]]; then
   echo "Error: --message and --message-file are mutually exclusive" >&2
+  exit 2
+fi
+if [[ $json -eq 1 && $no_watch -eq 0 ]]; then
+  echo "Error: --json prints the submission response and requires --no-watch" >&2
   exit 2
 fi
 if api_is_file_rpc && [[ $no_watch -eq 0 ]]; then
@@ -391,8 +397,7 @@ payload=$(jq -nc \
 # caused a terminal pane to spawn instead of recognising the duplicate.
 # The response body is written to a temp file; HTTP status in the exit variable.
 tmp_response=$(mktemp)
-tmp_sse_result=$(mktemp)
-trap 'rm -f "$tmp_response" "$tmp_sse_result"' EXIT
+trap 'rm -f "$tmp_response"; api_cleanup_temp_files' EXIT
 
 http_status=$(api_send_capture POST "/api/auth/v2/request" "$payload" "$tmp_response") || http_status=""
 
@@ -464,6 +469,10 @@ else
     echo "Error: no request_id in response: $response" >&2
     exit 1
   fi
+  if [[ $json -eq 1 ]]; then
+    printf '%s\n' "$response" | jq .
+    exit 0
+  fi
 
   echo "Auth request submitted: $(api_short_id "$request_id")"
   echo "Title: ${title}"
@@ -491,83 +500,4 @@ if [[ $no_watch -eq 1 ]]; then
 fi
 
 echo "Listening for auth resolution via SSE (timeout: ${timeout}s)..."
-
-# SSE endpoint with topic filter — single persistent connection, no polling.
-# Mandible emits auth:resolved when a request reaches terminal state.
-# Heartbeats every 15s keep the connection alive.
-
-#
-# Bug: 2fa626e — when the while-loop exits inside a pipeline, curl gets SIGPIPE
-# and exits 23. With set -o pipefail, the pipeline exit code becomes 23 (non-zero),
-# causing false failure even when the auth succeeded.
-#
-# Fix: disable pipefail for the SSE pipeline, communicate resolution via a temp
-# file written from within the while-subshell, then check it after the pipeline
-# completes. This avoids exit 23 propagating as a failure.
-set +o pipefail
-_mandible_sse_traced=0
-case "$-" in *x*) _mandible_sse_traced=1; { set +x; } 2>/dev/null ;; esac
-_mandible_sse_token="$(api_client_token POST)"
-_mandible_sse_config=""
-if [[ -n "$_mandible_sse_token" ]]; then
-  _mandible_sse_config="$(api_temp_file)"
-  printf 'header = "Authorization: Bearer %s"\n' "$_mandible_sse_token" > "$_mandible_sse_config"
-fi
-_mandible_sse_token=""
-(( _mandible_sse_traced == 0 )) || set -x
-_mandible_sse_curl_args=(-sN --max-time "$timeout" -X POST -H 'Content-Type: application/json' --data-binary '{"topics":["auth:"]}')
-api_is_local_socket && _mandible_sse_curl_args+=(--unix-socket "$MANDIBLE_SOCKET")
-[[ -z "$_mandible_sse_config" ]] || _mandible_sse_curl_args+=(--config "$_mandible_sse_config")
-curl "${_mandible_sse_curl_args[@]}" \
-  "$(api_base)/api/events/subscribe" 2>/dev/null | \
-while IFS= read -r line; do
-  # Skip heartbeat comments and empty lines
-  [[ "$line" =~ ^: ]] && continue
-  [[ -z "$line" ]] && continue
-
-  # SSE format: "data: {json}"
-  if [[ "$line" == data:* ]]; then
-    json="${line#data: }"
-    evt_type=$(printf '%s' "$json" | jq -r '.type // empty' 2>/dev/null) || continue
-    evt_id=$(printf '%s' "$json" | jq -r '.data.request_id // .data.id // empty' 2>/dev/null) || continue
-
-    # Only care about our request
-    [[ "$evt_id" != "$request_id" ]] && continue
-
-    case "$evt_type" in
-      auth:resolved)
-        resolved=$(printf '%s' "$json" | jq -c '.data') || continue
-        result=0
-        mandible_auth_report "$(api_short_id "$request_id")" "$resolved" || result=$?
-        [[ "$result" == 2 ]] && continue
-        printf '%s' "$result" > "$tmp_sse_result"
-        break
-        ;;
-    esac
-  fi
-done || true
-[[ -z "$_mandible_sse_config" ]] || rm -f "$_mandible_sse_config"
-set -o pipefail
-
-sse_result=$(cat "$tmp_sse_result" 2>/dev/null || echo "")
-
-if [[ -n "$sse_result" ]]; then
-  [[ "$sse_result" == 0 ]] && exit 0
-  exit 1
-fi
-
-# Reconcile once after SSE disconnects, using the same delivery classification.
-final=$(api_get "/api/auth/request/${request_id}" 2>/dev/null || true)
-if [[ -n "$final" ]]; then
-  result=0
-  mandible_auth_report "$(api_short_id "$request_id")" "$final" || result=$?
-  [[ "$result" == 0 ]] && exit 0
-  if [[ "$result" == 2 ]]; then
-    request_status=$(printf '%s' "$final" | jq -r '.status')
-    echo "Auth request $(api_short_id "$request_id"): still in progress ($request_status) after SSE ended; check dashboard." >&2
-  fi
-  exit 1
-fi
-
-echo "Auth request $(api_short_id "$request_id"): SSE connection lost, status unknown. Check dashboard." >&2
-exit 1
+mandible_auth_watch "$request_id" "$timeout"

@@ -394,16 +394,6 @@ ensure_clean_with_dirty_policy() {
   esac
 }
 
-# --- Auto-detect protected branch ---
-
-detect_protected_branch() {
-  if git show-ref --verify --quiet refs/heads/develop 2>/dev/null; then
-    echo "develop"
-  else
-    echo "main"
-  fi
-}
-
 # --- Canonical change message ---
 # Issues 7d64d8f and 4720024 — the merge commit message is authored, not
 # synthesized, and every merge request carries one. The command grammar
