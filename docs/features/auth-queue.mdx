@@ -11,7 +11,7 @@ Every auth request carries a `type` field that describes what kind of operation 
 | Type | Description |
 |------|-------------|
 | `merge` | Merge a feature/integration branch into the protected branch. This is by far the most common type. |
-| `commit` | Create a signed commit on a protected branch (rare — most commits go on feature branches with the agent key). |
+| `commit` | The record of the operator's direct commit to a protected branch with `mandible commit -m <message>`. It is never submitted; see [Approvals and the Touch ID gate](../approvals.md). |
 | `force-push` | Force-push to a branch. Destructive by nature, so it requires explicit approval. |
 | `branch-delete` | Delete a branch. Used for cleanup after merges. |
 | `config-change` | Modify a configuration that affects system behavior (e.g., Mandible settings, signing config). |

@@ -64,7 +64,7 @@ async function stagedExecutions(paths: string[]) {
   const requests = [];
   try {
     for (const [index, cwd] of paths.entries()) {
-      const request = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: `private fixture ${index}`, title: `Private admission ${index}`, cwd });
+      const request = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: `private fixture ${index}`, title: `Private admission ${index}`, cwd });
       signals.set(request.id, { entered: barrier(), release: barrier() });
       await approveFixtureRequest(queue, request.id);
       requests.push(queue.getRequestExact(request.id)!);

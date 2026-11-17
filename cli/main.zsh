@@ -18,6 +18,7 @@
 #   auth withdraw <id> --reason ... --expected-revision N --expected-custody-generation N
 #   auth approve <id> --revision N   Approve a request as the operator (Touch ID for merges)
 #   auth deliver <branch> [opts]     Operator's one-command delivery: request, approve, merge
+#   commit -m <message>              Operator's direct commit of staged changes to a protected branch
 #   auth candidate-repair inspect|apply <id> [opts]
 #   auth replay-archives <id>        Replay Codex archive attempts
 #   auth acceptance run|show <id>    Run or show candidate acceptance of a self-update
@@ -108,6 +109,7 @@ case "${1:-}" in
   changes) shift; exec "$MANDIBLE_CLI_DIR/changes.sh" "$@" ;;
   umbrella) shift; exec "$MANDIBLE_CLI_DIR/umbrella.sh" "$@" ;;
   description) shift; exec "$MANDIBLE_CLI_DIR/issue.sh" description "$@" ;;
+  commit)  shift; exec "$MANDIBLE_CLI_DIR/commit.sh" "$@" ;;
   auth)
     shift
     case "${1:-}" in

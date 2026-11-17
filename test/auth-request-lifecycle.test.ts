@@ -174,10 +174,10 @@ describe("auth request immutable lifecycle", () => {
   it("inherits prerequisites on supersession and leaves dependent identities unchanged", async () => {
     const { db, queue, actor, submit } = requesterFixture();
     try {
-      const source = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo source", title: "Source" });
-      const validation = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo validation", title: "Validation" });
+      const source = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo source", title: "Source" });
+      const validation = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo validation", title: "Validation" });
       const original = await submit({ depends_on_ids: [source.id, validation.id] });
-      const dependent = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo consumer", title: "Consumer", depends_on_ids: [original.id] });
+      const dependent = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo consumer", title: "Consumer", depends_on_ids: [original.id] });
       const replacement = await submit({ supersedes_request_id: original.id, expected_revision: 1, expected_custody_generation: 1 });
       expect(replacement.depends_on_ids).toEqual(original.depends_on_ids);
       expect((await queue.getRequest(dependent.id))?.depends_on_ids).toEqual([original.id]);

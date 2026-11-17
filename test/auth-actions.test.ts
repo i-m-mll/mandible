@@ -382,7 +382,7 @@ describe("auth request action execution", () => {
     try {
       const { repoRoot, issue } = createLedgerIssue(db, "link123");
       const queue = new AuthQueue({ db, now: () => 50_000 });
-      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
         command: "echo link",
         title: "Link staged close",
         cwd: repoRoot,
@@ -418,7 +418,7 @@ describe("auth request action queue persistence", () => {
       let now = 1000;
       const queue = new AuthQueue({ db, now: () => now });
 
-      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
         command: "echo staged",
         title: "Staged actions",
         cwd: repoRoot,
@@ -468,7 +468,7 @@ describe("auth request action queue persistence", () => {
     const db = createMigratedDb();
     try {
       const queue = new AuthQueue({ db });
-      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
         command: "echo done",
         title: "Done",
         actions: [{ kind: "issue_close", target_issue_ref: "abc123", payload: {} }],
@@ -597,7 +597,7 @@ describe("auth request action routes", () => {
       const router = actionRouter(db);
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
-      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
         command: "echo route",
         title: "Route veto",
         actions: [{ kind: "comment_add", target_issue_ref: "abc123", payload: { body: "One" } }],

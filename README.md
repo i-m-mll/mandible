@@ -75,7 +75,7 @@ The worktree tool is policy, not Mandible, but the reference flow is `wt new fea
 
 ### Approvals
 
-An approval request (auth request) is how an agent asks for an operation it may not perform itself: a merge into a protected branch, or an explicit command reviewed under one of the types `commit`, `force-push`, `branch-delete`, `config-change`, `data-delete`. Submission is asynchronous and never runs the operation.
+An approval request (auth request) is how an agent asks for an operation it may not perform itself: a merge into a protected branch, or an explicit command reviewed under one of the types `force-push`, `branch-delete`, `config-change`, `data-delete`. Submission is asynchronous and never runs the operation. The operator commits staged changes onto a protected branch directly with `mandible commit -m <message>`, recorded as a `commit` request; see [Approvals and the Touch ID gate](docs/approvals.md).
 
 ```bash
 mandible auth list --head feature/x                       # find an existing request first

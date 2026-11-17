@@ -1961,7 +1961,6 @@ export function AuthHooksPanel({
               aria-label="Approval type"
             >
               <option value="merge">Merge</option>
-              <option value="commit">Commit</option>
               <option value="force-push">Force Push</option>
               <option value="branch-delete">Branch Delete</option>
               <option value="config-change">Config Change</option>

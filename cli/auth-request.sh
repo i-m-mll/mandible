@@ -64,7 +64,7 @@
 #                           Once the merge is live, tear down the preview recorded
 #                           for this landed branch, discarding its data (repeatable)
 #   --command <command>     Exact shell command for a non-merge request; reviewed before execution
-#   --type <type>           Auth request type (default: merge; options: merge, commit, force-push, branch-delete, config-change, data-delete)
+#   --type <type>           Auth request type (default: merge; options: merge, force-push, branch-delete, config-change, data-delete)
 #   --handoff <text>        Post-merge handoff note for next session
 #   --dirty-policy <policy> Protected-root dirty policy: block, allow-untracked, stash, branch-off
 #   --dirty-branch-prefix <prefix>
@@ -178,7 +178,7 @@ if api_is_file_rpc && [[ $no_watch -eq 0 ]]; then
 fi
 
 # Validate auth type
-valid_types="merge commit force-push branch-delete config-change data-delete"
+valid_types="merge force-push branch-delete config-change data-delete"
 if [[ "$auth_type" == *[[:space:]]* || " $valid_types " != *" $auth_type "* ]]; then
   echo "Error: invalid --type '$auth_type'. Must be one of: $valid_types" >&2
   exit 2

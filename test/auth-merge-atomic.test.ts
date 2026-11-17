@@ -17,7 +17,7 @@ import { describeAuthExecutionFailure } from "../src/contracts.js";
 import { createAuthCheckRepo, commitOnBranch } from "./helpers/auth-queue-fixtures.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { preparedGitFixture } from "./helpers/prepared-git-fixture.js";
-import { buildMergeCommit, signedCommitObject } from "../src/merge-commit.js";
+import { buildCommit, signedCommitObject } from "../src/commit-object.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
 
@@ -94,7 +94,7 @@ function candidate(base: string, head: string, requestId = "atomic-test"): {
 /** The approval-time commit: built and signed outside the executor, written with no ref change. */
 function signedMerge(base: string, head: string, tree: string, signingKey: string | null = key,
   message = "Merge branch 'feature/atomic'\n"): string {
-  const unsigned = buildMergeCommit({ tree, parents: [base, head], message,
+  const unsigned = buildCommit({ tree, parents: [base, head], message,
     identity: { name: "Approval Test", email: "approval@example.invalid" }, time: { seconds: 1_794_700_000, offset_minutes: -300 } });
   let object = unsigned;
   if (signingKey) {

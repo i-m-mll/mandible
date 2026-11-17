@@ -49,7 +49,7 @@ describe("failed auth execution", () => {
       return response.body as Record<string, unknown>;
     };
 
-    const request = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "git commit -S", title: "Signed commit" });
+    const request = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "git commit -S", title: "Signed commit" });
     await approveFixtureRequest(queue, request.id);
     await waitForStatus(queue, request.id, "failed");
 

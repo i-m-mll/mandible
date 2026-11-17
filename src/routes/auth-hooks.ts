@@ -19,7 +19,8 @@ import type { AuthHookInput, AuthRequestType } from "../types.js";
 import { readBody } from "./http.js";
 
 // Issue 72b00f8 — custody-transfer requests complete in process and run no hooks.
-const HOOKABLE_AUTH_TYPES: readonly AuthRequestType[] = AUTH_REQUEST_TYPES.filter((type) => type !== "custody-transfer");
+// A direct commit (issue a7cc881) runs no hooks, as git commit runs no post-merge work.
+const HOOKABLE_AUTH_TYPES: readonly AuthRequestType[] = AUTH_REQUEST_TYPES.filter((type) => type !== "custody-transfer" && type !== "commit");
 
 export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookManager): AuthHookManager {
   const hookManager = manager ?? new AuthHookManager();

@@ -441,6 +441,10 @@ export function registerAuthRoutes(
         res.status(400).json({ error: CUSTODY_TRANSFER_SUBMISSION_REFUSAL });
         return;
       }
+      if (current.type === "commit" || result.payload.type === "commit") {
+        res.status(400).json({ error: "Direct commits are made by the operator with mandible commit, not submitted or revised." });
+        return;
+      }
       const control = authMutationControl(db, req, res, current, body, true);
       if (!control) return;
       // Issue 4720024 — a revision that touches a merge request's message must
@@ -732,6 +736,38 @@ export function registerAuthRoutes(
       handleQueueError(error, res);
     }
   }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/approve", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
+  // Issue a7cc881 — the operator's direct commit of a checkout's staged
+  // changes. The response waits for the touch; a disconnect cancels the sheet.
+  app.post("/api/auth/commit", globalCapabilityRoute("approve_auth", async (req, res) => {
+    try {
+      const identity = req.client_identity!;
+      const body = readBody<Record<string, unknown>>(req);
+      if (typeof body.cwd !== "string" || typeof body.message !== "string") {
+        res.status(400).json({ error: "cwd and message are required." });
+        return;
+      }
+      const { request, commitSha } = await authQueue.commitAsOperator({ cwd: body.cwd, message: body.message }, {
+        user_id: identity.user_id,
+        evidence_method: requireAttribution(db, req).evidence_method,
+        identity_method: identity.method,
+        source: identity.source,
+        credential_id: identity.credential_id,
+      }, req.signal);
+      res.status(201).json({
+        request_id: request.id,
+        commit_sha: commitSha,
+        branch: request.base_branch,
+        repo: request.repo,
+        title: request.title,
+        files_changed: request.files_changed,
+        additions: request.additions,
+        deletions: request.deletions,
+      });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/commit", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/cancel-proof", globalCapabilityRoute("approve_auth", (req, res) => {
     try {

@@ -148,7 +148,7 @@ function explainBaseTransition(detail: Record<string, unknown>): string {
     case "not_a_two_parent_merge":
       return (
         `${range}: commit ${commit} is not a two-parent merge (parents: ` +
-        `${text(detail.parent_count) ?? "?"}) — a direct commit or octopus merge on the protected branch. ` +
+        `${text(detail.parent_count) ?? "?"}) — a direct commit Mandible did not record, or an octopus merge, on the protected branch. ` +
         REQUEUE
       );
     case "merge_second_parent_not_reviewed_head":
