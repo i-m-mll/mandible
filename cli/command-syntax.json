@@ -1729,7 +1729,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "option","names": ["--type"],"values": [{"kind": "argument","name": "commit|force-push|branch-delete|config-change|data-delete","value": {"type": "enum","values": ["commit","force-push","branch-delete","config-change","data-delete"]}}]},
+          {"kind": "option","names": ["--type"],"values": [{"kind": "argument","name": "force-push|branch-delete|config-change|data-delete","value": {"type": "enum","values": ["force-push","branch-delete","config-change","data-delete"]}}]},
           {"kind": "option","names": ["--command"],"values": [{"kind": "argument","name": "command","value": {"type": "string"}}]},
           {"kind": "option","names": ["--cwd"],"values": [{"kind": "argument","name": "path","value": {"type": "string"}}]},
           {"kind": "option","names": ["--repo"],"values": [{"kind": "argument","name": "ref","value": {"type": "string"}}]},
