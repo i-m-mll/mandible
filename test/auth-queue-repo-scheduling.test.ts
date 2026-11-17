@@ -141,8 +141,8 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
     const db = createMigratedDb();
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     try {
-      const r1 = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo one", title: "one" }));
-      const r2 = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo two", title: "two", cwd: uniqueMissingPath("unresolved") }));
+      const r1 = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", command: "echo one", title: "one" }));
+      const r2 = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", command: "echo two", title: "two", cwd: uniqueMissingPath("unresolved") }));
       const chainKey = (request: typeof r1) => (queue as unknown as { reserveRepoAdmission(request: typeof r1, install: (key: string) => string): Promise<string> }).reserveRepoAdmission(request, key => key);
       expect(await chainKey(r1)).toBe(await chainKey(r2));
     } finally { (await queue.dispose()); db.close(); }

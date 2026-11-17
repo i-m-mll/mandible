@@ -266,7 +266,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
       const hookManager = new AuthHookManager(db);
       const hook = hookManager.create({
         repo_pattern: "durable-repo",
-        auth_type: "commit",
+        auth_type: "config-change",
         command: markerGatedCommand(marker),
         label: "Converge hook",
         position: 0,
@@ -280,7 +280,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
           return { exit_code: 0, output: "merge-ok\n" };
         },
       });
-      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
         command: 'echo "merge-ok"',
         title: "Durable convergence",
         repo: "durable-repo",
@@ -337,7 +337,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
       const hookManager = new AuthHookManager(db);
       hookManager.create({
         repo_pattern: "bounded-repo",
-        auth_type: "commit",
+        auth_type: "config-change",
         command: "echo always-fails >&2; exit 3",
         label: "Broken hook",
         position: 0,
@@ -348,7 +348,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
         command: 'echo "merge-ok"',
         title: "Bounded retry",
         repo: "bounded-repo",
@@ -388,7 +388,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
       const hookManager = new AuthHookManager(db);
       const hook = hookManager.create({
         repo_pattern: "alert-repo",
-        auth_type: "commit",
+        auth_type: "config-change",
         command: "exit 5",
         label: "Alerting hook",
         position: 0,
@@ -399,7 +399,7 @@ describe("durable hook execution state (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
         command: 'echo "merge-ok"',
         title: "Dedup alert",
         repo: "alert-repo",
@@ -470,7 +470,7 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
       const hookManager = new AuthHookManager(db);
       hookManager.create({
         repo_pattern: repoName,
-        auth_type: "commit",
+        auth_type: "config-change",
         command: markerGatedCommand(marker),
         label: "Withholding hook",
         position: 0,
@@ -482,7 +482,7 @@ describe("convergence gates deferred issue closure (issue 27241e6)", () => {
         backgroundMaintenance: false,
         executor: async () => ({ exit_code: 0, output: "merge-ok\n" }),
       });
-      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
         command: 'echo "merge-ok"',
         title: "Withhold closure",
         cwd: repoRoot,
@@ -547,7 +547,7 @@ describe("hook registration authority (issue 27241e6)", () => {
       const { token } = authenticator.mintApiToken(agent.id);
       const body = {
         repo_pattern: "authority-repo",
-        auth_type: "commit",
+        auth_type: "config-change",
         command: "echo take-over-the-machine",
         label: "Unauthorized hook",
       };
@@ -624,11 +624,11 @@ describe("hook registry", () => {
 
   it("matches enabled hooks by repo pattern and auth type", () => {
     const manager = new AuthHookManager(plainDb());
-    const matching = (repo: string, type: "merge" | "commit") => manager.findMatchingHooks(repo, type).map((hook) => hook.id);
+    const matching = (repo: string, type: "merge" | "config-change") => manager.findMatchingHooks(repo, type).map((hook) => hook.id);
     expect(matching("mandible", "merge")).toContain("builtin-mandible-rebuild");
     expect(matching(".dotfiles", "merge")).toContain("builtin-dotfiles-agent-instructions");
     expect(matching("dotfiles", "merge")).toContain("builtin-dotfiles-agent-instructions-nodot");
-    expect(matching("mandible", "commit")).not.toContain("builtin-mandible-rebuild");
+    expect(matching("mandible", "config-change")).not.toContain("builtin-mandible-rebuild");
 
     const wildcard = manager.create({ repo_pattern: "*", auth_type: "merge", command: "echo all", label: "All repos" });
     expect(matching("feedbax", "merge")).toEqual([wildcard.id]);
@@ -641,10 +641,10 @@ describe("hook registry", () => {
   it("runs matching hooks after a successful auth execution and reports their output", async () => {
     const db = plainDb();
     const hookManager = new AuthHookManager(db);
-    hookManager.create({ repo_pattern: "*", auth_type: "commit", command: "echo hook-executed", label: "Integration test hook", position: 0 });
+    hookManager.create({ repo_pattern: "*", auth_type: "config-change", command: "echo hook-executed", label: "Integration test hook", position: 0 });
     const queue = new AuthQueue({ db, hookManager });
     try {
-      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: 'echo "merge-ok"', title: "Test merge", repo: "test-repo" }));
+      const request = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", command: 'echo "merge-ok"', title: "Test merge", repo: "test-repo" }));
       await approveFixtureRequest(queue, request.id);
       await waitFor(async () => (await queue.getRequest(request.id))?.status === "completed");
       expect((await queue.getRequest(request.id))?.output).toContain("hook-executed");

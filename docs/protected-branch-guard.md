@@ -1,33 +1,16 @@
 # Protected-branch guard
 
-A protected branch moves only through an approved Mandible merge or a commit
-signed with one of the operator's own keys. The Git `reference-transaction`
-hook in [`hooks/git/reference-transaction`](../hooks/git/reference-transaction)
-refuses anything else at the moment Git tries to update the ref, from any
-command: commit, merge, fast-forward, reset, `update-ref`, `branch -f`, push
-into a local repository, and branch creation or deletion.
+A protected branch moves only through an approved Mandible merge or a commit signed with one of the operator's own keys. The Git `reference-transaction` hook in [`hooks/git/reference-transaction`](../hooks/git/reference-transaction) refuses anything else at the moment Git tries to update the ref, from any command: commit, merge, fast-forward, reset, `update-ref`, `branch -f`, push into a local repository, and branch creation or deletion.
 
 ## What counts as protected
 
-Protection comes from Mandible's existing config: the global
-`protected_branches` setting plus each registered checkout's default branch,
-applied per repository. Repositories Mandible does not know are never checked.
+Protection comes from Mandible's existing config: the global `protected_branches` setting plus each registered checkout's default branch, applied per repository. Repositories Mandible does not know are never checked.
 
 ## Signer rule
 
-A protected branch may point only at a commit signed by an active `ssh_key`
-credential of the configured operator: the enrolled approval key, which signs
-each approved merge after a Touch ID match. Agent users hold none. Enrolling
-the key and changing which branches are protected are themselves signed
-actions; see
-[Approvals and the Touch ID gate](approvals.md).
+A protected branch may point only at a commit signed by an active `ssh_key` credential of the configured operator: the enrolled approval key, which signs each approved merge and each direct commit (`mandible commit`) after a Touch ID match. Agent users hold none. Enrolling the key and changing which branches are protected are themselves signed actions; see [Approvals and the Touch ID gate](approvals.md).
 
-The rule lives in
-[`src/protected-branch-signers.ts`](../src/protected-branch-signers.ts), the one
-implementation shared with the protected-base history audit. The audit has
-Mandible's record of its merges, so a recorded merge passes whatever key
-signed it, while a commit Mandible did not record passes only with an
-operator `ssh_key`.
+The rule lives in [`src/protected-branch-signers.ts`](../src/protected-branch-signers.ts), the one implementation shared with the protected-base history audit. The audit has Mandible's record of its merges and direct commits, so a recorded one passes whatever key signed it, while a commit Mandible did not record passes only with an operator `ssh_key`.
 
 ## Hook decisions
 
@@ -42,66 +25,31 @@ In the `prepared` state, for each update of a protected `refs/heads/<name>`:
 | Deletion of an existing protected branch | refused |
 | Anything else | refused |
 
-A refusal names the branch and says to submit `mandible auth request`.
+A refusal names the branch and says to submit `mandible auth request`, or, for the operator, to commit staged changes with `mandible commit -m <message>`, which signs the commit with the approval key.
 
-The upstream rule lets `git pull --ff-only` and similar syncs bring in
-collaborators' or hosting-provider merges that the operator did not sign. It
-applies only to a fast-forward, only to the branch's configured upstream under
-`refs/remotes/<remote>/`, and only when that remote has a URL. A local process
-can still forge a remote-tracking ref; the protected-history check of umbrella
-0cda998 surfaces such commits when Mandible next reads the branch.
+The upstream rule lets `git pull --ff-only` and similar syncs bring in collaborators' or hosting-provider merges that the operator did not sign. It applies only to a fast-forward, only to the branch's configured upstream under `refs/remotes/<remote>/`, and only when that remote has a URL. A local process can still forge a remote-tracking ref; the protected-history check of umbrella 0cda998 surfaces such commits when Mandible next reads the branch.
 
 ## Projection
 
-The hook never calls the daemon. The production daemon writes two files under
-`$MANDIBLE_HOME/git-guard/` (default `~/.mandible/git-guard/`) at startup and
-whenever the `protected_branches` setting, a checkout's registration or default
-branch, the operator identity, or an operator signing credential changes:
+The hook never calls the daemon. The production daemon writes two files under `$MANDIBLE_HOME/git-guard/` (default `~/.mandible/git-guard/`) at startup and whenever the `protected_branches` setting, a checkout's registration or default branch, the operator identity, or an operator signing credential changes:
 
-- `protected-refs`: a header line; `names<TAB><ref>...` listing every protected
-  ref name; then `<git common dir><TAB>refs/heads/<name>` per protected branch.
-  The Git common directory, with symlinks resolved, identifies a repository, so
-  all of its worktrees match.
-- `allowed_signers`: the operator's signing keys in ssh-keygen allowed-signers
-  format.
+- `protected-refs`: a header line; `names<TAB><ref>...` listing every protected ref name; then `<git common dir><TAB>refs/heads/<name>` per protected branch. The Git common directory, with symlinks resolved, identifies a repository, so all of its worktrees match.
+- `allowed_signers`: the operator's signing keys in ssh-keygen allowed-signers format.
 
-Both are generated from the protection config and the user registry
-(`src/protected-branch-guard.ts`) and are not edited by hand. Preview and copy
-instances never write them.
+Both are generated from the protection config and the user registry (`src/protected-branch-guard.ts`) and are not edited by hand. Preview and copy instances never write them.
 
 ## Failure behavior
 
-- No `protected-refs` file: Mandible is not set up, so the update is allowed.
-  The hook prints one warning line when the branch is `main` or `develop`, the
-  shipped default of `protected_branches`.
-- An error while checking a protected ref (missing signer list, no registered
-  operator key, `/usr/bin/ssh-keygen` unavailable, repository not resolvable):
-  that update is refused, except that an upstream fast-forward still passes.
-- Updates of other refs and of unknown repositories return before any check
-  and never fail.
+- No `protected-refs` file: Mandible is not set up, so the update is allowed. The hook prints one warning line when the branch is `main` or `develop`, the shipped default of `protected_branches`.
+- An error while checking a protected ref (missing signer list, no registered operator key, `/usr/bin/ssh-keygen` unavailable, repository not resolvable): that update is refused, except that an upstream fast-forward still passes.
+- Updates of other refs and of unknown repositories return before any check and never fail.
 
 ## Cost
 
-Git runs the hook in every transaction state, and a plain `git fetch` opens one
-transaction per updated ref. The hook therefore reads small transactions with
-shell builtins and dismisses non-protected branches using the projection's
-`names` line, so its cost over an empty hook is well under a millisecond per
-call. Checking a protected update runs `git` and `ssh-keygen` and takes tens of
-milliseconds.
+Git runs the hook in every transaction state, and a plain `git fetch` opens one transaction per updated ref. The hook therefore reads small transactions with shell builtins and dismisses non-protected branches using the projection's `names` line, so its cost over an empty hook is well under a millisecond per call. Checking a protected update runs `git` and `ssh-keygen` and takes tens of milliseconds.
 
 ## Installation and limits
 
-The global hooks directory owned by dotfiles (`~/.config/git/hooks`) runs this
-guard from its `reference-transaction` dispatcher. Git hooks do not bind a
-same-user process that overrides `core.hooksPath`, and Git's files backend
-creates the target of `git branch -m <old> <new>` without a ref transaction, so
-renaming a branch onto a missing protected name is not seen. The guard stops
-mistakes; the protected-history check makes bypasses visible.
+The global hooks directory owned by dotfiles (`~/.config/git/hooks`) runs this guard from its `reference-transaction` dispatcher. Git hooks do not bind a same-user process that overrides `core.hooksPath`, and Git's files backend creates the target of `git branch -m <old> <new>` without a ref transaction, so renaming a branch onto a missing protected name is not seen. The guard stops mistakes; the protected-history check makes bypasses visible.
 
-The same holds for the files the guard reads. A same-user process can rewrite
-`allowed_signers` or `protected-refs`, or the hook itself, and no local
-mechanism stops it. What it cannot do is produce the approval key's signature,
-so a commit it places on a protected branch fails the protected-history check
-and `git verify-commit` against the approval key. The Touch ID gate proves that
-a matching finger touched, not what the operator meant to approve; an
-unexpected Touch ID prompt should be cancelled.
+The same holds for the files the guard reads. A same-user process can rewrite `allowed_signers` or `protected-refs`, or the hook itself, and no local mechanism stops it. What it cannot do is produce the approval key's signature, so a commit it places on a protected branch fails the protected-history check and `git verify-commit` against the approval key. The Touch ID gate proves that a matching finger touched, not what the operator meant to approve; an unexpected Touch ID prompt should be cancelled.

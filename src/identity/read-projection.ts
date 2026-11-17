@@ -145,6 +145,7 @@ export function authAttributionReadFields(
     approved_by_user_id?: string | null;
     execution_evidence_id?: string | null;
     command?: string | null;
+    type?: string | null;
   },
 ): AuthAttributionReadFields {
   const executionEvidence = resolver.attribution({ evidence_id: request.execution_evidence_id });
@@ -155,7 +156,8 @@ export function authAttributionReadFields(
     // Derived from the recorded verification RESULT, not from the evidence
     // method name. Those disagree whenever verification failed.
     merge_signature: resolver.mergeSignatureClaim(request.execution_evidence_id),
-    approval_tier: isAuthMergeCommand(request) ? "signed" : "courtesy",
+    // Only the operator's direct commit (issue a7cc881) creates a "commit" request.
+    approval_tier: isAuthMergeCommand(request) || request.type === "commit" ? "signed" : "courtesy",
     lifecycle_revision: resolver.lifecycleRevision(request.id),
   };
 }

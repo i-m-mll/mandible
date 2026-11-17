@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { AuthQueue } from "../../src/auth-queue.js";
 import type { Db } from "../../src/db.js";
-import { buildMergeCommit, signedCommitObject } from "../../src/merge-commit.js";
+import { buildCommit, signedCommitObject } from "../../src/commit-object.js";
 import type { SignOutcome, SignRequest } from "../../src/operator-signing/signer.js";
 import type { AuthRequest } from "../../src/types.js";
 import { addCredential } from "../../src/users/store.js";
@@ -51,7 +51,7 @@ export function sshSign(key: string, bytes: Buffer): string {
 
 /** Attacker-prepared commit X with the reviewed tree, parents and message; signed by `key` or unsigned. */
 export function forgeX(repo: string, request: AuthRequest, key: string | null, seconds = 1_794_700_000): string {
-  const unsigned = buildMergeCommit({
+  const unsigned = buildCommit({
     tree: request.merge_candidate_tree_sha!, parents: [request.merge_preflight_base_sha!, request.merge_head_sha!],
     message: request.commit_message!, identity: { name: "Mandible Test", email: "mandible-test@localhost" },
     time: { seconds, offset_minutes: 0 },

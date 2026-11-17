@@ -3,9 +3,10 @@ import { childOutput } from "./child-observation.js";
 import type { Signed } from "./operator-signing/authority.js";
 
 /**
- * Protected merge commits are built here, byte for byte, and signed before the
- * executor runs. The executor publishes the signed object and never invokes a
- * signer (issue e523950).
+ * Protected commits are built here, byte for byte, and signed with the
+ * approval key before anything publishes them: a reviewed merge, which the
+ * executor publishes without invoking a signer (issue e523950), and the
+ * operator's direct commit (issue a7cc881).
  */
 
 export interface CommitIdentity {
@@ -13,10 +14,10 @@ export interface CommitIdentity {
   email: string;
 }
 
-export interface MergeCommitInput {
+export interface CommitInput {
   tree: string;
-  /** First parent is the protected base, second the reviewed head. */
-  parents: readonly [string, string];
+  /** First parent is the protected base; a merge's second parent is the reviewed head. */
+  parents: readonly [string, ...string[]];
   /** The exact message, ending in one newline. */
   message: string;
   identity: CommitIdentity;
@@ -34,14 +35,8 @@ export interface CommitSignature {
  * Anything that signs a commit for Mandible: the operator's approval key. The
  * returned signature must already be verified against the credential it names.
  */
-export interface MergeCommitSigner {
+export interface CommitSigner {
   sign(message: Buffer, namespace: "git", signal?: AbortSignal): Promise<Signed<CommitSignature>>;
-}
-
-export interface SignedMergeCommit {
-  sha: string;
-  credential_id: string;
-  signature: string;
 }
 
 const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
@@ -52,16 +47,16 @@ function timezone(offsetMinutes: number): string {
   return `${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}${String(absolute % 60).padStart(2, "0")}`;
 }
 
-function personLine(role: "author" | "committer", input: MergeCommitInput): string {
+function personLine(role: "author" | "committer", input: CommitInput): string {
   const { name, email } = input.identity;
   if (/[<>\n]/.test(name) || /[<>\n]/.test(email)) throw new Error("Commit identity contains characters git does not allow.");
   return `${role} ${name} <${email}> ${input.time.seconds} ${timezone(input.time.offset_minutes)}\n`;
 }
 
 /** The unsigned commit object: exactly the bytes a commit signature covers. */
-export function buildMergeCommit(input: MergeCommitInput): Buffer {
+export function buildCommit(input: CommitInput): Buffer {
   for (const sha of [input.tree, ...input.parents]) if (!SHA.test(sha)) throw new Error(`Not an object id: ${sha}`);
-  if (!input.message.endsWith("\n") || input.message.endsWith("\n\n")) throw new Error("Merge message must end in exactly one newline.");
+  if (!input.message.endsWith("\n") || input.message.endsWith("\n\n")) throw new Error("Commit message must end in exactly one newline.");
   return Buffer.from(
     `tree ${input.tree}\n` +
     input.parents.map((parent) => `parent ${parent}\n`).join("") +
@@ -87,7 +82,7 @@ export function signedCommitObject(unsigned: Buffer, signature: string): Buffer 
 }
 
 /** `localtime` for commit headers, as git computes it from the process time zone. */
-export function commitTime(at: number): MergeCommitInput["time"] {
+export function commitTime(at: number): CommitInput["time"] {
   return { seconds: Math.floor(at / 1000), offset_minutes: -new Date(at).getTimezoneOffset() };
 }
 

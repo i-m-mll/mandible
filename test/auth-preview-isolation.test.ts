@@ -18,7 +18,7 @@ describe("copied auth preview isolation", () => {
     const sourceDb = createMigratedDb();
     const repo = createAuthCheckRepo();
     const sourceQueue = new AuthQueue({ db: sourceDb, backgroundMaintenance: false });
-    const sourceRequest = (await sourceQueue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo source", title: "Source" }));
+    const sourceRequest = (await sourceQueue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", command: "echo source", title: "Source" }));
     const candidateRef = `refs/mandible/auth-candidates/${sourceRequest.id}`;
     const candidateSha = git(repo, ["rev-parse", "HEAD"]);
     git(repo, ["update-ref", candidateRef, candidateSha]);

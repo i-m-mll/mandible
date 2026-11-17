@@ -6,7 +6,7 @@ Projects organize the local OS owner’s ledger and do not restrict local agents
 
 ## Types
 
-Auth request types: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, `data-delete`.
+Auth request types: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, `data-delete`. A `commit` request is only ever the record of the operator's direct commit (`POST /api/auth/commit`); submission and revision refuse it.
 
 Auth request statuses: `pending`, `executing`, `approved`, `needs_rebase`, `completed` (exit 0), `failed` (non-zero exit, with `failure_reason`), `rejected`, `withdrawn`, `superseded`, `expired`, and legacy `dismissed`.
 
@@ -245,6 +245,18 @@ Approve a pending request. The body is `{"lifecycle_revision": <n>}`, the reques
 
 ```json
 { "request_id": "...", "status": "executing" }
+```
+
+### POST /api/auth/commit
+
+The operator's direct commit of a checkout's staged changes onto its protected branch. The body is `{"cwd": "<checkout>", "message": "<message>"}`. Requires `approve_auth` and the configured operator; unavailable through file RPC. Mandible builds the commit from the index (`git write-tree`) with the branch tip as its only parent, the message cleaned as `git commit -m` cleans it, and the operator as author and committer, then the approval key signs it with one Touch ID match on a sheet that names the direct commit, repository, branch, subject and number of files changed. The branch then moves to the signed commit by compare-and-swap from the tip the commit was built on. The checkout's index already holds that tree, so it is left on the new tip with unstaged and untracked changes as they were. Commit hooks do not run.
+
+It refuses with nothing changed when the checkout is not on a branch, the branch is not protected for that repository, nothing is staged, the message is empty, or HEAD or the branch moved before publication (`422` or `409`, with `error`). A refused signature returns the same codes as an approval. Closing the connection while the sheet is up cancels it. Only a published commit is recorded: a completed `commit` request with the message as `commit_message` and its title, the staged diff as `diff_summary`, file and line counts, and the same signature evidence chain as a signed merge, so the commit counts as recorded protected history for the base audit and for the base transitions of pending merges.
+
+**Response:** `201 Created`
+
+```json
+{ "request_id": "...", "commit_sha": "...", "branch": "main", "repo": "...", "title": "...", "files_changed": 1, "additions": 3, "deletions": 0 }
 ```
 
 ### POST /api/auth/request/:id/cancel-proof

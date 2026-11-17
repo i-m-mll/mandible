@@ -6,7 +6,7 @@ import path from "node:path";
 import { observeChild } from "../child-observation.js";
 import { trustedSshKeygenPath } from "../auth-signature-verification.js";
 import type { Db } from "../db.js";
-import type { MergeCommitSigner } from "../merge-commit.js";
+import type { CommitSigner } from "../commit-object.js";
 import { resolveOpenSshPublicKey } from "./public-key.js";
 import { ulid } from "../users/ids.js";
 import {
@@ -215,8 +215,8 @@ export class OperatorSigningAuthority {
     return this.signWith(key, namespace, message, reason, signal);
   }
 
-  /** The approval key as a merge-commit signer; `reason` is shown on the sheet. */
-  commitSigner(reason: string): MergeCommitSigner {
+  /** The approval key as a commit signer; `reason` is shown on the sheet. */
+  commitSigner(reason: string): CommitSigner {
     return { sign: (message, namespace, signal) => this.signWithApprovalKey(namespace, message, reason, signal) };
   }
 

@@ -52,7 +52,7 @@ function setDependencyResult(
 }
 
 async function createAmbiguousRequestPrefix(database: Db, queue: AuthQueue): Promise<string> {
-  const seed = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo ambiguous", title: "Ambiguous dependency seed" }));
+  const seed = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", command: "echo ambiguous", title: "Ambiguous dependency seed" }));
   const columns = database.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>;
   const names = columns.map(({ name }) => `"${name}"`);
   const selections = columns.map(({ name }) => name === "id" ? "?" : `"${name}"`);
@@ -68,7 +68,7 @@ describe("auth dependency readiness", () => {
   it("prioritizes re-pin candidates by resolved identity while approval still requires durable finalization", async () => {
     const { db: database, queue } = setup();
     const submit = (title: string, depends_on_ids: string[] = []) => queue.submit({ ...AUTH_COMMAND_REVIEW,
-      type: "commit", command: `echo ${title}`, title, depends_on_ids });
+      type: "config-change", command: `echo ${title}`, title, depends_on_ids });
     const completed = await submit("completed");
     const second = await submit("second");
     const unrelated = await submit("unrelated");
@@ -98,7 +98,7 @@ describe("auth dependency readiness", () => {
   it("admits independent prerequisites and waits for every direct request without flattening a diamond", async () => {
     const { db: database, queue } = setup();
     const submit = (title: string, depends_on_ids?: string[]) => queue.submit({ ...AUTH_COMMAND_REVIEW,
-      type: "commit", command: `echo ${title}`, title, depends_on_ids });
+      type: "config-change", command: `echo ${title}`, title, depends_on_ids });
     const detail = await submit("detail");
     const source = await submit("source", [detail.id]);
     const validation = await submit("validation", [detail.id]);
@@ -119,11 +119,11 @@ describe("auth dependency readiness", () => {
 
   it("refuses retired writes without creating or changing requests", async () => {
     const { db: database, queue, router } = setup();
-    const request = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo original", title: "Original" });
+    const request = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo original", title: "Original" });
     const before = database.prepare("SELECT * FROM auth_requests").all();
     const events = queue.listLifecycleEvents(request.id);
     expect((await router.invoke({ method: "POST", url: "/api/auth/request", body: {
-      ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo retired", title: "Retired", depends_on_id: request.id,
+      ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo retired", title: "Retired", depends_on_id: request.id,
     } })).status).toBe(410);
     expect((await router.invoke({ method: "PUT", url: `/api/auth/request/${request.id}`, body: { title: "Changed", depends_on_id: null } })).status).toBe(410);
     expect(database.prepare("SELECT * FROM auth_requests").all()).toEqual(before);
@@ -133,8 +133,8 @@ describe("auth dependency readiness", () => {
 
   it("preserves historical storage on unrelated edits and converts only an explicit prerequisite edit", async () => {
     const { db: database, queue } = setup();
-    const source = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo source", title: "Source" });
-    const request = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo legacy", title: "Legacy" });
+    const source = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo source", title: "Source" });
+    const request = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo legacy", title: "Legacy" });
     const short = source.id.slice(0, 8);
     database.prepare("UPDATE auth_requests SET depends_on_ids = NULL, depends_on_id = ? WHERE id = ?").run(short, request.id);
     await queue.update(request.id, { title: "Renamed" });
@@ -149,9 +149,9 @@ describe("auth dependency readiness", () => {
 
   it("rejects invalid admission and cycle edits while preserving prior prerequisites", async () => {
     const { db: database, queue, router } = setup();
-    const root = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo root", title: "root" });
-    const child = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo child", title: "child", depends_on_ids: [root.id] });
-    const submit = (depends_on_ids: unknown) => queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit",
+    const root = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo root", title: "root" });
+    const child = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo child", title: "child", depends_on_ids: [root.id] });
+    const submit = (depends_on_ids: unknown) => queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change",
       command: "echo invalid", title: "invalid", depends_on_ids: depends_on_ids as string[] });
     for (const invalid of [null, "scalar", [""], [" "], [1], ["does-not-exist"]]) {
       await expect(submit(invalid)).rejects.toMatchObject({ status: 400 });
@@ -166,7 +166,7 @@ describe("auth dependency readiness", () => {
     await queue.update(child.id, { depends_on_ids: [] });
     expect((await queue.getRequest(child.id))?.depends_on_ids).toEqual([]);
     const scalar = await router.invoke({ method: "POST", url: "/api/auth/v2/request",
-      body: { ...AUTH_COMMAND_REVIEW, type: "commit", command: "echo scalar", title: "scalar", depends_on_id: root.id } });
+      body: { ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo scalar", title: "scalar", depends_on_id: root.id } });
     expect(scalar.status).toBe(400);
     expect(scalar.body).toMatchObject({ error: expect.stringMatching(/depends_on_id.*retired/) });
     await queue.dispose();
@@ -174,8 +174,8 @@ describe("auth dependency readiness", () => {
 
   it("classifies every durable dependency state and permits only finalized success", async () => {
     const { db: database, queue } = setup();
-    const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo dependency", title: "Dependency" }));
-    const dependent = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+    const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", command: "echo dependency", title: "Dependency" }));
+    const dependent = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
       command: "echo dependent",
       title: "Dependent",
       depends_on_ids: [dependency.id],
@@ -211,12 +211,12 @@ describe("auth dependency readiness", () => {
 
   it("uses the same projection in detail, queue, and history", async () => {
     const { db: database, queue, router } = setup();
-    const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo dependency", title: "Dependency" }));
+    const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", command: "echo dependency", title: "Dependency" }));
     setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
-    const active = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+    const active = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
       command: "echo active", title: "Active dependent", depends_on_ids: [dependency.id],
     }));
-    const historical = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+    const historical = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
       command: "echo historical", title: "Historical dependent", depends_on_ids: [dependency.id],
     }));
     setDependencyResult(database, historical.id, { status: "rejected", exitCode: null, finalizedAt: null });
@@ -237,8 +237,8 @@ describe("auth dependency readiness", () => {
 
   it("blocks ordinary approval until the dependency is durably finalized", async () => {
     const { db: database, queue } = setup();
-    const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit", command: "echo dependency", title: "Dependency" }));
-    const dependent = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+    const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", command: "echo dependency", title: "Dependency" }));
+    const dependent = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
       command: "echo dependent", title: "Dependent", depends_on_ids: [dependency.id],
     }));
 

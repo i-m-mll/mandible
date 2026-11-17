@@ -207,7 +207,7 @@ describe("auth queue", () => {
         await waitUntil(() => queue.isRebuilding, "the self-merge hook phase");
 
         // A request approved during the rebuild window must be parked, not run.
-        const other = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+        const other = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
           command: "echo other",
           title: "Other",
           execution_mode: "daemon",
@@ -234,7 +234,7 @@ describe("auth queue", () => {
       const db = createMigratedDb();
       const now = 5_000_000;
       const q1 = new AuthQueue({ db, now: () => now });
-      const req = (await q1.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const req = (await q1.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
         command: "echo work",
         title: "Interrupted",
         execution_mode: "daemon",
@@ -274,7 +274,7 @@ describe("auth queue", () => {
       const db = createMigratedDb();
       const now = 5_000_000;
       const q1 = new AuthQueue({ db, now: () => now });
-      const req = (await q1.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+      const req = (await q1.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
         command: "echo work",
         title: "Recent",
         execution_mode: "daemon",

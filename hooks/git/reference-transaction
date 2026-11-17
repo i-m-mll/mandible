@@ -104,7 +104,7 @@ while IFS= read -r line; do
   esac
 done <"$refs_file"
 
-hint="Protected branches change only through Mandible: submit an approval request with 'mandible auth request' (see 'mandible help auth request')."
+hint="Protected branches change only through Mandible: submit an approval request with 'mandible auth request' (see 'mandible help auth request'), or, as the operator, commit staged changes with 'mandible commit -m <message>'."
 refused=0
 
 refuse() {

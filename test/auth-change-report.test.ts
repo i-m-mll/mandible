@@ -325,7 +325,7 @@ describe("auth change reports", () => {
       expect(() => db.prepare("UPDATE auth_requests SET files_changed = files_changed + 1 WHERE id = ?").run(request.id))
         .toThrow(/immutable/);
       await expect((async () => (await queue.submit({ ...AUTH_COMMAND_REVIEW,
-        type: "commit",
+        type: "config-change",
         command: "echo invalid",
         title: "Non-merge report",
         change_report: captured,

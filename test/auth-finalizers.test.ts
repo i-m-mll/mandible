@@ -209,7 +209,7 @@ describe("staged finalizer lifecycle", () => {
     const events: SseEvent[] = [];
     const queue = new AuthQueue({ db, broadcast: (event) => events.push(event) });
     try {
-      const id = await submitSuccessfulRequest(queue, { type: "commit" });
+      const id = await submitSuccessfulRequest(queue, { type: "config-change" });
       await completeFixturePublication(queue, id);
       await queue.drainFinalizers();
 

@@ -87,7 +87,7 @@ it("keeps queued initiating origins durable while recording the system executor 
   const queue = new AuthQueue({ db, backgroundMaintenance: false });
   cleanups.push(() => queue.dispose());
   const request = await withRequestOrigin(codex, () => queue.submit({ ...AUTH_COMMAND_REVIEW,
-    type: "commit", command: "true", title: "Origin fixture", execution_mode: "remote" }));
+    type: "config-change", command: "true", title: "Origin fixture", execution_mode: "remote" }));
   const actor = systemAction();
   withRequestOrigin(claude, () => appendAuthLifecycleEvent(db, { requestId: request.id,
     eventType: "revised", priorStatus: "pending", nextStatus: "pending", occurredAt: 2,

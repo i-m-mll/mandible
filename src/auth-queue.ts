@@ -8,7 +8,7 @@ import { forEachInEventLoopSlices } from "./event-loop-slices.js";
 import { assertAuthPublication, bindAuthPublication } from "./auth-publication.js";
 import type { OperatorSigningAuthority } from "./operator-signing/authority.js";
 import { SignedActionRefused } from "./operator-signing/http.js";
-import { buildMergeCommit, commitTime, defaultMergeMessage, signedCommitObject, writeCommitObject } from "./merge-commit.js";
+import { buildCommit, commitTime, defaultMergeMessage, signedCommitObject, writeCommitObject } from "./commit-object.js";
 import type { EvidenceMethod } from "./users/types.js";
 import { DOMAIN_EVENTS, OPERATOR_PROOF_WINDOW_MS, type AuthResolvedPayload } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -27,8 +27,10 @@ import {
   extractAtomicMergeState,
   isValidCommitSha,
   verifyApprovedMerge,
+  verifyMergeCommitSignature,
   type MergeSignatureVerification,
 } from "./auth-signature-verification.js";
+import { cleanCommitMessage, directCommitReason, publishDirectCommit, readStagedCommit, type StagedCommit } from "./direct-commit.js";
 import {
   WITHHOLD_UNTIL_CONVERGED,
   addAuthRequestAction,
@@ -1856,6 +1858,7 @@ export class AuthQueue {
         );
       }
       if (payload.type === "custody-transfer") throw new AuthQueueError("invalid_command", "Custody-transfer approval is retired; explicitly assume responsibility instead.");
+      if (payload.type === "commit") throw new AuthQueueError("invalid_command", "Direct commits are made by the operator with mandible commit, not submitted.");
       const requesterUserId = this.resolveRequesterUserId(payload, requestedByUserId);
       const actor: AuthLifecycleActor = {
         user_id: requesterUserId,
@@ -3652,7 +3655,7 @@ export class AuthQueue {
     }
     const identity = this.operatorCommitIdentity();
     const message = request.commit_message_digest ? this.reviewedChangeMessage(request) : await defaultMergeMessage(cwd, head, branch);
-    return buildMergeCommit({ tree, parents: [base, head], message, identity, time: commitTime(at) });
+    return buildCommit({ tree, parents: [base, head], message, identity, time: commitTime(at) });
   }
 
   private reviewedChangeMessage(request: AuthRequest): string {
@@ -3749,6 +3752,100 @@ export class AuthQueue {
         this.operatorProofs.delete(request.id);
       }
     } finally { finishObservation(); }
+  }
+
+  /**
+   * Issue a7cc881 — the operator's direct commit of `cwd`'s staged changes onto
+   * its protected branch: a signed action of its own kind. The approval key
+   * signs the commit after one touch on a sheet naming it; the branch then
+   * moves by compare-and-swap from the tip the commit was built on. The request
+   * is recorded only once the commit is published, with its message, diff
+   * summary and resulting commit, so a refusal or a cancelled sheet leaves no
+   * request and no ref changed.
+   */
+  async commitAsOperator(input: { cwd: string; message: string }, caller: ApprovalCaller, signal?: AbortSignal): Promise<{ request: AuthRequest; commitSha: string }> {
+    const finishObservation = this.beginObservation();
+    try {
+      this.requireExternalEffects("Direct commit");
+      const operatorId = this.resolveApproverUserId(caller.user_id);
+      const message = cleanCommitMessage(input.message);
+      if (!message) throw new AuthQueueError("invalid_command", "The commit message is empty. Nothing was committed.");
+      if (!this.operatorSigning) throw new SignedActionRefused({ code: "approval_key_required", detail: "This daemon has no approval signer." });
+      const ready = await this.operatorSigning.readyToSign();
+      if (!ready.ok) throw new SignedActionRefused(ready.error);
+      const read = await readStagedCommit(this.db, input.cwd);
+      if (!read.ok) throw new AuthQueueError("invalid_command", read.error);
+      const staged = read.value;
+      const at = this.now();
+      const unsigned = buildCommit({ tree: staged.tree, parents: [staged.parent], message, identity: this.operatorCommitIdentity(), time: commitTime(at) });
+      const controller = new AbortController();
+      const cancel = () => controller.abort();
+      signal?.addEventListener("abort", cancel, { once: true });
+      let expired = false;
+      const expiry = setTimeout(() => { expired = true; controller.abort(); }, OPERATOR_PROOF_WINDOW_MS);
+      const signed = await this.operatorSigning.commitSigner(directCommitReason(staged, message))
+        .sign(unsigned, "git", controller.signal)
+        .finally(() => { clearTimeout(expiry); signal?.removeEventListener("abort", cancel); });
+      if (expired) throw new AuthQueueError("invalid_status", "The approval window closed before Touch ID. Nothing was committed.");
+      if (this.disposed || !this.isDbOpen() || controller.signal.aborted) throw new SignedActionRefused({ code: "cancelled", detail: "Signing was cancelled." });
+      if (!signed.ok) throw new SignedActionRefused(signed.error);
+      const credentialId = signed.value.credential_id;
+      if (!authorizedMergeSignerLines(this.db, operatorId, credentialId).length) {
+        throw new AuthQueueError("invalid_status", "The approval key changed during signing. Nothing was committed.");
+      }
+      const commitSha = await writeCommitObject(staged.checkout, signedCommitObject(unsigned, signed.value.signature));
+      const verification = await verifyMergeCommitSignature(this.db, staged.checkout, commitSha);
+      if (!verification.verified || verification.user_id !== operatorId || verification.credential_id !== credentialId) {
+        throw new AuthQueueError("invalid_status", `The signed commit does not verify against the approval key (${verification.reason}). Nothing was committed.`);
+      }
+      const published = await publishDirectCommit(staged, commitSha, message);
+      if (!published.ok) throw new AuthQueueError("invalid_status", published.error);
+      const request = this.recordDirectCommit({ staged, message, commitSha, operatorId, caller, credentialId, signature: signed.value.signature, fingerprint: verification.fingerprint, at });
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request } });
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(request) });
+      return { request, commitSha };
+    } finally { finishObservation(); }
+  }
+
+  /** The completed record of a published direct commit, with the same evidence chain as a signed merge. */
+  private recordDirectCommit(input: {
+    staged: StagedCommit; message: string; commitSha: string; operatorId: string; caller: ApprovalCaller;
+    credentialId: string; signature: string; fingerprint: string | null; at: number;
+  }): AuthRequest {
+    const { staged, message, commitSha, operatorId, caller, credentialId, at } = input;
+    const id = randomUUID();
+    const now = this.now();
+    return this.db.transaction(() => {
+      this.db.prepare(
+        `INSERT INTO auth_requests (id, session_id, requested_by_user_id, requester_evidence_method, type, command, title, cwd,
+          diff_summary, commit_message, repo, base_branch, files_changed, additions, deletions, execution_mode, status,
+          created_at, updated_at, expires_at, output, target_repo_root)
+        VALUES (?, NULL, ?, ?, 'commit', 'mandible commit', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'daemon', 'pending', ?, ?, ?, '', ?)`,
+      ).run(id, operatorId, caller.evidence_method, message.split("\n", 1)[0]!, staged.checkout, staged.diff, message, staged.repo,
+        staged.branch, staged.files, staged.additions, staged.deletions, at, at, at, staged.repoRoot);
+      this.appendLifecycleEvent({ requestId: id, eventType: "submitted", priorStatus: null, nextStatus: "pending",
+        actor: { user_id: operatorId, evidence_method: caller.evidence_method, credential_id: caller.credential_id }, occurredAt: at });
+      const approval = addAttributionEvidence(this.db, {
+        evidence_method: "credential_signature", credential_id: credentialId,
+        details: { auth_request_id: id, signer_user_id: operatorId, authorizer_user_id: operatorId, verified: true,
+          signed_commit_sha: commitSha, signature: input.signature },
+      }, now);
+      const actor: AuthLifecycleActor = { user_id: operatorId, evidence_method: "credential_signature", evidence_id: approval.id, credential_id: credentialId };
+      this.db.prepare("UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?, approved_by_user_id = ?, execution_evidence_id = ? WHERE id = ?")
+        .run(now, now, operatorId, approval.id, id);
+      this.appendLifecycleEvent({ requestId: id, eventType: "approved", priorStatus: "pending", nextStatus: "approved", actor, occurredAt: now });
+      const publication = addAttributionEvidence(this.db, {
+        evidence_method: "credential_signature", credential_id: credentialId,
+        details: { auth_request_id: id, authorizer_user_id: operatorId, executor_user_id: operatorId, verified: true,
+          publication_verified: true, commit_sha: commitSha, target_head_sha: commitSha, fingerprint: input.fingerprint,
+          signer_user_id: operatorId, reason: null, authorization_evidence_id: approval.id, authorization_evidence_method: "credential_signature" },
+      }, now);
+      this.db.prepare(
+        "UPDATE auth_requests SET status = 'completed', exit_code = 0, output = ?, resolved_at = ?, last_executed_at = ?, updated_at = ?, execution_evidence_id = ? WHERE id = ?",
+      ).run(`Committed ${commitSha} to ${staged.branch}.\n`, now, now, now, publication.id, id);
+      this.appendLifecycleEvent({ requestId: id, eventType: "completed", priorStatus: "approved", nextStatus: "completed", actor, occurredAt: now });
+      return this.requireRequest(id);
+    })();
   }
 
   async approve(id: string, approvedByUserId?: string): Promise<AuthRequest> {
@@ -4438,7 +4535,8 @@ export class AuthQueue {
    *     check and refuses history rewrites and merged-away bases).
    *  2. Every commit on that chain is a two-parent merge commit recorded by a
    *     distinct successfully completed auth merge request for this repo and
-   *     base branch — matched against non-forgeable recorded provenance
+   *     base branch, or a one-parent commit recorded by a completed direct
+   *     commit (issue a7cc881) — matched against non-forgeable recorded provenance
    *     (recordedMergeCommitSha: structured signature evidence, or the
    *     lifecycle-locked single-occurrence output marker for legacy rows),
    *     with duplicate SHA claims across requests refused as reuse — and the
@@ -4448,8 +4546,8 @@ export class AuthQueue {
    *     (verifyApprovedMerge): the commit its approval signed, verifying
    *     against the approving credential.
    *
-   * Anything else — non-descendant rewrites, direct commits to the protected
-   * branch, unsigned or unrecorded merges (including legacy multi-source
+   * Anything else — non-descendant rewrites, unrecorded direct commits to the
+   * protected branch, unsigned or unrecorded merges (including legacy multi-source
    * merge transitions, whose intermediate commits have no per-commit record),
    * or transitions longer than the cap — returns false and keeps the strict
    * requeue error.
@@ -4509,10 +4607,13 @@ export class AuthQueue {
       } catch {
         return refuse("parents_unresolvable", { commit });
       }
-      // Review F1 — exactly two parents. The previous ^1/^2 probes would have
-      // accepted an octopus merge whose extra parents smuggle unreviewed
-      // history; a 1-parent commit is a direct commit, never a queue merge.
-      if (parents.length !== 2) {
+      // Review F1 — exactly two parents for a queue merge. The previous ^1/^2
+      // probes would have accepted an octopus merge whose extra parents
+      // smuggle unreviewed history. Exactly one for the operator's recorded
+      // direct commit (issue a7cc881); any other 1-parent commit is refused.
+      const record = recorded.get(commit);
+      const directCommit = record?.type === "commit";
+      if (parents.length !== (directCommit ? 1 : 2)) {
         return refuse("not_a_two_parent_merge", { commit, parent_count: parents.length });
       }
       if (parents[0] !== expectedFirstParent) {
@@ -4521,17 +4622,16 @@ export class AuthQueue {
       if (reused.has(commit)) {
         return refuse("merge_provenance_reused", { commit });
       }
-      const record = recorded.get(commit);
       if (!record) {
         return refuse("commit_not_a_recorded_queue_merge", { commit });
       }
-      if (!record.merge_head_sha) {
+      if (!directCommit && !record.merge_head_sha) {
         return refuse("recorded_merge_missing_reviewed_head", {
           commit,
           recorded_request_id: record.id,
         });
       }
-      if (parents[1] !== record.merge_head_sha) {
+      if (!directCommit && parents[1] !== record.merge_head_sha) {
         return refuse("merge_second_parent_not_reviewed_head", {
           commit,
           recorded_request_id: record.id,
@@ -4564,8 +4664,9 @@ export class AuthQueue {
   }
 
   /**
-   * Recorded evidence: completed successful queue merges into the request's
-   * repo and base branch, keyed by the merge commit their execution recorded
+   * Recorded evidence: completed successful queue merges and operator direct
+   * commits into the request's repo and base branch, keyed by the commit their
+   * execution recorded
    * (recordedMergeCommitSha — structured signature evidence preferred, with
    * the hardened output marker as legacy fallback). A merge SHA claimed by
    * more than one completed request is reuse/forgery evidence: it is moved to
@@ -4573,7 +4674,7 @@ export class AuthQueue {
    */
   private async recordedQueueMerges(request: AuthRequest): Promise<{ recorded: Map<string, AuthRequest>; reused: Set<string>; assertCurrent(): void }> {
     const read = () => this.db.prepare(
-      "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' AND exit_code = 0 AND base_branch = ? AND id != ? ORDER BY id",
+      "SELECT * FROM auth_requests WHERE type IN ('merge', 'commit') AND status = 'completed' AND exit_code = 0 AND base_branch = ? AND id != ? ORDER BY id",
     ).all(request.base_branch, request.id) as Record<string, unknown>[];
     const decision = (rows: Record<string, unknown>[]) => JSON.stringify(rows.map(raw => {
       const row = mapRow(raw);

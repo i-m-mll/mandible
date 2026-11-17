@@ -122,7 +122,7 @@ for (const cancellation of ["result", "dispose"] as const) {
     await f.ready;
     const first = (f.queue as any).inFlight.get(f.request.id) as Promise<void>;
     try {
-      const follower = await f.queue.submit({ ...AUTH_COMMAND_REVIEW, type: "commit", title: "Queued command",
+      const follower = await f.queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", title: "Queued command",
         command: "echo private follower", cwd: f.repo, target_repo_root: f.repo });
       await approveAsFixtureOperator(f.queue, follower.id, f.signing.operatorId);
       const queued = (f.queue as any).inFlight.get(follower.id) as Promise<void>;

@@ -82,7 +82,7 @@ describe("auth queue", () => {
       if (blockSync) writeFile(repo, "atomic.txt", "local collision\n");
       const order: string[] = [];
       const follower = _phase === "after CAS"
-        ? (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "commit",
+        ? (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
             command: "echo same-repo follower",
             title: "Same-repo follower",
             cwd: repo,
