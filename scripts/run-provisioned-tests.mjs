@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * `bun run test:provisioned [file...]`: the suite that needs a real browser,
- * macOS `lockf` and launchd, or a daemon fleet (test/README.md).
+ * macOS `lockf` and launchd, a daemon fleet, or a `python3` (test/README.md).
  *
  * Each unit runs in its own supervised Vitest process tree under a per-unit
  * RSS cap, a pool of units at a time, with output buffered per unit so

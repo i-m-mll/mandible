@@ -10,7 +10,8 @@
 // other under the chosen compressor.
 //
 // Pipeline:
-//   1. extract   TypeScript AST -> comparable units (functions, types, SQL)
+//   1. extract   TypeScript AST (tsc) or Python AST (scripts/ncd-extract-python.py)
+//                -> comparable units (functions, classes, types, SQL)
 //   2. normalize alpha-rename bound identifiers, erase locally arbitrary
 //                literals, keep operators, control flow, call targets, types
 //   3. prefilter token 5-shingles -> exact prefix filter -> exact Jaccard
@@ -26,6 +27,13 @@
 //                             [--min-tokens N] [--jaccard F] [--ncd-max F]
 //                             [--literals erase|keep] [--kinds a,b,c]
 //                             [--include-dropped] [--quiet]
+//
+// Languages: extraction dispatches on file extension. TypeScript/JavaScript is
+// parsed in-process with the TypeScript compiler API; Python is parsed by
+// Python's own `ast` module in one batch subprocess (`config.pythonBin`, or
+// $NCD_PYTHON, default `python3`). Pairs are never formed across languages:
+// the two normalizers emit disjoint node-kind vocabularies, so a cross-language
+// score would measure the vocabularies, not the code.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -98,8 +106,18 @@ const settings = {
 };
 
 const includeExt = new Set(config.includeExtensions ?? ['.ts', '.tsx']);
+const PYTHON_EXT = new Set(['.py']);
+const PYTHON_BIN = String(process.env.NCD_PYTHON ?? config.pythonBin ?? 'python3');
+const PY_EXTRACTOR = path.join(HERE, 'ncd-extract-python.py');
+const languageOf = (rel) => (PYTHON_EXT.has(path.extname(rel)) ? 'python' : 'ts');
 const excludeRe = (config.excludePaths ?? []).map((p) => new RegExp(p));
 const tagRules = (config.tagRules ?? []).map((r) => ({ tag: r.tag, re: new RegExp(r.path) }));
+// Generated code is detected structurally, by the marker its generator writes
+// into the file, rather than only by a hard-coded path list. Structural
+// similarity among generated files is correct output, not a finding, so it is
+// classified and reported separately instead of silently dropped from the tree.
+const generatedHeaderRes = (config.generatedHeaderPatterns ?? []).map((p) => new RegExp(p, 'im'));
+const HEADER_SCAN_BYTES = 4096;
 const dropPairTags = new Set(config.dropPairTags ?? []);
 const bindingRejections = (config.bindingRejections ?? []).map((r) => ({
   id: r.id, label: r.label, res: r.paths.map((p) => new RegExp(p)),
@@ -136,9 +154,13 @@ function selectFiles() {
   return files;
 }
 
-function tagsFor(rel) {
+function tagsFor(rel, text) {
   const tags = [];
   for (const rule of tagRules) if (rule.re.test(rel)) tags.push(rule.tag);
+  if (text !== undefined && !tags.includes('generated')
+    && generatedHeaderRes.some((re) => re.test(text.slice(0, HEADER_SCAN_BYTES)))) {
+    tags.push('generated');
+  }
   return tags;
 }
 
@@ -295,7 +317,7 @@ function unitNameOf(node) {
   return '<anonymous>';
 }
 
-function extractUnits(rel, text) {
+function extractTsUnits(rel, text) {
   const source = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true, scriptKindFor(rel));
   const units = [];
   const lineOf = (pos) => source.getLineAndCharacterOfPosition(pos).line + 1;
@@ -304,6 +326,7 @@ function extractUnits(rel, text) {
     if (tokens.length < settings.minTokens || tokens.length > settings.maxTokens) return;
     units.push({
       file: rel,
+      language: 'ts',
       kind,
       name,
       start: node.getStart(source),
@@ -334,6 +357,64 @@ function extractUnits(rel, text) {
   };
   walk(source);
   return units;
+}
+
+/**
+ * Python extraction runs in Python, through `ast`. Hand-rolling a Python parser
+ * in JavaScript would be a second source of truth for a grammar that already
+ * ships with the interpreter, and a JS Python-parser dependency would be a
+ * third. The subprocess is spawned once for the whole scan, not once per file.
+ *
+ * The helper returns the same unit shape the TypeScript path produces, except
+ * that SQL units carry `raw` rather than `tokens`: they are normalized here by
+ * the one `normalizeSql` that already exists, so the two languages share it.
+ */
+function runPythonExtractor(sources) {
+  if (!sources.length) return { units: [], errors: [] };
+  const request = JSON.stringify({
+    sources,
+    literals: settings.literals,
+    kinds: [...settings.kinds],
+  });
+  let stdout;
+  try {
+    stdout = execFileSync(PYTHON_BIN, [PY_EXTRACTOR], {
+      input: request, encoding: 'utf8', maxBuffer: 1024 * 1024 * 1024,
+    });
+  } catch (err) {
+    const detail = (err && err.stderr) ? String(err.stderr).trim() : String(err && err.message);
+    throw new Error(`python extraction failed (${PYTHON_BIN} ${PY_EXTRACTOR}): ${detail}`);
+  }
+  return JSON.parse(stdout);
+}
+
+function pythonUnitsFrom(response) {
+  const units = [];
+  for (const u of response.units) {
+    const tokens = u.kind === 'sql' ? normalizeSql(u.raw) : u.tokens;
+    if (tokens.length < settings.minTokens || tokens.length > settings.maxTokens) continue;
+    units.push({
+      file: u.path,
+      language: 'python',
+      kind: u.kind,
+      name: u.name,
+      start: u.start,
+      end: u.end,
+      startLine: u.startLine,
+      endLine: u.endLine,
+      tokens,
+    });
+  }
+  return units;
+}
+
+function extractPythonUnits(rel, text) {
+  return pythonUnitsFrom(runPythonExtractor([{ path: rel, text }]));
+}
+
+/** Language router. Single-file entry point; `main` batches Python instead. */
+function extractUnits(rel, text) {
+  return languageOf(rel) === 'python' ? extractPythonUnits(rel, text) : extractTsUnits(rel, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -465,26 +546,48 @@ function main() {
   const files = timed('select', selectFiles);
   log(`[ncd] ${files.length} tracked source files`);
 
+  const fileTags = new Map();
+  const extractionErrors = [];
+  const filesByLanguage = { ts: 0, python: 0 };
+
   const units = timed('extract', () => {
     const all = [];
+    const pythonSources = [];
     for (const rel of files) {
       const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      fileTags.set(rel, tagsFor(rel, text));
+      const language = languageOf(rel);
+      filesByLanguage[language] += 1;
+      if (language === 'python') { pythonSources.push({ path: rel, text }); continue; }
       try {
-        for (const u of extractUnits(rel, text)) all.push(u);
+        for (const u of extractTsUnits(rel, text)) all.push(u);
       } catch (err) {
+        extractionErrors.push({ file: rel, message: err.message });
         log(`[ncd] extraction failed for ${rel}: ${err.message}`);
       }
     }
+    if (pythonSources.length) {
+      const response = runPythonExtractor(pythonSources);
+      for (const e of response.errors) {
+        extractionErrors.push({ file: e.path, message: e.message });
+        log(`[ncd] extraction failed for ${e.path}: ${e.message}`);
+      }
+      for (const u of pythonUnitsFrom(response)) all.push(u);
+    }
     return all;
   });
-  log(`[ncd] ${units.length} units extracted`);
+  log(`[ncd] ${units.length} units extracted `
+    + `(${filesByLanguage.ts} ts, ${filesByLanguage.python} python files)`);
+
+  const generatedFiles = [...fileTags.entries()].filter(([, t]) => t.includes('generated')).length;
+  if (generatedFiles) log(`[ncd] ${generatedFiles} files classified generated`);
 
   timed('prepare', () => {
     for (const u of units) {
       u.text = u.tokens.join(' ');
       u.buf = Buffer.from(u.text, 'utf8');
       u.clen = clen(u.buf);
-      u.tags = tagsFor(u.file);
+      u.tags = fileTags.get(u.file) ?? tagsFor(u.file);
       u.rejections = rejectionsFor(u.file);
       u.shingles = shingleSet(u.tokens, settings.shingleK);
     }
@@ -506,11 +609,15 @@ function main() {
   const scored = timed('score', () => {
     const results = [];
     let evaluated = 0;
+    let crossLanguage = 0;
     for (const key of candidates) {
       const i = Math.floor(key / n);
       const j = key % n;
       const a = units[i];
       const b = units[j];
+      // The two normalizers emit disjoint node-kind vocabularies, so a
+      // cross-language score would measure the vocabularies, not the code.
+      if (a.language !== b.language) { crossLanguage += 1; continue; }
       // Skip a unit against a unit it lexically contains.
       if (a.file === b.file && a.start < b.end && b.start < a.end) continue;
       const jac = jaccardSorted(a.shingles, b.shingles);
@@ -521,6 +628,7 @@ function main() {
       results.push({ i, j, jaccard: jac, ncd, asymmetry });
     }
     stats.ncdEvaluated = evaluated;
+    stats.crossLanguageSkipped = crossLanguage;
     return results;
   });
 
@@ -529,6 +637,7 @@ function main() {
 
   const describe = (u) => ({
     file: u.file,
+    language: u.language,
     name: u.name,
     kind: u.kind,
     lines: [u.startLine, u.endLine],
@@ -571,6 +680,7 @@ function main() {
       config: path.relative(ROOT, CONFIG_PATH) || CONFIG_PATH,
       node: process.version,
       typescript: ts.version,
+      pythonBin: filesByLanguage.python ? PYTHON_BIN : null,
       compressor: `deflateRaw level=${settings.compressLevel} memLevel=9 windowBits=15`,
       settings: {
         minTokens: settings.minTokens,
@@ -582,17 +692,23 @@ function main() {
       },
       counts: {
         files: files.length,
+        filesByLanguage,
+        generatedFiles,
+        extractionErrors: extractionErrors.length,
         units: units.length,
+        unitsByLanguage: units.reduce((acc, u) => { acc[u.language] = (acc[u.language] ?? 0) + 1; return acc; }, {}),
         unitsByKind: units.reduce((acc, u) => { acc[u.kind] = (acc[u.kind] ?? 0) + 1; return acc; }, {}),
         distinctShingles: stats.distinctShingles,
         postingLists: stats.postingLists,
         candidatePairs: stats.candidatePairs,
+        crossLanguageSkipped: stats.crossLanguageSkipped,
         ncdEvaluated: stats.ncdEvaluated,
         retained: scored.length,
         kept: kept.length,
         droppedByTag: dropped.length,
       },
       timingsMs: Object.fromEntries(Object.entries(timings).map(([k, v]) => [k, Number(v.toFixed(1))])),
+      extractionErrors,
     },
     pairs: kept.slice(0, settings.top),
     droppedPairs: settings.includeDropped ? dropped.slice(0, settings.top) : dropped.slice(0, 40),
@@ -674,6 +790,9 @@ function renderMarkdown(report) {
   return lines.join('\n');
 }
 
-export { extractUnits, normalizeUnit, normalizeSql, shingleSet, jaccardSorted, ncdPair };
+export {
+  extractUnits, extractTsUnits, extractPythonUnits,
+  normalizeUnit, normalizeSql, shingleSet, jaccardSorted, ncdPair,
+};
 
 if (IS_MAIN) main();
