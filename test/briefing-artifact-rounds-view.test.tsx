@@ -406,6 +406,31 @@ describe('artifact-backed Briefing rounds', () => {
     expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').selectedRoundIds).toMatchObject({ 'briefing:briefing-1': ROUND_ONE });
   });
 
+  it('shows a failed submit in the Briefing notice and keeps the draft', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); const method = init?.method ?? 'GET';
+      const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/briefings') return json({ briefings: [detail().briefing] });
+      if (url === '/api/briefing-bundles') return json({ bundles: [] });
+      if (url === '/api/briefing-groups') return json({ groups: [] });
+      if (url === '/api/client-auth/whoami') return json({ authenticated: true, user: { id: 'human', kind: 'human' } });
+      if (method === 'GET' && url.startsWith('/api/briefings/briefing-1')) return json(detail());
+      if (url.includes('/api/artifacts/') && url.endsWith('/content')) return json({ content: { artifact_id: 'artifact:doc', status: 'available', kind: 'markdown', media_type: 'text/markdown', size_bytes: new TextEncoder().encode(source).byteLength, source: null, preview: { encoding: 'utf-8', text: source, raw_text: source, truncated: false }, download: { available: true, media_type: 'text/markdown', size_bytes: source.length, filename: 'briefing.md' } } });
+      if (url.endsWith('/answers')) return json({ answer_event_ids: ['answer-new'] });
+      if (url.endsWith('/submit')) return json({ error: 'submission store unavailable' }, 500);
+      throw new Error(`unexpected ${method} ${url}`);
+    }));
+    window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({ ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE, selectedCollectionId: 'briefing:briefing-1' }));
+    render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
+    const submit = screen.getByRole('button', { name: 'Submit' });
+    await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
+    fireEvent.click(submit);
+    const alert = await within(noticeHost).findByRole('alert');
+    expect(alert.textContent).toContain('submission store unavailable');
+    expect(screen.getByRole('button', { name: 'Dismiss' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('revokes mutation authority on reconnect and retains last-good content when the round read fails', async () => {
     let detailReads = 0;
     const posts: string[] = [];

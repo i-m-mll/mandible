@@ -154,6 +154,7 @@ export function BriefingDocumentRenderer({
   const [renameError, setRenameError] = useState<string | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
   const [hideSubmittedAnnotations, setHideSubmittedAnnotations] = useState(false);
   const [resultId, setResultId] = useState<string | null>(null);
@@ -262,6 +263,7 @@ export function BriefingDocumentRenderer({
     setStatus(null);
     setExportBusy(false);
     setExportError(null);
+    setMutationError(null);
     setHideSubmittedAnnotations(false);
     setResultId(null);
     setResultCopied(false);
@@ -359,6 +361,7 @@ export function BriefingDocumentRenderer({
 
     setBusy(true);
     setStatus(null);
+    setMutationError(null);
     try {
       const answerItems = round.items.filter((item) => item.item_kind === 'item');
       const operations: BriefingAnswerOperation[] = [];
@@ -425,11 +428,11 @@ export function BriefingDocumentRenderer({
       setValidationErrors({});
     } catch (error) {
       if (!mutationIsCurrent()) return;
-      setStatus(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setMutationError(isApiErrorStatus(error, 409) ? `The round changed. ${message}` : message);
       // The answer batch may have landed even when submit failed. Refetch both
       // ordinary failures and 409s, preserving the unsaved local draft.
       await reconcile(selectedOverlayId);
-      if (isApiErrorStatus(error, 409)) setStatus(`The round changed. ${error.message}`);
     } finally {
       if (mutationIsCurrent()) setBusy(false);
     }
@@ -492,6 +495,7 @@ export function BriefingDocumentRenderer({
     const annotationIds = pendingAnnotations.map((annotation) => annotation.annotation_event_id);
     setClearBusy(true);
     setStatus(null);
+    setMutationError(null);
     try {
       const result = await postBriefingAnnotations(briefingId, round.selected_round_id, annotationIds.map((annotationEventId) => ({
         operation: 'retract' as const,
@@ -505,7 +509,7 @@ export function BriefingDocumentRenderer({
       setClearConfirmOpen(false);
       setStatus(`${annotationIds.length} pending annotation${annotationIds.length === 1 ? '' : 's'} cleared.`);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      setMutationError(error instanceof Error ? error.message : String(error));
       await reconcile(null);
     } finally {
       setClearBusy(false);
@@ -616,11 +620,12 @@ export function BriefingDocumentRenderer({
       footerClassName="briefing-detail__footer"
       headerRef={headerRef}
       ariaBusy={load.loading}
-      notice={load.error || exportError || (round && !round.valid) || documentFailure ? (
+      notice={load.error || exportError || mutationError || (round && !round.valid) || documentFailure ? (
         <DetailPaneNotice severity="error" density="compact" title="Briefing needs attention">
           {[
             load.error,
             exportError,
+            mutationError,
             round && !round.valid ? 'The selected Briefing projection is invalid or unsupported.' : null,
             documentFailure,
           ].filter(Boolean).join(' · ')}
