@@ -40,11 +40,21 @@ export function isOperator(db: Db, identity: ResolvedClientIdentity): boolean {
   return operatorId !== null && identity.user_id === operatorId;
 }
 
+/** Whether the request carries any sign of an agent: an ambient provider identity, the managed-client flag, or a managed app/session identity. */
+export function hasAgentMarker(req: RequestLike): boolean {
+  return (req as RequestLike & { managed_client?: boolean }).managed_client === true
+    || Boolean((req as RequestLike & { local_managed_identity?: unknown }).local_managed_identity)
+    || Boolean(req.ambient_identity);
+}
+
 export function isLocalHumanRequest(req: RequestLike): boolean {
-  return req.client_identity?.method === "local_socket"
-    && (req as RequestLike & { managed_client?: boolean }).managed_client !== true
-    && !(req as RequestLike & { local_managed_identity?: unknown }).local_managed_identity
-    && !req.ambient_identity;
+  return req.client_identity?.method === "local_socket" && !hasAgentMarker(req);
+}
+
+/** The user: the configured operator's identity, with no agent marker on any transport. */
+export function isUserRequest(db: Db, req: RequestLike): boolean {
+  const identity = req.client_identity;
+  return Boolean(identity && isOperator(db, identity) && !hasAgentMarker(req));
 }
 
 /**
@@ -154,9 +164,7 @@ export function authorizeOperatorSetup(db: Db, req: RequestLike): void {
     requireOperator(db, req);
     return;
   }
-  if ((req as RequestLike & { managed_client?: boolean }).managed_client === true
-      || (req as RequestLike & { local_managed_identity?: unknown }).local_managed_identity
-      || req.ambient_identity) {
+  if (hasAgentMarker(req)) {
     throw new ClientAuthzError(403, "operator_setup_human_required",
       "Initial operator setup requires a local human invocation.");
   }

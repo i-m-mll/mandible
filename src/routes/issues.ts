@@ -1,7 +1,8 @@
 import { parseAssignmentTarget, resolveAssignmentTarget } from "../work-unit-assignment.js";
 import { exactAgentRef } from "../ambient-provider-identity.js";
 import { listIssueHierarchyEdges } from "../ledger/issue-graph.js";
-import { responsibilityActor, sameResponsibilitySession, sessionResponsibilityActor } from "../responsibility.js";
+import { custodyGate, responsibilityActor, sameResponsibilitySession, sessionResponsibilityActor, type CustodyDecision, type ResponsibilityActor } from "../responsibility.js";
+import { describeCustodyHolder } from "../work-unit-custody.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { existsSync } from "node:fs";
 import { WorkScanner } from "../work-scanner.js";
@@ -381,12 +382,23 @@ function parentRolePrecondition(db: Db, req: RequestLike, issueId: string, body:
   const latest = new LedgerStore(db).getLatestIssueCheckpoint(issueId, "parent-role");
   if (!("expected_checkpoint_id" in body) || body.expected_checkpoint_id !== (latest?.id ?? null)) return { error: "Parent-role revision changed or expected_checkpoint_id is missing; refresh and retry." };
   if (typeof body.reason !== "string" || !body.reason.trim()) return { error: "A transfer reason is required." };
-  if (release && latest) {
-    const payload = JSON.parse(latest.payload_json) as Record<string, unknown>;
-    const actor = responsibilityActor(req);
-    if (payload.authenticated_user_id !== actor.user_id || !sameResponsibilitySession(db, payload.session_id as string | null, actor.session_id)) return { error: "Only the current responsible session may relinquish the parent role." };
+  if (release && latest && !parentRoleGate(db, JSON.parse(latest.payload_json) as Record<string, unknown>, responsibilityActor(req)).allowed) {
+    return { error: "Only the current responsible session may relinquish the parent role." };
   }
   return null;
+}
+
+/** The custody gate over a parent-role checkpoint's holder. */
+function parentRoleGate(db: Db, payload: Record<string, unknown> | null, actor: ResponsibilityActor): CustodyDecision {
+  return custodyGate(db, {
+    owner_user_id: typeof payload?.authenticated_user_id === "string" ? payload.authenticated_user_id : null,
+    responsibility_session_id: typeof payload?.session_id === "string" ? payload.session_id : null,
+  }, actor);
+}
+
+function passedOverReply(db: Db, decision: CustodyDecision): Record<string, unknown> {
+  const holder = decision.allowed ? decision.passed_over : null;
+  return holder ? { custody_passed_over: describeCustodyHolder(db, holder.user_id, holder.session_id) } : {};
 }
 
 function latestCheckpoint(projection: LedgerIssueDetailProjection, kind: string): unknown {
@@ -1126,7 +1138,7 @@ export function registerIssueRoutes(
     const body = getBody(req) ?? {};
     const selectedSessionId = typeof body.session_id === "string" ? body.session_id.trim() : "";
     const caller = responsibilityActor(req);
-    const sessionId = selectedSessionId === req.ambient_identity?.agent_id ? caller.session_id ?? selectedSessionId : selectedSessionId;
+    const sessionId = caller.kind === "agent" && selectedSessionId === req.ambient_identity?.agent_id ? caller.session_id : selectedSessionId;
     const mechanism = typeof body.mechanism === "string" && body.mechanism.trim()
       ? body.mechanism.trim()
       : "unknown";
@@ -1151,11 +1163,12 @@ export function registerIssueRoutes(
     const failure = parentRolePrecondition(db, req, issueId, body, false);
     if (failure) { sendJson(res, 409, failure); return; }
     const actor = responsibilityActor(req);
-    const handingOff = !sameResponsibilitySession(db, sessionId, actor.session_id);
-    if (handingOff && (!holder || !sameResponsibilitySession(db, holder.session_id as string | null, actor.session_id) || (holder.payload as Record<string, unknown>)?.authenticated_user_id !== actor.user_id)) {
-      sendJson(res, 403, { error: "Assume responsibility before handing the role to another session." }); return;
+    const successor = actor.kind === "agent" && sameResponsibilitySession(db, sessionId, actor.session_id) ? actor : sessionResponsibilityActor(db, sessionId);
+    const handingOff = successor !== actor;
+    const decision = parentRoleGate(db, (holder?.payload as Record<string, unknown> | undefined) ?? null, actor);
+    if (handingOff && !decision.allowed) {
+      sendJson(res, 403, { error: "Only the responsible session may hand the role to another session." }); return;
     }
-    const successor = handingOff ? sessionResponsibilityActor(db, sessionId) : actor;
     if (!successor) { sendJson(res, 400, { error: "Successor user is unresolved." }); return; }
     const checkpoint = recordParentRoleCheckpoint(req, issueId, (now) => ({
       session_id: resolution.agent_ref ?? sessionId,
@@ -1173,6 +1186,7 @@ export function registerIssueRoutes(
       responsibility_session_id: successor.session_id,
     }));
     sendJson(res, 200, {
+      ...(handingOff ? passedOverReply(db, decision) : {}),
       ok: true,
       checkpoint: checkpointResponse(checkpoint),
       parent_role: buildParentRoleStatus(db, issueId, decisionResolver),
@@ -1193,15 +1207,18 @@ export function registerIssueRoutes(
     }
     const failure = parentRolePrecondition(db, req, issueId, body, true);
     if (failure) { sendJson(res, 409, failure); return; }
+    const actor = responsibilityActor(req);
+    const passedOver = passedOverReply(db, parentRoleGate(db, holder.payload as Record<string, unknown>, actor));
     const checkpoint = recordParentRoleCheckpoint(req, issueId, (now) => ({
       released: true,
       released_at: now,
-      released_by_session_id: responsibilityActor(req).session_id,
+      released_by_session_id: actor.kind === "agent" ? actor.session_id : null,
       reason: body.reason,
       authority: "relinquishment",
       previous_holder: holder,
     }));
     sendJson(res, 200, {
+      ...passedOver,
       ok: true,
       released: true,
       checkpoint: checkpointResponse(checkpoint),

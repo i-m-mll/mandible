@@ -145,7 +145,7 @@ it('retires a failed delivery with guarded explicit intent and displays truthful
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout).toContain('retired; cleanup pending');
   expect(responder.requests[0]).toMatchObject({ method: 'POST', path: `/api/auth/request/${id}/retire-delivery`,
-    body: { reason: 'Replaced by corrected delivery', expected_revision: 4, expected_custody_generation: 2, operator_recovery: false } });
+    body: { reason: 'Replaced by corrected delivery', expected_revision: 4, expected_custody_generation: 2 } });
   const show = await runCli(['auth', 'show', id], { env });
   expect(show.status, show.stderr).toBe(0);
   expect(show.stdout).toMatch(/hook skipped, retired \(1\): builtin-mandible-rebuild/);
@@ -178,22 +178,25 @@ describe("auth handoff verification", () => {
     else expect(human.stdout).not.toContain(originalFailure);
     expect(responder.requests.map(({ method, path, body }) => ({ method, path, body }))).toEqual(
       [{ method: "POST", path: `/api/auth/request/${requestId}/retry-convergence`,
-        body: { mode: "verify-current", operator_recovery: false } }],
+        body: { mode: "verify-current" } }],
     );
   });
 
-  it("reports recovery only after confirmation and sends the explicit operator recovery flag", async () => {
-    const response = { request_id: requestId, convergence: convergence("complete"), verification: { outcome: "confirmed" } };
+  it("reports recovery only after confirmation and notes the holder it passed over", async () => {
+    const response = { request_id: requestId, convergence: convergence("complete"), verification: { outcome: "confirmed" },
+      custody_passed_over: { user_id: "agent-user", user_slug: "claude-agent", session_id: "agent:claude:abcdef1234" } };
     const { env, responder } = fileRpc(() => ({ status: 200, body: response }));
     cleanups.push(() => responder.stop());
-    const result = await runCli(["auth", "handoff", "recover", requestId, "--operator-recovery"], { env });
+    const result = await runCli(["auth", "handoff", "recover", requestId], { env });
 
     expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr.trim().split("\n").filter(line => line.includes("claude-agent"))).toEqual(
+      ["Note: claude-agent (session agent:claude:abcdef1234) holds custody of this item and keeps it."]);
     expect(result.stdout).toMatch(/\brecovered\b/i);
     expect(result.stdout).toContain("complete");
     expect(result.stdout).not.toMatch(/verification.*(?:pending|unconfirmed)/i);
     expect(responder.requests.map(({ method, path, body }) => ({ method, path, body }))).toEqual([
-      { method: "POST", path: `/api/auth/request/${requestId}/retry-convergence`, body: { mode: "verify-current", operator_recovery: true } },
+      { method: "POST", path: `/api/auth/request/${requestId}/retry-convergence`, body: { mode: "verify-current" } },
     ]);
   });
 

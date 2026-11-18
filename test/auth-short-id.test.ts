@@ -143,7 +143,6 @@ describe("auth request short ids", () => {
       body: {
         title: "Short-id update",
         merge_head_sha: "2222222222222222222222222222222222222222",
-        operator_recovery: true,
         expected_revision: 2,
         expected_custody_generation: 0,
       },

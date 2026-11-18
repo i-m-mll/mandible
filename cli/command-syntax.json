@@ -382,7 +382,6 @@
         {"kind":"option","names":["--reason"],"values":[{"kind":"argument","name":"text","value":{"type":"string"}}]},
         {"kind":"option","names":["--expected-revision"],"values":[{"kind":"argument","name":"n","value":{"type":"integer"}}]},
         {"kind":"option","names":["--expected-custody-generation"],"values":[{"kind":"argument","name":"n","value":{"type":"integer"}}]},
-        {"kind":"optional","item":{"kind":"option","names":["--operator-recovery"],"values":[]}},
         {"kind":"optional","item":{"kind":"option","names":["--json"],"values":[]}}
       ]}
     },
@@ -412,7 +411,6 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "request","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "option","names": ["--operator-recovery"],"values": []}},
           {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
         ]
       }
@@ -2803,7 +2801,6 @@
           {"kind": "option","names": ["--expected-revision"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
           {"kind": "option","names": ["--expected-custody-generation"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
           {"kind": "option","names": ["--expected-current-snapshot-sha256"],"values": [{"kind": "argument","name": "sha256","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--operator-recovery"],"values": []}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}},
           {"kind": "argument","name": "'","value": {"type": "string"}}
         ]
@@ -3371,7 +3368,6 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "request","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "option","names": ["--operator-recovery"],"values": []}},
           {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
         ]
       }

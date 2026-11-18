@@ -1,6 +1,6 @@
 import { serializeAssignmentTarget, assignmentTargetForSession, parseAssignmentTarget, resolveAssignmentTarget } from "../work-unit-assignment.js";
 import { mutateWorkUnit } from "../work-unit-history.js";
-import { responsibilityActor, holdsResponsibility, sessionResponsibilityActor, sameResponsibilitySession } from "../responsibility.js";
+import { actorHolder, custodyGate, responsibilityActor, sessionResponsibilityActor, type CustodyOwner, type ResponsibilityActor, type ResponsibilityHolder } from "../responsibility.js";
 import { randomUUID } from "node:crypto";
 import {
   normalizeAmbientProviderIdentity,
@@ -33,6 +33,7 @@ import {
   CustodyGenerationConflict,
   describeCustodyHolder,
   freshHolderReader,
+  holderLabel,
   takeoverCommand,
   transferWorkUnitCustody,
   type CustodyAuthorityPath,
@@ -264,17 +265,10 @@ export function registerWorkUnitRoutes(
     });
     return freshHolderReader(db, units, sessionManager);
   };
-  const matchedUnitIds = (issueId: unknown, repoRef: unknown, branch: unknown): string[] => {
-    if (typeof issueId !== "string" || !issueId || typeof repoRef !== "string" || !repoRef) return [];
-    const match = findExistingWorkUnit(db, issueId, normalizeProjectRepoId(db, repoRef),
-      typeof branch === "string" ? branch : null);
-    return match.status === "matched" && match.work_unit ? [match.work_unit.id] : [];
-  };
 
   // POST /api/work-units/claim — create a new work unit (state=open)
   server.post("/api/work-units/claim", async (req, res) => {
     const body = readBody<ClaimInput>(req);
-    const readCodexTask = await holderReader(matchedUnitIds(body.issue_id, body.repo_id, body.branch));
 
     if (!body.issue_id || typeof body.issue_id !== "string") {
       sendJson(res, 400, { error: "Missing or invalid issue_id" });
@@ -311,9 +305,11 @@ export function registerWorkUnitRoutes(
         sendJson(res, 409, { error: current.auth_request_id ? "Auth-bound work-unit ancestry cannot change." : "Existing parent branch conflicts with the requested parent." });
         return;
       }
+      let passedOver: ResponsibilityHolder | null = null;
       if (changingKind || body.expected_generation !== undefined) {
-        const failure = custodyMutationFailure(db, req, current, body.expected_generation);
-        if (failure) { sendJson(res, failure.status, failure); return; }
+        const mutation = custodyMutation(db, req, current, body.expected_generation);
+        if (!mutation.ok) { sendJson(res, mutation.status, mutation.refusal); return; }
+        passedOver = mutation.passed_over;
       }
       if (changingKind) {
         if (current.auth_request_id || current.kind === "integration") {
@@ -330,7 +326,7 @@ export function registerWorkUnitRoutes(
           const issue = db.prepare("SELECT kind FROM ledger_issues WHERE id = ?").get(current.ledger_issue_id) as { kind: string } | undefined;
           const checkpoint = new LedgerStore(db).getLatestIssueCheckpoint(current.ledger_issue_id, "parent-role");
           const payload = checkpoint ? JSON.parse(checkpoint.payload_json) as Record<string, unknown> : null;
-          const actor = responsibilityIdentity(req)!;
+          const actor = responsibilityActor(req);
           const refusal = issue?.kind !== "umbrella"
             ? "Integration promotion requires a work unit on an umbrella issue."
             : !body.parent_role_checkpoint_id
@@ -339,7 +335,7 @@ export function registerWorkUnitRoutes(
                 ? "This umbrella has no parent-role checkpoint; run issue parent-role assume first."
                 : checkpoint.id !== body.parent_role_checkpoint_id
                   ? `Checkpoint ${shortRef(db, "checkpoint", body.parent_role_checkpoint_id)} is not this umbrella's latest parent-role checkpoint (${shortRef(db, "checkpoint", checkpoint.id)}); pass the latest one.`
-                  : payload?.authenticated_user_id !== actor.user_id || !sameResponsibilitySession(db, payload?.responsibility_session_id as string | null, actor.session_id)
+                  : !custodyGate(db, checkpointOwner(payload), actor).allowed
                     ? "The latest parent-role checkpoint was recorded by another responsible session; run issue parent-role assume with this actor."
                     : null;
           if (refusal) {
@@ -377,36 +373,26 @@ export function registerWorkUnitRoutes(
         updates.push("execution_identity_json = ?");
         params.push(JSON.stringify(ambientIdentity));
       }
-      const actor = responsibilityIdentity(req);
-      const owned = db.prepare("SELECT owner_user_id, responsibility_session_id FROM work_units WHERE id = ?").get(existing.id) as { owner_user_id: string | null; responsibility_session_id: string | null };
-      if (owned.owner_user_id && !actor) {
-        sendJson(res, 401, { error: "Existing work-unit custody requires a durable actor." });
-        return;
-      }
+      const actor = responsibilityActor(req);
       // Issue 72b00f8 — a claim that re-records the session or credential on a
       // held unit obeys the holder rule. The holder's own handoff
       // (`claim --session <worker>`) passes because the caller is the holder.
-      const recordsSession = changingParent || Boolean(ambientIdentity) ||
-        Boolean("assigned_session_id" in body && existing.assigned_session_id !== assignedSessionId);
-      if (actor && (recordsSession || current.custody_generation > 0)) {
-        const refusal = holderRefusal(db, mapRow(current as unknown as Record<string, unknown>), actor,
-          (ambientIdentity ? exactAgentRef(ambientIdentity) : null), sessionManager, readCodexTask);
-        if (refusal) { sendJson(res, 409, refusal); return; }
-      }
-      if (actor) {
-        const custody = assignInitialCustody(db, existing.id, actor.user_id, actor.session_id, now);
-        if (!custody.ok) {
-          sendJson(res, 409, { error: custody.error, code: "work_unit_custody_conflict" });
-          return;
-        }
+      const unit = mapRow(current as unknown as Record<string, unknown>);
+      const refusal = holderRefusal(db, unit, actor);
+      if (refusal) { sendJson(res, 409, refusal); return; }
+      passedOver ??= heldPassedOver(db, unit, actor);
+      const custody = assignInitialCustody(db, existing.id, actor);
+      if (!custody.ok) {
+        sendJson(res, 409, { error: custody.error, code: "work_unit_custody_conflict" });
+        return;
       }
       const corrected = db.transaction(() => {
         if (updates.length > 0) {
           const guard = changingKind
-            ? " AND custody_generation = ? AND owner_user_id = ? AND responsibility_session_id IS ? AND kind = ? AND auth_request_id IS NULL"
+            ? " AND custody_generation = ? AND owner_user_id IS ? AND responsibility_session_id IS ? AND kind = ? AND auth_request_id IS NULL"
             : "";
           const changed = mutateWorkUnit(db, existing.id, () => db.prepare(`UPDATE work_units SET ${updates.join(", ")} WHERE id = ?${guard}`)
-            .run(...params, existing.id, ...(changingKind ? [body.expected_generation, current.owner_user_id, current.responsibility_session_id, current.kind] : [])), attributionForRequest(db, req));
+            .run(...params, existing.id, ...(changingKind ? [body.expected_generation, current.owner_user_id, current.responsibility_session_id, current.kind] : [])), attributionForRequest(db, req), operatorOverride(passedOver));
           if (changed.changes !== 1) return false;
         }
         if (changingKind) {
@@ -437,6 +423,7 @@ export function registerWorkUnitRoutes(
         kind: updated.kind,
         custody_generation: updated.custody_generation,
         existing: true,
+        ...passedOverReply(db, passedOver),
         ...ledgerLinkFieldsForExisting(ledgerLink, existing.ledger_issue_id),
         ...ledgerIssueMetadataFields(db, ledgerLink, existing.ledger_issue_id),
       });
@@ -449,7 +436,7 @@ export function registerWorkUnitRoutes(
     }
     const id = randomUUID();
     const kind = body.kind ?? "solo";
-    const actor = responsibilityIdentity(req);
+    const actor = responsibilityActor(req);
     const ownerUserId = actor?.user_id ?? resolveSessionOwnerUserId(
       db,
       {
@@ -481,7 +468,7 @@ export function registerWorkUnitRoutes(
       0,
       "assigned_session_id" in body && !assignedSessionId ? null : serializeAssignmentTarget(assignmentTargetForSession(db, assignedSessionId, ambientIdentity)),
     ));
-    if (actor) assignInitialCustody(db, id, actor.user_id, actor.session_id, now);
+    if (actor) assignInitialCustody(db, id, actor);
 
     const ledgerLink = linkLedgerIssue(db, id, body.issue_id, repoId);
     sendJson(res, 201, {
@@ -497,7 +484,6 @@ export function registerWorkUnitRoutes(
   // POST /api/work-units/activate — mark as committed, update timestamps
   server.post("/api/work-units/activate", async (req, res) => {
     const body = readBody<ActivateInput>(req);
-    const readCodexTask = await holderReader(matchedUnitIds(body.issue_id, body.repo_id, body.branch));
 
     if (!body.issue_id || typeof body.issue_id !== "string") {
       sendJson(res, 400, { error: "Missing or invalid issue_id" });
@@ -527,26 +513,17 @@ export function registerWorkUnitRoutes(
     const existing = match.work_unit;
 
     if (existing) {
-      const actor = responsibilityIdentity(req);
-      const owned = db.prepare("SELECT owner_user_id, responsibility_session_id FROM work_units WHERE id = ?").get(existing.id) as { owner_user_id: string | null; responsibility_session_id: string | null };
-      if (owned.owner_user_id && !actor) {
-        sendJson(res, 401, { error: "Existing work-unit custody requires a durable actor." });
-        return;
-      }
+      const actor = responsibilityActor(req);
       // Issue 72b00f8 — activation re-records the session, so it obeys the
       // holder rule and never takes a unit over implicitly.
-      if (actor) {
-        const unit = mapRow(db.prepare("SELECT * FROM work_units WHERE id = ?").get(existing.id) as Record<string, unknown>);
-        const refusal = holderRefusal(db, unit, actor,
-          (ambientIdentity ? exactAgentRef(ambientIdentity) : null), sessionManager, readCodexTask);
-        if (refusal) { sendJson(res, 409, refusal); return; }
-      }
-      if (actor) {
-        const custody = assignInitialCustody(db, existing.id, actor.user_id, actor.session_id, now);
-        if (!custody.ok) {
-          sendJson(res, 409, { error: custody.error, code: "work_unit_custody_conflict" });
-          return;
-        }
+      const unit = mapRow(db.prepare("SELECT * FROM work_units WHERE id = ?").get(existing.id) as Record<string, unknown>);
+      const refusal = holderRefusal(db, unit, actor);
+      if (refusal) { sendJson(res, 409, refusal); return; }
+      const passedOver = heldPassedOver(db, unit, actor);
+      const custody = assignInitialCustody(db, existing.id, actor);
+      if (!custody.ok) {
+        sendJson(res, 409, { error: custody.error, code: "work_unit_custody_conflict" });
+        return;
       }
       // Update to committed state, update timestamps
       const updates: string[] = ["state = 'committed'", "last_commit_at = ?"];
@@ -587,10 +564,11 @@ export function registerWorkUnitRoutes(
 
       mutateWorkUnit(db, existing.id, () => db.prepare(
         `UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`
-      ).run(...params), attributionForRequest(db, req));
+      ).run(...params), attributionForRequest(db, req), operatorOverride(passedOver));
 
       const ledgerLink = linkLedgerIssue(db, existing.id, body.issue_id, repoId);
       sendJson(res, 200, {
+        ...passedOverReply(db, passedOver),
         id: existing.id,
         state: "committed",
         ...ledgerLinkFieldsForExisting(ledgerLink, existing.ledger_issue_id),
@@ -599,7 +577,7 @@ export function registerWorkUnitRoutes(
     } else {
       // No existing work unit — create one in committed state (auto-claim)
       const id = randomUUID();
-      const actor = responsibilityIdentity(req);
+      const actor = responsibilityActor(req);
       const ownerUserId = actor?.user_id ?? resolveSessionOwnerUserId(
         db,
         {
@@ -632,7 +610,7 @@ export function registerWorkUnitRoutes(
         0,
         "assigned_session_id" in body && !assignedSessionId ? null : serializeAssignmentTarget(assignmentTargetForSession(db, assignedSessionId, ambientIdentity)),
       ));
-      if (actor) assignInitialCustody(db, id, actor.user_id, actor.session_id, now);
+      if (actor) assignInitialCustody(db, id, actor);
 
       const ledgerLink = linkLedgerIssue(db, id, body.issue_id, repoId);
       sendJson(res, 201, {
@@ -671,8 +649,8 @@ export function registerWorkUnitRoutes(
         return;
       }
     }
-    const failure = custodyMutationFailure(db, req, row, body.expected_generation);
-    if (failure) { sendJson(res, failure.status, failure); return; }
+    const mutation = custodyMutation(db, req, row, body.expected_generation);
+    if (!mutation.ok) { sendJson(res, mutation.status, mutation.refusal); return; }
     if (row.state === 'resolved') {
       sendJson(res, 409, { error: "Resolved work cannot be released." });
       return;
@@ -680,7 +658,7 @@ export function registerWorkUnitRoutes(
     if (!body.reason?.trim()) { sendJson(res, 400, { error: "reason is required" }); return; }
     transferWorkUnitCustody(db, { unit: mapRow(rows[0] as Record<string, unknown>), expected_generation: body.expected_generation!,
       new_user_id: null, new_session_id: null, authority_path: "handoff", reason: body.reason.trim(), comment_attribution: attributionForRequest(db, req), raise_notice });
-    sendJson(res, 200, { ok: true, id: row.id, released: 1 });
+    sendJson(res, 200, { ...passedOverReply(db, mutation.passed_over), ok: true, id: row.id, released: 1 });
   }, { operation: { id: "post:/api/work-units/release", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow",
     refs: { body: { id: entityRefs.workUnit } } });
 
@@ -700,9 +678,9 @@ export function registerWorkUnitRoutes(
       return;
     }
     for (const row of rows) {
-      const failure = custodyMutationFailure(db, req, row,
+      const mutation = custodyMutation(db, req, row,
         body.work_units.find(x => x.id === row.id)!.expected_generation);
-      if (failure) { sendJson(res, failure.status, failure); return; }
+      if (!mutation.ok) { sendJson(res, mutation.status, mutation.refusal); return; }
     }
     if (!body.reason?.trim()) { sendJson(res, 400, { error: "reason is required" }); return; }
     db.transaction(() => {
@@ -746,11 +724,7 @@ export function registerWorkUnitRoutes(
   // Issue 72b00f8 — read-only custody answer for commit wrappers. Registered
   // before GET /api/work-units/:id so the literal path is not read as an id.
   server.get("/api/work-units/custody-check", async (req, res) => {
-    const identity = responsibilityIdentity(req);
-    if (!identity) {
-      sendJson(res, 401, { error: "The custody check requires an authenticated durable client actor.", code: "durable_credential_required" });
-      return;
-    }
+    const actor = responsibilityActor(req);
     const repoParam = typeof req.query.repo_id === "string" ? req.query.repo_id.trim() : "";
     const branch = typeof req.query.branch === "string" ? req.query.branch.trim() : "";
     const issueParam = typeof req.query.issue_id === "string" ? req.query.issue_id.trim() : "";
@@ -777,15 +751,11 @@ export function registerWorkUnitRoutes(
     }
     const unit = rows[0] ? mapRow(rows[0]) : null;
     const readCodexTask = await holderReader(unit ? [unit.id] : []);
-    sendJson(res, 200, custodyCheck(db, unit, identity, req, sessionManager, readCodexTask));
+    sendJson(res, 200, custodyCheck(db, unit, actor, sessionManager, readCodexTask));
   }, { operation: { id: "get:/api/work-units/custody-check", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/work-units/:id/custody/assume", async (req, res) => {
-    const identity = responsibilityIdentity(req);
-    if (!identity) {
-      sendJson(res, 401, { error: "Work-unit custody requires an authenticated durable client actor." });
-      return;
-    }
+    const actor = responsibilityActor(req);
     const body = readBody<CustodyAssumeInput>(req);
     if (!Number.isInteger(body.expected_generation) || !body.reason?.trim()) {
       sendJson(res, 400, { error: "expected_generation and a non-empty reason are required" });
@@ -805,15 +775,17 @@ export function registerWorkUnitRoutes(
     if (unit.custody_generation !== body.expected_generation) {
       sendJson(res, 409, { error: "Responsibility changed; refresh and retry.", code: "custody_generation_conflict" }); return;
     }
-    const actor = responsibilityActor(req);
-    let next = actor;
+    let next = actorHolder(actor);
+    let passedOver: ResponsibilityHolder | null = null;
     if (body.target_session_id) {
-      if (!holdsResponsibility(db, unit, actor)) {
-        sendJson(res, 403, { error: "Assume responsibility before handing it to another session." }); return;
+      const decision = custodyGate(db, unit, actor);
+      if (!decision.allowed) {
+        sendJson(res, 403, { error: "Only the responsible session may hand this unit to another session." }); return;
       }
+      passedOver = decision.passed_over;
       const target = sessionResponsibilityActor(db, body.target_session_id);
       if (!target) { sendJson(res, 400, { error: "Successor session has no resolved user." }); return; }
-      next = target;
+      next = actorHolder(target);
     }
     const authorityPath: CustodyAuthorityPath = body.target_session_id ? "handoff" : "explicit_assumption";
     try {
@@ -827,7 +799,7 @@ export function registerWorkUnitRoutes(
         comment_attribution: attributionForRequest(db, req),
         raise_notice,
       });
-      sendJson(res, 200, { work_unit: transferred, authority_path: authorityPath });
+      sendJson(res, 200, { ...passedOverReply(db, passedOver), work_unit: transferred, authority_path: authorityPath });
     } catch (error) {
       if (error instanceof CustodyGenerationConflict) {
         sendJson(res, 409, { error: error.message, code: "custody_generation_conflict" });
@@ -884,9 +856,11 @@ export function registerWorkUnitRoutes(
         (body.state === "abandoned" && !body.reason?.trim())) {
       sendJson(res, 400, { error: "A non-empty reason is required to abandon work." }); return;
     }
+    let passedOver: ResponsibilityHolder | null = null;
     {
-      const failure = custodyMutationFailure(db, req, existing, body.expected_generation);
-      if (failure) { sendJson(res, failure.status, failure); return; }
+      const mutation = custodyMutation(db, req, existing, body.expected_generation);
+      if (!mutation.ok) { sendJson(res, mutation.status, mutation.refusal); return; }
+      passedOver = mutation.passed_over;
       if (existing.auth_request_id && ((body.state !== undefined && body.state !== existing.state) ||
           ("auth_request_id" in body && body.auth_request_id !== existing.auth_request_id))) {
         sendJson(res, 409, { error: "Auth-bound delivery state is owned by the auth lifecycle." });
@@ -939,28 +913,31 @@ export function registerWorkUnitRoutes(
     params.push(id);
     mutateWorkUnit(db, id, () => db.prepare(
       `UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`
-    ).run(...params), attributionForRequest(db, req), body.reason ? { reason: body.reason.trim() } : undefined);
+    ).run(...params), attributionForRequest(db, req), body.reason || passedOver
+      ? { ...(body.reason ? { reason: body.reason.trim() } : {}), ...operatorOverride(passedOver) } : undefined);
 
     const updatedRow = db
       .prepare("SELECT * FROM work_units WHERE id = ?")
       .get(id) as Record<string, unknown>;
 
     const workUnit = mapRow(updatedRow);
-    sendJson(res, 200, workUnitViews([workUnit], sessionManager)[0]);
+    sendJson(res, 200, { ...workUnitViews([workUnit], sessionManager)[0], ...passedOverReply(db, passedOver) });
   }, { operation: { id: "patch:/api/work-units/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work_units" }, fileRpc: "allow",
     refs: { params: { id: entityRefs.workUnit }, body: { auth_request_id: entityRefs.authRequest, assigned_session_id: entityRefs.session } } });
 }
 
-function responsibilityIdentity(req: RequestLike): { user_id: string; session_id: string | null } {
-  return responsibilityActor(req);
-}
-function assignInitialCustody(db: ReturnType<typeof getDb>, workUnitId: string, userId: string, sessionId: string | null, now: number): { ok: true } | { ok: false; error: string } {
+/**
+ * Initial custody for the caller of a claim or activation. An unheld unit goes
+ * to the caller; a held one stays with its holder when the gate allows the
+ * caller, and the user never takes it over by acting.
+ */
+function assignInitialCustody(db: ReturnType<typeof getDb>, workUnitId: string, actor: ResponsibilityActor): { ok: true } | { ok: false; error: string } {
   const row = db.prepare("SELECT * FROM work_units WHERE id = ?").get(workUnitId) as CustodyRow;
-  if (row.custody_generation > 0 && holdsResponsibility(db, row, { user_id: userId, session_id: sessionId })) return { ok: true };
-  if (row.custody_generation > 0 || row.auth_request_id) return { ok: false, error: "Explicit custody-assume is required before changing responsibility." };
+  if (row.custody_generation > 0 && custodyGate(db, row, actor).allowed) return { ok: true };
+  if (row.custody_generation > 0 || row.auth_request_id) return { ok: false, error: "Another session is responsible for this unit; only it, or a session it hands responsibility to, may change it." };
+  const holder = actorHolder(actor);
   db.prepare(`UPDATE work_units SET owner_user_id = ?, responsibility_session_id = ?, custody_generation = 1 WHERE id = ? AND custody_generation = 0`)
-    .run(userId, sessionId, workUnitId);
-  void now;
+    .run(holder.user_id, holder.session_id, workUnitId);
   return { ok: true };
 }
 
@@ -1015,24 +992,52 @@ type CustodyRow = {
   auth_request_id: string | null;
 };
 
-function custodyMutationFailure(
+type CustodyMutation =
+  | { ok: true; passed_over: ResponsibilityHolder | null }
+  | { ok: false; status: number; refusal: { error: string; code: string } };
+
+function custodyMutation(
   db: ReturnType<typeof getDb>, req: RequestLike, row: CustodyRow, expectedGeneration: unknown,
-): { status: number; error: string; code: string } | null {
+): CustodyMutation {
   if (!Number.isInteger(expectedGeneration) || expectedGeneration !== row.custody_generation) {
-    return { status: 409, error: "Work-unit custody changed or expected_generation is missing; refresh and retry.", code: "custody_generation_conflict" };
+    return { ok: false, status: 409, refusal: { error: "Work-unit custody changed or expected_generation is missing; refresh and retry.", code: "custody_generation_conflict" } };
   }
-  if (!holdsResponsibility(db, row, responsibilityActor(req))) {
-    return { status: 403, error: "Only the current responsible user and session may change delivery state.", code: "work_unit_custody_conflict" };
+  const decision = custodyGate(db, row, responsibilityActor(req));
+  if (!decision.allowed) {
+    return { ok: false, status: 403, refusal: { error: "Only the current responsible user and session may change delivery state.", code: "work_unit_custody_conflict" } };
   }
-  return null;
+  return { ok: true, passed_over: decision.passed_over };
 }
 
-function holderRefusal(db: ReturnType<typeof getDb>, unit: WorkUnit,
-  identity: { user_id: string; session_id: string | null }, callerSessionId: string | null,
-  _sessionManager: SessionManager, _readCodexTask: ProviderTaskLivenessReader): Record<string, unknown> | null {
-  if (unit.custody_generation === 0 || holdsResponsibility(db, unit, { user_id: identity.user_id, session_id: callerSessionId })) return null;
-  return { error: "Ordinary writes do not transfer responsibility. Explicitly assume responsibility, then retry.",
+/** Ordinary writes by an agent do not transfer responsibility; a held unit refuses a non-holding agent. */
+function holderRefusal(db: ReturnType<typeof getDb>, unit: WorkUnit, actor: ResponsibilityActor): Record<string, unknown> | null {
+  if (unit.custody_generation === 0 || custodyGate(db, unit, actor).allowed) return null;
+  return { error: "Another session is responsible for this unit; ordinary writes do not transfer responsibility.",
     code: "responsibility_transfer_required", holder: describeCustodyHolder(db, unit.owner_user_id, unit.responsibility_session_id), takeover_command: takeoverCommand(db, unit) };
+}
+
+/** The holder of a held unit that the actor passes over by acting on it. */
+function heldPassedOver(db: ReturnType<typeof getDb>, unit: WorkUnit, actor: ResponsibilityActor): ResponsibilityHolder | null {
+  if (unit.custody_generation === 0) return null;
+  const decision = custodyGate(db, unit, actor);
+  return decision.allowed ? decision.passed_over : null;
+}
+
+/** The parent-role checkpoint's holder as a custody owner. */
+function checkpointOwner(payload: Record<string, unknown> | null): CustodyOwner {
+  return {
+    owner_user_id: typeof payload?.authenticated_user_id === "string" ? payload.authenticated_user_id : null,
+    responsibility_session_id: typeof payload?.responsibility_session_id === "string" ? payload.responsibility_session_id : null,
+  };
+}
+
+/** The work-unit timeline payload recording that the user acted over a holder, who keeps custody. */
+function operatorOverride(passedOver: ResponsibilityHolder | null): Record<string, unknown> | undefined {
+  return passedOver ? { authority_path: "operator", custody_passed_over: passedOver } : undefined;
+}
+
+function passedOverReply(db: ReturnType<typeof getDb>, passedOver: ResponsibilityHolder | null): { custody_passed_over?: CustodyHolder } {
+  return passedOver ? { custody_passed_over: describeCustodyHolder(db, passedOver.user_id, passedOver.session_id) } : {};
 }
 
 export type CustodyCheckOutcome = "clear" | "held" | "takeover_available";
@@ -1047,8 +1052,7 @@ export type CustodyCheckOutcome = "clear" | "held" | "takeover_available";
 function custodyCheck(
   db: ReturnType<typeof getDb>,
   unit: WorkUnit | null,
-  _identity: { user_id: string; session_id: string | null },
-  req: RequestLike,
+  actor: ResponsibilityActor,
   sessionManager: SessionManager,
   readCodexTask: ProviderTaskLivenessReader,
 ): Record<string, unknown> {
@@ -1072,7 +1076,9 @@ function custodyCheck(
   if (!unit) return answer("clear", "No work unit is registered for this branch; committing claims one.");
   const holder = describeCustodyHolder(db, unit.owner_user_id, unit.responsibility_session_id);
   const liveness = classifyHolderLiveness(db, unit, sessionManager, readCodexTask);
-  if (unit.custody_generation === 0 || holdsResponsibility(db, unit, responsibilityActor(req))) return answer("clear", "You may work on this unit.", { holder, holder_liveness: liveness });
+  const decision = unit.custody_generation === 0 ? { allowed: true as const, passed_over: null } : custodyGate(db, unit, actor);
+  if (decision.allowed) return answer("clear", "You may work on this unit.", { holder, holder_liveness: liveness,
+    warning: decision.passed_over ? `Held by ${holderLabel(holder)}; it keeps custody.` : null });
   return answer("takeover_available", "Explicitly assume responsibility before writing. Existing execution may still be running.",
     { holder, holder_liveness: liveness, takeover_command: takeoverCommand(db, unit) });
 }

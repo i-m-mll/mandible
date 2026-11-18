@@ -1483,12 +1483,24 @@ api_capture() {
     return 0
   fi
 
+  local response_status exchange_status=0
   if api_is_file_rpc; then
-    api_file_rpc_exchange "$method" "$request_path" "$data" "$output_file"
-    return
+    response_status=$(api_file_rpc_exchange "$method" "$request_path" "$data" "$output_file") || exchange_status=$?
+  else
+    response_status=$(api_http_exchange "$method" "$request_path" "$data" "$output_file") || exchange_status=$?
   fi
+  [[ "$exchange_status" -ne 0 || ! "$response_status" =~ ^2 ]] || api_warn_custody_passed_over "$output_file"
+  printf '%s' "$response_status"
+  return "$exchange_status"
+}
 
-  api_http_exchange "$method" "$request_path" "$data" "$output_file"
+# The daemon names the custody holder a user's action passed over; the holder
+# keeps custody and is told. One stderr line, whatever the command.
+api_warn_custody_passed_over() {
+  local holder
+  holder=$(jq -r 'select(type == "object") | .custody_passed_over // empty
+    | "\(.user_slug // .user_id)\(if .session_id then " (session \(.session_id))" else "" end)"' "$1" 2>/dev/null) || return 0
+  [[ -z "$holder" ]] || printf 'Note: %s holds custody of this item and keeps it.\n' "$holder" >&2
 }
 
 api_file_rpc_cleanup() {
@@ -1523,6 +1535,7 @@ api_request() {
     tmp_response=$(api_temp_file)
     response_status=$(api_file_rpc_exchange "$method" "$request_path" "$data" "$tmp_response")
     if [[ "$response_status" =~ ^2 ]]; then
+      api_warn_custody_passed_over "$tmp_response"
       cat "$tmp_response"
       rm -f "$tmp_response"
       return 0
@@ -1535,6 +1548,7 @@ api_request() {
   tmp_response=$(api_temp_file)
   response_status=$(api_http_exchange "$method" "$request_path" "$data" "$tmp_response")
   if [[ "$response_status" =~ ^2 ]]; then
+    api_warn_custody_passed_over "$tmp_response"
     cat "$tmp_response"
     rm -f "$tmp_response"
     return 0

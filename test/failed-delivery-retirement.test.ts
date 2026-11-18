@@ -268,7 +268,7 @@ it('enforces real request custody and generation at the AuthQueue retirement ent
   const queue = new AuthQueue({ db: f.db, backgroundMaintenance: false, broadcast: () => {} });
   try {
     await expect(queue.retireFailedDelivery(f.id, 'Retire obsolete attempt', { ...currentActor, session_id: 'another-session', credential_id: other.id }, event.revision, 3))
-      .rejects.toThrow('Explicitly assume current request responsibility');
+      .rejects.toThrow('Another session is responsible for this request');
     await expect(queue.retireFailedDelivery(f.id, 'Retire obsolete attempt', currentActor, event.revision, 4))
       .rejects.toThrow('lifecycle or work-unit custody changed');
     expect(f.hook().state).toBe('failed');

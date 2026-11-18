@@ -434,7 +434,7 @@ export function registerSessionRoutes(
   // sessionLinkKey and never creates a sessions row (issue 2043af5).
   server.post("/api/sessions/:id/issues", (req, res) => {
     const caller = req.ambient_identity ? responsibilityActor(req) : null;
-    const rawSessionId = caller?.session_id && req.params.id === req.ambient_identity?.agent_id ? caller.session_id : req.params.id;
+    const rawSessionId = caller?.kind === "agent" && req.params.id === req.ambient_identity?.agent_id ? caller.session_id : req.params.id;
     if (!rawSessionId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;

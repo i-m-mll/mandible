@@ -1,5 +1,6 @@
 import { exactAgentRef } from "../ambient-provider-identity.js";
 import { responsibilityActor, sessionResponsibilityActor } from "../responsibility.js";
+import { describeCustodyHolder } from "../work-unit-custody.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-action.js";
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
@@ -29,7 +30,7 @@ import {
   AttributionReadResolver,
   authAttributionReadFields,
 } from "../identity/read-projection.js";
-import { ClientAuthzError, requireAttribution, requireIdentity, requireOperator } from "../client-auth/authz.js";
+import { ClientAuthzError, requireAttribution, requireOperator } from "../client-auth/authz.js";
 import { SignedActionRefused, sendSigningRefusal } from "../operator-signing/http.js";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -271,10 +272,11 @@ export function registerAuthRoutes(
 
       payload.requester_evidence_method = requester.evidenceMethod;
       payload.requester_credential_id = requester.credentialId;
-      payload.session_id = responsibilityActor(req).session_id;
+      payload.session_id = authLifecycleActor(req, requester).session_id;
       payload.require_delivery_custody = isAuthMerge;
       const request = (await authQueue.submit(payload, requester.userId));
       res.status(201).json({
+        ...passedOverReply(db, authQueue, req, request.id),
         request_id: request.id,
         lifecycle_revision: authQueue.lifecycleRevision(request.id),
         files_changed: request.files_changed,
@@ -354,9 +356,10 @@ export function registerAuthRoutes(
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
       const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
+      const passedOver = passedOverReply(db, authQueue, req, current.id);
       const action = authQueue.addAction(req.params.id, authActionPayload(body), control.actor,
         numberField(body.expected_revision), numberField(body.expected_custody_generation));
-      res.status(201).json({ action });
+      res.status(201).json({ ...passedOver, action });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -369,6 +372,7 @@ export function registerAuthRoutes(
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
       const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
+      const passedOver = passedOverReply(db, authQueue, req, current.id);
       const action = authQueue.updateAction(
         req.params.id,
         req.params.actionId,
@@ -377,7 +381,7 @@ export function registerAuthRoutes(
         numberField(body.expected_revision),
         numberField(body.expected_custody_generation),
       );
-      res.status(200).json({ action });
+      res.status(200).json({ ...passedOver, action });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -390,9 +394,10 @@ export function registerAuthRoutes(
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
       const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
+      const passedOver = passedOverReply(db, authQueue, req, current.id);
       const action = authQueue.deleteAction(req.params.id, req.params.actionId, control.actor,
         numberField(body.expected_revision), numberField(body.expected_custody_generation));
-      res.status(200).json({ action_id: action.id, deleted: true });
+      res.status(200).json({ ...passedOver, action_id: action.id, deleted: true });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -409,9 +414,10 @@ export function registerAuthRoutes(
       if (!current) { res.status(404).json({ error: "Auth request not found." }); return; }
       const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
+      const passedOver = passedOverReply(db, authQueue, req, current.id);
       const action = authQueue.setActionVeto(req.params.id, req.params.actionId, body.vetoed,
         control.actor, numberField(body.expected_revision), numberField(body.expected_custody_generation));
-      res.status(200).json({ action });
+      res.status(200).json({ ...passedOver, action });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -462,9 +468,10 @@ export function registerAuthRoutes(
           return;
         }
       }
+      const passedOver = passedOverReply(db, authQueue, req, current.id);
       const updated = (await authQueue.update(req.params.id, result.payload, control.actor,
         numberField(body.expected_revision), numberField(body.expected_custody_generation)));
-      res.status(200).json({ request_id: updated.id, ...updated });
+      res.status(200).json({ ...passedOver, request_id: updated.id, ...updated });
     } catch (error) {
       if (isHttpError(error)) {
         res.status(error.status).json({ error: error.message });
@@ -492,9 +499,10 @@ export function registerAuthRoutes(
       }
       const successor = typeof body.target_session_id === "string" ? sessionResponsibilityActor(db, body.target_session_id) : undefined;
       if (body.target_session_id && !successor) { res.status(400).json({ error: "Unknown successor identity." }); return; }
+      const passedOver = successor !== undefined || action === "release" ? passedOverReply(db, authQueue, req, request.id) : {};
       authQueue.assumeRequestResponsibility(request.id, responsibilityActor(req), body.reason,
         Number(body.expected_revision), Number(body.expected_custody_generation), action === "release" ? null : successor);
-      res.json({ responsibility: authQueue.requestResponsibility(request) });
+      res.json({ ...passedOver, responsibility: authQueue.requestResponsibility(request) });
     } catch (error) { handleQueueError(error, res); }
   };
   app.post("/api/auth/request/:id/responsibility/assume", modifyRequestResponsibility("assume"), { operation: { id: "post:/api/auth/request/:id/responsibility/assume", effects: ["ledger:write"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
@@ -506,26 +514,18 @@ export function registerAuthRoutes(
       res.status(400).json({ error: "reason is required" });
       return;
     }
-    const requester = resolveAuthRequester(db, req, { command: "withdraw", title: "withdraw" }, true);
-    if (!requester.ok) {
-      res.status(requester.status).json({ error: requester.error, code: requester.code });
-      return;
-    }
     try {
       const current = (await authQueue.getRequest(req.params.id));
       if (!current) {
         res.status(404).json({ error: "Auth request not found." });
         return;
       }
-      if (current.repo && !validateAuthProject(db, res, current.repo)) return;
-      const request = (await authQueue.withdraw(req.params.id, body.reason, {
-        user_id: requester.userId,
-        evidence_method: requester.evidenceMethod,
-        credential_id: requester.credentialId,
-        session_id: responsibilityActor(req).session_id,
-        authority_path: "custodian",
-      }, numberField(body.expected_revision), numberField(body.expected_custody_generation)));
-      res.json({ request_id: request.id, status: request.status });
+      const control = authMutationControl(db, req, res, current, body);
+      if (!control) return;
+      const passedOver = passedOverReply(db, authQueue, req, current.id);
+      const request = (await authQueue.withdraw(req.params.id, body.reason, control.actor,
+        numberField(body.expected_revision), numberField(body.expected_custody_generation)));
+      res.json({ ...passedOver, request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -537,8 +537,8 @@ export function registerAuthRoutes(
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
       const control = authMutationControl(db, req, res, request, body, true);
-      if (!control?.actor) return;
-      res.json((await authQueue.inspectPendingCandidateSnapshotRepair(request.id, control.actor)));
+      if (!control) return;
+      res.json({ ...passedOverReply(db, authQueue, req, request.id), ...(await authQueue.inspectPendingCandidateSnapshotRepair(request.id, control.actor)) });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -550,17 +550,18 @@ export function registerAuthRoutes(
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) throw new AuthQueueError("not_found", "Auth request not found.");
       const control = authMutationControl(db, req, res, request, body, true);
-      if (!control?.actor) return;
+      if (!control) return;
       const expectedDigest = body.expected_current_snapshot_sha256;
       if (typeof expectedDigest !== "string" || !/^[0-9a-f]{64}$/.test(expectedDigest)) {
         res.status(400).json({ error: "expected_current_snapshot_sha256 is required." });
         return;
       }
+      const passedOver = passedOverReply(db, authQueue, req, request.id);
       const repaired = await authQueue.repairPendingCandidateSnapshot(
         request.id, control.actor, numberField(body.expected_revision) ?? NaN,
         numberField(body.expected_custody_generation) ?? NaN, expectedDigest,
       );
-      res.json({ request_id: repaired.id, lifecycle: authQueue.listLifecycleEvents(repaired.id).at(-1) });
+      res.json({ ...passedOver, request_id: repaired.id, lifecycle: authQueue.listLifecycleEvents(repaired.id).at(-1) });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -572,10 +573,11 @@ export function registerAuthRoutes(
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) { res.status(404).json({ error: 'Auth request not found.' }); return; }
       const control = authMutationControl(db, req, res, request, body, true);
-      if (!control?.actor) return;
+      if (!control) return;
+      const passedOver = passedOverReply(db, authQueue, req, request.id);
       const retirement = await authQueue.retireFailedDelivery(request.id, typeof body.reason === 'string' ? body.reason : '', control.actor,
         Number(body.expected_revision), Number(body.expected_custody_generation));
-      res.json({ request_id: request.id, retirement });
+      res.json({ ...passedOver, request_id: request.id, retirement });
     } catch (error) { handleQueueError(error, res); }
   }, { operation: { id: 'post:/api/auth/request/:id/retire-delivery', effects: ['auth:protected'], requestSchema: null, reportingCategory: 'auth' }, fileRpc: 'allow' });
 
@@ -591,11 +593,12 @@ export function registerAuthRoutes(
       if (body.mode !== undefined && body.mode !== 'retry' && body.mode !== 'verify-current') { res.status(400).json({ error: 'Unknown convergence mode.' }); return; }
       const request = authQueue.getRequestReference(req.params.id);
       if (!request) { res.status(404).json({ error: 'Auth request not found.' }); return; }
-      const control = body.mode === 'verify-current' ? authMutationControl(db, req, res, request, body, true) : null;
-      if (body.mode === 'verify-current' && !control?.actor) return;
+      const control = body.mode === 'verify-current' ? authMutationControl(db, req, res, request, body) : null;
+      if (body.mode === 'verify-current' && !control) return;
+      const passedOver = control ? passedOverReply(db, authQueue, req, request.id) : {};
       const { verification, ...convergence } = await authQueue.retryHookConvergence(req.params.id, hookId,
-        body.mode === 'verify-current' ? { mode: 'verify-current', actor: control!.actor! } : undefined);
-      res.status(200).json({ request_id: req.params.id, convergence, ...(verification ? { verification } : {}) });
+        control ? { mode: 'verify-current', actor: control.actor } : undefined);
+      res.status(200).json({ ...passedOver, request_id: req.params.id, convergence, ...(verification ? { verification } : {}) });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -639,16 +642,17 @@ export function registerAuthRoutes(
 
   app.post("/api/runtime-handoff/retire", async (req, res) => {
     try {
-      const identity = requireIdentity(req);
       const body = readBody<Record<string, unknown>>(req);
       if (typeof body.binding_digest !== "string" || typeof body.reason !== "string" || !body.reason.trim()) {
         res.status(400).json({ error: "binding_digest and reason are required." });
         return;
       }
-      const retirement = await authQueue.retireRuntimeHandoff({ bindingDigest: body.binding_digest, reason: body.reason }, {
-        user_id: identity.user_id, evidence_method: identity.method, credential_id: identity.credential_id ?? null, session_id: responsibilityActor(req).session_id, authority_path: "custodian",
-      });
-      res.json({ retirement });
+      const actor = requestLifecycleActor(db, req, res);
+      if (!actor) return;
+      const lockedRequest = authQueue.runtimeHandoffLock()?.requestId;
+      const passedOver = lockedRequest ? passedOverReply(db, authQueue, req, lockedRequest) : {};
+      const retirement = await authQueue.retireRuntimeHandoff({ bindingDigest: body.binding_digest, reason: body.reason }, actor);
+      res.json({ ...passedOver, retirement });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -1000,29 +1004,48 @@ function authMutationControl(
   request: AuthRequest,
   body: Record<string, unknown>,
   requireGoverned = false,
-): { actor: AuthLifecycleActor | undefined } | null {
+): { actor: AuthLifecycleActor } | null {
   void requireGoverned;
+  void body;
+  const actor = requestLifecycleActor(db, req, res);
+  if (!actor) return null;
+  if (request.repo) {
+    if (!validateAuthProject(db, res, request.repo)) return null;
+  }
+  return { actor };
+}
+
+/** The lifecycle actor of a durable caller, or null after replying with its refusal. */
+function requestLifecycleActor(db: Db, req: RequestLike, res: ResponseLike): AuthLifecycleActor | null {
   const requester = resolveAuthRequester(db, req, { command: "mutate", title: "mutate" }, true);
   if (!requester.ok) {
     res.status(requester.status).json({ error: requester.error, code: requester.code });
     return null;
   }
-  void body;
-  if (request.repo) {
-    if (!validateAuthProject(db, res, request.repo)) return null;
-  }
-  return { actor: {
+  return authLifecycleActor(req, requester);
+}
+
+/** The one place a route turns its caller into an `AuthLifecycleActor`. */
+function authLifecycleActor(req: RequestLike, requester: { userId: string; evidenceMethod: string; credentialId: string | null }): AuthLifecycleActor {
+  const custodian = responsibilityActor(req);
+  return {
     user_id: requester.userId,
     evidence_method: requester.evidenceMethod,
     credential_id: requester.credentialId,
-    session_id: responsibilityActor(req).session_id,
-    authority_path: "custodian",
-  } };
+    ...(custodian.kind === "agent"
+      ? { session_id: custodian.session_id, authority_path: "custodian" as const }
+      : { session_id: null, authority_path: "operator" as const }),
+  };
+}
+
+/** The reply field naming the holder the user passes over by acting on the request. */
+function passedOverReply(db: Db, authQueue: AuthQueue, req: RequestLike, requestId: string): { custody_passed_over?: ReturnType<typeof describeCustodyHolder> } {
+  const holder = authQueue.custodyPassedOver(requestId, responsibilityActor(req));
+  return holder ? { custody_passed_over: describeCustodyHolder(db, holder.user_id, holder.session_id) } : {};
 }
 
 function authActionPayload(body: Record<string, unknown>): Record<string, unknown> {
-  const { expected_revision: _revision, expected_custody_generation: _generation,
-    operator_recovery: _recovery, ...payload } = body;
+  const { expected_revision: _revision, expected_custody_generation: _generation, ...payload } = body;
   return payload;
 }
 
@@ -1336,7 +1359,7 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
       return;
     }
     if (error.code === "requester_control_required" || error.code === "custody_required" ||
-        error.code === "operator_recovery_required" || error.code === "operator_required") {
+        error.code === "operator_required") {
       res.status(403).json({ error: error.message, code: error.code });
       return;
     }

@@ -109,12 +109,12 @@ describe("auth request immutable lifecycle", () => {
     expect(JSON.parse(submitted!.snapshot_json).request.spec_content).toBe(spec);
 
     // The guarded transition re-derives the snapshot digest; it must still match.
-    queue.assumeRequestResponsibility("spec-request", { user_id: operator.id, session_id: null }, "Retire old request", 1, 0);
+    queue.assumeRequestResponsibility("spec-request", { kind: "user", user_id: operator.id }, "Retire old request", 1, 0);
     const withdrawn = (await queue.withdraw("spec-request", "Operator retired an old request", {
       user_id: operator.id,
       evidence_method: "api_token",
       credential_id: credential.id,
-      authority_path: "operator_recovery",
+      authority_path: "operator",
     }, 1, 1));
     expect(withdrawn).toMatchObject({ status: "withdrawn", spec_content: spec });
     const last = queue.listLifecycleEvents("spec-request").at(-1)!;

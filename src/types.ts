@@ -321,8 +321,10 @@ export interface AuthLifecycleActor {
   evidence_method: string;
   evidence_id?: string | null;
   credential_id?: string | null;
+  /** The acting agent's exact session; absent exactly when the user acts. */
   session_id?: string | null;
-  authority_path?: "custodian" | "operator_recovery" | "system" | "legacy";
+  /** `operator` for the user, `custodian` for an agent. */
+  authority_path?: "custodian" | "operator" | "system" | "legacy";
 }
 
 export interface AuthRequestLifecycleEvent {

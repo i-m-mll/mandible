@@ -339,7 +339,7 @@ describe("metadata backup coverage", () => {
       const request = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "command", command: "printf reviewed",
         title: "Backup responsibility", repo: process.cwd(), session_id: "author",
         requester_evidence_method: "session_claim" }, operator.id);
-      queue.assumeRequestResponsibility(request.id, { user_id: peer.id, session_id: "successor", evidence_method: "session_claim" },
+      queue.assumeRequestResponsibility(request.id, { kind: "agent", user_id: peer.id, session_id: "successor" },
         "Continue review", 1, 0);
 
       const schema = (target: SqliteDatabase) => (target.prepare(

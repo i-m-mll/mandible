@@ -108,11 +108,11 @@ Fixture authority and access adapters cover its private heartbeat and Caddy admi
 
 ## Failed delivery retirement
 
-A failed builtin update that never acquired a publication intent or handoff journal can be explicitly retired by its current delivery custodian or the operator using recovery authority:
+A failed builtin update that never acquired a publication intent or handoff journal can be explicitly retired by its current delivery custodian or by the user:
 
 ```bash
 mandible auth retire-delivery <request> --reason <text> \
-  --expected-revision <n> --expected-custody-generation <n> [--operator-recovery]
+  --expected-revision <n> --expected-custody-generation <n>
 ```
 
 The request must record a successful finalized merge and an unchanged approved acceptance selection. Every recorded attempt must be a settled nonzero failure; timeout, interruption, missing settlement evidence, an admitted publication, handoff/preparation material, live consumers or producers, installed ownership, or another live selection refuse the operation. An exactly empty canonical pre-admission directory carries no payload reference.

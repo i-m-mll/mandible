@@ -1445,3 +1445,33 @@ it("rolls back the complete ACL retirement if removing a referenced restriction 
     expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
   } finally { db.close(); }
 });
+
+describe("v242 operator authority path", () => {
+  it("rebuilds lifecycle events with every row and both immutability triggers, admitting operator in place of operator_recovery", () => {
+    const db = migrateFixtureThrough(241);
+    try {
+      const agent = createUser(db, { slug: "lifecycle-agent", display_name: "Agent", kind: "agent" });
+      db.prepare(`INSERT INTO auth_requests (id, command, title, status, created_at, updated_at, expires_at)
+        VALUES ('held-request', 'printf held', 'Held request', 'pending', 1, 2, 3)`).run();
+      appendAuthLifecycleEvent(db, { requestId: "held-request", eventType: "submitted", priorStatus: null, nextStatus: "pending", occurredAt: 2,
+        actor: { user_id: agent.id, evidence_method: "session_claim", session_id: "agent:codex:t1", authority_path: "custodian" } });
+      appendAuthLifecycleEvent(db, { requestId: "held-request", eventType: "revised", priorStatus: "pending", nextStatus: "pending", occurredAt: 3,
+        actor: { user_id: agent.id, evidence_method: "legacy", authority_path: "legacy" } });
+      const rows = () => db.prepare("SELECT * FROM auth_request_lifecycle_events ORDER BY rowid").all();
+      const before = rows();
+      expect(before).toHaveLength(2);
+
+      migrate(db);
+
+      expect(rows()).toEqual(before);
+      appendAuthLifecycleEvent(db, { requestId: "held-request", eventType: "withdrawn", priorStatus: "pending", nextStatus: "withdrawn", occurredAt: 4,
+        actor: { user_id: agent.id, evidence_method: "local_socket", authority_path: "operator" } });
+      expect(() => db.prepare(`INSERT INTO auth_request_lifecycle_events (id, auth_request_id, revision, event_type, next_status, snapshot_json,
+        snapshot_sha256, authority_path, occurred_at) VALUES ('x', 'held-request', 9, 'revised', 'pending', '{}', ?, 'operator_recovery', 5)`)
+        .run("0".repeat(64))).toThrow("CHECK constraint failed");
+      expect(() => db.prepare("UPDATE auth_request_lifecycle_events SET reason = 'x'").run()).toThrow("immutable");
+      expect(() => db.prepare("DELETE FROM auth_request_lifecycle_events").run()).toThrow("immutable");
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+    } finally { db.close(); }
+  });
+});
