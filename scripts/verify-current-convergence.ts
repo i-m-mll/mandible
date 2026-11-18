@@ -24,8 +24,8 @@ try {
   if (!request?.repo) throw new Error('An exact project-bound request is required.');
   const project = resolveProjectRef(db, request.repo);
   if (!project.ok) throw new Error('Request project is unavailable or ambiguous.');
-  const { verification, ...convergence } = await queue.retryHookConvergence(request.id, undefined, { mode: 'verify-current',
+  const { verification, supersession, ...convergence } = await queue.retryHookConvergence(request.id, undefined, { mode: 'verify-current',
     actor: { user_id: identity.user_id, credential_id: null, session_id: identity.session_id ?? null,
       evidence_method: ambient || localManaged ? 'session_claim' : 'local_default', authority_path: identity.session_id ? 'custodian' : 'operator' } });
-  process.stdout.write(JSON.stringify({ request_id: request.id, convergence, verification }) + '\n');
+  process.stdout.write(JSON.stringify({ request_id: request.id, convergence, verification, supersession }) + '\n');
 } finally { await queue.dispose(); db.close(); }

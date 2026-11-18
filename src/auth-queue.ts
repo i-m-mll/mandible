@@ -13,7 +13,7 @@ import type { EvidenceMethod } from "./users/types.js";
 import { DOMAIN_EVENTS, OPERATOR_PROOF_WINDOW_MS, type AuthResolvedPayload } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { childOutput } from "./child-observation.js";
+import { childOutput, observeChild } from "./child-observation.js";
 import { checkCheckoutReadiness } from "../cli/checkout-readiness.mjs";
 import { accessSync, constants as fsConstants, existsSync, realpathSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
@@ -159,6 +159,8 @@ import { NoticeLog, type NoticeCause } from "./notices/log.js";
 import type {
   AuthConvergence,
   AuthDependencyProjection,
+  AuthGoLiveSupersession,
+  AuthGoLiveSupersessionReport,
   AuthHookRun,
   AuthOutputChunk,
   AuthRequest,
@@ -337,6 +339,18 @@ type StaleMergeRecovery =
   | { outcome: "atomic_needs_recovery"; detail: string }
   | { outcome: "requeued"; detail: string }
   | { outcome: "failed"; detail: string };
+
+type GoLiveSuccession =
+  | { kind: "none" }
+  | { kind: "superseded"; supersession: AuthGoLiveSupersession }
+  | { kind: "not_contained"; merge_sha: string; latest_request_id: string; latest_merge_sha: string };
+
+async function gitIsAncestor(cwd: string, ancestor: string, descendant: string): Promise<{ ok: true; value: boolean } | { ok: false; error: string }> {
+  const result = await observeChild("git", ["merge-base", "--is-ancestor", ancestor, descendant], { cwd, timeout: 5_000, env: authGitEnv() });
+  if (result.status === 0) return { ok: true, value: true };
+  if (result.status === 1) return { ok: true, value: false };
+  return { ok: false, error: result.error?.message ?? (result.stderr.trim() || `git exited ${result.status ?? result.signal}`) };
+}
 
 function completionSignal(): { promise: Promise<void>; resolve(): void } {
   let resolve!: () => void;
@@ -5741,8 +5755,9 @@ export class AuthQueue {
     }
     if (runs.length === 0) return convergence;
 
+    const supersededRebuild = (run: AuthHookRun) => Boolean(convergence.superseded_by) && run.hook_id === MANDIBLE_REBUILD_HOOK_ID;
     for (const run of runs) {
-      if (run.state === "failed" && run.required) {
+      if (run.state === "failed" && run.required && !supersededRebuild(run)) {
         // One alert per (request, hook). The unique key in auth_hook_alerts is
         // the dedup, so a hook that fails on every attempt still produces
         // exactly one alert and one notification. No ledger issue is created: an issue is for
@@ -5762,13 +5777,16 @@ export class AuthQueue {
             error: errorMessage(error) ?? String(error),
           });
         }
-      } else if (run.state === "complete") {
+      } else if (run.state === "complete" || supersededRebuild(run)) {
         try { this.hookManager.resolveAlert(request.id, run.hook_id); } catch { /* alert table optional */ }
       }
     }
 
     if (convergence.state === "complete") {
       (await this.releaseWithheldClosures(request));
+      if (!convergence.superseded_by && runs.some(run => run.hook_id === MANDIBLE_REBUILD_HOOK_ID && run.state === "complete")) {
+        await this.settlePredecessorGoLives(request);
+      }
     }
 
     authLog(convergence.state === "failed" ? "warn" : "info", "auth_convergence_settled", {
@@ -5790,6 +5808,104 @@ export class AuthQueue {
     });
     this.raiseNotice(request.id);
     return convergence;
+  }
+
+  // --- Issue 077f152: a later verified go-live settles its predecessors ------
+
+  /**
+   * A self-update whose own go-live was never confirmed (its rebuild failed,
+   * is still pending, or was retired) is live once a later self-update's
+   * verified go-live contains its merge commit. The earliest such go-live is
+   * recorded against the predecessor, which then converges on that evidence
+   * and releases its withheld actions.
+   */
+  private async settleSupersededGoLive(request: AuthRequest): Promise<GoLiveSuccession> {
+    const recorded = this.convergenceForRequest(request.id).superseded_by;
+    if (recorded) return { kind: "superseded", supersession: recorded };
+    const rebuild = this.hookManager.getRun?.(request.id, MANDIBLE_REBUILD_HOOK_ID);
+    if (request.type !== "merge" || request.status !== "completed" || request.exit_code !== 0
+      || !rebuild || rebuild.state === "complete" || !this.tableExists("auth_go_live_supersessions")) return { kind: "none" };
+    const mergeSha = extractSuccessfulMergeCommitSha(request.output);
+    const cwd = request.target_repo_root ?? request.cwd;
+    if (!mergeSha || !cwd || (await this.successfulMergeEvidenceFailure(request))) return { kind: "none" };
+    let latest: GoLiveSuccession & { kind: "not_contained" } | null = null;
+    for (const successor of this.verifiedGoLivesAfter(request)) {
+      const successorMergeSha = extractSuccessfulMergeCommitSha(successor.output);
+      if (!successorMergeSha) continue;
+      const contained = await gitIsAncestor(cwd, mergeSha, successorMergeSha);
+      if (!contained.ok) {
+        authLog("warn", "auth_go_live_ancestry_unknown", { subsystem: "auth", auth_request_id: request.id,
+          successor_request_id: successor.id, error: contained.error });
+        continue;
+      }
+      if (!contained.value) {
+        latest = { kind: "not_contained", merge_sha: mergeSha, latest_request_id: successor.id, latest_merge_sha: successorMergeSha };
+        continue;
+      }
+      const supersession = { successor_request_id: successor.id, merge_sha: mergeSha, successor_merge_sha: successorMergeSha, recorded_at: this.now() };
+      this.recordGoLiveSupersession(request, supersession);
+      await this.settleConvergence(this.requireRequest(request.id));
+      return { kind: "superseded", supersession: this.convergenceForRequest(request.id).superseded_by ?? supersession };
+    }
+    return latest ?? { kind: "none" };
+  }
+
+  /** Same-repository merges whose own rebuild completed after this request merged, earliest go-live first. */
+  private verifiedGoLivesAfter(request: AuthRequest): AuthRequest[] {
+    const rows = this.db.prepare(
+      `SELECT r.* FROM auth_requests r
+         JOIN auth_hook_executions h ON h.auth_request_id = r.id AND h.hook_id = ? AND h.state = 'complete'
+        WHERE r.type = 'merge' AND r.status = 'completed' AND r.exit_code = 0 AND r.repo IS ? AND r.id != ?
+          AND COALESCE(h.finished_at, h.updated_at) >= ?
+        ORDER BY COALESCE(h.finished_at, h.updated_at) ASC`,
+    ).all(MANDIBLE_REBUILD_HOOK_ID, request.repo, request.id, request.resolved_at ?? request.updated_at) as Record<string, unknown>[];
+    return rows.map(mapRow);
+  }
+
+  private recordGoLiveSupersession(request: AuthRequest, supersession: AuthGoLiveSupersession): void {
+    this.db.transaction(() => {
+      const inserted = this.db.prepare(
+        `INSERT OR IGNORE INTO auth_go_live_supersessions
+           (auth_request_id, successor_request_id, merge_sha, successor_merge_sha, recorded_at) VALUES (?, ?, ?, ?, ?)`,
+      ).run(request.id, supersession.successor_request_id, supersession.merge_sha, supersession.successor_merge_sha, supersession.recorded_at);
+      if (!inserted.changes) return;
+      const current = this.requireRequest(request.id);
+      appendAuthLifecycleEvent(this.db, { requestId: request.id, eventType: "revised", priorStatus: current.status, nextStatus: current.status,
+        actor: systemAction(), relatedRequestId: supersession.successor_request_id, occurredAt: supersession.recorded_at,
+        reason: `Live through auth request ${supersession.successor_request_id.slice(0, 8)}: its verified go-live of merge ${supersession.successor_merge_sha.slice(0, 12)} contains merge ${supersession.merge_sha.slice(0, 12)}.` });
+    }).immediate();
+    authLog("info", "auth_go_live_superseded", { subsystem: "auth", auth_request_id: request.id,
+      successor_request_id: supersession.successor_request_id, merge_sha: supersession.merge_sha, successor_merge_sha: supersession.successor_merge_sha });
+  }
+
+  /** A verified go-live settles every earlier self-update in its repository whose own go-live was never confirmed. */
+  private async settlePredecessorGoLives(successor: AuthRequest): Promise<void> {
+    if (!this.tableExists("auth_go_live_supersessions")) return;
+    const rows = this.db.prepare(
+      `SELECT r.id FROM auth_requests r
+         JOIN auth_hook_executions h ON h.auth_request_id = r.id AND h.hook_id = ? AND h.state != 'complete'
+        WHERE r.type = 'merge' AND r.status = 'completed' AND r.exit_code = 0 AND r.repo IS ? AND r.id != ?
+          AND NOT EXISTS (SELECT 1 FROM auth_go_live_supersessions s WHERE s.auth_request_id = r.id)
+        ORDER BY r.resolved_at ASC`,
+    ).all(MANDIBLE_REBUILD_HOOK_ID, successor.repo, successor.id) as Array<{ id: string }>;
+    for (const { id } of rows) {
+      if (this.disposed || !this.isDbOpen()) return;
+      const predecessor = this.getRequestById(id);
+      if (!predecessor) continue;
+      try {
+        await this.settleSupersededGoLive(predecessor);
+      } catch (error) {
+        authLog("warn", "auth_go_live_supersession_failed", { subsystem: "auth", auth_request_id: id,
+          successor_request_id: successor.id, error: errorMessage(error) ?? String(error) });
+      }
+    }
+  }
+
+  private goLiveSupersessionReport(requestId: string, supersession: AuthGoLiveSupersession): AuthGoLiveSupersessionReport {
+    const settled = (this.tableExists("auth_request_actions") ? listAuthRequestActions(this.db, requestId) : [])
+      .filter(action => WITHHOLD_UNTIL_CONVERGED[action.kind])
+      .map(({ id, kind, target_issue_ref, state, outcome_detail }) => ({ id, kind, target_issue_ref, state, outcome_detail }));
+    return { ...supersession, settled };
   }
 
   /**
@@ -5870,9 +5986,9 @@ export class AuthQueue {
     for (const { auth_request_id } of rows) {
       if (this.disposed || !this.isDbOpen()) return;
       const request = this.getRequestById(auth_request_id);
-      if (!request || request.type !== "merge" || request.status !== "completed" || request.exit_code !== 0
-        || this.convergenceWithholdsClosures(request.id)) continue;
-      await this.releaseWithheldClosures(request);
+      if (!request || request.type !== "merge" || request.status !== "completed" || request.exit_code !== 0) continue;
+      if (this.convergenceWithholdsClosures(request.id)) await this.settleSupersededGoLive(request);
+      else await this.releaseWithheldClosures(request);
     }
   }
 
@@ -5920,7 +6036,7 @@ export class AuthQueue {
    * Operator-initiated convergence retry: grant one more attempt to the failed
    * hooks of a merged request and run them. Never re-runs the merge.
    */
-  async retryHookConvergence(requestId: string, hookId?: string, recovery?: { mode: "verify-current"; actor: AuthLifecycleActor }): Promise<AuthConvergence & { verification?: RuntimeVerificationResult }> {
+  async retryHookConvergence(requestId: string, hookId?: string, recovery?: { mode: "verify-current"; actor: AuthLifecycleActor }): Promise<AuthConvergence & { verification?: RuntimeVerificationResult; supersession?: AuthGoLiveSupersessionReport }> {
     const finishObservation = this.beginObservation();
     try {
       this.requireExternalEffects("Hook convergence retry");
@@ -5931,6 +6047,12 @@ export class AuthQueue {
           "invalid_status",
           "Convergence retry applies only to a successfully executed request.",
         );
+      }
+      // A later verified go-live that contains this merge already made it live;
+      // re-running or re-verifying this request's own delivery would only refuse.
+      const succession = !hookId || hookId === MANDIBLE_REBUILD_HOOK_ID ? await this.settleSupersededGoLive(request) : { kind: "none" as const };
+      if (succession.kind === "superseded") {
+        return { ...this.convergenceForRequest(request.id), supersession: this.goLiveSupersessionReport(request.id, succession.supersession) };
       }
       if (!hookId || hookId === MANDIBLE_REBUILD_HOOK_ID) this.hookManager.reconcileRuntimeRetirement?.(request.id);
       if (this.hookManager.listRuns(request.id).some(run => run.state === 'retired' && (!hookId || run.hook_id === hookId))) {
@@ -5953,7 +6075,10 @@ export class AuthQueue {
             (binding, proof) => this.adoptRuntimePublication(binding, proof));
         } catch (error) {
           if (error instanceof AuthQueueError) throw error;
-          throw new AuthQueueError("recovery_refused", `Verification-only recovery refused: ${error instanceof Error ? error.message : String(error)}`);
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new AuthQueueError("recovery_refused", succession.kind === "not_contained"
+            ? `Verification-only recovery refused: the running version went live through auth request ${succession.latest_request_id.slice(0, 8)} (merge ${succession.latest_merge_sha.slice(0, 12)}), which does not contain this request's merge ${succession.merge_sha.slice(0, 12)}, so it cannot settle this request; this request's own receipt no longer matches: ${detail}`
+            : `Verification-only recovery refused: ${detail}`);
         }
         if (verification.outcome === 'pending') return { ...this.convergenceForRequest(request.id), verification };
         // Recovery settles this request only. Existing merge finalizers retain
@@ -7106,6 +7231,7 @@ export class AuthQueue {
     // and still run before convergence completes.
     const withheld: string[] = [];
     let teardownsDue = false;
+    const supersededBy = this.convergenceForRequest(request.id).superseded_by;
     await forEachInEventLoopSlices(actions, (snapshot) => {
       guard();
       const state = hasPersistedActions
@@ -7134,8 +7260,11 @@ export class AuthQueue {
         this.db.transaction(() => {
           const outcome = withRequestOrigin(action.request_origin ?? null,
             () => this.applyDeferredLedgerAction(request, action));
+          const detail = supersededBy && WITHHOLD_UNTIL_CONVERGED[action.kind]
+            ? [`Settled by the verified go-live of auth request ${supersededBy.successor_request_id.slice(0, 8)}.`, outcome.detail].filter(Boolean).join(" ")
+            : outcome.detail;
           if (!action.id.startsWith("legacy:")) {
-            this.recordActionOutcome(action.id, outcome.state, outcome.detail, outcome.appliedAt);
+            this.recordActionOutcome(action.id, outcome.state, detail, outcome.appliedAt);
           }
         }).immediate();
       } catch (error) {
@@ -7180,6 +7309,10 @@ export class AuthQueue {
     const now = this.now();
     const currentDigest = getLedgerIssueContentDigest(this.db, issueId);
     const digestMoved = Boolean(action.target_digest && action.target_digest !== currentDigest);
+    const target = store.getIssue(issueId);
+    if (action.kind === "issue_close" && target.status === "closed") {
+      return { state: "applied", detail: `Issue was already closed (${target.resolution}); left unchanged.`, appliedAt: now };
+    }
     if (action.kind === "issue_close" && digestMoved && action.payload.on_stale === "skip") {
       this.removeActionResolveLink(request, action, issueId);
       return {

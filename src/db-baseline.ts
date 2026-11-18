@@ -4,7 +4,7 @@ import { INTERFACE_NOTES_SCHEMA_SQL } from "./interface-notes/schema.js";
 import { NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL } from "./work-unit-assignment-schema.js";
-import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
+import { AUTH_GO_LIVE_SUPERSESSIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
 import { AUTH_REQUEST_ACTIONS_INDEX_SQL, AUTH_REQUEST_ACTIONS_TABLE_SQL } from "./auth-actions-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
@@ -35,7 +35,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 242;
+export const BASELINE_SCHEMA_VERSION = 243;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -429,6 +429,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE \"artifact_version\" (\n        id                  TEXT PRIMARY KEY,\n        artifact_id         TEXT NOT NULL REFERENCES artifact(id) ON DELETE CASCADE,\n        version_no          INTEGER NOT NULL,\n        blob_id             TEXT NOT NULL REFERENCES artifact_blob(id) ON DELETE RESTRICT,\n        source_kind         TEXT NOT NULL\n          CHECK(source_kind IN ('tracked_repo','local_only','managed')),\n        content_hash        TEXT NOT NULL,\n        source_project_id   TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        repo_path           TEXT,\n        commit_sha          TEXT,\n        observed_path       TEXT,\n        parent_version_id   TEXT REFERENCES artifact_version(id) ON DELETE SET NULL,\n        custody_mode        TEXT NOT NULL CHECK(custody_mode IN ('git','managed')),\n        label               TEXT,\n        note                TEXT,\n        metadata_json       TEXT NOT NULL DEFAULT '{}',\n        created_at          INTEGER NOT NULL,\n        CHECK(length(content_hash)=64 AND content_hash NOT GLOB '*[^a-f0-9]*'),\n        CHECK((custody_mode='git' AND source_project_id IS NOT NULL AND repo_path IS NOT NULL AND length(repo_path)>0 AND commit_sha IS NOT NULL AND length(commit_sha) IN (40,64) AND commit_sha NOT GLOB '*[^a-f0-9]*') OR (custody_mode='managed' AND source_project_id IS NULL AND repo_path IS NULL AND commit_sha IS NULL)),\n        UNIQUE(artifact_id, version_no)\n      )",
   "CREATE TABLE attribution_evidence (\n        id              TEXT PRIMARY KEY,\n        evidence_method TEXT NOT NULL,\n        credential_id   TEXT REFERENCES user_credentials(id) ON DELETE SET NULL,\n        verified_at     INTEGER NOT NULL,\n        details_json    TEXT NOT NULL DEFAULT '{}'\n                          CHECK(json_valid(details_json) AND json_type(details_json)='object')\n      )",
   "CREATE TABLE auth_hooks (\n        id            TEXT PRIMARY KEY,\n        repo_pattern  TEXT NOT NULL DEFAULT '*',\n        auth_type     TEXT NOT NULL DEFAULT 'merge',\n        command       TEXT NOT NULL,\n        label         TEXT NOT NULL DEFAULT '',\n        enabled       INTEGER NOT NULL DEFAULT 1,\n        builtin       INTEGER NOT NULL DEFAULT 0,\n        position      INTEGER NOT NULL DEFAULT 0,\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL\n      , required INTEGER NOT NULL DEFAULT 1)",
+  AUTH_GO_LIVE_SUPERSESSIONS_TABLE_SQL,
   "CREATE TABLE auth_hook_alerts (\n        id                TEXT PRIMARY KEY,\n        auth_request_id   TEXT NOT NULL,\n        hook_id           TEXT NOT NULL,\n        hook_label        TEXT NOT NULL DEFAULT '',\n        session_id        TEXT,\n        repo              TEXT,\n        detail            TEXT NOT NULL DEFAULT '',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        acknowledged_at   INTEGER,\n        acknowledged_by   TEXT,\n        UNIQUE(auth_request_id, hook_id)\n      )",
   AUTH_HOOK_EXECUTIONS_TABLE_SQL,
   AUTH_REQUEST_ACTIONS_TABLE_SQL,

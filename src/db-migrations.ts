@@ -7,7 +7,7 @@ import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL, recoverHistoricalExactAssignments } from "./work-unit-assignment-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
-import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
+import { AUTH_GO_LIVE_SUPERSESSIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
 import { AUTH_REQUEST_ACTIONS_ORIGIN_MIGRATION_SQL, LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL, ledgerOriginColumnSql } from "./ledger-origin-schema.js";
 import { AUTH_REQUEST_ACTIONS_REBUILD_SQL } from "./auth-actions-schema.js";
 import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
@@ -2418,6 +2418,8 @@ export const MIGRATIONS: readonly Migration[] = [
        SELECT ${AUTH_LIFECYCLE_EVENT_COLUMNS} FROM auth_request_lifecycle_events_v241`,
     "DROP TABLE auth_request_lifecycle_events_v241",
   ] },
+  // Issue 077f152 — a later verified go-live settles a predecessor it contains.
+  { version: 243, name: "auth_go_live_supersessions", statements: [AUTH_GO_LIVE_SUPERSESSIONS_TABLE_SQL] },
 ];
 
 /**

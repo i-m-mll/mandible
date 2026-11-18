@@ -46,6 +46,7 @@ import type {
   AuthConvergence,
   AuthConvergenceHookSummary,
   AuthConvergenceState,
+  AuthGoLiveSupersession,
   AuthRuntimeVerification,
   AuthHook,
   AuthHookAlert,
@@ -718,6 +719,18 @@ export class AuthHookManager {
     return this.listRuns(request.id);
   }
 
+  /** Issue 077f152 — later verified go-lives that contain these requests' merges. */
+  goLiveSupersessions(requestIds: string[]): Map<string, AuthGoLiveSupersession> {
+    if (requestIds.length === 0 || !this.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_go_live_supersessions'",
+    ).get()) return new Map();
+    const rows = this.db.prepare(
+      `SELECT auth_request_id, successor_request_id, merge_sha, successor_merge_sha, recorded_at
+         FROM auth_go_live_supersessions WHERE auth_request_id IN (${requestIds.map(() => "?").join(", ")})`,
+    ).all(...requestIds) as Array<AuthGoLiveSupersession & { auth_request_id: string }>;
+    return new Map(rows.map(({ auth_request_id, ...supersession }) => [auth_request_id, supersession]));
+  }
+
   listRuns(authRequestId: string): AuthHookRun[] {
     return this.listRunsForRequests([authRequestId]).get(authRequestId) ?? [];
   }
@@ -751,12 +764,18 @@ export class AuthHookManager {
 
   convergenceForRequests(requestIds: string[]): Map<string, AuthConvergence> {
     const runs = this.listRunsForRequests(requestIds);
+    const supersessions = this.goLiveSupersessions(requestIds);
     const pending = this.runtimeHandoffLock()?.verification;
     return new Map(requestIds.map(id => {
       const group = runs.get(id) ?? [];
+      const superseded = supersessions.get(id);
       const verification = pending && this.projectRuntimeVerification(pending, group);
-      return [id, { state: convergenceStateFromRuns(group), hooks: group.map(summarizeConvergenceRun),
-        ...(verification ? { runtime_verification: verification } : {}) }];
+      const live = superseded
+        ? group.map(run => run.hook_id === MANDIBLE_REBUILD_HOOK_ID ? { ...run, state: "complete" as const } : run)
+        : group;
+      return [id, { state: convergenceStateFromRuns(live), hooks: group.map(summarizeConvergenceRun),
+        ...(verification ? { runtime_verification: verification } : {}),
+        ...(superseded ? { superseded_by: superseded } : {}) }];
     }));
   }
 
