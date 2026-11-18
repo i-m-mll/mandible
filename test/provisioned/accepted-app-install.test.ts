@@ -286,9 +286,9 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         } };
       let completed = await runRuntimeHandoffWorker(file, options);
       if (index) {
+        expect(completed.attempt.state, JSON.stringify(completed.attempt.lastObservation)).toBe('running');
         expect(gatewayValidationMs).toBeGreaterThan(5000);
         expect(completed.attempt.effects.prepare.gatewayConfig).toMatch(/^[a-f0-9]{64}$/);
-        expect(completed.attempt.state, JSON.stringify(completed.attempt.lastObservation)).toBe('running');
         expect(applicationIdentity(app)).toBe(readAcceptedReleaseReceipt(reference).package.sha256);
         expect(completed.attempt.effects.replace.completedAt).toBeDefined();
         const attemptId = completed.attempt.id;
