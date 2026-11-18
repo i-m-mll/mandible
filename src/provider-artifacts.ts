@@ -245,6 +245,11 @@ export interface ArtifactSnapshotInput {
   reference?: JsonRecord;
 }
 
+/**
+ * A bundle member as callers send it. It names exactly one locator: `path` or
+ * `ref`, where `artifact_ref` is another spelling of `ref`. `bundleMemberLocator`
+ * enforces this for every surface (routes, CLI, direct callers).
+ */
 export interface ArtifactBundleMemberInput {
   ref?: string;
   artifact_ref?: string;
@@ -261,6 +266,25 @@ export interface ArtifactBundleInput {
   issue?: string;
   issue_project?: string;
   metadata?: JsonRecord;
+}
+
+export type ArtifactBundleMemberLocator =
+  | { kind: "path"; path: string }
+  | { kind: "ref"; ref: string };
+
+type PlannedBundleMember = { member: ArtifactBundleMemberInput; locator: ArtifactBundleMemberLocator };
+
+type ArtifactBundleMemberErrorCode =
+  | "bundle_member_locator_missing"
+  | "bundle_member_locator_conflict"
+  | "bundle_member_ref_conflict";
+
+export class ArtifactBundleMemberError extends Error {
+  readonly status = 400;
+  constructor(readonly code: ArtifactBundleMemberErrorCode, readonly index: number) {
+    super(`bundle member ${index}: ${code}`);
+    this.name = "ArtifactBundleMemberError";
+  }
 }
 
 interface ArtifactLinkInput {
@@ -2407,7 +2431,7 @@ function linkBundleMember(
   db: Db,
   bundleId: string,
   artifact: ArtifactRecord,
-  member: ArtifactBundleMemberInput,
+  { member, locator }: PlannedBundleMember,
   order: number,
   now: number,
 ): ArtifactBundleMemberRecord {
@@ -2422,10 +2446,8 @@ function linkBundleMember(
     metadata: mergeJsonRecords(member.metadata, {
       bundle_id: bundleId,
       order,
-      // Freeze a durable ref (resolved artifact URI), not the possibly-disposable
-      // input path. The original path is kept separately for provenance.
-      member_ref: member.ref ?? member.artifact_ref ?? artifact.uri ?? artifact.id,
-      ...(member.path ? { member_input_path: member.path } : {}),
+      member_ref: bundleMemberRef(locator, artifact) ?? artifact.id,
+      ...(locator.kind === "path" ? { member_input_path: locator.path } : {}),
     }),
   }, now);
   upsertGraphEdge(db, {
@@ -2447,57 +2469,66 @@ function linkBundleMember(
   };
 }
 
-function resolveBundleMemberArtifact(
-  db: Db,
-  member: ArtifactBundleMemberInput,
-  now: number,
-): ArtifactRecord {
-  if (asString(member.path)) {
-    return registerLocalArtifactPath(db, {
-      path: member.path as string,
-      role: member.role,
-      custody_mode: member.custody_mode,
-      metadata: member.metadata,
-    }, now).artifact;
-  }
-  return resolveBundleMemberRef(db, member, now);
+function bundleMemberLocator(member: ArtifactBundleMemberInput, index: number): ArtifactBundleMemberLocator {
+  const memberPath = asString(member.path);
+  const ref = asString(member.ref);
+  const alias = asString(member.artifact_ref);
+  if (ref && alias && ref !== alias) throw new ArtifactBundleMemberError("bundle_member_ref_conflict", index);
+  const memberRef = ref ?? alias;
+  if (memberPath && memberRef) throw new ArtifactBundleMemberError("bundle_member_locator_conflict", index);
+  if (memberPath) return { kind: "path", path: memberPath };
+  if (memberRef) return { kind: "ref", ref: memberRef };
+  throw new ArtifactBundleMemberError("bundle_member_locator_missing", index);
 }
 
-// Shared ref-resolution tail for a non-path bundle member (pure in-memory work).
-function resolveBundleMemberRef(
-  db: Db,
-  member: ArtifactBundleMemberInput,
-  now: number,
-): ArtifactRecord {
-  const ref = asString(member.ref) ?? asString(member.artifact_ref);
-  if (!ref) throw new Error("bundle member ref or path is required");
+/** Settle every member's locator before any member registers. */
+function planBundleMembers(members: ArtifactBundleMemberInput[]): PlannedBundleMember[] {
+  return members.map((member, index) => ({ member, locator: bundleMemberLocator(member, index) }));
+}
+
+/**
+ * The durable ref a manifest entry and member link freeze: the ref the member
+ * named, or for a path member the resolved artifact URI rather than the
+ * possibly-disposable input path.
+ */
+function bundleMemberRef(locator: ArtifactBundleMemberLocator, artifact: ArtifactRecord): string | null {
+  return locator.kind === "ref" ? locator.ref : artifact.uri;
+}
+
+function localInputForBundleMember(member: ArtifactBundleMemberInput, memberPath: string) {
+  return { path: memberPath, role: member.role, custody_mode: member.custody_mode, metadata: member.metadata };
+}
+
+function resolveBundleMemberArtifact(db: Db, { member, locator }: PlannedBundleMember, now: number): ArtifactRecord {
+  return locator.kind === "path"
+    ? registerLocalArtifactPath(db, localInputForBundleMember(member, locator.path), now).artifact
+    : resolveBundleMemberRef(db, locator.ref, now);
+}
+
+function resolveBundleMemberRef(db: Db, ref: string, now: number): ArtifactRecord {
   const resolution = resolveArtifactIdentity(db, ref, "strict-read", now);
   if (resolution.status === "ambiguous") throw new Error(`ambiguous artifact ref: ${ref}`);
-  if (!resolvedArtifactRecord(resolution)) throw new Error(`artifact ref did not resolve: ${ref}`);
-  return resolvedArtifactRecord(resolution)!;
+  const artifact = resolvedArtifactRecord(resolution);
+  if (!artifact) throw new Error(`artifact ref did not resolve: ${ref}`);
+  return artifact;
 }
 
 // Off-thread twin of resolveBundleMemberArtifact: a path member is read+hashed
 // through the bounded ingest pool via registerLocalArtifactPathAsync.
 async function resolveBundleMemberArtifactAsync(
   db: Db,
-  member: ArtifactBundleMemberInput,
+  { member, locator }: PlannedBundleMember,
   now: number,
 ): Promise<ArtifactRecord> {
-  if (asString(member.path)) {
-    return (await registerLocalArtifactPathAsync(db, {
-      path: member.path as string,
-      role: member.role,
-      custody_mode: member.custody_mode,
-      metadata: member.metadata,
-    }, now)).artifact;
-  }
-  return resolveBundleMemberRef(db, member, now);
+  return locator.kind === "path"
+    ? (await registerLocalArtifactPathAsync(db, localInputForBundleMember(member, locator.path), now)).artifact
+    : resolveBundleMemberRef(db, locator.ref, now);
 }
 
 function finalizeArtifactBundle(
   db: Db,
   input: ArtifactBundleInput,
+  planned: PlannedBundleMember[],
   memberArtifacts: ArtifactRecord[],
   now: number,
   artifactRoot: string,
@@ -2510,15 +2541,9 @@ function finalizeArtifactBundle(
     created_at: new Date(now).toISOString(),
     members: memberArtifacts.map((artifact, index) => ({
       artifact_id: artifact.id,
-      // Store the normalized, durable member ref. When a member was added by
-      // path, freeze the resolved artifact URI (a worktree `_artifacts` symlink
-      // becomes its persistent realpath) rather than the disposable input path.
-      ref: input.members[index].ref
-        ?? input.members[index].artifact_ref
-        ?? artifact.uri
-        ?? `artifact-blob:${artifact.content_hash}`,
-      ...(input.members[index].path ? { input_path: input.members[index].path } : {}),
-      role: input.members[index].role ?? artifact.role ?? null,
+      ref: bundleMemberRef(planned[index].locator, artifact) ?? `artifact-blob:${artifact.content_hash}`,
+      ...(planned[index].locator.kind === "path" ? { input_path: planned[index].locator.path } : {}),
+      role: planned[index].member.role ?? artifact.role ?? null,
       order: index,
       recoverability: artifact.custody_mode === 'git' ? 'repo_commit' : 'mandible_cas',
     })),
@@ -2558,7 +2583,7 @@ function finalizeArtifactBundle(
   });
 
   const members = memberArtifacts.map((artifact, index) =>
-    linkBundleMember(db, bundle.id, artifact, input.members[index], index, now)
+    linkBundleMember(db, bundle.id, artifact, planned[index], index, now)
   );
   if (input.issue) {
     resolveAndLinkArtifact(db, {
@@ -2583,8 +2608,9 @@ export function createArtifactBundle(
 ): ArtifactBundleRecord {
   const name = asString(input.name);
   if (!name) throw new Error("bundle name is required");
-  const memberArtifacts = input.members.map((member) => resolveBundleMemberArtifact(db, member, now));
-  return finalizeArtifactBundle(db, input, memberArtifacts, now, artifactRoot);
+  const planned = planBundleMembers(input.members);
+  const memberArtifacts = planned.map((member) => resolveBundleMemberArtifact(db, member, now));
+  return finalizeArtifactBundle(db, input, planned, memberArtifacts, now, artifactRoot);
 }
 
 // Off-thread twin of createArtifactBundle (issue aadf45e). Path members are the
@@ -2599,11 +2625,12 @@ export async function createArtifactBundleAsync(
 ): Promise<ArtifactBundleRecord> {
   const name = asString(input.name);
   if (!name) throw new Error("bundle name is required");
+  const planned = planBundleMembers(input.members);
   const memberArtifacts: ArtifactRecord[] = [];
-  for (const member of input.members) {
+  for (const member of planned) {
     memberArtifacts.push(await resolveBundleMemberArtifactAsync(db, member, now));
   }
-  return finalizeArtifactBundle(db, input, memberArtifacts, now, artifactRoot);
+  return finalizeArtifactBundle(db, input, planned, memberArtifacts, now, artifactRoot);
 }
 
 export function addArtifactBundleMembers(
@@ -2616,7 +2643,7 @@ export function addArtifactBundleMembers(
   if (!bundle) throw new Error(`bundle ref did not resolve: ${bundleRef}`);
   const existingMembers = listArtifactBundleMembers(db, bundle.id);
   const start = existingMembers.length;
-  const added = members.map((member, index) =>
+  const added = planBundleMembers(members).map((member, index) =>
     linkBundleMember(db, bundle.id, resolveBundleMemberArtifact(db, member, now), member, start + index, now)
   );
   return { bundle: getArtifact(db, bundle.id) as ArtifactRecord, members: [...existingMembers, ...added] };
@@ -2634,12 +2661,13 @@ export async function addArtifactBundleMembersAsync(
   if (!bundle) throw new Error(`bundle ref did not resolve: ${bundleRef}`);
   const existingMembers = listArtifactBundleMembers(db, bundle.id);
   const start = existingMembers.length;
+  const planned = planBundleMembers(members);
   const resolved: ArtifactRecord[] = [];
-  for (const member of members) {
+  for (const member of planned) {
     resolved.push(await resolveBundleMemberArtifactAsync(db, member, now));
   }
   const added = resolved.map((artifact, index) =>
-    linkBundleMember(db, bundle.id, artifact, members[index], start + index, now)
+    linkBundleMember(db, bundle.id, artifact, planned[index], start + index, now)
   );
   return { bundle: getArtifact(db, bundle.id) as ArtifactRecord, members: [...existingMembers, ...added] };
 }
