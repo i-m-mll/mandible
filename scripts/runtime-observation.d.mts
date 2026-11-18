@@ -6,7 +6,14 @@ export class RuntimeObservationError extends Error {
   toJSON(): { schema: string; outcome: 'pending' | 'failed'; code: string; message: string; evidence: unknown };
 }
 export function observationPending(error: unknown): error is RuntimeObservationError;
-export function runtimeObservationTimeout(until: number | undefined, maximumMs: number): number;
+export const RUNTIME_OBSERVATION_WINDOW_MS: number;
+export function withRuntimeBudget<T>(budget: () => number, operation: () => T): T;
+export interface RuntimeCommandResult { status: number | null; stdout: string; stderr: string; error?: Error & { code?: string }; signal?: string | null }
+export function withRuntimeCommands<T>(substitutes: { spawn?: (binary: string, args: string[], options: Record<string, unknown> & { timeout: number }) => RuntimeCommandResult; now?: () => number }, operation: () => T): T;
+export function runtimeNow(): number;
+export function runtimeDeadline(until?: number): number;
+export function runtimeObservationTimeout(until?: number): number;
+export function runRuntimeCommand(binary: string, args: string[], options?: Record<string, unknown> & { until?: number }): { status: number; stdout: string; stderr: string };
 export interface RuntimeProcessIdentity { pid: number; startedAt: string | null; runs: number }
 export interface RuntimeTerminalReceipt {
   schema: 'mandible-runtime-receipt@2';

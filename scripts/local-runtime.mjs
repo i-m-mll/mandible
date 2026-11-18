@@ -19,17 +19,17 @@ import { installationRuntime, servicePath, readServiceConfiguration, publishServ
 import { withInstallationGatewayLock, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { readRuntimeHandoffLock } from './runtime-handoff-lock.mjs';
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
-import { RuntimeObservationError, runtimeProcessChanged, runtimeObservationTimeout } from './runtime-observation.mjs';
+import { RuntimeObservationError, observationPending, runRuntimeCommand, runtimeProcessChanged, runtimeDeadline } from './runtime-observation.mjs';
 import { reloadGatewayConfiguration, gatewayAdminNeedsRestart } from './gateway-admin.mjs';
 export { parseLoadedService, loadedServiceMatches } from "./service-definitions.mjs";
 
 import { readBundleOwner, nativeServiceControl, nativeServiceControls, readBundleLaunch, bundleLoginSession } from './bundle-services.mjs';
-import { reconcileBundleServiceStart, bundleServiceStartAction, bundleServiceCompletedRun, startOwnedJob, BUNDLE_SERVICE_START_TIMEOUT_MS } from './bundle-service-start.mjs';
+import { reconcileBundleServiceStart, bundleServiceStartAction, bundleServiceCompletedRun, startOwnedJob } from './bundle-service-start.mjs';
 import { installAcceptedApplication } from './accepted-app-install.mjs';
 
 import * as installedModuleReader from './installed-release.mjs';
 import * as acceptedInstall from './accepted-app-install.mjs';
-import { configureLocalFrontDoor } from './local-front-door.mjs';
+import { configureLocalFrontDoor, gatewayConfiguration, validateGatewayConfiguration } from './local-front-door.mjs';
 import SqliteDatabase from '../src/sqlite.ts';
 import { LocalSessionAuthority } from '../src/client-auth/session-authority.ts';
 import { resolveInstanceInfo } from '../src/instance-policy.ts';
@@ -254,16 +254,14 @@ function readTrustedRoot() {
   return { ca: fs.readFileSync(paths.rootCert), error: null };
 }
 
-function runLaunchctl(args, timeout = 2500) {
+function runLaunchctl(args, until) {
   assertLifecycleLockHeld();
   if (process.platform !== "darwin") throw new Error("Mandible's supervised local runtime requires macOS launchd.");
-  const result = spawnSync("/bin/launchctl", args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024 });
-  if (result.error) throw new Error(`launchctl ${args[0]} failed: ${result.error.message}`);
-  return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  return runRuntimeCommand("/bin/launchctl", args, { until });
 }
 
 function inspectJob(label, until) {
-  const result = runLaunchctl(["print", `${DOMAIN}/${label}`], runtimeObservationTimeout(until, 2500));
+  const result = runLaunchctl(["print", `${DOMAIN}/${label}`], until);
   const loaded = result.status === 0;
   if (!loaded && !/Could not find service|service not found/i.test(result.stderr)) throw new Error(`Cannot inspect launchd service ${label}: ${result.stderr}`);
   const pid = loaded ? Number(result.stdout.match(/\bpid = (\d+)/)?.[1] ?? 0) || null : null;
@@ -274,8 +272,8 @@ function inspectJob(label, until) {
 
 function processStart(pid, until) {
   if (!pid) return null;
-  const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 1500) });
-  if (result.error || result.status !== 0 && result.stderr?.trim()) throw new Error(`Cannot inspect process ${pid}: ${result.error?.message || result.stderr.trim()}`);
+  const result = runRuntimeCommand('/bin/ps', ['-p', String(pid), '-o', 'lstart='], { until });
+  if (result.status !== 0 && result.stderr.trim()) throw new Error(`Cannot inspect process ${pid}: ${result.stderr.trim()}`);
   return result.status === 0 ? result.stdout.trim() || null : null;
 }
 
@@ -293,14 +291,14 @@ function handoffService(label, inspection) {
 
 function capturedGatewayChildren(observation, context) {
   if (!observation?.job.pid || observation.job.executable !== path.join(context.bundleRoot, 'Contents/MacOS/mandible-bun')) return [];
-  const result = spawnSync('/usr/bin/pgrep', ['-P', String(observation.job.pid), '-x', 'mandible-caddy'], { encoding: 'utf8', timeout: 2500 });
-  if (result.error || ![0, 1].includes(result.status)) throw new Error('Cannot inspect the prior Bun gateway children.');
+  const result = runRuntimeCommand('/usr/bin/pgrep', ['-P', String(observation.job.pid), '-x', 'mandible-caddy']);
+  if (![0, 1].includes(result.status)) throw new Error('Cannot inspect the prior Bun gateway children.');
   const executable = path.join(context.bundleRoot, 'Contents/MacOS/mandible-caddy');
   const command = `${executable} run --config ${path.join(context.runtimeDir, 'Caddyfile')} --adapter caddyfile`;
   return result.stdout.trim().split('\n').filter(Boolean).map(value => {
     const pid = Number(value), startedAt = processStart(pid);
-    const actual = spawnSync('/bin/ps', ['-ww', '-p', value, '-o', 'command='], { encoding: 'utf8', timeout: 2500 });
-    if (!startedAt || actual.error || actual.status !== 0 || actual.stdout.trim() !== command) throw new Error('Prior gateway child has a different executable or configuration.');
+    const actual = runRuntimeCommand('/bin/ps', ['-ww', '-p', value, '-o', 'command=']);
+    if (!startedAt || actual.status !== 0 || actual.stdout.trim() !== command) throw new Error('Prior gateway child has a different executable or configuration.');
     return { pid, startedAt, command };
   });
 }
@@ -308,8 +306,8 @@ function capturedGatewayChildren(observation, context) {
 async function drainCapturedGatewayChildren(children, until) {
   for (const child of children ?? []) {
     if (processStart(child.pid, until) !== child.startedAt) continue;
-    const actual = spawnSync('/bin/ps', ['-ww', '-p', String(child.pid), '-o', 'command='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
-    if (actual.error || actual.status !== 0 || actual.stdout.trim() !== child.command) throw new Error('Captured old gateway writer changed; preserving it.');
+    const actual = runRuntimeCommand('/bin/ps', ['-ww', '-p', String(child.pid), '-o', 'command='], { until });
+    if (actual.status !== 0 || actual.stdout.trim() !== child.command) throw new Error('Captured old gateway writer changed; preserving it.');
     process.kill(child.pid, 'SIGTERM');
     const grace = Math.min(until, Date.now() + 1000);
     while (Date.now() < grace && processStart(child.pid, until) === child.startedAt) await new Promise(resolve => setTimeout(resolve, 25));
@@ -376,7 +374,7 @@ async function unloadExactHandoffService(label, expectedArguments, expectedDefin
   // bootout returns once launchd has stopped the job: a running daemon's graceful
   // shutdown takes up to 5 s, and launchd kills a job still running after its
   // default 20 s exit timeout.
-  const result = runLaunchctl(['bootout', `${DOMAIN}/${label}`], 25_000);
+  const result = runLaunchctl(['bootout', `${DOMAIN}/${label}`], Date.now() + 25_000);
   if (result.status !== 0) throw new Error(`Could not unload exact service ${label} (launchctl exit ${result.status}): stdout=${JSON.stringify(result.stdout.trim())}; stderr=${JSON.stringify(result.stderr.trim())}`);
   const deadline = Date.now() + 5000;
   while (true) {
@@ -409,7 +407,7 @@ function assertHandoffMutation(binding, { context, journal, assertHeld }) {
       || current.attempt?.fence || current.attempt?.state !== 'running') throw new Error('Runtime mutation requires the exact active unfenced attempt.');
 }
 
-export async function removeHandoffDefinitions(binding, { context = defaultInstallation(), journal, assertHeld, until = Date.now() + BUNDLE_SERVICE_START_TIMEOUT_MS } = {}) {
+export async function removeHandoffDefinitions(binding, { context = defaultInstallation(), journal, assertHeld, until = runtimeDeadline() } = {}) {
   const HOME = context.home, RUNTIME_DIR = context.runtimeDir;
   const INSTALLATION_AUTHORITY = path.join(HOME, "config/client-auth/authority-id");
   const BACKEND_LABEL = context.backendLabel, GATEWAY_LABEL = context.gatewayLabel;
@@ -445,9 +443,8 @@ export async function removeHandoffDefinitions(binding, { context = defaultInsta
       if (!live.length) {
         let registered = false;
         for (const role of ['backend', 'gateway']) {
-          const result = spawnSync('/bin/launchctl', ['print', `${inspectionContext.domain}/${inspectionContext[`${role}Label`]}`],
-            { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
-          if (result.error || result.status !== 0 && !/Could not find service|service not found/i.test(result.stderr)) throw new Error('Cannot confirm native unregister.');
+          const result = runRuntimeCommand('/bin/launchctl', ['print', `${inspectionContext.domain}/${inspectionContext[`${role}Label`]}`], { until });
+          if (result.status !== 0 && !/Could not find service|service not found/i.test(result.stderr)) throw new Error('Cannot confirm native unregister.');
           if (result.status !== 0) continue;
           const job = parseLoadedService(result.stdout);
           if (job.bundleProgram !== 'Contents/MacOS/mandible-service' || job.parentBundleIdentifier !== inspectionContext.bundleIdentifier
@@ -503,8 +500,17 @@ export function readBundleProcess(context, role, { until } = {}) {
   return job.loaded && job.pid ? { pid: job.pid, startedAt: job.startedAt ?? processStart(job.pid, until), runs: job.runs } : null;
 }
 
+/**
+ * Caddy's verdict on the gateway configuration, from the staged binary while the
+ * old version still serves. This also pays the first launch of the copied binary.
+ */
+export function validatePreparedGateway(binding, prepared, { until } = {}) {
+  const application = acceptedInstall.preparedApplicationContext(prepared, binding);
+  return validateGatewayConfiguration(path.resolve(application.resources, application.release.native.caddy), gatewayConfiguration(binding.home), { until });
+}
+
 export async function startHandoffDefinitions(binding, { context, journal, assertHeld, prepared,
-  until = Date.now() + BUNDLE_SERVICE_START_TIMEOUT_MS, processes = {},
+  until = runtimeDeadline(), processes = {},
   initialize = initializeMainRegistration, configure = configureLocalFrontDoor } = {}) {
   if (binding.acceptedRelease) {
     assertHandoffMutation(binding, { context, journal, assertHeld });
@@ -518,7 +524,8 @@ export async function startHandoffDefinitions(binding, { context, journal, asser
     assertHeld();
     fs.writeFileSync(path.join(context.runtimeDir, 'bundle-launch.json'), JSON.stringify({ enabled: true, gatewayEnabled: true,
       launchMode: binding.priorBackend.launchMode, session: bundleLoginSession() }), { mode: 0o600 });
-    await configure(context, { binary: path.resolve(application.resources, application.release.native.caddy), assertHeld });
+    await configure(context, { binary: path.resolve(application.resources, application.release.native.caddy), assertHeld,
+      validated: journal.attempt.effects?.prepare?.gatewayConfig, until });
     assertHandoffMutation(binding, { context, journal, assertHeld });
     Object.assign(processes, inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes }).processes);
     const statuses = nativeServiceControls(context, 'register', ['backend', 'gateway'], { until, release: application.release });
@@ -537,7 +544,7 @@ export async function startHandoffDefinitions(binding, { context, journal, asser
         assertStartupBudget();
         return observed;
       } catch (error) {
-        if (error instanceof RuntimeObservationError && error.code === 'observation_deadline') {
+        if (observationPending(error)) {
           assertHeld();
           throw new RuntimeObservationError('starting', error.message, { ...error.evidence, processes, commands }, 'pending');
         }
@@ -737,15 +744,10 @@ export function inspectHandoffProcesses(binding, { context, prepared, assertHeld
     : { resources, release: installedModuleReader.readInstalledRelease(resources) };
   const execution = nativeExecutionModel(context.bundleRoot, application.release);
   if (!execution.ok) throw new RuntimeObservationError('unreadable_state', execution.message);
-  const failedRead = result => {
-    const expired = result.error?.code === 'ETIMEDOUT' && Date.now() >= until;
-    return new RuntimeObservationError(expired ? 'observation_deadline' : 'service_observation_failed',
-      result.error?.message || result.stderr, { code: result.error?.code, status: result.status, signal: result.signal }, expired ? 'pending' : 'failed');
-  };
+  const failedRead = result => new RuntimeObservationError('service_observation_failed', result.stderr, { status: result.status });
   const jobs = Object.fromEntries(['backend', 'gateway'].map(role => {
-    const result = spawnSync('/bin/launchctl', ['print', `${context.domain}/${context[`${role}Label`]}`],
-      { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
-    if (result.error || result.status !== 0 && !/Could not find service|service not found/i.test(result.stderr)) throw failedRead(result);
+    const result = runRuntimeCommand('/bin/launchctl', ['print', `${context.domain}/${context[`${role}Label`]}`], { until });
+    if (result.status !== 0 && !/Could not find service|service not found/i.test(result.stderr)) throw failedRead(result);
     const job = result.status === 0 ? { loaded: true, ...parseLoadedService(result.stdout),
       pid: Number(result.stdout.match(/\bpid = (\d+)/)?.[1]) || null, runs: Number(result.stdout.match(/\bruns = (\d+)/)?.[1]) || 0 } : { loaded: false, pid: null };
     if (job.loaded && (job.bundleProgram !== 'Contents/MacOS/mandible-service' || job.parentBundleIdentifier !== context.bundleIdentifier
@@ -758,9 +760,8 @@ export function inspectHandoffProcesses(binding, { context, prepared, assertHeld
   const pids = Object.values(jobs).flatMap(job => job.pid ? [job.pid] : []);
   const actual = new Map();
   if (pids.length) {
-    const result = spawnSync('/bin/ps', ['-p', pids.join(','), '-o', 'pid=,lstart=,comm='],
-      { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
-    if (result.error || result.status !== 0 && result.stderr.trim()) throw failedRead(result);
+    const result = runRuntimeCommand('/bin/ps', ['-p', pids.join(','), '-o', 'pid=,lstart=,comm='], { until });
+    if (result.status !== 0 && result.stderr.trim()) throw failedRead(result);
     for (const line of result.stdout.split('\n').filter(Boolean)) {
       const row = line.match(/^\s*(\d+)\s+(.{24})\s+(.+)$/);
       if (!row) throw new RuntimeObservationError('service_observation_failed', 'Cannot decode candidate process identity.');
@@ -807,9 +808,8 @@ function acceptedHandoffEvidence(binding, expectedProcesses, options) {
     if (runtimeProcessChanged(observed.processes[observation.service], current)) throw new RuntimeObservationError('process_changed', 'Candidate process changed during qualification.', { current });
   }
   const logPath = binding.daemonLog;
-  const writer = spawnSync('/usr/sbin/lsof', ['-a', '-p', String(observed.processes.backend.pid), '-d', '2', '-Fn'],
-    { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
-  if (writer.error || writer.status !== 0 || !writer.stdout.split('\n').includes(`n${logPath}`)) throw new RuntimeObservationError('log_identity_changed', 'Current daemon stderr writer differs from its captured log.');
+  const writer = runRuntimeCommand('/usr/sbin/lsof', ['-a', '-p', String(observed.processes.backend.pid), '-d', '2', '-Fn'], { until });
+  if (writer.status !== 0 || !writer.stdout.split('\n').includes(`n${logPath}`)) throw new RuntimeObservationError('log_identity_changed', 'Current daemon stderr writer differs from its captured log.');
   const log = fs.statSync(logPath);
   assertHeld();
   return { outcome: 'confirmed', backend: handoffService(context.backendLabel, inspection), gateway: handoffService(context.gatewayLabel, inspection),
@@ -1498,15 +1498,11 @@ export async function initializeMainRegistration(root, { context = defaultInstal
   const RUNTIME_DIR = context.runtimeDir;
   assertHeld?.();
   if (!fs.existsSync(INSTALLATION_AUTHORITY)) {
-    const result = spawnSync(runtimeBinary(root), [path.join(root, "scripts", "local-front-door.mjs"), "initialize"], {
-      cwd: root,
-      env: { ...process.env, HOME: ACCOUNT_HOME, MANDIBLE_HOME: HOME },
-      encoding: "utf8",
-      timeout: 10_000,
-      maxBuffer: 1024 * 1024,
+    const result = runRuntimeCommand(runtimeBinary(root), [path.join(root, "scripts", "local-front-door.mjs"), "initialize"], {
+      cwd: root, env: { ...process.env, HOME: ACCOUNT_HOME, MANDIBLE_HOME: HOME },
     });
-    if (result.error || result.status !== 0) {
-      throw new Error(`Installation authority setup failed: ${(result.stderr || result.error?.message || "unknown failure").trim()}`);
+    if (result.status !== 0) {
+      throw new Error(`Installation authority setup failed: ${(result.stderr || "unknown failure").trim()}`);
     }
   }
   const installationId = fs.readFileSync(INSTALLATION_AUTHORITY, "utf8").trim();

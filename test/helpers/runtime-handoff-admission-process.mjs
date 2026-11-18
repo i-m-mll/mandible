@@ -45,7 +45,7 @@ try {
         return { packageSha256: 'fixture-package', installed: false, bundleIdentifier: 'bio.mll.mandible.fixture' };
       },
       control: async (_journal, operation) => { emit('effect', { operation }); return '{}'; },
-      install: async () => ({}), desktop: async () => {},
+      install: async () => ({}), desktop: async () => {}, validateGateway: async () => null,
       observe: async () => ({ schema: 'mandible-runtime-receipt@2', files: {} }),
       wait: async ms => {
         const journal = read();

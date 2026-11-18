@@ -107,12 +107,6 @@ export interface RuntimeHandoffClient {
 /** The required hook whose runtime handoff self-updates this installation. */
 export { MANDIBLE_REBUILD_HOOK_ID } from "./runtime-build-scope.js";
 
-// Most hooks should finish quickly. The built-in Mandible hook may perform a
-// cold Rust/Tauri release build after native changes, so it gets a deliberate
-// longer ceiling instead of being killed halfway through bundle production.
-const DEFAULT_HOOK_TIMEOUT_MS = 5 * 60 * 1000;
-const MANDIBLE_REBUILD_HOOK_TIMEOUT_MS = 30 * 60 * 1000;
-
 /**
  * Issue 27241e6 — attempt budget for one (request, hook) pair. Three attempts
  * covers the realistic transient failures (a busy lock, a host that was mid
@@ -124,11 +118,8 @@ export const AUTH_HOOK_MAX_ATTEMPTS = 3;
 /** Persisted hook output is bounded so one runaway hook cannot bloat the DB. */
 const MAX_PERSISTED_OUTPUT_CHARS = 64 * 1024;
 
-export function authHookTimeoutMs(hookId: string): number {
-  return hookId === "builtin-mandible-rebuild"
-    ? MANDIBLE_REBUILD_HOOK_TIMEOUT_MS
-    : DEFAULT_HOOK_TIMEOUT_MS;
-}
+import { authHookTimeoutMs } from "./auth-hook-timeout.js";
+export { authHookTimeoutMs };
 
 // --- Execution environment contract (issue 27241e6) ---------------------------
 

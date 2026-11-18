@@ -1,10 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { applicationIdentity, resolveAcceptedRelease, readAcceptedReleaseReceipt, readAcceptedInstalledRelease } from './accepted-release.mjs';
 import { assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { adoptBundleRelease, readBundleOwner } from './bundle-services.mjs';
-import { runtimeObservationTimeout } from './runtime-observation.mjs';
+import { runRuntimeCommand, runtimeObservationTimeout } from './runtime-observation.mjs';
 import { serviceInstallationContext } from './service-definitions.mjs';
 
 export function acceptedApplication(binding) {
@@ -76,14 +75,14 @@ export function prepareAcceptedApplication(binding, { until, attemptId, assertHe
       fs.rmSync(path.join(paths.staging, entry), { recursive: true });
     }
     const source = path.join(receipt.package.handle.root, receipt.package.path);
-    const result = spawnSync('/usr/bin/ditto', [source, paths.staging], { timeout: runtimeObservationTimeout(until, 60_000), encoding: 'utf8' });
-    if (result.error || result.status !== 0) throw new Error(`Accepted app copy failed: ${result.error?.message || result.stderr}`);
+    const result = runRuntimeCommand('/usr/bin/ditto', [source, paths.staging], { until });
+    if (result.status !== 0) throw new Error(`Accepted app copy failed: ${result.stderr}`);
     assertHeld();
     sameRoot(paths.staging, stageIdentity);
     fs.chmodSync(paths.staging, fs.lstatSync(source).mode & 0o777);
   }
   assertHeld();
-  runtimeObservationTimeout(until, 60_000);
+  runtimeObservationTimeout(until);
   const target = installed ? binding.nativeApp : paths.staging;
   if (stageIdentity) sameRoot(target, stageIdentity);
   const identity = applicationRootIdentity(target);
@@ -99,7 +98,7 @@ export function prepareAcceptedApplication(binding, { until, attemptId, assertHe
 /** Runs only after the exact captured writer and owned service jobs have drained. */
 export function installAcceptedApplication(binding, context, { until, prepared } = {}) {
   assertLifecycleLockHeld();
-  const check = () => { preparedApplicationContext(prepared, binding); runtimeObservationTimeout(until, 60_000); };
+  const check = () => { preparedApplicationContext(prepared, binding); runtimeObservationTimeout(until); };
   check();
   const accepted = preparedApplicationContext(prepared, binding);
   check();

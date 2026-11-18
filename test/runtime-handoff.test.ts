@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { bindingDigest, handoffDirectory, runRuntimeHandoffWorker, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, cleanupRuntimeHandoff, scheduleRuntimeHandoffCleanup, runtimeHandoffCleanupWake, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
+import { bindingDigest, COMMITTED_OBSERVATION_WINDOW_MS, handoffDirectory, runRuntimeHandoffWorker, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, cleanupRuntimeHandoff, scheduleRuntimeHandoffCleanup, runtimeHandoffCleanupWake, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
 import { acceptedInstallPaths, applicationRootIdentity } from '../scripts/accepted-app-install.mjs';
 import { installedFileIdentity } from '../scripts/installed-release.mjs';
 import { waitUntil } from './helpers/wait-until.js';
@@ -79,10 +79,10 @@ it('resumes an installed-before-launch interruption through the same recorded at
   const desktop = vi.fn(async () => { effects.push('desktop'); });
   const observe = vi.fn(async (journal, options) => {
     expect(desktop).toHaveBeenCalledOnce();
-    expect(options.until).toBe(journal.attempt.deadline);
+    expect(options.until).toBeLessThanOrEqual(Date.now() + COMMITTED_OBSERVATION_WINDOW_MS);
     return { schema: 'mandible-runtime-receipt@2', bindingDigest: journal.bindingDigest, services: identities };
   });
-  const options = { actor: { provider: 'fixture' }, prepare, install, control, desktop, observe, verifyPublication: vi.fn(async () => {}) };
+  const options = { actor: { provider: 'fixture' }, prepare, install, control, desktop, observe, verifyPublication: vi.fn(async () => {}), validateGateway: async () => null };
   const first = await runRuntimeHandoffWorker(f.file, options);
   expect(first.attempt.state, JSON.stringify(first.attempt.lastObservation)).toBe('running');
   expect(effects).toEqual(['prepare', 'drain', 'replace']);

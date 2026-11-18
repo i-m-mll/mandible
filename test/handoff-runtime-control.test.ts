@@ -226,7 +226,7 @@ it.each(['command', 'following observation', 'following read timeout'] as const)
     assertHeld: fx.assertHeld, until, initialize: async () => {}, configure: async () => {} })).rejects.toMatchObject({
       code: 'starting', outcome: 'pending', evidence: {
         processes: { gateway: { pid: 51, startedAt: fx.birth, runs: 1 } },
-        commands: { backend: { operation: 'kickstart', outcome: 'indeterminate', code: 'ETIMEDOUT', status: null, signal: 'SIGTERM' } },
+        commands: { backend: { operation: 'kickstart', outcome: 'indeterminate', code: 'command_unanswered', status: null, signal: 'SIGTERM' } },
       },
     });
   expect(fx.commands.length - atDemand).toBe(boundary === 'command' ? 0 : 1);

@@ -1,9 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { assertLifecycleLockHeld, processIdentity } from './lifecycle-lock.mjs';
-import { runtimeObservationTimeout } from './runtime-observation.mjs';
+import { runRuntimeCommand, runtimeObservationTimeout } from './runtime-observation.mjs';
 import { inspectServiceDefinitionsSync, assertBundleServiceIdentity } from './service-definitions.mjs';
 import { readServiceConfiguration, publishServiceConfiguration } from './service-configuration.mjs';
 import { readInstalledRelease, releaseFile } from './installed-release.mjs';
@@ -25,10 +24,10 @@ function publish(file, value) {
 let loginSession;
 export function bundleLoginSession() {
   if (loginSession) return loginSession;
-  const domain = spawnSync('/bin/launchctl', ['print', `gui/${process.getuid()}`], { encoding: 'utf8', timeout: 2500, maxBuffer: 4 * 1024 * 1024 });
-  const boot = spawnSync('/usr/sbin/sysctl', ['-n', 'kern.bootsessionuuid'], { encoding: 'utf8', timeout: 2500 });
-  const handle = domain.stdout?.match(/^\s*handle = (\d+)$/m)?.[1];
-  if (domain.error || domain.status !== 0 || boot.error || boot.status !== 0 || !handle
+  const domain = runRuntimeCommand('/bin/launchctl', ['print', `gui/${process.getuid()}`]);
+  const boot = runRuntimeCommand('/usr/sbin/sysctl', ['-n', 'kern.bootsessionuuid']);
+  const handle = domain.stdout.match(/^\s*handle = (\d+)$/m)?.[1];
+  if (domain.status !== 0 || boot.status !== 0 || !handle
       || !/^[A-Fa-f0-9-]{36}$/.test(boot.stdout.trim())) throw new Error('Cannot identify the logged-in service session.');
   loginSession = `${boot.stdout.trim()}:${handle}`;
   return loginSession;
@@ -69,17 +68,17 @@ export function adoptBundleRelease(context, release, expectedOwner, acceptedRele
   }
   const installationId = fs.readFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'utf8').trim();
   if (current && current.installationId !== installationId) throw new Error('Bundle owner belongs to another installation authority.');
-  runtimeObservationTimeout(until, 2500);
+  runtimeObservationTimeout(until);
   publish(ownerFile(context), { schema: 'mandible-bundle-owner@1', bundleRoot: context.bundleRoot, installationId,
     generation: release.provenance.commit, sourceDigest: release.provenance.source_digest, ...(acceptedRelease ? { acceptedRelease } : {}) });
   return readBundleOwner(context);
 }
 
-export function nativeServiceControl(context, operation, role, { until = Date.now() + 10_000 } = {}) {
+export function nativeServiceControl(context, operation, role, { until } = {}) {
   return nativeServiceControls(context, operation, [role], { until })[role];
 }
 
-export function nativeServiceControls(context, operation, roles, { until = Date.now() + 10_000, release } = {}) {
+export function nativeServiceControls(context, operation, roles, { until, release } = {}) {
   if (!['status', 'register', 'unregister', 'settings'].includes(operation) || !roles.length
       || new Set(roles).size !== roles.length || roles.some(role => !['backend', 'gateway'].includes(role))) throw new Error('Invalid native service operation.');
   if (operation !== 'status') assertLifecycleLockHeld();
@@ -87,14 +86,9 @@ export function nativeServiceControls(context, operation, roles, { until = Date.
   const resources = path.join(context.bundleRoot, 'Contents/Resources');
   release ??= readInstalledRelease(resources);
   const helper = releaseFile(resources, release.native.serviceHelper, release.layout);
-  if (Date.now() >= until) throw new Error('Native service operation deadline exceeded.');
-  const invoke = requested => spawnSync(helper, [operation, ...requested], {
-    encoding: 'utf8', timeout: Math.max(1, until - Date.now()), env: { HOME: context.accountHome, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
-  });
   const decode = requested => {
-    if (Date.now() >= until) throw new Error('Native service operation deadline exceeded.');
-    const result = invoke(requested);
-    if (result.error || result.status !== 0) throw new Error(`Native ${requested.join('/')} ${operation} failed: ${result.stderr || result.error?.message}`);
+    const result = runRuntimeCommand(helper, [operation, ...requested], { until, env: { HOME: context.accountHome, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } });
+    if (result.status !== 0) throw new Error(`Native ${requested.join('/')} ${operation} failed: ${result.stderr || `exit ${result.status}`}`);
     return JSON.parse(result.stdout);
   };
   const protocol = release.serviceControlProtocol ?? 1;

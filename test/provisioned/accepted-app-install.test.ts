@@ -262,7 +262,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
           } }));
         return JSON.stringify(await readAccess(options.awaitReady));
       };
-      const options = { context, control, verifyPublication: async () => {}, waitMs: Math.max(1, workUntil - Date.now()),
+      const options = { context, control, verifyPublication: async () => {}, validateGateway: async () => null, waitMs: Math.max(1, workUntil - Date.now()),
         observe: async (journal, { prepared }) => {
           const application = preparedApplicationContext(prepared, binding);
           const access = await readAccess();

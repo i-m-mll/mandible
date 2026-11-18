@@ -1,20 +1,22 @@
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { inspectServiceDefinitionsSync, matchingServiceDefinitions } from './service-definitions.mjs';
-import { RuntimeObservationError, runtimeProcessChanged, runtimeObservationTimeout } from './runtime-observation.mjs';
+import { RuntimeObservationError, observationPending, runRuntimeCommand, runtimeProcessChanged, runtimeObservationTimeout } from './runtime-observation.mjs';
 import { RUNTIME_HEALTH_PROBE_INTERVAL_MS } from './runtime-probe-cadence.mjs';
 
 export const BUNDLE_SERVICE_START_TIMEOUT_MS = 20_000;
 
-export function startOwnedJob(context, role, until = Date.now() + BUNDLE_SERVICE_START_TIMEOUT_MS) {
+export function startOwnedJob(context, role, until) {
   assertLifecycleLockHeld();
-  const result = spawnSync('/bin/launchctl', ['kickstart', `${context.domain}/${context[`${role}Label`]}`], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, Infinity) });
-  const code = result.error?.code ?? null;
-  const outcome = !result.error && result.status === 0 ? 'acknowledged'
-    : code === 'ETIMEDOUT' || result.signal ? 'indeterminate' : 'failed';
-  return { operation: 'kickstart', outcome, code, status: result.status ?? null, signal: result.signal ?? null,
-    message: result.error?.message || result.stderr?.trim() || null };
+  runtimeObservationTimeout(until);
+  let result;
+  try { result = runRuntimeCommand('/bin/launchctl', ['kickstart', `${context.domain}/${context[`${role}Label`]}`], { until }); }
+  catch (error) {
+    if (!observationPending(error)) throw error;
+    return { operation: 'kickstart', outcome: 'indeterminate', code: error.code, status: null, signal: error.evidence?.signal ?? null, message: error.message };
+  }
+  return { operation: 'kickstart', outcome: result.status === 0 ? 'acknowledged' : 'failed', code: null, status: result.status,
+    signal: null, message: result.stderr.trim() || null };
 }
 
 export function bundleServiceCompletedRun(job, demand = {}) {
@@ -70,7 +72,7 @@ export async function reconcileBundleServiceStart(context, role, { until, contro
       }
       const replaced = continuity(); if (replaced) return replaced;
     }
-    catch (error) { return fail('service_observation_failed', error.message); }
+    catch (error) { return fail(observationPending(error) ? error.code : 'service_observation_failed', error.message, observationPending(error) ? 'pending' : 'failed'); }
     const observed = inspection.ok ? inspection.observations.find(item => item.service === role) : null;
     const sample = { at: now(), native, job: observed ? {
       loaded: observed.job.loaded, pid: observed.job.pid, runs: observed.job.runs, lastExit: observed.job.lastExit, lastSignal: observed.job.lastSignal, program: observed.job.program,

@@ -2,20 +2,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { bundleServiceLabel } from './bundle-service-roles.mjs';
-import { runtimeObservationTimeout } from './runtime-observation.mjs';
+import { observationPending, runRuntimeCommand, runtimeObservationTimeout } from './runtime-observation.mjs';
 
 import { nativeExecutionModel, classifyNativeExecution } from './native-service-execution.mjs';
 
 const execute = promisify(execFile);
 
 function bundleIdentifierAt(bundleRoot, until) {
-  const result = spawnSync('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', path.join(bundleRoot, 'Contents/Info.plist')],
-    { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
-  if (result.error || result.status !== 0 || !/^[A-Za-z0-9.-]+$/.test(result.stdout.trim())) {
-    throw new Error(`Cannot read the expected service bundle identity: ${result.stderr || result.error?.message || 'Invalid CFBundleIdentifier'}`);
+  const result = runRuntimeCommand('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', path.join(bundleRoot, 'Contents/Info.plist')], { until });
+  if (result.status !== 0 || !/^[A-Za-z0-9.-]+$/.test(result.stdout.trim())) {
+    throw new Error(`Cannot read the expected service bundle identity: ${result.stderr || 'Invalid CFBundleIdentifier'}`);
   }
   return result.stdout.trim();
 }
@@ -197,14 +196,14 @@ function loadedJob(service, label, result, context, until, execution) {
         return refusal(service, label, 'ownership_conflict', [], 'The loaded service has a different native bundle identity.');
       }
       if (job.pid) {
-        const executable = spawnSync('/bin/ps', ['-ww', '-p', String(job.pid), '-o', 'comm='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
-        if (executable.error || executable.status !== 0) return refusal(service, label, 'unreadable_state', [], 'Cannot establish the loaded bundle process executable.');
+        const executable = runRuntimeCommand('/bin/ps', ['-ww', '-p', String(job.pid), '-o', 'comm='], { until });
+        if (executable.status !== 0) return refusal(service, label, 'unreadable_state', [], 'Cannot establish the loaded bundle process executable.');
         const actual = executable.stdout.trim();
         const model = execution();
         if (!model.ok) return refusal(service, label, 'unreadable_state', [], model.message);
         const stage = classifyNativeExecution(model, service, actual);
         if (stage === 'pending') {
-          const birth = spawnSync('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
+          const birth = runRuntimeCommand('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { until });
           const pending = refusal(service, label, 'starting', ['processExecutable'], `Native service ${label} PID ${job.pid} is still starting (${actual}); bundle process ownership is not confirmed yet.`);
           pending.refusal.evidence = { service, label, executable: actual, pid: job.pid,
             startedAt: birth.status === 0 ? birth.stdout.trim() : null,
@@ -215,8 +214,8 @@ function loadedJob(service, label, result, context, until, execution) {
         if (stage === 'foreign') {
           return refusal(service, label, 'ownership_conflict', ['processExecutable'], `The loaded process PID ${job.pid} belongs to another bundle location (${actual}); preserving it.`);
         }
-        const birth = spawnSync('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 2500) });
-        if (birth.error || birth.status !== 0 || !birth.stdout.trim()) return refusal(service, label, 'unreadable_state', [], 'Cannot establish the loaded bundle process birth.');
+        const birth = runRuntimeCommand('/bin/ps', ['-p', String(job.pid), '-o', 'lstart='], { until });
+        if (birth.status !== 0 || !birth.stdout.trim()) return refusal(service, label, 'unreadable_state', [], 'Cannot establish the loaded bundle process birth.');
         job.startedAt = birth.stdout.trim();
         job.executable = actual;
       } else {
@@ -249,13 +248,13 @@ export async function inspectServiceDefinitions(context, options = {}) {
         let bytes;
         try { bytes = await fs.promises.readFile(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
         let record;
-        try { record = JSON.parse((await execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], { timeout: runtimeObservationTimeout(options.until, 2500), maxBuffer: 1024 * 1024 })).stdout); }
+        try { record = JSON.parse((await execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], { timeout: runtimeObservationTimeout(options.until), maxBuffer: 1024 * 1024 })).stdout); }
         catch (error) { return refusal(service, label, 'unreadable_state', [], `Cannot establish ownership of ${file}: ${error.message}`); }
         if (record.BundleProgram) record.bundleRoot = context.bundleRoot;
         installed.push(installedDefinition(file, bytes, record));
       }
       let result;
-      try { result = { status: 0, ...await execute('/bin/launchctl', ['print', `${context.domain}/${label}`], { timeout: runtimeObservationTimeout(options.until, 2500), maxBuffer: 1024 * 1024 }) }; }
+      try { result = { status: 0, ...await execute('/bin/launchctl', ['print', `${context.domain}/${label}`], { timeout: runtimeObservationTimeout(options.until), maxBuffer: 1024 * 1024 }) }; }
       catch (error) { result = { status: error.code, stdout: error.stdout ?? '', stderr: error.stderr || error.message }; }
       const loaded = loadedJob(service, label, result, context, options.until, execution);
       return loaded.ok ? assessServiceObservation(context, service, installed, loaded.job, { ...options, desired: options.desired?.[service] }) : loaded;
@@ -273,16 +272,19 @@ export function inspectServiceDefinitionsSync(context, options = {}) {
       for (const file of serviceFiles(context, label)) {
         let bytes;
         try { bytes = fs.readFileSync(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-        const parsed = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], { encoding: 'utf8', timeout: runtimeObservationTimeout(options.until, 2500) });
+        const parsed = runRuntimeCommand('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], { until: options.until });
         let record;
-        try { if (parsed.error || parsed.status !== 0) throw new Error(parsed.stderr || parsed.error?.message); record = JSON.parse(parsed.stdout); }
+        try { if (parsed.status !== 0) throw new Error(parsed.stderr); record = JSON.parse(parsed.stdout); }
         catch (error) { return refusal(service, label, 'unreadable_state', [], `Cannot establish ownership of ${file}: ${error.message}`); }
         if (record.BundleProgram) record.bundleRoot = context.bundleRoot;
         installed.push(installedDefinition(file, bytes, record));
       }
-      const result = spawnSync('/bin/launchctl', ['print', `${context.domain}/${label}`], { encoding: 'utf8', timeout: runtimeObservationTimeout(options.until, 2500) });
-      const loaded = loadedJob(service, label, { ...result, stderr: result.error?.message || result.stderr || '' }, context, options.until, execution);
+      const result = runRuntimeCommand('/bin/launchctl', ['print', `${context.domain}/${label}`], { until: options.until });
+      const loaded = loadedJob(service, label, result, context, options.until, execution);
       return loaded.ok ? assessServiceObservation(context, service, installed, loaded.job, { ...options, desired: options.desired?.[service] }) : loaded;
-    } catch (error) { return refusal(service, label, 'unreadable_state', [], `Cannot inspect ${label}: ${error.message}`); }
+    } catch (error) {
+      if (observationPending(error)) throw error;
+      return refusal(service, label, 'unreadable_state', [], `Cannot inspect ${label}: ${error.message}`);
+    }
   }));
 }

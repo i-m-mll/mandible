@@ -71,7 +71,7 @@ it.each(['bio.mll.mandible', 'bio.mll.mandible.fixture.private'])('qualifies exp
     expect(observedTimeouts.slice(before).length).toBeGreaterThan(0);
     expect(observedTimeouts.slice(before).every(timeout => timeout > 0 && timeout <= 40)).toBe(true);
     const beforeExpired = observedTimeouts.length;
-    expect(inspectServiceDefinitionsSync(context, { until: 999 })).toMatchObject({ ok: false, refusal: { category: 'unreadable_state' } });
+    expect(() => inspectServiceDefinitionsSync(context, { until: 999 })).toThrow(expect.objectContaining({ code: 'observation_deadline', outcome: 'pending' }));
     expect(observedTimeouts).toHaveLength(beforeExpired);
   } finally { clock.mockRestore(); }
   parentIdentifier = 'bio.mll.foreign';
