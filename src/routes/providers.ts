@@ -16,6 +16,7 @@ import { checkArtifactMaterialization, diffArtifacts, getArtifactContentAsync } 
 import { openArtifactExternally } from "../artifact-open.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import {
+  ArtifactBundleMemberError,
   ArtifactLinkTargetError,
   addArtifactBundleMembersAsync,
   associateProjectArtifact,
@@ -70,7 +71,8 @@ import { bodyRecord, sendJson } from "./http.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 
 function handleError(res: ResponseLike, error: unknown): void {
-  if (error instanceof ClientAuthzError || error instanceof ArtifactLinkTargetError || error instanceof ArtifactAttachmentError) {
+  if (error instanceof ClientAuthzError || error instanceof ArtifactLinkTargetError
+    || error instanceof ArtifactBundleMemberError || error instanceof ArtifactAttachmentError) {
     sendJson(res, error.status, { error: error.message, code: error.code });
     return;
   }

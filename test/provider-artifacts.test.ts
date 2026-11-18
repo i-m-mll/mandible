@@ -8,6 +8,7 @@ import SqliteDatabase from "../src/sqlite.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getArtifactContent } from "../src/artifact-content.js";
 import {
+  ArtifactBundleMemberError,
   addArtifactBundleMembers,
   canonicalArtifactSeriesShortRef,
   canonicalArtifactVersionShortRef,
@@ -459,6 +460,47 @@ describe("provider/artifact substrate", () => {
     }));
     expect(bundleContent?.preview?.text).toContain(tracked.id);
     expect(bundleContent?.preview?.text).toContain(local.id);
+  });
+
+  it("records the artifact a bundle member stored, and refuses a member naming two locators", () => {
+    const named = ingestArtifact(db, { content: "named\n", role: "note" }, 1000, tempDir);
+    const filePath = path.join(tempDir, "on-disk.txt");
+    fs.writeFileSync(filePath, "on disk\n", "utf8");
+    const artifactCount = () => listArtifacts(db, { limit: 1000 }).length;
+    const before = artifactCount();
+
+    const refusal = (members: Parameters<typeof createArtifactBundle>[1]["members"]) => {
+      try {
+        createArtifactBundle(db, { name: "packet", members }, 2000, tempDir);
+      } catch (error) {
+        return error instanceof ArtifactBundleMemberError ? { code: error.code, index: error.index } : error;
+      }
+      return null;
+    };
+    const namedRef = `artifact-blob:${named.content_hash}`;
+    expect(refusal([{ ref: namedRef }, { path: filePath, ref: namedRef }]))
+      .toEqual({ code: "bundle_member_locator_conflict", index: 1 });
+    expect(refusal([{ path: filePath, artifact_ref: namedRef }]))
+      .toEqual({ code: "bundle_member_locator_conflict", index: 0 });
+    expect(refusal([{ ref: namedRef, artifact_ref: named.uri as string }]))
+      .toEqual({ code: "bundle_member_ref_conflict", index: 0 });
+    expect(refusal([{ role: "note" }])).toEqual({ code: "bundle_member_locator_missing", index: 0 });
+    expect(artifactCount()).toBe(before);
+
+    const { bundle, members } = createArtifactBundle(db, {
+      name: "packet",
+      members: [{ path: filePath }, { ref: namedRef, artifact_ref: namedRef }],
+    }, 2000, tempDir);
+    const stored = members[0].artifact;
+    expect(getArtifactContent(db, stored.id)?.preview?.text).toBe("on disk\n");
+    expect(members.map((member) => member.link.metadata?.member_ref)).toEqual([stored.uri, namedRef]);
+    const manifest = JSON.parse(getArtifactContent(db, bundle.id)?.preview?.text ?? "{}");
+    expect(manifest.members.map((member: { artifact_id: string; ref: string }) => [member.artifact_id, member.ref]))
+      .toEqual([[stored.id, stored.uri], [named.id, namedRef]]);
+
+    expect(() => addArtifactBundleMembers(db, bundle.id, [{ path: filePath, ref: namedRef }], 3000))
+      .toThrow(ArtifactBundleMemberError);
+    expect(getArtifactBundle(db, bundle.id)?.members).toHaveLength(2);
   });
 
   it("keeps repo artifact discovery dry-run read-only and scan registration mutating", () => {
