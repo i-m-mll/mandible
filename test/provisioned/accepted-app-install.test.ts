@@ -16,6 +16,7 @@ import { pathToFileURL } from 'node:url';
 import http from 'node:http';
 import { readBundleProcess } from '../../scripts/local-runtime.mjs';
 import { stageBundleServices } from '../../scripts/prepare-bundle-services.mjs';
+import { validateGatewayConfiguration } from '../../scripts/local-front-door.mjs';
 import { withLifecycleLock, processIdentity } from '../../scripts/lifecycle-lock.mjs';
 import { runSupervisedCommand } from '../../scripts/process-group-supervisor.mjs';
 import { RuntimeObservationError, runtimeProcessChanged } from '../../scripts/runtime-observation.mjs';
@@ -72,6 +73,9 @@ it('replaces retained signed bundles through real native service startup, qualif
   let sourceRevision: string | null = null;
   let candidateExecutables: Record<string, ReturnType<typeof installedFileIdentity>> | null = null;
   let predecessorExecutable: ReturnType<typeof installedFileIdentity> | null = null;
+  let slowCaddy = '';
+  let predecessorProtocol: number | undefined;
+  let gatewayValidationMs: number | null = null;
   let failureDiagnostic: { json_excerpt: string; truncated: boolean; service_stderr: Record<string, string> } | null = null;
   console.info('native_bundle_replacement_started', JSON.stringify({ identifier, root, started, deadline }));
   const runtime = process.env.MANDIBLE_RUNTIME;
@@ -126,10 +130,10 @@ it('replaces retained signed bundles through real native service startup, qualif
     expect(candidateRelease.serviceControlProtocol).toBe(2);
     const helper = path.join(candidateMacOS, 'mandible-service');
     const predecessorApp = process.env.MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP;
-    if (!predecessorApp || !path.isAbsolute(predecessorApp)) throw new Error('Native proof requires an explicit retained v1 MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP.');
+    if (!predecessorApp || !path.isAbsolute(predecessorApp)) throw new Error('Native proof requires an explicit retained MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP.');
     const predecessorHelper = path.join(predecessorApp, 'Contents/MacOS/mandible-service');
     const predecessorRelease = JSON.parse(fs.readFileSync(path.join(predecessorApp, 'Contents/Resources/release.json'), 'utf8'));
-    if (predecessorRelease.serviceControlProtocol !== undefined) throw new Error('Native predecessor must declare the actual v1 service protocol.');
+    predecessorProtocol = predecessorRelease.serviceControlProtocol;
     predecessorExecutable = installedFileIdentity(predecessorHelper);
     expect(predecessorExecutable).toEqual(predecessorRelease.files[predecessorRelease.native.serviceHelper]);
     for (const executable of ['mandible-service', 'mandible-bun', 'mandible-caddy']) if (!fs.statSync(path.join(candidateMacOS, executable)).isFile()) throw new Error('Candidate native proof executable is missing: ' + executable);
@@ -137,6 +141,9 @@ it('replaces retained signed bundles through real native service startup, qualif
     for (const [file, role] of [['mandible-service', 'serviceHelper'], ['mandible-bun', 'bun'], ['mandible-caddy', 'caddy']] as const) {
       expect(candidateExecutables[file]).toEqual(candidateRelease.files[candidateRelease.native[role]]);
     }
+    // A Caddy that answers only after the 5 s the go-live path once allowed it.
+    slowCaddy = path.join(root, 'slow-caddy');
+    fs.writeFileSync(slowCaddy, `#!/bin/sh\n/bin/sleep 6\nexec ${JSON.stringify(path.join(candidateMacOS, 'mandible-caddy'))} "$@"\n`, { mode: 0o755 });
     fs.mkdirSync(path.join(home, 'config/client-auth'), { recursive: true });
     const authority = path.join(home, 'config/client-auth/authority-id');
     const credentials = path.join(home, 'config/client-auth/credentials');
@@ -192,7 +199,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: String(index + 1), target: `${process.platform}-${process.arch}`,
         layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', agents: '../Library/LaunchAgents' } },
         provenance: { commit: candidate.pin_sha, source_digest: pin.repeat(64) }, entrypoints: { daemon: 'foreground.mjs', service: 'foreground.mjs' },
-        qualification: { bun_sha256: candidateRelease.qualification.bun_sha256 }, serviceExecutables: { backend: 'bun', gateway: 'caddy' }, ...(index ? { serviceControlProtocol: 2 } : {}), native, files }));
+        qualification: { bun_sha256: candidateRelease.qualification.bun_sha256 }, serviceExecutables: { backend: 'bun', gateway: 'caddy' }, ...((index ? 2 : predecessorProtocol) ? { serviceControlProtocol: index ? 2 : predecessorProtocol } : {}), native, files }));
       signer.sign(built, null, true, identifier);
       verifyNativeAppSignatures(built, signer, { native });
       const evidence = path.join(root, `evidence-${pin}`);
@@ -262,7 +269,13 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
           } }));
         return JSON.stringify(await readAccess(options.awaitReady));
       };
-      const options = { context, control, verifyPublication: async () => {}, validateGateway: async () => null, waitMs: Math.max(1, workUntil - Date.now()),
+      const validateGateway = index ? async (_binding: unknown, _prepared: unknown, { until }: { until: number }) => {
+        const before = Date.now();
+        const digest = validateGatewayConfiguration(slowCaddy, `{\n  admin unix/${gatewaySocket}\n}\n`, { until });
+        gatewayValidationMs = Date.now() - before;
+        return digest;
+      } : async () => null;
+      const options = { context, control, verifyPublication: async () => {}, validateGateway, waitMs: Math.max(1, workUntil - Date.now()),
         observe: async (journal, { prepared }) => {
           const application = preparedApplicationContext(prepared, binding);
           const access = await readAccess();
@@ -273,6 +286,8 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         } };
       let completed = await runRuntimeHandoffWorker(file, options);
       if (index) {
+        expect(gatewayValidationMs).toBeGreaterThan(5000);
+        expect(completed.attempt.effects.prepare.gatewayConfig).toMatch(/^[a-f0-9]{64}$/);
         expect(completed.attempt.state, JSON.stringify(completed.attempt.lastObservation)).toBe('running');
         expect(applicationIdentity(app)).toBe(readAcceptedReleaseReceipt(reference).package.sha256);
         expect(completed.attempt.effects.replace.completedAt).toBeDefined();
@@ -319,7 +334,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         }
         expect(prior).toMatchObject({ generation: candidate.pin_sha, acceptedRelease: reference, installationId: 'preserved-authority' });
         generations.push({ generation: candidate.pin_sha, processes: qualified, packageSha256: receipt.package.sha256,
-          service_control_protocol: index ? 2 : 1, attempt_id: completed.attempt.id,
+          service_control_protocol: index ? 2 : predecessorProtocol ?? 1, attempt_id: completed.attempt.id,
           receipt_digest: completed.attempt.receiptDigest, receipt_scope: 'Private native access adapter; no production health or adoption',
           installed_before_launch_continuation: index === 1 && interrupted,
           provisioning_install_proof_ms: Date.now() - phaseStarted });
@@ -363,8 +378,8 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       if (cleaned) fs.rmSync(root, { recursive: true, force: true });
       console.info('native_bundle_replacement_proof', JSON.stringify({ scope: 'private SMAppService replacement; no product daemon, GUI, production ledger or approval API',
         source_revision: sourceRevision, candidate_app: process.env.MANDIBLE_NATIVE_PROOF_APP, candidate_executables: candidateExecutables,
-        predecessor_app: process.env.MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP,
-        predecessor_executable: predecessorExecutable,
+        predecessor_app: process.env.MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP, predecessor_service_control_protocol: predecessorProtocol ?? 1,
+        predecessor_executable: predecessorExecutable, gateway_validation_ms: gatewayValidationMs,
         runtime_source: 'Current source reconciler and native effect modules; fixture authority/access adapters; copied candidate helper is re-signed for private descriptors.',
         identifier, signing_identity: signer.identity, helper_identifier: nativeSigningIdentifier(identifier, 'serviceHelper'),
         generations, command_costs: costs, failure: failureDiagnostic,

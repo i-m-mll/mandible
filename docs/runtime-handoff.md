@@ -56,7 +56,7 @@ The accepted updater calls the local-runtime operations directly with one explic
 
 `release.json.serviceControlProtocol` identifies the native helper interface. Missing means the installed v1 one-role protocol. V2 accepts both roles in one invocation and completes unregister only after every native completion handler has answered, when re-registration is safe. V1 predecessors receive their supported one-role calls, followed by confirmation that captured jobs and processes have drained before exchange. A v2 error never selects the v1 path. The prior helper stops its registered app; the verified new installed helper starts the replacement.
 
-The isolated native replacement fixture takes explicit `MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP` and `MANDIBLE_NATIVE_PROOF_APP` inputs. It copies the v1 and candidate v2 helpers into uniquely identified private bundles and re-signs those copies for the fixture descriptors. It proves native replacement, process continuity, registration completion and retained-package cleanup. Its small backend and desktop substitutes do not prove product GUI or publication behavior; those require the candidate and normal update qualification.
+The isolated native replacement fixture takes explicit `MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP` and `MANDIBLE_NATIVE_PROOF_APP` inputs. It copies the predecessor's helper, at the service protocol its `release.json` declares, and the candidate's v2 helper into uniquely identified private bundles and re-signs those copies for the fixture descriptors. It proves native replacement, process continuity, registration completion and retained-package cleanup. Its small backend and desktop substitutes do not prove product GUI or publication behavior; those require the candidate and normal update qualification.
 
 All generated Caddy configurations share a one-second HTTP shutdown grace, including production, preview hosts, candidate acceptance, and temporary CA setup. On SIGTERM, Caddy stops accepting connections, closes idle connections, allows finite responses to finish during that second, then closes remaining streams and cleans up its storage and modules. Event streams reconnect after the update; connection lifetime does not represent durable application work. Backend transactions and jobs retain their own drain contract; native service unregistration still waits for captured processes to exit. The HTTP grace also applies when a configuration reload removes an HTTP server.
 
@@ -94,7 +94,7 @@ The admission regression runs the actual producer and worker in separate Bun pro
 bun run test test/runtime-go-live-time.test.ts test/runtime-handoff-admission.test.ts test/runtime-handoff.test.ts test/service-definition-handoff.test.ts test/bundle-service-start.test.ts test/lifecycle-lock.test.ts test/runtime-handoff-readiness.test.ts
 ```
 
-The bounded macOS native fixture requires a clean, committed source checkout and a configured native app signing identity. It reuses executables from the candidate app already built for ordinary [candidate acceptance](candidate-acceptance.md) and an explicitly retained predecessor app with the v1 service protocol:
+The bounded macOS native fixture requires a clean, committed source checkout and a configured native app signing identity. It reuses executables from the candidate app already built for ordinary [candidate acceptance](candidate-acceptance.md) and an explicitly retained predecessor app, normally the accepted release of the installed version. The fixture stages the predecessor at the service protocol its `release.json` declares and records that protocol in its evidence:
 
 ```bash
 MANDIBLE_NATIVE_PROOF_APP='/absolute/path/to/candidate/Mandible.app' \
@@ -102,7 +102,7 @@ MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP='/absolute/path/to/predecessor/Mandible.ap
   bun run test:provisioned test/provisioned/accepted-app-install.test.ts
 ```
 
-It assembles two small signed private descriptors with unique service identities, uses the production reconciler and its prepare/install/drain/start effects, and continues one interruption after B is installed but before services launch. It performs no additional Cargo or Tauri build. Its original 20-second command budget includes runner startup and owned teardown; the launcher supplies the deadline.
+It assembles two small signed private descriptors with unique service identities, uses the production reconciler and its prepare/install/drain/start effects, and continues one interruption after B is installed but before services launch. B's gateway configuration is validated before drain by a Caddy that answers only after 6 seconds, through the same runner and budget as the product. It performs no additional Cargo or Tauri build. Its original 20-second command budget includes runner startup and owned teardown; the launcher supplies the deadline.
 
 Fixture authority and access adapters cover its private heartbeat and Caddy admin endpoint. They do not certify product approval or the full product daemon. The fixture also does not physically kill and relaunch the independent production helper. Real signed publication evidence has separate source coverage, including an unavailable checkout. Exact product package/runtime acceptance remains the normal gate; the actual production transition is reported after human approval.
 
