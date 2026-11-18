@@ -144,7 +144,7 @@ import {
   type LedgerStoredWorkerStatus,
 } from "./ledger/types.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
-import { holdsResponsibility, recordResponsibilityTransfer, type ResponsibilityActor } from "./responsibility.js";
+import { actorHolder, custodyGate, recordResponsibilityTransfer, type ResponsibilityActor, type ResponsibilityHolder } from "./responsibility.js";
 import { raiseDaemonIncident, resolveDaemonIncident } from "./operational-incidents.js";
 import { promoteBriefingGroupProposal } from "./feedback/briefing-groups.js";
 import { appendAuthLifecycleEvent, listAuthLifecycleEvents, authRequestInitiatingOrigin } from "./auth-lifecycle.js";
@@ -345,7 +345,7 @@ function completionSignal(): { promise: Promise<void>; resolve(): void } {
 }
 
 export class AuthQueueError extends Error {
-  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "operator_recovery_required" | "lifecycle_precondition_required" | "lifecycle_conflict" | "recovery_refused" | "operator_required";
+  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "lifecycle_precondition_required" | "lifecycle_conflict" | "recovery_refused" | "operator_required";
   readonly status?: AuthRequestStatus;
   readonly details?: unknown;
 
@@ -1865,6 +1865,7 @@ export class AuthQueue {
         evidence_method: payload.requester_evidence_method ?? "session_claim",
         credential_id: payload.requester_credential_id ?? null,
         session_id: payload.session_id ?? null,
+        authority_path: payload.session_id ? "custodian" : "operator",
       };
       const predecessor = payload.supersedes_request_id
         ? this.requireRequest(payload.supersedes_request_id)
@@ -2331,7 +2332,8 @@ export class AuthQueue {
       const wuProject = resolveProjectRef(this.db, row.repo_id);
       return wuProject.ok && wuProject.project.id === project.project!.id;
     });
-    const owned = onBranch.filter((row) => holdsResponsibility(this.db, row, { user_id: actor.user_id, session_id: actor.session_id ?? null }));
+    const custodian = custodyActor(actor);
+    const owned = onBranch.filter((row) => custodyGate(this.db, row, custodian).allowed);
     const matches = owned.filter((row) => Boolean(row.ledger_issue_id && issueIds.has(row.ledger_issue_id)));
     if (matches.length !== 1) {
       const where = `branch ${payload.head_branch} of ${payload.repo}`;
@@ -2341,7 +2343,7 @@ export class AuthQueue {
         : onBranch.length === 0
           ? `No committed, unbound delivery work unit exists on ${where}. Run \`mandible work-unit activate --issue <id> --repo ${payload.repo} --branch ${payload.head_branch}\` first.`
           : owned.length === 0
-            ? `The committed work units on ${where} are held by another responsible user or session: ${units(onBranch)}. Explicitly transfer responsibility with \`mandible work-unit custody-assume\`.`
+            ? `The committed work units on ${where} are held by another session: ${units(onBranch)}. That session submits the request, or hands you responsibility with \`mandible work-unit custody-assume --session\`.`
             : `The request names no issue linked to a committed work unit on ${where}; the branch's units are ${units(owned)}. Pass that issue with --issue or --closes-issue.`;
       throw new AuthQueueError("custody_required", `Merge request has no single delivery work unit. ${reason}`);
     }
@@ -2360,14 +2362,29 @@ export class AuthQueue {
   }
 
   private requestCustodyForActor(request: AuthRequest, actor: AuthLifecycleActor): WorkUnitCustody | null {
+    return this.requestCustodyDecision(request, custodyActor(actor)).custody;
+  }
+
+  private requestCustodyDecision(request: AuthRequest, actor: ResponsibilityActor): { custody: WorkUnitCustody | null; passed_over: ResponsibilityHolder | null } {
     const custody = request.custody_work_unit_id ? this.db.prepare("SELECT * FROM work_units WHERE id = ?")
       .get(request.custody_work_unit_id) as WorkUnitCustody | undefined : null;
     if (request.custody_work_unit_id && !custody) throw new AuthQueueError("custody_required", "The bound delivery work unit is missing.");
-    const owner = custody ?? this.requestResponsibility(request);
-    if (!owner || !holdsResponsibility(this.db, owner, { user_id: actor.user_id, session_id: actor.session_id ?? null })) {
-      throw new AuthQueueError("custody_required", "Explicitly assume current request responsibility before changing it.");
+    const decision = custodyGate(this.db, custody ?? this.requestResponsibility(request), actor);
+    if (!decision.allowed) {
+      throw new AuthQueueError("custody_required", "Another session is responsible for this request; only it, or a session it hands responsibility to, may change it.");
     }
-    return custody ?? null;
+    return { custody: custody ?? null, passed_over: decision.passed_over };
+  }
+
+  /** The holder the actor passes over by acting on the request, or null. */
+  custodyPassedOver(requestId: string, actor: ResponsibilityActor): ResponsibilityHolder | null {
+    if (actor.kind !== "user") return null;
+    return this.requestCustodyDecision(this.requireRequest(requestId), actor).passed_over;
+  }
+
+  /** A revision that passed over the holder continues the holder's notice. */
+  private noticePassedOverHolder(request: AuthRequest, actor: AuthLifecycleActor | undefined): void {
+    if (actor && this.custodyPassedOver(request.id, custodyActor(actor))) this.raiseNotice(request.id, { kind: "change" });
   }
 
   /** The status transition writer; a transition into `NOTICE_STATUSES` raises its notice. */
@@ -2415,8 +2432,8 @@ export class AuthQueue {
     this.db.transaction(() => {
       this.assertLifecycleCas(request, null, expectedRevision, expectedGeneration);
       const prior = this.requestResponsibility(request);
-      if (successor !== undefined) this.requestCustodyForActor(request, { ...actor, evidence_method: "session_claim" });
-      const next = successor === undefined ? actor : successor;
+      if (successor !== undefined) this.requestCustodyDecision(request, actor);
+      const next = successor === undefined ? actorHolder(actor) : successor && actorHolder(successor);
       this.db.prepare(`INSERT INTO auth_request_responsibility (auth_request_id, owner_user_id, responsibility_session_id, custody_generation)
         VALUES (?, ?, ?, ?) ON CONFLICT(auth_request_id) DO UPDATE SET owner_user_id=excluded.owner_user_id,
         responsibility_session_id=excluded.responsibility_session_id, custody_generation=excluded.custody_generation`)
@@ -2734,6 +2751,7 @@ export class AuthQueue {
         nextStatus: request.status, actor, priorSnapshot, occurredAt: this.now(),
       });
     })();
+    this.noticePassedOverHolder(request, actor);
     return result;
   }
 
@@ -3302,6 +3320,7 @@ export class AuthQueue {
         this.queueCandidateCleanup(request, { clearRequestFields: false });
       }
       this.syncLedgerLinksForRequest(updated, false);
+      this.noticePassedOverHolder(updated, actor);
       this.broadcast({
         event: DOMAIN_EVENTS.AUTH_UPDATED,
         data: { request: updated }
@@ -8475,4 +8494,11 @@ function normalizeRepoRef(repo: string | null | undefined): string | null {
  */
 export function publicationBlockerFor(request: { selfUpdates: boolean; changesBuildInputs: boolean }, blocker: AuthPublicationBlocker | null): AuthPublicationBlocker | null {
   return request.selfUpdates && (blocker?.code === "runtime_handoff_lock" || request.changesBuildInputs) ? blocker : null;
+}
+
+/** An auth actor's custody role: the route sets `session_id` exactly for an agent. */
+function custodyActor(actor: AuthLifecycleActor): ResponsibilityActor {
+  return actor.session_id
+    ? { kind: "agent", user_id: actor.user_id, session_id: actor.session_id }
+    : { kind: "user", user_id: actor.user_id };
 }

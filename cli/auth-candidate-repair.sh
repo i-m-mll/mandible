@@ -4,16 +4,16 @@ set -euo pipefail
 source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 mandible_prepare_syntax_runtime || exit $?
 
-usage='Usage: mandible auth candidate-repair inspect <request> [--operator-recovery] [--json]
-       mandible auth candidate-repair apply <request> --expected-revision <n> --expected-custody-generation <n> --expected-current-snapshot-sha256 <sha256> [--operator-recovery] [--json]'
+usage='Usage: mandible auth candidate-repair inspect <request> [--json]
+       mandible auth candidate-repair apply <request> --expected-revision <n> --expected-custody-generation <n> --expected-current-snapshot-sha256 <sha256> [--json]'
 action="${1:-}"
 [[ "$action" == inspect || "$action" == apply ]] || { printf '%s\n' "$usage" >&2; exit 2; }
 shift
 request_id="${1:-}"
 [[ -n "$request_id" && "$request_id" != -* ]] || { printf '%s\n' "$usage" >&2; exit 2; }
 shift
-revision="" generation="" digest="" recovery=false json=0
-binding=$(mandible_bind_main_arguments "auth.candidate-repair.${action}" '{"revision":{"option":"expected-revision"},"generation":{"option":"expected-custody-generation"},"digest":{"option":"expected-current-snapshot-sha256"},"recovery":{"option":"operator-recovery","constant":"true"},"json":{"option":"json","constant":"1"}}' "$request_id" "$@") || exit $?
+revision="" generation="" digest="" json=0
+binding=$(mandible_bind_main_arguments "auth.candidate-repair.${action}" '{"revision":{"option":"expected-revision"},"generation":{"option":"expected-custody-generation"},"digest":{"option":"expected-current-snapshot-sha256"},"json":{"option":"json","constant":"1"}}' "$request_id" "$@") || exit $?
 eval "$binding"
 if [[ "$action" == apply ]] && { [[ ! "$revision" =~ ^[0-9]+$ ]] || [[ ! "$generation" =~ ^[0-9]+$ ]] || [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; }; then
   printf '%s\n' "$usage" >&2
@@ -21,11 +21,11 @@ if [[ "$action" == apply ]] && { [[ ! "$revision" =~ ^[0-9]+$ ]] || [[ ! "$gener
 fi
 command -v jq >/dev/null 2>&1 || { printf '%s\n' 'Error: jq is required.' >&2; exit 1; }
 if [[ "$action" == inspect ]]; then
-  payload=$(jq -nc --argjson operator_recovery "$recovery" '{operator_recovery: $operator_recovery}')
+  payload='{}'
 else
-  payload=$(jq -nc --argjson operator_recovery "$recovery" --argjson expected_revision "$revision" \
+  payload=$(jq -nc --argjson expected_revision "$revision" \
     --argjson expected_custody_generation "$generation" --arg expected_current_snapshot_sha256 "$digest" \
-    '{operator_recovery: $operator_recovery, expected_revision: $expected_revision,
+    '{expected_revision: $expected_revision,
       expected_custody_generation: $expected_custody_generation,
       expected_current_snapshot_sha256: $expected_current_snapshot_sha256}')
 fi

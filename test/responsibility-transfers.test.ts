@@ -52,7 +52,7 @@ it("lets the successor withdraw an unbound approval request while preserving aut
   const queue = new AuthQueue({ db });
   const request = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "command", command: "printf reviewed", title: "Reviewed command", repo,
     session_id: "old", requester_evidence_method: "session_claim" }, user.id);
-  const actor = (session: string) => ({ user_id: user.id, session_id: session, evidence_method: "session_claim" });
+  const actor = (session: string) => ({ kind: "agent" as const, user_id: user.id, session_id: session, evidence_method: "session_claim" });
   queue.assumeRequestResponsibility(request.id, actor("new"), "Continue review", 1, 0);
   expect(() => queue.assumeRequestResponsibility(request.id, actor("old"), "Stale takeover", 1, 0)).toThrow();
   await expect(queue.withdraw(request.id, "Stale author", actor("old"), 1, 1)).rejects.toMatchObject({ code: "custody_required" });

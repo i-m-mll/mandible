@@ -8,19 +8,19 @@ source "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 
 usage='Usage: mandible auth handoff status [--json]
-       mandible auth handoff recover <request> [--operator-recovery] [--json]
+       mandible auth handoff recover <request> [--json]
        mandible auth handoff retire --binding-digest <sha256> --reason <text> [--json]'
 action="${1:-}"
 [[ "$action" == status || "$action" == recover || "$action" == retire ]] || { printf '%s\n' "$usage" >&2; exit 2; }
 shift
-digest="" reason="" json=0 recovery=false request_id=""
+digest="" reason="" json=0 request_id=""
 if [[ "$action" == status ]]; then
   binding=$(mandible_bind_main_arguments "auth.handoff.status" '{"json":{"option":"json","constant":"1"}}' "$@") || exit $?
 elif [[ "$action" == recover ]]; then
   request_id="${1:-}"
   [[ -n "$request_id" && "$request_id" != -* ]] || { printf '%s\n' "$usage" >&2; exit 2; }
   shift
-  binding=$(mandible_bind_main_arguments "auth.handoff.recover" '{"recovery":{"option":"operator-recovery","constant":"true"},"json":{"option":"json","constant":"1"}}' "$request_id" "$@") || exit $?
+  binding=$(mandible_bind_main_arguments "auth.handoff.recover" '{"json":{"option":"json","constant":"1"}}' "$request_id" "$@") || exit $?
 else
   binding=$(mandible_bind_main_arguments "auth.handoff.retire" '{"digest":{"option":"binding-digest"},"reason":{"option":"reason"},"json":{"option":"json","constant":"1"}}' "$@") || exit $?
 fi
@@ -49,7 +49,7 @@ fi
 if [[ "$action" == recover ]]; then
   # The daemon re-verifies the exact live generation and settles convergence;
   # it never reruns the merge, a build, an installer or a restart.
-  payload=$(jq -nc --argjson operator_recovery "$recovery" '{mode: "verify-current", operator_recovery: $operator_recovery}')
+  payload='{"mode":"verify-current"}'
   response=$(api_send POST "/api/auth/request/$(urlencode "$request_id")/retry-convergence" "$payload") || {
     printf 'Error: verification-only recovery refused for auth request %s; the failed handoff and its evidence are unchanged.\n' "$request_id" >&2
     exit 1

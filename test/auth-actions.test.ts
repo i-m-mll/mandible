@@ -210,7 +210,7 @@ describe("auth request action execution", () => {
       const operator = getOperator(db)!;
       const credential = addCredential(db, operator.id, { type: "api_token", fingerprint: `action-fixture-${crypto.randomUUID()}` });
       queue.setActionVeto(request.id, actions[2].id, true, {
-        user_id: operator.id, evidence_method: 'api_token', credential_id: credential.id, authority_path: 'operator_recovery',
+        user_id: operator.id, evidence_method: 'api_token', credential_id: credential.id, authority_path: 'operator',
       }, 1, 0);
 
       // Issue 08a5f04 (review F2) — canonical-command verification needs the

@@ -102,7 +102,7 @@ it("tells the root session of the responsible agent once, and only that session"
   queue.notices!.delivered(owed.map((notice) => notice.id));
   expect(texts("claude", "s1")).toEqual([]);
 
-  queue.assumeRequestResponsibility(request.id, { user_id: user.id, session_id: "agent:claude:s2:s2" }, "Hand off", 2, 0);
+  queue.assumeRequestResponsibility(request.id, { kind: "agent", user_id: user.id, session_id: "agent:claude:s2:s2" }, "Hand off", 2, 0);
   expect(texts("claude", "s2")).toEqual([]);
 });
 
@@ -111,7 +111,7 @@ it("finds a Codex thread's root session from its recorded origin and follows a h
   await queue.reject(request.id, "No", { ...operator, user_id: user.id });
   expect(texts("codex", "t2")).toEqual([]);
   expect(texts("codex", "r2")).toEqual([`Mandible: auth ${request.id.slice(0, 8)} rejected: No. (submitted by agent t2)`]);
-  queue.assumeRequestResponsibility(request.id, { user_id: user.id, session_id: "agent:claude:s3:s3" }, "Hand off", 2, 0);
+  queue.assumeRequestResponsibility(request.id, { kind: "agent", user_id: user.id, session_id: "agent:claude:s3:s3" }, "Hand off", 2, 0);
   expect(texts("codex", "r2")).toEqual([]);
   expect(texts("claude", "s3")).toEqual([`Mandible: auth ${request.id.slice(0, 8)} rejected: No.`]);
 });

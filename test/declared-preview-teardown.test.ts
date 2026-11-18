@@ -161,7 +161,7 @@ describe("declared preview teardown", () => {
       const operator = getOperator(db)!;
       const credential = addCredential(db, operator.id, { type: "api_token", fingerprint: `teardown-veto-${crypto.randomUUID()}` });
       queue.setActionVeto(id, veto.id, true, {
-        user_id: operator.id, evidence_method: "api_token", credential_id: credential.id, authority_path: "operator_recovery",
+        user_id: operator.id, evidence_method: "api_token", credential_id: credential.id, authority_path: "operator",
       }, 1, 0);
       await merge(queue, id);
       await queue.drainFinalizers();

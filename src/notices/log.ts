@@ -3,7 +3,7 @@ import { normalizeAmbientProviderIdentity, parseExactAgentRef, type AmbientProvi
 import { DOMAIN_EVENTS } from "../contracts.js";
 import type { Db } from "../db.js";
 import type { SqliteStatement } from "../sqlite.js";
-import { holdsResponsibility, type ResponsibilityActor } from "../responsibility.js";
+import { holdsResponsibility, type ResponsibilityHolder } from "../responsibility.js";
 import { resolveSessionAlias } from "../session-liveness.js";
 import { broadcast } from "../sse.js";
 import { NOTICE_PROVIDERS, outcomeReportDigest, type NoticeProvider, type OutcomeReporter } from "./contract.js";
@@ -22,7 +22,7 @@ export interface RequestHolder {
  * outcome state and only continues a request that already has one.
  */
 export type NoticeCause =
-  | { kind: "transition"; actor: ResponsibilityActor | null }
+  | { kind: "transition"; actor: ResponsibilityHolder | null }
   | { kind: "change" };
 
 interface Recipient { provider: NoticeProvider; session_id: string; agent_ref: string }

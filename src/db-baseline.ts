@@ -35,7 +35,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 241;
+export const BASELINE_SCHEMA_VERSION = 242;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -119,8 +119,13 @@ export const CONVERSATION_SIDEBAR_INDEX_SQL: readonly string[] = [
 ];
 
 // Issue cc8fe29 — immutable auth request lifecycle revisions. `failed` records
-// an execution that exited non-zero. Shared by the fresh baseline and v212.
-export const AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL: readonly string[] = [
+// an execution that exited non-zero. v212 built it with the authority paths of
+// its time; v242 rebuilt it to admit `operator`, the user acting without custody.
+export const AUTH_LIFECYCLE_AUTHORITY_PATHS_V212 = ["custodian", "operator_recovery", "system", "legacy"] as const;
+export const AUTH_LIFECYCLE_AUTHORITY_PATHS = ["custodian", "operator", "system", "legacy"] as const;
+
+export function authRequestLifecycleEventsSchemaSql(authorityPaths: readonly string[]): readonly string[] {
+  return [
   `CREATE TABLE auth_request_lifecycle_events (
         id TEXT PRIMARY KEY,
         auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE RESTRICT,
@@ -140,14 +145,17 @@ export const AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL: readonly string[] = [
         related_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT,
         custody_work_unit_id TEXT REFERENCES work_units(id) ON DELETE RESTRICT,
         custody_generation INTEGER,
-        authority_path TEXT CHECK(authority_path IN ('custodian','operator_recovery','system','legacy')),
+        authority_path TEXT CHECK(authority_path IN (${authorityPaths.map((path) => `'${path}'`).join(",")})),
         occurred_at INTEGER NOT NULL,
         UNIQUE(auth_request_id, revision)
       )`,
   "CREATE INDEX idx_auth_request_lifecycle_events_request ON auth_request_lifecycle_events(auth_request_id, revision)",
   "CREATE TRIGGER auth_request_lifecycle_events_immutable_update BEFORE UPDATE ON auth_request_lifecycle_events BEGIN SELECT RAISE(ABORT, 'auth request lifecycle events are immutable'); END",
   "CREATE TRIGGER auth_request_lifecycle_events_immutable_delete BEFORE DELETE ON auth_request_lifecycle_events BEGIN SELECT RAISE(ABORT, 'auth request lifecycle events are immutable'); END",
-];
+  ];
+}
+
+export const AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL = authRequestLifecycleEventsSchemaSql(AUTH_LIFECYCLE_AUTHORITY_PATHS);
 
 // Issue 23f8142 — the parent session a conversation's provider declares, which
 // lineage linking resolves into parent_conversation_id whichever row arrives

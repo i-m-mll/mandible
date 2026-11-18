@@ -8,7 +8,7 @@ import { migrateLocalAuthorizationEvidence } from "./local-authorization-migrati
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL, recoverHistoricalExactAssignments } from "./work-unit-assignment-schema.js";
 import { CHILD_RETENTION_SCHEMA_SQL } from "./conversations/retention-schema.js";
 import { AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
-import { AUTH_REQUEST_ACTIONS_ORIGIN_MIGRATION_SQL, LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL } from "./ledger-origin-schema.js";
+import { AUTH_REQUEST_ACTIONS_ORIGIN_MIGRATION_SQL, LEDGER_ORIGIN_SCHEMA_SQL, MANAGED_SESSION_ORIGIN_INDEX_SQL, ledgerOriginColumnSql } from "./ledger-origin-schema.js";
 import { AUTH_REQUEST_ACTIONS_REBUILD_SQL } from "./auth-actions-schema.js";
 import { SPACE_PUBLICATION_AUTH_SCHEMA_SQL } from "./spaces/publication-auth-schema.js";
 import { SPACE_PUBLICATION_SCHEMA_SQL } from "./spaces/publication-schema.js";
@@ -19,7 +19,9 @@ import { ARTIFACT_CUSTODY_MIGRATION_SQL, ARTIFACT_CUSTODY_TRIGGERS_SQL } from '.
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
   AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
+  AUTH_LIFECYCLE_AUTHORITY_PATHS_V212,
   AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
+  authRequestLifecycleEventsSchemaSql,
   WORKER_THREAD_ARCHIVES_SCHEMA_SQL,
   BASELINE_SCHEMA_VERSION,
   AUTH_PREREQUISITE_SCHEMA_SQL,
@@ -552,6 +554,13 @@ const REMOVE_DELEGATION_MIGRATION_SQL: string[] = [
    FROM rebased`,
   "DROP TABLE temp.auth_snapshot_rebase",
 ];
+
+const AUTH_LIFECYCLE_EVENT_COLUMNS = [
+  "id", "auth_request_id", "revision", "event_type", "prior_status", "next_status",
+  "snapshot_json", "snapshot_sha256", "prior_snapshot_json", "prior_snapshot_sha256",
+  "actor_user_id", "evidence_method", "evidence_id", "credential_id", "reason", "related_request_id",
+  "custody_work_unit_id", "custody_generation", "authority_path", "occurred_at", "request_origin_json",
+].join(", ");
 
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -2237,7 +2246,7 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP TRIGGER auth_request_lifecycle_events_immutable_delete",
     "DROP INDEX idx_auth_request_lifecycle_events_request",
     "ALTER TABLE auth_request_lifecycle_events RENAME TO auth_request_lifecycle_events_v210",
-    ...AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
+    ...authRequestLifecycleEventsSchemaSql(AUTH_LIFECYCLE_AUTHORITY_PATHS_V212),
     "INSERT INTO auth_request_lifecycle_events SELECT * FROM auth_request_lifecycle_events_v210",
     "DROP TABLE auth_request_lifecycle_events_v210",
     `CREATE TEMP TABLE auth_failed_reclassification AS
@@ -2396,6 +2405,19 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 239, name: "operator_signing_custody", statements: OPERATOR_SIGNING_CUSTODY_MIGRATION_SQL, requires_foreign_keys_off: true },
   { version: 240, name: "remove_delegation", statements: REMOVE_DELEGATION_MIGRATION_SQL, requires_foreign_keys_off: true },
   { version: 241, name: "touch_id_only_operator", statements: [...TOUCH_ID_ONLY_OPERATOR_MIGRATION_SQL] },
+  // Issue db5caee — the user acts on held requests under the `operator`
+  // authority path; `operator_recovery` was never written.
+  { version: 242, name: "auth_lifecycle_operator_authority", statements: [
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_update",
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_delete",
+    "DROP INDEX idx_auth_request_lifecycle_events_request",
+    "ALTER TABLE auth_request_lifecycle_events RENAME TO auth_request_lifecycle_events_v241",
+    ...AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
+    `ALTER TABLE auth_request_lifecycle_events ADD COLUMN ${ledgerOriginColumnSql}`,
+    `INSERT INTO auth_request_lifecycle_events (${AUTH_LIFECYCLE_EVENT_COLUMNS})
+       SELECT ${AUTH_LIFECYCLE_EVENT_COLUMNS} FROM auth_request_lifecycle_events_v241`,
+    "DROP TABLE auth_request_lifecycle_events_v241",
+  ] },
 ];
 
 /**

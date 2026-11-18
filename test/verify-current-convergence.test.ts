@@ -37,7 +37,7 @@ it('runs tokenless local verification with canonical project, responsibility, an
     db.prepare("UPDATE auth_requests SET type='commit',status='completed',exit_code=0 WHERE id=?").run(request);
     const completed = db.prepare('SELECT * FROM auth_requests WHERE id=?').get(request);
     const unowned = invoke();
-    expect(unowned.status).toBe(1); expect(unowned.stderr).toContain('Explicitly assume current request responsibility before changing it.');
+    expect(unowned.status).toBe(1); expect(unowned.stderr).toContain('Another session is responsible for this request');
     db.prepare("UPDATE users SET status = 'retired' WHERE id = ?").run(user.id);
     const retired = invoke();
     expect(retired.status).toBe(1); expect(retired.stderr).toContain('An active local identity is required.');
