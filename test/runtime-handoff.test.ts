@@ -79,7 +79,7 @@ it('resumes an installed-before-launch interruption through the same recorded at
   const desktop = vi.fn(async () => { effects.push('desktop'); });
   const observe = vi.fn(async (journal, options) => {
     expect(desktop).toHaveBeenCalledOnce();
-    expect(options.until).toBeLessThanOrEqual(Date.now() + COMMITTED_OBSERVATION_WINDOW_MS);
+    expect(options.until).toBeLessThanOrEqual(Date.now() + 2 * COMMITTED_OBSERVATION_WINDOW_MS);
     return { schema: 'mandible-runtime-receipt@2', bindingDigest: journal.bindingDigest, services: identities };
   });
   const options = { actor: { provider: 'fixture' }, prepare, install, control, desktop, observe, verifyPublication: vi.fn(async () => {}), validateGateway: async () => null };

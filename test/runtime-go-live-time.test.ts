@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterEach, expect, it } from 'vitest';
-import { bindingDigest, handoffDirectory, runRuntimeHandoffWorker } from '../scripts/runtime-handoff.mjs';
+import { COMMITTED_OBSERVATION_WINDOW_MS, bindingDigest, handoffDirectory, runRuntimeHandoffWorker, workerRunsAgain } from '../scripts/runtime-handoff.mjs';
 import { runRuntimeCommand, withRuntimeCommands } from '../scripts/runtime-observation.mjs';
 import { validateGatewayConfiguration } from '../scripts/local-front-door.mjs';
 
@@ -17,11 +17,14 @@ afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursiv
  * an injected clock; a command whose duration exceeds its timeout is killed, as
  * spawnSync reports it. Everything else, such as lock identity reads, runs for real.
  */
-function slowHost(durations: Record<string, () => number>, alive: Record<number, string> = {}) {
+function slowHost(durations: Record<string, () => number>, alive: Record<number, () => string | null> = {}) {
   const clock = { now: Date.now() };
   const calls: Array<{ binary: string; timeout: number }> = [];
   const spawn = (binary: string, args: string[], options: Record<string, unknown> & { timeout: number }) => {
-    if (binary === '/bin/ps' && args[0] === '-p' && alive[Number(args[1])]) return { status: 0, stdout: `${alive[Number(args[1])]}\n`, stderr: '' };
+    if (binary === '/bin/ps' && args[0] === '-p' && alive[Number(args[1])]) {
+      const started = alive[Number(args[1])]();
+      return started ? { status: 0, stdout: `${started}\n`, stderr: '' } : { status: 1, stdout: '', stderr: '' };
+    }
     const duration = durations[binary];
     if (!duration) return spawnSync(binary, args, options) as never;
     const ms = duration();
@@ -84,13 +87,64 @@ it('keeps a committed attempt running while its services step outlasts each budg
 it('aborts an attempt whose preparation outlasts its pre-drain budget without draining the serving daemon', async () => {
   const old = { pid: 424_242, startedAt: 'Wed Nov 18 09:00:00 2026' };
   const f = fixture(old);
-  const host = slowHost({ '/fixture/ditto': () => 31 * 60_000 }, { [old.pid]: old.startedAt });
+  const host = slowHost({ '/fixture/ditto': () => 31 * 60_000 }, { [old.pid]: () => old.startedAt });
   const effects: string[] = [];
   const result = await host.run(() => runRuntimeHandoffWorker(f.file, { ...delivery(effects), actor: { provider: 'fixture' } }));
   expect(result).toMatchObject({ phase: 'failed', drainReady: null, attempt: { state: 'failed', lastObservation: { code: 'command_unanswered' } } });
   expect(result.attempt.effects.drain).toBeUndefined();
   expect(effects).toEqual(['prepare']);
   expect(host.calls).toEqual([{ binary: '/fixture/ditto', timeout: result.attempt.deadline - result.attempt.enteredAt }]);
+});
+
+const old = { pid: 424_242, startedAt: 'Wed Nov 18 09:00:00 2026' };
+/** Each wait of the drain loop passes ten minutes, so the 30-minute budget ends after a few looks. */
+const drainWait = (host: ReturnType<typeof slowHost>) => async () => { host.clock.now += 10 * 60_000; };
+
+it('commits an attempt whose daemon exits as the drain wait reaches its deadline', async () => {
+  const f = fixture(old);
+  let deadline = Infinity;
+  const host = slowHost({ '/fixture/ditto': () => 1000, '/fixture/launchctl': () => 1000 }, { [old.pid]: () => (host.clock.now < deadline ? old.startedAt : null) });
+  const effects: string[] = [];
+  const prepare = delivery(effects).prepare;
+  const result = await host.run(() => runRuntimeHandoffWorker(f.file, { ...delivery(effects), actor: { provider: 'fixture' }, wait: drainWait(host),
+    prepare: async () => { deadline = f.read().attempt.deadline; return prepare(); } }));
+  expect(result.attempt).toMatchObject({ state: 'running', effects: { drain: { exitedAt: expect.any(Number) } } });
+  const rerun = await host.run(() => runRuntimeHandoffWorker(f.file, delivery(effects)));
+  expect(rerun).toMatchObject({ phase: 'complete', attempt: { id: result.attempt.id, state: 'complete' } });
+  expect(effects).toContain('handoff-remove');
+});
+
+it('settles a drain-wait failure by whether the old daemon is still serving when the helper runs again', async () => {
+  for (const exits of [true, false]) {
+    const f = fixture(old);
+    let serving = true;
+    const host = slowHost({ '/fixture/ditto': () => 1000, '/fixture/launchctl': () => 1000 }, { [old.pid]: () => (serving ? old.startedAt : null) });
+    const effects: string[] = [];
+    const first = await host.run(() => runRuntimeHandoffWorker(f.file, { ...delivery(effects), actor: { provider: 'fixture' }, wait: drainWait(host) }));
+    expect(first.attempt.state).toBe('failed');
+    expect(workerRunsAgain(first)).toBe(true);
+    serving = !exits;
+    const second = await host.run(() => runRuntimeHandoffWorker(f.file, delivery(effects)));
+    expect(second.attempt.id).toBe(first.attempt.id);
+    if (exits) {
+      expect(second).toMatchObject({ phase: 'complete', attempt: { state: 'complete', receipt: { attemptId: first.attempt.id } } });
+      expect(effects).toContain('handoff-remove');
+    } else {
+      expect(second.attempt.state).toBe('failed');
+      expect(workerRunsAgain(second)).toBe(false);
+      expect(effects).toEqual(['prepare']);
+    }
+  }
+});
+
+it('gives each consecutive pending run of a committed attempt a longer window', async () => {
+  const f = fixture();
+  const host = slowHost({ '/fixture/ditto': () => 1000, '/fixture/launchctl': () => 1.5 * COMMITTED_OBSERVATION_WINDOW_MS });
+  const effects: string[] = [];
+  const first = await host.run(() => runRuntimeHandoffWorker(f.file, { ...delivery(effects), actor: { provider: 'fixture' } }));
+  expect(first.attempt).toMatchObject({ state: 'running', lastObservation: { code: 'command_unanswered' } });
+  const second = await host.run(() => runRuntimeHandoffWorker(f.file, delivery(effects)));
+  expect(second).toMatchObject({ phase: 'complete', attempt: { id: first.attempt.id, state: 'complete' } });
 });
 
 it('reports Caddy\'s own diagnostic for an invalid configuration and an unanswered validation as pending', () => {

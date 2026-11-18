@@ -26,13 +26,25 @@ import { conversationStructureCachePath } from '../src/conversations/structure-c
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 /** The longest an attempt may take before its drain; the hook that waits for admission may set less. */
 const ADMISSION_WINDOW_MS = 30 * 60 * 1000;
-/** How long one helper run observes a committed attempt before exiting 75 for launchd to run it again. */
+/** How long the first helper run observes a committed attempt; each consecutive pending run doubles it, up to the cap. */
 export const COMMITTED_OBSERVATION_WINDOW_MS = 60_000;
+export const COMMITTED_OBSERVATION_CAP_MS = 16 * COMMITTED_OBSERVATION_WINDOW_MS;
 /**
  * The old version serves until its daemon has drained. Once it has, the attempt
  * is committed: only a failed observation ends it, and waiting never does.
  */
 export const attemptCommitted = attempt => Boolean(attempt?.effects.drain?.exitedAt || attempt?.effects.drain?.completedAt || attempt?.effects.replace?.issuedAt);
+/**
+ * An attempt that failed after its drain was issued, before its daemon's exit was
+ * recorded, is settled only by looking again: the daemon may have exited on the
+ * permission it read just before the failure.
+ */
+const commitmentUnsettled = attempt => attempt?.state === 'failed' && Boolean(attempt.effects.drain?.issuedAt)
+  && !attemptCommitted(attempt) && !attempt.effects.drain.servingAt;
+/** Whether the helper exits 75 for launchd to run it again. */
+export const workerRunsAgain = journal => Boolean(journal.attempt && !journal.attempt.fence
+  && (journal.attempt.state === 'running' || commitmentUnsettled(journal.attempt)));
+const committedWindow = (attempt, base) => Math.min(base * 2 ** (attempt.committedPendingRuns ?? 0), Math.max(base, COMMITTED_OBSERVATION_CAP_MS));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fileHash = file => hash(fs.readFileSync(file));
 const acceptedOperations = new AsyncLocalStorage();
@@ -169,6 +181,11 @@ async function runStage(binary, args, { cwd, env, log }) {
 const startedAt = pid => {
   const result = runRuntimeCommand('/bin/ps', ['-p', String(pid), '-o', 'lstart=']);
   return result.status === 0 ? result.stdout.trim() || null : null;
+};
+/** Whether the bound old daemon has exited; null when ps did not answer. */
+const oldProcessGone = binding => {
+  try { return startedAt(binding.oldProcess.pid) !== binding.oldProcess.startedAt; }
+  catch (error) { if (observationPending(error)) return null; throw error; }
 };
 function desktopIdentities(app) {
   const executable = path.join(app, 'Contents/MacOS/mandible-app');
@@ -1217,6 +1234,13 @@ export async function runRuntimeHandoffWorker(file, {
     exactActiveOwner(journal);
     if (journal.attempt?.state === 'complete') return journal;
     if (!journal.binding.acceptedRelease) throw new Error('Historical source-build handoffs are evidence only; delivery requires an accepted release.');
+    if (commitmentUnsettled(journal.attempt)) {
+      const gone = oldProcessGone(journal.binding);
+      if (gone) save(journal, { phase: 'verification-pending', attempt: { ...journal.attempt, state: 'running', failedAt: undefined,
+        effects: { ...journal.attempt.effects, drain: { ...journal.attempt.effects.drain, exitedAt: now() } } } });
+      else if (gone === false) saveEffect(journal, 'drain', { servingAt: now() });
+      if (gone !== true) return journal;
+    }
     if (!journal.attempt || journal.attempt.state === 'failed') {
       if (!actor) { if (journal.phase === 'armed') save(journal, { phase: 'failed', acknowledgedAt: null, drainReady: null }); return journal; }
       const priorStage = journal.attempt?.effects.prepare;
@@ -1234,8 +1258,8 @@ export async function runRuntimeHandoffWorker(file, {
     }
     const b = journal.binding;
     let committed = attemptCommitted(journal.attempt);
-    let until = committed ? now() + waitMs : journal.attempt.deadline;
-    const commit = () => { if (!committed) { committed = true; until = now() + waitMs; } };
+    let until = committed ? now() + committedWindow(journal.attempt, waitMs) : journal.attempt.deadline;
+    const commit = () => { if (!committed) { committed = true; until = now() + committedWindow(journal.attempt, waitMs); } };
     acceptedOperations.getStore().context = context;
     const invokeControl = (journal, operation, currentVerifier, options) => control(journal, operation, currentVerifier, {
       ...options, prepared: acceptedOperations.getStore().prepared,
@@ -1301,9 +1325,14 @@ export async function runRuntimeHandoffWorker(file, {
     }); } catch (error) {
       assertObservationLease(journal);
       unchangedJournal(journal);
+      if (!committed && journal.attempt.effects.drain?.issuedAt && oldProcessGone(b)) {
+        saveEffect(journal, 'drain', { exitedAt: now() });
+        committed = true;
+      }
       const pending = observationPending(error) && (committed || now() < until);
       save(journal, { phase: pending ? 'verification-pending' : 'failed', acknowledgedAt: null, drainReady: null, attempt: { ...journal.attempt, state: pending ? 'running' : 'failed',
-        lastObservation: pendingMetadata(error), ...(!pending ? { failedAt: now() } : {}) } });
+        lastObservation: pendingMetadata(error), ...(!pending ? { failedAt: now() } : {}),
+        ...(pending && committed ? { committedPendingRuns: (journal.attempt.committedPendingRuns ?? 0) + 1 } : {}) } });
     }
     return journal;
   });
@@ -1320,7 +1349,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const [command, file, expected, actor] = process.argv.slice(2);
   (command === 'cleanup' ? cleanupRuntimeHandoff(file).catch(error => { if (error.code !== 'observer_busy') throw error; process.stderr.write(`${error.message}\n`); process.exitCode = 75; }) : ['recovery-start', 'recovery-desktop'].includes(command) ? (command === 'recovery-start' ? startFailedRuntimeHandoff : restoreFailedRuntimeHandoffDesktop)(file, { bindingDigest: expected, actor: JSON.parse(actor) }).then(j => {
     process.stdout.write(`${JSON.stringify({ phase: j.phase, recoveryStart: j.recoveryStart })}\n`);
-  }) : command === 'worker' ? runRuntimeHandoffWorker(file).then(j => { if (j.attempt?.state === 'running' && !j.attempt.fence) process.exitCode = 75; }) : command === 'arm' ? armRuntimeHandoff(path.resolve(file || process.cwd())).then(j => {
+  }) : command === 'worker' ? runRuntimeHandoffWorker(file).then(j => { if (workerRunsAgain(j)) process.exitCode = 75; }) : command === 'arm' ? armRuntimeHandoff(path.resolve(file || process.cwd())).then(j => {
     if (j) { process.stderr.write(`MANDIBLE_RUNTIME_HANDOFF_PENDING:${j.bindingDigest}\n`); process.exitCode = 75; }
   }) : Promise.reject(new Error('Usage: runtime-handoff.mjs arm <root>|worker <journal>|recovery-start|recovery-desktop <journal> <binding-digest> <actor-json>'))).catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
 }
