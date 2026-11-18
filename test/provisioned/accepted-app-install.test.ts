@@ -6,9 +6,9 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { expect, it } from 'vitest';
-import { createPendingRelease, retainAcceptedRelease, applicationIdentity, readAcceptedReleaseReceipt } from '../../scripts/accepted-release.mjs';
+import { applicationIdentity, readAcceptedReleaseReceipt } from '../../scripts/accepted-release.mjs';
 import { acceptedInstallPaths, applicationRootIdentity, preparedApplicationContext } from '../../scripts/accepted-app-install.mjs';
-import { installedFileIdentity, readInstalledRelease, verifyInstalledRelease } from '../../scripts/installed-release.mjs';
+import { installedFileIdentity, readInstalledRelease } from '../../scripts/installed-release.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions } from '../../scripts/service-definitions.mjs';
 import { readBundleOwner, nativeServiceControls, bundleRuntimeCommand } from '../../scripts/bundle-services.mjs';
 import { bindingDigest, handoffDirectory, readRuntimeHandoffReceipt, runRuntimeHandoffWorker, withRuntimeObservation } from '../../scripts/runtime-handoff.mjs';
@@ -209,11 +209,20 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       const evidence = path.join(root, `evidence-${pin}`);
       fs.writeFileSync(evidence, JSON.stringify({ scope: 'private native service replacement fixture', generation: candidate.pin_sha }));
       checkDeadline(`generation ${pin} retention admission`);
-      const pending = await createPendingRelease({ storage: path.join(home, 'accepted-releases'), ownership: { runId: randomUUID(), instanceId: 'fixture', project: 'mandible', workUnit: 'fixture' } });
-      fs.cpSync(built, pending.app, { recursive: true, verbatimSymlinks: true });
-      const { reference } = await retainAcceptedRelease({ pending,
-        candidate, acceptance: { record_id: null, request_id: null }, evidence: fs.readFileSync(evidence),
-        expectedDigest: applicationIdentity(pending.app), shipped: verifyInstalledRelease(pending.resources) });
+      // The release is retained by its own producer process, as acceptance does, so
+      // disposal later sees an exited producer rather than this test process.
+      const retained = path.join(root, `retained-${pin}`);
+      const module = (file: string) => JSON.stringify(new URL(`../../scripts/${file}`, import.meta.url).href);
+      await supervised(['--eval', `import fs from 'node:fs';
+        import { createPendingRelease, retainAcceptedRelease, applicationIdentity } from ${module('accepted-release.mjs')};
+        import { verifyInstalledRelease } from ${module('installed-release.mjs')};
+        const input = ${JSON.stringify({ storage: path.join(home, 'accepted-releases'), runId: randomUUID(), built, candidate, evidence, retained })};
+        const pending = await createPendingRelease({ storage: input.storage, ownership: { runId: input.runId, instanceId: 'fixture', project: 'mandible', workUnit: 'fixture' } });
+        fs.cpSync(input.built, pending.app, { recursive: true, verbatimSymlinks: true });
+        const { reference } = await retainAcceptedRelease({ pending, candidate: input.candidate, acceptance: { record_id: null, request_id: null },
+          evidence: fs.readFileSync(input.evidence), expectedDigest: applicationIdentity(pending.app), shipped: verifyInstalledRelease(pending.resources) });
+        fs.writeFileSync(input.retained, reference);`], `generation ${pin} retention producer`);
+      const reference = fs.readFileSync(retained, 'utf8');
       references.push(reference);
       checkDeadline(`generation ${pin} retention`);
       fs.rmSync(scratch, { recursive: true });
