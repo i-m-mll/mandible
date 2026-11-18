@@ -190,6 +190,11 @@ export function readAcceptedInstalledRelease(receipt, resources) {
   return release;
 }
 
+/** A runtime receipt names the package it started; both receipt schemas bind it by digest and candidate commit. */
+export function assertApprovedRuntimePackage(receipt, packageSha256, generation) {
+  if (receipt.package.sha256 !== packageSha256 || receipt.candidate.pin_sha !== generation) throw new Error('Terminal package identity differs from approval.');
+}
+
 /** Explicit delivery-owner disposal uses sealed identity and live custody. */
 export async function disposeAcceptedRelease(reference, expectedCandidate, reason, { home, assertHeld, claim, database, deferCleanup = false, inspect = inspectRunConsumers } = {}) {
   if (!reason?.trim()) throw new Error('Accepted release disposal requires an owner reason.');

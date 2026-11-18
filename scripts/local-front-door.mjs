@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,7 @@ import { assertLocalCaIdentity, localCaPaths, probeCurrentMacOsTrust } from "./l
 import { withInstallationGatewayLock, assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { prepareGatewayAdmin } from './gateway-admin.mjs';
 import { gatewayCaddyfile } from './gateway-config.mjs';
+import { RuntimeObservationError, runRuntimeCommand } from './runtime-observation.mjs';
 
 const home = path.resolve(process.env.MANDIBLE_HOME || path.join(os.homedir(), ".mandible"));
 const caPaths = localCaPaths(home);
@@ -59,21 +60,36 @@ function install() {
   try { installPinnedCaddy(home); } catch (error) { fail(error.message); }
 }
 
-export function configureLocalFrontDoor(context, { binary = pinnedCaddyBinary(context.home), assertHeld } = {}) {
+/** The gateway configuration this installation's registrations generate now. */
+export function gatewayConfiguration(home) {
+  const paths = localCaPaths(home);
+  return gatewayCaddyfile(readInstances(path.join(paths.authorityDir, 'sessions.db')), {
+    adminAddress: prepareGatewayAdmin(home).address, storageRoot: paths.storageRoot });
+}
+export const gatewayConfigurationDigest = config => createHash('sha256').update(config).digest('hex');
+
+/**
+ * Caddy's own verdict on a generated configuration, returning its digest. Only
+ * a nonzero exit is invalid; a run that does not answer within the current
+ * budget is pending.
+ */
+export function validateGatewayConfiguration(binary, config, { until } = {}) {
+  const adapted = runRuntimeCommand(binary, ['adapt', '--config', '-', '--adapter', 'caddyfile'], { input: config, until });
+  if (adapted.status !== 0) throw new RuntimeObservationError('gateway_config_invalid',
+    `Local HTTPS configuration is invalid: ${adapted.stderr.trim() || `caddy adapt exited ${adapted.status}`}`, { status: adapted.status });
+  return gatewayConfigurationDigest(config);
+}
+
+/** `validated` is the digest of bytes already validated with this binary; only different bytes are validated again. */
+export function configureLocalFrontDoor(context, { binary = pinnedCaddyBinary(context.home), assertHeld, validated, until } = {}) {
   if (typeof assertHeld !== 'function') throw new Error('Gateway configuration requires explicit mutation ownership.');
   assertHeld();
   const paths = localCaPaths(context.home);
   const ca = assertLocalCaIdentity(paths);
   if (ca.state !== 'trusted') fail('Secure local connections are not set up.');
   fs.mkdirSync(paths.authorityDir, { recursive: true, mode: 0o700 });
-  const config = gatewayCaddyfile(readInstances(path.join(paths.authorityDir, 'sessions.db')), {
-    adminAddress: prepareGatewayAdmin(context.home).address, storageRoot: paths.storageRoot });
-  if (fs.existsSync(binary)) {
-    const adapted = spawnSync(binary, ['adapt', '--config', '-', '--adapter', 'caddyfile'], {
-      input: config, encoding: 'utf8', timeout: 5000, maxBuffer: 8 * 1024 * 1024,
-    });
-    if (adapted.error || adapted.status !== 0) fail(`Local HTTPS configuration is invalid: ${adapted.stderr || adapted.error?.message}`);
-  }
+  const config = gatewayConfiguration(context.home);
+  if (fs.existsSync(binary) && validated !== gatewayConfigurationDigest(config)) validateGatewayConfiguration(binary, config, { until });
   assertHeld();
   const destination = path.join(paths.authorityDir, 'Caddyfile');
   fs.writeFileSync(destination, config, { mode: 0o600 });
@@ -89,7 +105,7 @@ function requireTrustedCa({ verifyNative = true } = {}) {
   }
 }
 
-function runRuntimeCommand(commandName, args = []) {
+function runLocalRuntime(commandName, args = []) {
   const script = fileURLToPath(new URL("./local-runtime.mjs", import.meta.url));
   const result = spawnSync(process.execPath, [script, commandName, ...args], {
     env: process.env, encoding: "utf8", timeout: 45_000, maxBuffer: 2 * 1024 * 1024,
@@ -106,10 +122,10 @@ if (command === "initialize") {
 } else if (command === "configure") {
   configureLocalFrontDoor({ home }, { binary: defaultBinary(), assertHeld: assertLifecycleLockHeld });
 } else if (command === "reload") {
-  runRuntimeCommand("reload-gateway", process.argv.slice(3));
+  runLocalRuntime("reload-gateway", process.argv.slice(3));
 } else if (command === "run") {
   requireTrustedCa();
-  runRuntimeCommand("start");
+  runLocalRuntime("start");
 } else if (command === "status") {
   let ca;
   try { ca = assertLocalCaIdentity(caPaths); } catch (error) { fail(error.message); }

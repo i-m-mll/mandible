@@ -1,10 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import { acquireProcessLock, ProcessLockBusyError, ProcessLockLostError } from './process-lock.mjs';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { runtimeObservationTimeout } from './runtime-observation.mjs';
+import { runRuntimeCommand } from './runtime-observation.mjs';
 
 const ownershipScope = new AsyncLocalStorage();
 export function assertLifecycleLockHeld() { ownershipScope.getStore()?.assertHeld(); }
@@ -15,9 +14,9 @@ export function processIdentity(pid, { until } = {}) {
 }
 function readProcessIdentity(pid, until) {
   if (!Number.isInteger(pid) || pid <= 1) throw new Error('Invalid owned process PID');
-  const result = spawnSync('/bin/ps', ['-ww', '-p', String(pid), '-o', 'lstart=', '-o', 'command='], { encoding: 'utf8', timeout: runtimeObservationTimeout(until, 5000) });
+  const result = runRuntimeCommand('/bin/ps', ['-ww', '-p', String(pid), '-o', 'lstart=', '-o', 'command='], { until });
   if (result.status === 1 && !result.stdout.trim()) return null;
-  if (result.error || result.status !== 0) throw new Error(`Cannot inspect owned process: ${result.error?.message ?? result.stderr}`);
+  if (result.status !== 0) throw new Error(`Cannot inspect owned process: ${result.stderr}`);
   return result.stdout.trim();
 }
 
@@ -158,8 +157,8 @@ export async function withInstallationGatewayLock(home, operation) {
     const owner = JSON.parse(fs.readFileSync(lock, 'utf8'));
     let ancestor = process.pid;
     for (let depth = 0; ancestor !== owner.pid && ancestor > 1 && depth < 16; depth++) {
-      const parent = spawnSync('/bin/ps', ['-p', String(ancestor), '-o', 'ppid='], { encoding: 'utf8', timeout: 5000 });
-      if (parent.error || parent.status !== 0) throw new Error('Gateway lock delegation ancestry cannot be inspected');
+      const parent = runRuntimeCommand('/bin/ps', ['-p', String(ancestor), '-o', 'ppid=']);
+      if (parent.status !== 0) throw new Error('Gateway lock delegation ancestry cannot be inspected');
       ancestor = Number(parent.stdout.trim());
     }
     if (owner.token !== token || ancestor !== owner.pid || processIdentity(owner.pid) !== owner.identity) throw new Error('Gateway lock delegation does not match its live owner');
