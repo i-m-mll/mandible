@@ -23,6 +23,14 @@ const SUITE_DIR = "test/provisioned";
 const LAUNCHER = `${SUITE_DIR}/iab-preview-launcher.test.ts`;
 const NATIVE_REPLACEMENT = `${SUITE_DIR}/accepted-app-install.test.ts`;
 const NATIVE_TERMINATION_MARGIN_MS = 2500;
+/** The native proof's own allocation within the shared verification ceiling. */
+const NATIVE_BUDGET_MS = 20_000;
+/**
+ * The slow-gateway unit repeats the native proof with a Caddy that answers only
+ * after this delay. The delay is the phenomenon it verifies, so it adds to that
+ * unit's budget and stays out of the ordinary proof's allocation.
+ */
+const NATIVE_GATEWAY_DELAY_MS = 6_000;
 const RSS_LIMIT_KIB = 950_000;
 const RSS_SAMPLE_MS = 500;
 const UNMEASURED_GRACE_MS = 60_000;
@@ -72,7 +80,10 @@ function launcherUnits() {
 export function provisionedUnits(files = suiteFiles()) {
   return files.flatMap((file) => path.normalize(file) === LAUNCHER
     ? launcherUnits()
-    : [{ label: file, args: [file], resource: declaredResource(file) }]);
+    : path.normalize(file) === NATIVE_REPLACEMENT
+      ? [0, NATIVE_GATEWAY_DELAY_MS].map((gatewayDelayMs) => ({ label: gatewayDelayMs ? `${file} slow gateway` : file, args: [file],
+        resource: declaredResource(file), native: { budgetMs: NATIVE_BUDGET_MS + gatewayDelayMs, gatewayDelayMs } }))
+      : [{ label: file, args: [file], resource: declaredResource(file) }]);
 }
 
 /** Memory the OS can hand out without swapping; macOS `freemem` omits reclaimable pages. */
@@ -127,7 +138,7 @@ function report(run) {
   process.stdout.write(failure ? `\n===== ${line}\n${run.output}===== ${failure}\n\n` : `${line}\n`);
   // Preserve source identity and phase-cost evidence for the qualifying native
   // proof on success too; the ordinary concise suite report remains unchanged.
-  if (!failure && path.normalize(run.label) === NATIVE_REPLACEMENT) process.stdout.write(run.output);
+  if (!failure && run.native) process.stdout.write(run.output);
 }
 
 function sharedRssMeasure() {
@@ -167,7 +178,7 @@ export async function runUnits(units, {
         const output = [];
         const started = performance.now();
         const commandStartedAt = unit.nativeProofStartedAt ?? Date.now();
-        const until = path.normalize(unit.args[0] ?? '') === NATIVE_REPLACEMENT ? commandStartedAt + 20_000 : null;
+        const until = unit.native ? commandStartedAt + unit.native.budgetMs : null;
         const phaseSupervisor = until ? new ProcessGroupSupervisor({ graceMs: 100 }) : supervisor;
         let deadlineTimer;
         let deadlineStop;
@@ -188,6 +199,7 @@ export async function runUnits(units, {
             const child = spawnUnit(unit, { ...env, ...(until ? {
               MANDIBLE_NATIVE_PROOF_STARTED_AT: String(commandStartedAt), MANDIBLE_NATIVE_PROOF_UNTIL: String(until),
               MANDIBLE_NATIVE_PROOF_CLEANUP_UNTIL: String(until - NATIVE_TERMINATION_MARGIN_MS),
+              MANDIBLE_NATIVE_PROOF_GATEWAY_DELAY_MS: String(unit.native.gatewayDelayMs),
             } : {}) });
             child.stdout?.on("data", (chunk) => output.push(chunk));
             child.stderr?.on("data", (chunk) => output.push(chunk));
@@ -199,13 +211,13 @@ export async function runUnits(units, {
         }
         const stopError = await deadlineStop;
         if (until && (deadlineReached || Date.now() >= until || stopError)) {
-          outcome = { ...outcome, status: 'error', error: stopError || new Error('Native replacement command exceeded its original 20000ms deadline, including runner startup and cleanup.') };
+          outcome = { ...outcome, status: 'error', error: stopError || new Error(`Native replacement command exceeded its original ${unit.native.budgetMs}ms deadline, including runner startup and cleanup.`) };
         }
         if (unit.resource) {
           held.delete(unit.resource);
           for (const wake of released.splice(0)) wake();
         }
-        const run = { label: unit.label, outcome, output: Buffer.concat(output).toString("utf8"),
+        const run = { label: unit.label, native: Boolean(unit.native), outcome, output: Buffer.concat(output).toString("utf8"),
           seconds: until ? (Date.now() - commandStartedAt) / 1000 : (performance.now() - started) / 1000 };
         runs.push(run);
         onRun(run);
@@ -221,7 +233,7 @@ export async function runUnits(units, {
 async function main(args) {
   const commandStartedAt = Date.now();
   const units = provisionedUnits(args.length > 0 ? args : undefined);
-  if (units.length === 1 && path.normalize(units[0].args[0] ?? '') === NATIVE_REPLACEMENT) units[0].nativeProofStartedAt = commandStartedAt;
+  if (units.every((unit) => unit.native)) units[0].nativeProofStartedAt = commandStartedAt;
   const jobs = Math.min(poolSize(), units.length);
   process.stdout.write(`provisioned: ${units.length} units, ${jobs} at a time\n`);
   const started = performance.now();

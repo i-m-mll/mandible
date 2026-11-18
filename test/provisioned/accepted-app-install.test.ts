@@ -32,7 +32,8 @@ it('replaces retained signed bundles through real native service startup, qualif
   const started = Number(process.env.MANDIBLE_NATIVE_PROOF_STARTED_AT);
   const deadline = Number(process.env.MANDIBLE_NATIVE_PROOF_UNTIL);
   const cleanupUntil = Number(process.env.MANDIBLE_NATIVE_PROOF_CLEANUP_UNTIL);
-  if (!Number.isFinite(started) || deadline !== started + 20_000 || cleanupUntil !== deadline - 2500 || Date.now() >= deadline) {
+  const gatewayDelayMs = Number(process.env.MANDIBLE_NATIVE_PROOF_GATEWAY_DELAY_MS);
+  if (!Number.isFinite(started) || !Number.isInteger(gatewayDelayMs) || deadline !== started + 20_000 + gatewayDelayMs || cleanupUntil !== deadline - 2500 || Date.now() >= deadline) {
     throw new Error('Run the native proof through test:provisioned with its original command deadline.');
   }
   const workUntil = deadline - 5_000;
@@ -73,7 +74,7 @@ it('replaces retained signed bundles through real native service startup, qualif
   let sourceRevision: string | null = null;
   let candidateExecutables: Record<string, ReturnType<typeof installedFileIdentity>> | null = null;
   let predecessorExecutable: ReturnType<typeof installedFileIdentity> | null = null;
-  let slowCaddy = '';
+  let gatewayCaddy = '';
   let predecessorProtocol: number | undefined;
   let gatewayValidationMs: number | null = null;
   let failureDiagnostic: { json_excerpt: string; truncated: boolean; service_stderr: Record<string, string> } | null = null;
@@ -141,9 +142,12 @@ it('replaces retained signed bundles through real native service startup, qualif
     for (const [file, role] of [['mandible-service', 'serviceHelper'], ['mandible-bun', 'bun'], ['mandible-caddy', 'caddy']] as const) {
       expect(candidateExecutables[file]).toEqual(candidateRelease.files[candidateRelease.native[role]]);
     }
-    // A Caddy that answers only after the 5 s the go-live path once allowed it.
-    slowCaddy = path.join(root, 'slow-caddy');
-    fs.writeFileSync(slowCaddy, `#!/bin/sh\n/bin/sleep 6\nexec ${JSON.stringify(path.join(candidateMacOS, 'mandible-caddy'))} "$@"\n`, { mode: 0o755 });
+    // The slow-gateway unit's Caddy answers only after the 5 s the go-live path once allowed it.
+    gatewayCaddy = path.join(candidateMacOS, 'mandible-caddy');
+    if (gatewayDelayMs) {
+      gatewayCaddy = path.join(root, 'slow-caddy');
+      fs.writeFileSync(gatewayCaddy, `#!/bin/sh\n/bin/sleep ${gatewayDelayMs / 1000}\nexec ${JSON.stringify(path.join(candidateMacOS, 'mandible-caddy'))} "$@"\n`, { mode: 0o755 });
+    }
     fs.mkdirSync(path.join(home, 'config/client-auth'), { recursive: true });
     const authority = path.join(home, 'config/client-auth/authority-id');
     const credentials = path.join(home, 'config/client-auth/credentials');
@@ -271,7 +275,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       };
       const validateGateway = index ? async (_binding: unknown, _prepared: unknown, { until }: { until: number }) => {
         const before = Date.now();
-        const digest = validateGatewayConfiguration(slowCaddy, `{\n  admin unix/${gatewaySocket}\n}\n`, { until });
+        const digest = validateGatewayConfiguration(gatewayCaddy, `{\n  admin unix/${gatewaySocket}\n}\n`, { until });
         gatewayValidationMs = Date.now() - before;
         return digest;
       } : async () => null;
@@ -287,7 +291,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       let completed = await runRuntimeHandoffWorker(file, options);
       if (index) {
         expect(completed.attempt.state, JSON.stringify(completed.attempt.lastObservation)).toBe('running');
-        expect(gatewayValidationMs).toBeGreaterThan(5000);
+        expect(gatewayValidationMs).toBeGreaterThanOrEqual(gatewayDelayMs);
         expect(completed.attempt.effects.prepare.gatewayConfig).toMatch(/^[a-f0-9]{64}$/);
         expect(applicationIdentity(app)).toBe(readAcceptedReleaseReceipt(reference).package.sha256);
         expect(completed.attempt.effects.replace.completedAt).toBeDefined();
@@ -379,13 +383,13 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
       console.info('native_bundle_replacement_proof', JSON.stringify({ scope: 'private SMAppService replacement; no product daemon, GUI, production ledger or approval API',
         source_revision: sourceRevision, candidate_app: process.env.MANDIBLE_NATIVE_PROOF_APP, candidate_executables: candidateExecutables,
         predecessor_app: process.env.MANDIBLE_NATIVE_PROOF_PREDECESSOR_APP, predecessor_service_control_protocol: predecessorProtocol ?? 1,
-        predecessor_executable: predecessorExecutable, gateway_validation_ms: gatewayValidationMs,
+        predecessor_executable: predecessorExecutable, gateway_delay_ms: gatewayDelayMs, gateway_validation_ms: gatewayValidationMs,
         runtime_source: 'Current source reconciler and native effect modules; fixture authority/access adapters; copied candidate helper is re-signed for private descriptors.',
         identifier, signing_identity: signer.identity, helper_identifier: nativeSigningIdentifier(identifier, 'serviceHelper'),
         generations, command_costs: costs, failure: failureDiagnostic,
         clock_origin: 'provisioned runner entry; external wall includes earlier runtime selector/import startup',
         runner_entry_elapsed_ms: Date.now() - started, teardown_ms: Date.now() - teardownStarted,
-        target_ms: 60_000, deadline_ms: 20_000, teardown_reserve_ms: 5_000,
+        target_ms: 60_000, deadline_ms: 20_000 + gatewayDelayMs, teardown_reserve_ms: 5_000,
         termination_margin_ms: deadline - cleanupUntil,
         cleanup: cleaned ? 'complete' : 'unconfirmed', retained_root: cleaned ? null : root }));
     }
