@@ -56,7 +56,10 @@ if [[ "$action" == recover ]]; then
   }
   if [[ "$json" == 1 ]]; then printf '%s\n' "$response" | jq .; exit 0; fi
   printf '%s\n' "$response" | jq -r '
-    if .verification.outcome == "pending" then
+    if .supersession then .supersession as $s |
+      "Auth request \(.request_id[0:8]) was superseded by auth request \($s.successor_request_id[0:8]): its verified go-live of merge \($s.successor_merge_sha[0:12]) contains this merge \($s.merge_sha[0:12]).",
+      (if ($s.settled | length) == 0 then "  Nothing was withheld." else ($s.settled[] | "  \(.kind) \(.target_issue_ref): \(.state)\(if .outcome_detail then " (\(.outcome_detail))" else "" end)") end)
+    elif .verification.outcome == "pending" then
       "Runtime handoff verification is pending for request \(.request_id[0:8]): \(.verification.reason)",
       (if .verification.retainedFailure then "The earlier recorded handoff failure remains retained.",
         (.convergence.hooks[]? | select(.state == "failed" and .failure != null) | "  \(.hook_id): \(.failure)") else empty end)

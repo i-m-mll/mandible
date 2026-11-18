@@ -84,6 +84,9 @@ export const METADATA_BACKUP_TABLES = [
   // parents restore first.
   "auth_hook_executions",
   "auth_hook_alerts",
+  // Issue 077f152 — the go-live evidence that settled a predecessor's
+  // withheld actions; its successor's own receipt may have been cleaned up.
+  "auth_go_live_supersessions",
   "notifications",
   "message_params",
   "providers",

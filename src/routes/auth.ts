@@ -596,9 +596,10 @@ export function registerAuthRoutes(
       const control = body.mode === 'verify-current' ? authMutationControl(db, req, res, request, body) : null;
       if (body.mode === 'verify-current' && !control) return;
       const passedOver = control ? passedOverReply(db, authQueue, req, request.id) : {};
-      const { verification, ...convergence } = await authQueue.retryHookConvergence(req.params.id, hookId,
+      const { verification, supersession, ...convergence } = await authQueue.retryHookConvergence(req.params.id, hookId,
         control ? { mode: 'verify-current', actor: control.actor } : undefined);
-      res.status(200).json({ ...passedOver, request_id: req.params.id, convergence, ...(verification ? { verification } : {}) });
+      res.status(200).json({ ...passedOver, request_id: req.params.id, convergence, ...(verification ? { verification } : {}),
+        ...(supersession ? { supersession } : {}) });
     } catch (error) {
       handleQueueError(error, res);
     }

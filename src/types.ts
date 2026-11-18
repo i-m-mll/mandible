@@ -1472,6 +1472,21 @@ export interface AuthConvergence {
   state: AuthConvergenceState;
   hooks: AuthConvergenceHookSummary[];
   runtime_verification?: AuthRuntimeVerification;
+  /** A later self-update's verified go-live contains this merge; it stands in for this request's own rebuild. */
+  superseded_by?: AuthGoLiveSupersession;
+}
+
+/** Issue 077f152 — the later verified go-live that made this request's merge live. */
+export interface AuthGoLiveSupersession {
+  successor_request_id: string;
+  merge_sha: string;
+  successor_merge_sha: string;
+  recorded_at: number;
+}
+
+/** The supersession of one request, with the withheld actions it settled. */
+export interface AuthGoLiveSupersessionReport extends AuthGoLiveSupersession {
+  settled: Array<Pick<AuthRequestAction, "id" | "kind" | "target_issue_ref" | "state" | "outcome_detail">>;
 }
 
 export interface AuthRuntimeVerification {

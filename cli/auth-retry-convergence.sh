@@ -25,7 +25,11 @@ if [[ "$json" == 1 ]]; then
 fi
 case "$state" in
   complete)
-    if [[ "$json" != 1 ]]; then printf 'Convergence complete for auth request %s.\n' "$request"; fi
+    if [[ "$json" != 1 ]]; then
+      printf '%s\n' "$response" | jq -r --arg request "$request" 'if .supersession then
+        "Convergence complete for auth request \($request): superseded by auth request \(.supersession.successor_request_id[0:8]), whose verified go-live contains its merge."
+        else "Convergence complete for auth request \($request)." end'
+    fi
     ;;
   pending)
     if [[ "$json" != 1 ]]; then printf 'Convergence retry admitted, still running for auth request %s. Check with: mandible auth show %s.\n' "$request" "$request"; fi
