@@ -299,6 +299,38 @@ export function commitOnBranch(repo: string, branch: string, changes: Record<str
   git(repo, ["checkout", "main"]);
 }
 
+export interface SubmoduleBump { path: string; base: string; bumped: string; worktree: string }
+
+/**
+ * Add submodule `vendor/sub` on main, initialized in the root checkout, then
+ * point `branch` (reset to main) in a linked worktree at a submodule commit
+ * that exists only in that worktree's submodule.
+ */
+export function commitSubmoduleBumpOnBranch(repo: string, branch: string): SubmoduleBump {
+  const g = (cwd: string, args: string[]) => git(cwd, ["-c", "user.name=Mandible Test", "-c", "user.email=mandible-test@localhost",
+    "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always", ...args]);
+  const origin = path.join(repo, ".git", "submodule-origin");
+  fs.mkdirSync(origin);
+  g(origin, ["init", "-q", "-b", "main"]);
+  writeFile(origin, "sub.txt", "base\n");
+  g(origin, ["add", "."]);
+  g(origin, ["commit", "-q", "-m", "sub base"]);
+  const base = g(origin, ["rev-parse", "HEAD"]);
+  g(repo, ["submodule", "add", "-q", origin, "vendor/sub"]);
+  g(repo, ["commit", "-q", "-m", "add submodule"]);
+  const worktree = trackTempPath(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-submodule-head-")));
+  fs.rmSync(worktree, { recursive: true });
+  g(repo, ["worktree", "add", "-q", "-B", branch, worktree, "main"]);
+  g(worktree, ["submodule", "update", "-q", "--init"]);
+  const sub = path.join(worktree, "vendor", "sub");
+  writeFile(sub, "sub.txt", "bumped\n");
+  g(sub, ["commit", "-q", "-am", "sub bump"]);
+  const bumped = g(sub, ["rev-parse", "HEAD"]);
+  g(worktree, ["add", "vendor/sub"]);
+  g(worktree, ["commit", "-q", "-m", `${branch} moves vendor/sub`]);
+  return { path: "vendor/sub", base, bumped, worktree };
+}
+
 // --- databases -------------------------------------------------------------
 
 export function createMigratedDb(): Db {

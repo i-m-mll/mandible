@@ -23,7 +23,14 @@ function quote(value) {
   return value.replace(/[^a-zA-Z0-9_./-]/g, '\\$&');
 }
 
-function trackedEntries(records) {
+function submoduleDescription(submodule) {
+  if (submodule[1] === 'C') return 'submodule checkout is not at the recorded commit';
+  if (submodule[2] === 'M') return 'submodule has tracked changes';
+  return 'submodule has untracked files';
+}
+
+/** Describe each tracked entry of `git status --porcelain=v2 -z` records. */
+export function trackedEntries(records) {
   const entries = [];
   for (let i = 0; i < records.length; i++) {
     const record = records[i];
@@ -33,7 +40,10 @@ function trackedEntries(records) {
     let start = 0;
     for (let n = 0; n < fields; n++) start = record.indexOf(' ', start) + 1;
     const state = record.slice(2, 4).replaceAll('.', ' ');
-    const description = kind === 'u' ? 'unmerged' : state[0] !== ' ' && state[1] !== ' ' ? 'staged and unstaged' : state[0] !== ' ' ? 'staged' : 'unstaged';
+    const submodule = record.slice(5, 9);
+    const description = kind === 'u' ? 'unmerged'
+      : submodule[0] === 'S' && state[0] === ' ' ? submoduleDescription(submodule)
+      : state[0] !== ' ' && state[1] !== ' ' ? 'staged and unstaged' : state[0] !== ' ' ? 'staged' : 'unstaged';
     entries.push(`${description} [${state}]: ${quote(record.slice(start))}`);
     if (kind === '2') i++;
   }

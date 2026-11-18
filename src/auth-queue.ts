@@ -14,7 +14,7 @@ import { DOMAIN_EVENTS, OPERATOR_PROOF_WINDOW_MS, type AuthResolvedPayload } fro
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { childOutput, observeChild } from "./child-observation.js";
-import { checkCheckoutReadiness } from "../cli/checkout-readiness.mjs";
+import { checkCheckoutReadiness, trackedEntries } from "../cli/checkout-readiness.mjs";
 import { accessSync, constants as fsConstants, existsSync, realpathSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -471,6 +471,10 @@ export interface ApprovalCaller {
   identity_method: string;
   source: string;
   credential_id: string | null;
+}
+
+function cliScript(name: string): string {
+  return join(process.env.MANDIBLE_CLI_DIR ?? join(process.cwd(), "cli"), name);
 }
 
 /** Git environment for reading a checkout's own configuration: injected overrides removed. */
@@ -1647,7 +1651,7 @@ export class AuthQueue {
   ): Promise<StaleMergeRecovery> {
     const baseSha = request.merge_preflight_base_sha;
     const candidateTree = request.merge_candidate_tree_sha;
-    if (!baseSha || !candidateTree || !request.base_branch || !request.approved_by_user_id) {
+    if (!baseSha || !candidateTree || !request.base_branch || !request.head_branch || !request.approved_by_user_id) {
       return { outcome: "failed", detail: "atomic merge recovery metadata is incomplete" };
     }
     const atomicState = extractAtomicMergeState(request.output);
@@ -1690,36 +1694,45 @@ export class AuthQueue {
       return { outcome: "atomic_needs_recovery", detail: "protected worktree is not on the target branch" };
     }
     const indexTree = (await git(["write-tree"]));
-    const trackedStatus = (await git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"]));
+    const trackedEntriesNow = async () => trackedEntries((await git(["status", "--porcelain=v2", "-z", "--untracked-files=no", "--ignore-submodules=none"])).split("\0"));
     if (advanced) {
       const currentTree = (await git(["rev-parse", "--verify", `${targetSha}^{tree}`]));
-      if (indexTree !== currentTree || trackedStatus) return { outcome: "atomic_needs_recovery", detail: "Later protected publication has not synchronized; earlier recovery will not change its checkout." };
+      if (indexTree !== currentTree || (await trackedEntriesNow()).length) return { outcome: "atomic_needs_recovery", detail: "Later protected publication has not synchronized; earlier recovery will not change its checkout." };
       return { outcome: "atomic_applied", mergeSha: prepared.merge_sha };
     }
-    if (indexTree === candidateTree && !trackedStatus) {
-      try { this.assertExecution(request.id, execution); this.assertPublicationAuthority(request, signature.credential_id); (await git(["update-ref", "ORIG_HEAD", baseSha])); }
-      catch { return { outcome: "atomic_needs_recovery", detail: "Native post-hook original-head input could not be restored." }; }
-      return { outcome: "atomic_applied", mergeSha: prepared.merge_sha };
+    if (indexTree !== candidateTree) {
+      const baseTree = (await git(["rev-parse", "--verify", `${baseSha}^{tree}`]));
+      if (indexTree !== baseTree) {
+        return { outcome: "atomic_needs_recovery", detail: "protected index is neither the pinned base nor merge tree" };
+      }
+      try {
+        (await git(["diff", "--quiet"]));
+        this.assertExecution(request.id, execution);
+        this.assertPublicationAuthority(request, signature.credential_id);
+        (await git(["read-tree", "-m", "-u", baseSha, prepared.merge_sha]));
+      } catch (error) {
+        return {
+          outcome: "atomic_needs_recovery",
+          detail: `collision-safe worktree synchronization is blocked: ${errorMessage(error) ?? String(error)}`,
+        };
+      }
+      if ((await git(["write-tree"])) !== candidateTree) {
+        return { outcome: "atomic_needs_recovery", detail: "protected worktree synchronization did not converge" };
+      }
     }
-    const baseTree = (await git(["rev-parse", "--verify", `${baseSha}^{tree}`]));
-    if (indexTree !== baseTree) {
-      return { outcome: "atomic_needs_recovery", detail: "protected index is neither the pinned base nor merge tree" };
-    }
-    try {
-      (await git(["diff", "--quiet"]));
-      this.assertExecution(request.id, execution);
-      this.assertPublicationAuthority(request, signature.credential_id);
-      (await git(["read-tree", "-m", "-u", baseSha, prepared.merge_sha]));
-    } catch (error) {
-      return {
-        outcome: "atomic_needs_recovery",
-        detail: `collision-safe worktree synchronization is blocked: ${errorMessage(error) ?? String(error)}`,
-      };
-    }
-    const syncedIndex = (await git(["write-tree"]));
-    const syncedStatus = (await git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"]));
-    if (syncedIndex !== candidateTree || syncedStatus) {
-      return { outcome: "atomic_needs_recovery", detail: "protected worktree synchronization did not converge" };
+    if ((await trackedEntriesNow()).length) {
+      try { this.assertExecution(request.id, execution); this.assertPublicationAuthority(request, signature.credential_id); }
+      catch { return { outcome: "atomic_needs_recovery", detail: "Submodule synchronization lost its publication authority." }; }
+      const sync = (await observeChild("bash", [cliScript("submodule-sync.sh"), "update", cwd, baseSha, prepared.merge_sha, request.head_branch], {
+        cwd, encoding: "utf8", timeout: 60_000, env: checkoutGitEnv(),
+      }));
+      if (sync.status !== 0) {
+        return { outcome: "atomic_needs_recovery", detail: `protected checkout submodules did not follow the merge: ${(sync.stdout || sync.stderr || String(sync.error)).trim()}` };
+      }
+      const remaining = (await trackedEntriesNow());
+      if (remaining.length) {
+        return { outcome: "atomic_needs_recovery", detail: `protected checkout differs from the merge tree: ${remaining.join("; ")}` };
+      }
     }
     try { this.assertExecution(request.id, execution); this.assertPublicationAuthority(request, signature.credential_id); (await git(["update-ref", "ORIG_HEAD", baseSha])); }
     catch { return { outcome: "atomic_needs_recovery", detail: "Native post-hook original-head input could not be restored." }; }
@@ -5650,7 +5663,7 @@ export class AuthQueue {
   }
 
   private async recoveredAtomicMergeReceipt(request: AuthRequest, mergeSha: string): Promise<string> {
-    const script = join(process.env.MANDIBLE_CLI_DIR ?? join(process.cwd(), "cli"), "auth-merge.sh");
+    const script = cliScript("auth-merge.sh");
     if (!existsSync(script)) {
       throw new Error(`auth merge receipt helper is unavailable at ${script}`);
     }
