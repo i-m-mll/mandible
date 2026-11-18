@@ -1,6 +1,6 @@
 # Alpha-normalized NCD duplication scan
 
-Mandible-Issue: ba5fec3
+Mandible-Issue: ba5fec3, 5234372
 
 ## Predictions, published before the first run
 
@@ -33,21 +33,44 @@ Normalized Compression Distance over alpha-normalized declarations:
 
 Lower is more similar. The pipeline is:
 
-1. **Extract.** The TypeScript compiler API parses each tracked source file.
-   Comparable units are function-like declarations (function declarations,
+1. **Extract.** Extraction dispatches on file extension, and is the only
+   language-bound stage.
+
+   *TypeScript and JavaScript* are parsed in-process by the TypeScript compiler
+   API. Comparable units are function-like declarations (function declarations,
    methods, constructors, arrows and function expressions), type declarations
    (interfaces and type aliases), and string or template literals that look
    like SQL.
+
+   *Python* is parsed by Python's own `ast` module, in
+   `scripts/ncd-extract-python.py`, spawned once per scan as a batch subprocess
+   over every Python file at once. Comparable units are `def`, `async def` and
+   `lambda` (methods included), class bodies, and string literals that look
+   like SQL. Writing a Python parser in JavaScript would be a second source of
+   truth for a grammar that ships with the interpreter; taking a JavaScript
+   Python-parser dependency would be a third. SQL units cross the boundary as
+   raw text and are normalized by the one `normalizeSql` on the Node side, so
+   the two languages share it.
 2. **Normalize.** Each unit is serialized as a preorder token stream of AST node
    kinds plus leaf tokens. Identifiers bound inside the unit — parameters,
-   locals, nested function and class names, type parameters, catch variables,
-   destructured bindings — are alpha-renamed to `$0`, `$1`, … in order of first
-   appearance. Free identifiers are preserved verbatim, because a call target,
-   an imported name, a property name, or a type name is shared structure rather
-   than a locally arbitrary choice. String, numeric, regex and template literal
-   payloads are erased by default (`--literals keep` retains them). Comments and
-   all formatting are absent by construction, since the stream is built from the
-   AST rather than from source text.
+   locals, nested function and class names, type parameters, catch and `except`
+   variables, destructured and comprehension bindings — are alpha-renamed to
+   `$0`, `$1`, … in order of first appearance. Free identifiers are preserved
+   verbatim, because a call target, an imported name, a property or attribute
+   name, a keyword-argument name, or a type name is shared structure rather than
+   a locally arbitrary choice. In Python that includes import aliases, so
+   `np.linalg.solve` and `jnp.linalg.solve` stay distinguishable, and class-body
+   field and method names, which are the class's contract exactly as a
+   TypeScript property or method declaration name is. String, numeric, regex and
+   template literal payloads are erased by default (`--literals keep` retains
+   them); `None`/`null`, `True`/`true` and `False`/`false` are kept as keyword
+   tokens. Comments and all formatting are absent by construction, since the
+   stream is built from the AST rather than from source text.
+
+   The two normalizers emit disjoint node-kind vocabularies — `IfStatement`
+   against `If`, `CallExpression` against `Call` — so a cross-language score
+   would measure the vocabularies rather than the code. Pairs are therefore
+   never formed across languages, even when one scan covers both.
 3. **Prefilter.** Token 5-shingles, an exact prefix filter over shingles
    ordered by global document frequency, then exact Jaccard on the surviving
    candidates. NCD is never computed for the full quadratic pair space. The
@@ -73,6 +96,17 @@ The output is an attention list, not a proof of semantic equivalence.
 - Tests, fixtures, generated files, snapshots and vendored code are tagged and
   their pairs are moved out of the primary ranked list. They are still printed
   in a separate section, so an exclusion can be audited rather than trusted.
+- Generated code is detected both by path rule and structurally, by the marker
+  its generator writes into the first 4 KiB of the file
+  (`config.generatedHeaderPatterns`). Structural similarity between generated
+  files is correct output, not a finding, so generated files are classified
+  rather than dropped from the tree: a new generator does not have to be added
+  to a path list before its output stops crowding the ranking.
+- Files are enumerated with `git ls-files`, never by walking the filesystem.
+  Virtualenvs, `node_modules`, caches, build output, nested checkouts and
+  per-run provenance snapshot trees are therefore absent by construction rather
+  than by an exclusion list that has to stay current. The exclusion patterns in
+  the config are the belt for the case where such a tree is tracked anyway.
 - Pairs covered by a binding rejection in
   `docs/88e6aeb-post-consolidation-design-review.md` are annotated in place.
   Annotation never removes a pair; it marks the pair as settled so that a
@@ -296,16 +330,21 @@ support the reopening rather than as silent absence of evidence.
 ## Reproducing
 
 ```bash
-npm run scan:duplication -- --root . --out report --top 200
-npm run scan:duplication -- --root . --literals keep --out report-literal
-npx --yes jscpd@4.0.5 src ui/src scripts cli channel-server \
+bun run scan:duplication -- --root . --out report --top 200
+bun run scan:duplication -- --root . --literals keep --out report-literal
+bunx jscpd@4.0.5 src ui/src scripts cli channel-server \
   --min-tokens 50 --min-lines 5 --max-size 10mb --max-lines 100000 \
   --reporters json --output jscpd-out \
   --format "typescript,tsx,javascript,jsx" \
   --ignore "**/dist/**,**/node_modules/**,**/*.d.ts"
 ```
 
-`jscpd` is invoked through `npx` at a pinned version rather than added as a
+The Python extraction path is tested by
+`bun run test:provisioned test/provisioned/ncd-scan-python.test.ts`, which needs
+a `python3` on PATH (`NCD_PYTHON` selects another interpreter). Run it when
+changing `scripts/ncd-scan.mjs` or `scripts/ncd-extract-python.py`.
+
+`jscpd` is invoked through `bunx` at a pinned version rather than added as a
 devDependency: it is a one-off comparison instrument, not part of the delivered
 tooling. The `--max-size` and `--max-lines` overrides are not optional in this
 repo — without them `jscpd` reports on roughly half the code and says nothing
