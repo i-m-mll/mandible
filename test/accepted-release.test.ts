@@ -12,7 +12,7 @@ import { CandidateAcceptanceRuns } from '../src/candidate-acceptance.js';
 import { diagnosticReplayPackage, finalizeAcceptance, acceptanceOwnedOutputs } from '../scripts/candidate-acceptance.mjs';
 import { acceptancePhases } from '../scripts/acceptance-progress.mjs';
 import { ACCEPTANCE_CERTIFICATE_SCHEMA, ACCEPTANCE_CERTIFICATE_LIMIT, acceptanceReceiptSchema } from '../scripts/acceptance-certificate.mjs';
-import { readAcceptedInstalledRelease } from '../scripts/accepted-release.mjs';
+import { assertApprovedRuntimePackage, readAcceptedInstalledRelease } from '../scripts/accepted-release.mjs';
 
 const finalized = (result: Record<string, unknown>) => ({ result, phases: acceptancePhases(result, { write: () => {} }) });
 function passingResult(shipped: unknown) {
@@ -294,6 +294,8 @@ it('seals negotiated v2 authority without cache, verifies its manifest on demand
       package: { sha256: digest }, manifest_sha256: installedFileIdentity(manifest).sha256, gates: { health_coverage: 'passed' } });
     expect(certificate).not.toHaveProperty('shipped');
     expect(certificate).not.toHaveProperty('evidence');
+    expect(() => assertApprovedRuntimePackage(certificate, digest, candidate.pin_sha)).not.toThrow();
+    expect(() => assertApprovedRuntimePackage(certificate, digest, 'f'.repeat(40))).toThrow('Terminal package identity differs');
     expect(resolveAcceptedRelease(reference, candidate).release).toEqual(shipped);
     fs.appendFileSync(manifest, '\n');
     expect(() => readAcceptedInstalledRelease(certificate, pending.resources)).toThrow('Installed manifest differs');

@@ -16,7 +16,7 @@ import { acceptedInstallPaths, preparedApplicationContext, applicationRootIdenti
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions, parseLoadedService } from './service-definitions.mjs';
 import { admitBundleOwner } from './bundle-services.mjs';
 import { installedResourceRoot, installedRuntimeEnvironment, installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
-import { readAcceptedReleaseReceipt, readAcceptedInstalledRelease, readImmutableAcceptedRelease, disposeAcceptedRelease } from './accepted-release.mjs';
+import { assertApprovedRuntimePackage, readAcceptedReleaseReceipt, readAcceptedInstalledRelease, readImmutableAcceptedRelease, disposeAcceptedRelease } from './accepted-release.mjs';
 import { inspectRunConsumers } from './owned-run.mjs';
 import SqliteDatabase from '../src/sqlite.ts';
 import { verifyRuntimeHandoffAuthority } from '../src/runtime-handoff-proof.ts';
@@ -760,8 +760,7 @@ export async function verifyRuntimeHandoffReceipt(journal, { probe = true } = {}
     if (!journal.attempt.fence || receipt.approved.reference !== journal.binding.acceptedRelease.reference
         || JSON.stringify(receipt.approved.publicationEvidence) !== JSON.stringify(journal.binding.publicationEvidence)
         || receipt.installed.root !== journal.binding.nativeApp || receipt.startup.database !== path.resolve(journal.database)) throw new Error('Terminal runtime receipt binding changed.');
-    const approved = readAcceptedReleaseReceipt(receipt.approved.reference);
-    if (approved.package.sha256 !== receipt.approved.packageSha256 || approved.shipped.provenance.commit !== receipt.startup.generation) throw new Error('Terminal package identity differs from approval.');
+    assertApprovedRuntimePackage(readAcceptedReleaseReceipt(receipt.approved.reference), receipt.approved.packageSha256, receipt.startup.generation);
     const identity = applicationRootIdentity(receipt.installed.root);
     if (identity.dev !== receipt.installed.identity.dev || identity.ino !== receipt.installed.identity.ino) throw new Error('Terminal installed root changed.');
     if (probe) {
