@@ -14,7 +14,7 @@ import { createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import { setupOperator } from "../src/users/store.js";
 import { describeAuthExecutionFailure } from "../src/contracts.js";
-import { createAuthCheckRepo, commitOnBranch } from "./helpers/auth-queue-fixtures.js";
+import { createAuthCheckRepo, commitOnBranch, commitSubmoduleBumpOnBranch } from "./helpers/auth-queue-fixtures.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import { preparedGitFixture } from "./helpers/prepared-git-fixture.js";
 import { buildCommit, signedCommitObject } from "../src/commit-object.js";
@@ -224,6 +224,36 @@ describe("atomic auth merge", () => {
       result.stderr.indexOf("MANDIBLE_MERGE_APPLIED"),
     );
     expect(result.stderr).toContain("MANDIBLE_MERGE_RESULT");
+  });
+
+  it("brings a submodule whose gitlink the merge moves to the merged commit, fetching it from the head worktree", () => {
+    const bump = commitSubmoduleBumpOnBranch(repo, "feature/atomic");
+    const sub = path.join(repo, bump.path);
+    expect(spawnSync("git", ["-C", sub, "cat-file", "-e", `${bump.bumped}^{commit}`]).status).not.toBe(0);
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+
+    const result = runAtomic(base, head, candidate(base, head));
+
+    expect(result.status, String(result.stderr)).toBe(0);
+    expect(git(["rev-parse", "HEAD"], sub)).toBe(bump.bumped);
+    expect(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"])).toBe("");
+    expect(result.stderr).toContain("MANDIBLE_MERGE_APPLIED");
+  });
+
+  it("refuses with nothing changed when a moved gitlink's commit cannot be fetched", () => {
+    const bump = commitSubmoduleBumpOnBranch(repo, "feature/atomic");
+    git(["worktree", "remove", "--force", bump.worktree]);
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+
+    const result = runAtomic(base, head, candidate(base, head));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`Submodule ${bump.path}: commit ${bump.bumped} is missing`);
+    expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(git(["rev-parse", "HEAD"], path.join(repo, bump.path))).toBe(bump.base);
   });
 
   it("reuses the candidate but names a tracked edit arriving after cached preflight without changing refs or index", () => {

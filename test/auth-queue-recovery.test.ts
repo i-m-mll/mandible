@@ -17,7 +17,7 @@ import { describe, expect, it } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthHookManager } from "../src/auth-hooks.js";
 import type { SseEvent } from "../src/types.js";
-import { commitOnBranch, configureSigningCredential, createAuthCheckRepo, createMigratedDb, createNoopHookManager, git, registerWorkRepo, waitForStatus, writeFile } from "./helpers/auth-queue-fixtures.js";
+import { commitOnBranch, commitSubmoduleBumpOnBranch, configureSigningCredential, createAuthCheckRepo, createMigratedDb, createNoopHookManager, git, registerWorkRepo, waitForStatus, writeFile } from "./helpers/auth-queue-fixtures.js";
 
 describe("auth queue", () => {
   it.each([
@@ -149,6 +149,68 @@ describe("auth queue", () => {
         verified: true,
         signer_user_id: signing.operatorId,
       });
+    } finally {
+      (await queue?.dispose());
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["left at the base commit", "completed", null],
+    ["moved to an unrelated commit", "executing", "Submodule vendor/sub: checkout is at"],
+    ["edited at the merged commit", "executing", "submodule has tracked changes [ M]: vendor/sub"],
+  ] as const)("recovers an applied merge that moved a gitlink, with the root's submodule %s", async (kind, status, detail) => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    let queue: AuthQueue | null = null;
+    try {
+      const bump = commitSubmoduleBumpOnBranch(repo, "feature/submodule");
+      const sub = path.join(repo, bump.path);
+      registerWorkRepo(db, repo);
+      configureSigningCredential(db, repo);
+      git(repo, ["config", "commit.gpgsign", "true"]);
+      let executionStarted: () => void;
+      let signedSha: string | undefined;
+      const started = new Promise<void>(resolve => { executionStarted = resolve; });
+      queue = new AuthQueue({ db, now: () => 0, hookManager: createNoopHookManager(), backgroundMaintenance: false, executor: async (options) => { signedSha = options.env?.MANDIBLE_AUTH_SIGNED_MERGE_SHA; executionStarted(); return new Promise<never>(() => {}); } });
+      const request = (await queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge",
+        command: "mandible auth merge feature/submodule --into main", title: "Submodule recovery", repo: path.basename(repo),
+        base_branch: "main", head_branch: "feature/submodule", merge_head_sha: git(repo, ["rev-parse", "feature/submodule"]), cwd: repo }));
+      await approveFixtureRequest(queue, request.id);
+      await started;
+      const base = request.merge_preflight_base_sha!;
+      const mergeSha = signedSha!;
+      db.prepare("UPDATE auth_requests SET output = ? WHERE id = ?").run(
+        `MANDIBLE_MERGE_PREPARED ${JSON.stringify({ merge_sha: mergeSha, base_sha: base, head_sha: request.merge_head_sha, tree_sha: request.merge_candidate_tree_sha })}\n` +
+        `MANDIBLE_MERGE_APPLIED ${JSON.stringify({ merge_sha: mergeSha, base_sha: base })}\n`, request.id);
+      git(repo, ["update-ref", "refs/heads/main", mergeSha, base]);
+      git(repo, ["read-tree", "-m", "-u", base, mergeSha]);
+      const identity = ["-c", "user.name=Mandible Test", "-c", "user.email=mandible-test@localhost", "-c", "commit.gpgsign=false"];
+      if (kind === "moved to an unrelated commit") git(sub, [...identity, "commit", "-q", "--allow-empty", "-m", "unrelated"]);
+      if (kind === "edited at the merged commit") {
+        git(sub, ["fetch", "-q", path.join(bump.worktree, bump.path), bump.bumped]);
+        git(sub, ["checkout", "-q", "--detach", bump.bumped]);
+        writeFile(sub, "sub.txt", "local edit\n");
+      }
+      const subHead = git(sub, ["rev-parse", "HEAD"]);
+      (await queue.dispose());
+
+      queue = new AuthQueue({ db, hookManager: createNoopHookManager(), now: () => 10 * 60 * 1000 });
+      if (status === "completed") {
+        const recovered = await waitForStatus(queue, request.id, "completed");
+        expect(recovered.exit_code).toBe(0);
+        expect(git(sub, ["rev-parse", "HEAD"])).toBe(bump.bumped);
+        expect(git(repo, ["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"])).toBe("");
+        return;
+      }
+      const blocked = await waitUntil(async () => {
+        const current = (await queue!.getRequest(request.id))!;
+        return current.error?.includes("needs recovery") ? current : undefined;
+      }, "the submodule state to be reported as needing recovery");
+      expect(blocked.status).toBe("executing");
+      expect(blocked.error).toContain(detail);
+      expect(git(sub, ["rev-parse", "HEAD"])).toBe(subHead);
     } finally {
       (await queue?.dispose());
       db.close();

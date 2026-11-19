@@ -345,6 +345,7 @@ cas_update_and_sync_target() {
   local target=$1
   local expected_sha=$2
   local merge_sha=$3
+  local source=$4
 
   if [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$target" ]] || \
      [[ "$(git rev-parse --verify HEAD 2>/dev/null || true)" != "$expected_sha" ]]; then
@@ -365,6 +366,12 @@ cas_update_and_sync_target() {
     err "${RED}Merge not applied: the protected checkout could not be synced to it. Nothing was changed; clear the paths above and retry the request.${RESET}"
     return 1
   fi
+  local submodule_blockers
+  if ! submodule_blockers=$(submodule_sync fetch "$expected_sha" "$merge_sha" "$source"); then
+    err "$submodule_blockers"
+    err "${RED}Merge not applied: the protected checkout's submodules cannot reach the merged commits. No ref or checkout was changed.${RESET}"
+    return 1
+  fi
   verify_atomic_merge_signature "$merge_sha" || return 1
   local prepared_marker applied_marker
   prepared_marker="MANDIBLE_MERGE_PREPARED $(jq -nc --arg merge_sha "$merge_sha" --arg base_sha "$expected_sha" --arg head_sha "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" --arg tree_sha "${MANDIBLE_AUTH_CANDIDATE_TREE_SHA:-}" '{merge_sha:$merge_sha,base_sha:$base_sha,head_sha:$head_sha,tree_sha:$tree_sha}')"
@@ -383,6 +390,11 @@ cas_update_and_sync_target() {
     restore_unsynced_target "$target" "$expected_sha" "$merge_sha" "$sync_error"
     return $?
   fi
+  if ! submodule_blockers=$(submodule_sync update "$expected_sha" "$merge_sha" "$source"); then
+    err "$submodule_blockers"
+    err "${RED}Target ${target} advanced to ${merge_sha}, but the protected checkout's submodules did not follow; recovery is required.${RESET}"
+    return 75
+  fi
   local merge_tree index_tree
   merge_tree=$(git rev-parse --verify "${merge_sha}^{tree}") || return 75
   index_tree=$(git write-tree) || return 75
@@ -400,6 +412,10 @@ cas_update_and_sync_target() {
     return 75
   }
   err "$applied_marker"
+}
+
+submodule_sync() {
+  bash "${MANDIBLE_CLI_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/submodule-sync.sh" "$1" "$(git rev-parse --show-toplevel)" "$2" "$3" "$4"
 }
 
 checkout_sync_check() {
@@ -573,7 +589,7 @@ main() {
   verify_atomic_merge_not_empty "$merge_tree" "$atomic_base" || exit 1
   merge_sha=$(require_signed_merge_commit "$merge_tree" "$atomic_base" "$source_head") || exit 1
   auth_phase "publishing approval-signed merge commit ${merge_sha}; atomically advancing ${target}..."
-  cas_update_and_sync_target "$target" "$atomic_base" "$merge_sha"
+  cas_update_and_sync_target "$target" "$atomic_base" "$merge_sha" "$source"
   local cas_status=$?
   (( cas_status == 0 )) || exit "$cas_status"
   auth_phase "protected worktree synchronized; recording the merge result..."
