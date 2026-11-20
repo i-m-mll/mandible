@@ -1044,9 +1044,9 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
       }
     });
 
-    const embedAsset = transport === "http" && (method === "GET" || method === "HEAD") ? embedAssetFor(pathname) : null;
+    const embedAsset = transport === "http" ? embedAssetFor(method, pathname) : null;
     const boundary = transport === "http"
-      ? validateDaemonWriteBoundary(req, method, isApi, instance, embedAsset)
+      ? validateDaemonWriteBoundary(req, method, isApi, instance, embedAsset ?? previewEmbedAssetAuthorized(req, method, pathname))
       : { ok: true } as const;
     if (!boundary.ok) {
       logger("warn", "request_forbidden", { method, pathname, reason: boundary.reason });
@@ -1505,10 +1505,25 @@ type WriteBoundaryResult = { ok: true } | { ok: false; reason: string };
  */
 type EmbedAsset = { kind: "script"; dest: "script" } | { kind: "bridge"; dest: "iframe" };
 
-function embedAssetFor(pathname: string): EmbedAsset | null {
+function embedAssetFor(method: string, pathname: string): EmbedAsset | null {
+  if (method !== "GET" && method !== "HEAD") return null;
   if (pathname === INTERFACE_NOTES_EMBED.script) return { kind: "script", dest: "script" };
   if (pathname === INTERFACE_NOTES_EMBED.bridge) return { kind: "bridge", dest: "iframe" };
   return null;
+}
+
+/**
+ * A preview's gateway authorizes each request to the preview by asking this
+ * instance's forward-auth route with the original request's headers and its
+ * method and URI in `X-Forwarded-Method` and `X-Forwarded-Uri`, so an embed
+ * document of a preview is exempt here on the same terms as on its own origin.
+ */
+function previewEmbedAssetAuthorized(req: http.IncomingMessage, method: string, pathname: string): EmbedAsset | null {
+  if (method !== "GET" || pathname !== "/api/client-auth/forward-auth") return null;
+  const forwardedUri = firstHeader(req, "x-forwarded-uri");
+  const forwardedMethod = firstHeader(req, "x-forwarded-method")?.toUpperCase();
+  if (!forwardedUri || !forwardedMethod) return null;
+  return embedAssetFor(forwardedMethod, new URL(forwardedUri, "http://forwarded.invalid").pathname);
 }
 
 /** Loopback origins, the only pages that may frame the bridge; the bridge checks each message's origin again. */

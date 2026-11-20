@@ -151,6 +151,18 @@ describe("daemon write boundary", () => {
     expect((await requestHead("/", frame)).status).toBe(403);
     expect((await requestJson("GET", "/api/read", undefined, { ...crossSite, "Sec-Fetch-Dest": "script" })).status).toBe(403);
     expect((await requestHead("/embed/bridge", { ...frame, Host: "example.com:19420" })).status).toBe(403);
+
+    // A preview's gateway asks forward-auth with the original request's headers.
+    const gateway = (uri: string, headers: Record<string, string>) =>
+      requestJson("GET", "/api/client-auth/forward-auth", undefined, { ...headers, Origin: "https://app.mandible.localhost:19420", "X-Forwarded-Method": "GET", "X-Forwarded-Uri": uri });
+    const forwarded = [
+      await gateway("/embed/notes.js?v=1", { ...crossSite, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "script" }),
+      await gateway("/embed/bridge", frame),
+      await gateway("/embed/notes.js", frame),
+      await gateway("/api/read", { ...crossSite, "Sec-Fetch-Dest": "script" }),
+    ];
+    expect(forwarded.map((response) => (response.body as { reason?: string } | undefined)?.reason === "cross_site_fetch"))
+      .toEqual([false, false, true, true]);
   });
 
   it("rejects cross-origin browser WebSocket upgrades", async () => {
