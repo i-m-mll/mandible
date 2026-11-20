@@ -2,13 +2,14 @@ import { Agentation } from 'agentation';
 import { openInterfaceNotesMenuFromSend } from './InterfaceNotesMenu';
 import { recordAdd, recordClear, recordDelete, recordUpdate, useInterfaceNotes } from './interfaceNotesStore';
 
-export function AgentationHost(): JSX.Element | null {
+/** The toolbar for this page's notes; `appName` is the name Agentation shows and copies. */
+export function AgentationHost({ appName }: { appName: string }): JSX.Element | null {
   const { ready, epoch } = useInterfaceNotes();
   if (!ready) return null;
   return (
     <Agentation
       key={epoch}
-      appName="Mandible"
+      appName={appName}
       onAnnotationAdd={recordAdd}
       onAnnotationUpdate={recordUpdate}
       onAnnotationDelete={recordDelete}

@@ -2551,7 +2551,8 @@ const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
   [DOMAIN_EVENTS.WORK_SCAN_COMPLETED, WORK_SCAN_PAYLOAD],
   [DOMAIN_EVENTS.DASHBOARD_BADGES, DASHBOARD_BADGE_COUNTS],
   [DOMAIN_EVENTS.NOTIFICATION_CHANGED, NOTIFICATION_CHANGED_PAYLOAD],
-  [DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED, z.object({ ids: z.array(z.string().min(1)), issue_id: z.string().min(1).nullable() }).strict()],
+  // A source instance of an earlier build sends no `app`; null stands for any app.
+  [DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED, z.object({ ids: z.array(z.string().min(1)), app: z.string().min(1).nullable().optional(), issue_id: z.string().min(1).nullable() }).strict()],
   [DOMAIN_EVENTS.WORK_REPO_SCANNED, WORK_REPO_SCAN_PAYLOAD],
   ...[DOMAIN_EVENTS.SESSION_REGISTERED, DOMAIN_EVENTS.SESSION_UPDATED, DOMAIN_EVENTS.SESSION_ENDED,
     ].map((event): [MandibleEventType, z.ZodType] => [event, scopedChange("id")]),

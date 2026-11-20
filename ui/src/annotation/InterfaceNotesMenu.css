@@ -76,3 +76,9 @@
 }
 
 .interface-notes-menu__title-input:focus { border-color: var(--border-focus); outline: none; }
+
+.interface-notes-menu__error {
+  padding: 4px 8px 6px;
+  color: var(--status-danger-fg);
+  font-size: var(--text-sm);
+}

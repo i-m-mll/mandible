@@ -131,15 +131,16 @@ export function useAnchoredMenu({
     window.addEventListener('resize', position);
     window.addEventListener('scroll', position, true);
 
+    // The composed path sees into shadow roots, where an anchor or the menu itself may live.
     const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target as Node | null;
-      if (!target || (!anchorPoint && anchor.contains(target)) || menu.contains(target)) return;
+      const path = event.composedPath();
+      if (!path.length || (!anchorPoint && path.includes(anchor)) || path.includes(menu)) return;
       dismissRef.current();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       // A nested popover owns Escape before its containing menu does.
-      const focusedMenu = (event.target as Element | null)?.closest?.('.app-anchored-menu');
+      const focusedMenu = (event.composedPath()[0] as Element | undefined)?.closest?.('.app-anchored-menu');
       if (focusedMenu && focusedMenu !== menu && menu.contains(focusedMenu)) return;
       event.preventDefault();
       if (escapeRef.current) {

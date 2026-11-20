@@ -1,25 +1,13 @@
 import { useEffect, useState } from 'preact/hooks';
 import { getStorageKey, loadAnnotations, type Annotation } from 'agentation';
 import {
-  INTERFACE_NOTE_CHANGED_EVENT,
   interfaceNotePagePath,
   type InterfaceNote,
-  type InterfaceNoteInput,
   type InterfaceNotePin,
 } from '../../../src/interface-notes/contract';
-import { servedBackendGeneration } from '../boot-instance';
 import { readPersistedViewState, writePersistedViewState } from '../hooks/usePersistedViewState';
-import { acquireSharedSse } from '../sse-shared';
 import { agentationAttachment, agentationText } from './agentationAdapter';
-import {
-  createInterfaceNote,
-  deleteUnfiledInterfaceNote,
-  interfaceNoteWriteSettled,
-  InterfaceNotesApiError,
-  listIssueInterfaceNotes,
-  listUnfiledInterfaceNotes,
-  updateInterfaceNoteText,
-} from './interfaceNotesApi';
+import { interfaceNoteWriteSettled, InterfaceNotesApiError, type InterfaceNoteDraft, type InterfaceNotesTransport } from './notesTransport';
 
 /**
  * The browser's one authority for interface notes. The daemon holds every note;
@@ -27,7 +15,20 @@ import {
  * action is recorded here synchronously as a pending daemon write, so the cache
  * the store writes always agrees with what the toolbar shows, and the toolbar is
  * remounted only when the daemon's view of the current page differs from it.
+ * One app's notes per page: Mandible's own, or the embedding app's.
  */
+
+export type InterfaceNotesEnvironment = {
+  /** The app whose unfiled notes this page shows. */
+  app: string;
+  transport: InterfaceNotesTransport;
+  /** The build revision recorded on a new note's target, when the page has one. */
+  revision(): string | null;
+  /** Mandible's own interface uploads the toolbar cache it had before the daemon held notes, once per browser. */
+  migrateLegacyCache: boolean;
+  /** Distinguishes this app's browser state from another app served on the same origin earlier. */
+  storageScope: string;
+};
 
 export type InterfaceNotesSnapshot = {
   ready: boolean;
@@ -40,7 +41,7 @@ export type InterfaceNotesSnapshot = {
 export type ReconcileResult = { ok: true } | { ok: false; error: string };
 
 type PendingWrite =
-  | { kind: 'create'; input: InterfaceNoteInput; at: number }
+  | { kind: 'create'; input: InterfaceNoteDraft; at: number }
   | { kind: 'update'; text: string }
   | { kind: 'delete' };
 
@@ -71,7 +72,8 @@ function normalizeWrite(value: unknown): PendingWrite | null {
   const input = value.input;
   if (value.kind === 'create' && typeof value.at === 'number' && isRecord(input)
       && typeof input.id === 'string' && typeof input.text === 'string' && isRecord(input.target) && isPin(input.pin)) {
-    return { kind: 'create', at: value.at, input: input as unknown as InterfaceNoteInput };
+    const { app: _app, ...draft } = input;
+    return { kind: 'create', at: value.at, input: draft as unknown as InterfaceNoteDraft };
   }
   return null;
 }
@@ -85,12 +87,13 @@ function normalizePending(value: unknown): Array<[string, PendingWrite]> {
   });
 }
 
+let environment: InterfaceNotesEnvironment | null = null;
 let daemonUnfiled: InterfaceNote[] = [];
 let daemonLoaded: { id: string; notes: InterfaceNote[] } | null = null;
-let loaded: LoadedIssue | null = readPersistedViewState(LOADED_KEY, normalizeLoaded, null);
-const pending = new Map<string, PendingWrite>(readPersistedViewState(PENDING_KEY, normalizePending, []));
+let loaded: LoadedIssue | null = null;
+const pending = new Map<string, PendingWrite>();
 /** Writes that have been tried and failed; restored writes failed in an earlier page. */
-const failed = new Set<string>(pending.keys());
+const failed = new Set<string>();
 /** Notes this browser has filed. A filed note never becomes unfiled again, so a later toolbar delete of one is skipped. */
 const filed = new Set<string>();
 let view: Map<string, PageView> | null = null;
@@ -120,7 +123,7 @@ function unfiledNotes(): InterfaceNote[] {
   const loadedIds = new Set(daemonLoaded?.notes.map((note) => note.id));
   const created = [...pending].flatMap(([id, write]): InterfaceNote[] => (
     write.kind === 'create' && !held.has(id) && !loadedIds.has(id) && !filed.has(id)
-      ? [{ ...write.input, owner: { kind: 'unfiled' }, created_at: write.at, updated_at: write.at }]
+      ? [{ ...write.input, app: env().app, owner: { kind: 'unfiled' }, created_at: write.at, updated_at: write.at }]
       : []
   ));
   return [...overlay(daemonUnfiled), ...created].sort((a, b) => a.created_at - b.created_at);
@@ -141,12 +144,31 @@ function emit(): void {
   listeners.forEach((listener) => listener());
 }
 
+function env(): InterfaceNotesEnvironment {
+  if (!environment) throw new Error('Interface notes are used before configureInterfaceNotes.');
+  return environment;
+}
+
+const scoped = (key: string): string => `${key}${env().storageScope}`;
+
 function persistPending(): boolean {
-  return writePersistedViewState(PENDING_KEY, [...pending]);
+  return writePersistedViewState(scoped(PENDING_KEY), [...pending]);
 }
 
 function persistLoaded(): void {
-  writePersistedViewState(LOADED_KEY, loaded);
+  writePersistedViewState(scoped(LOADED_KEY), loaded);
+}
+
+/** Sets where this page's notes come from; called once, before `startInterfaceNotes`. */
+export function configureInterfaceNotes(next: InterfaceNotesEnvironment): void {
+  if (environment) throw new Error('Interface notes are configured once per page.');
+  environment = next;
+  loaded = readPersistedViewState(scoped(LOADED_KEY), normalizeLoaded, null);
+  for (const [id, write] of readPersistedViewState(scoped(PENDING_KEY), normalizePending, [])) {
+    pending.set(id, write);
+    failed.add(id);
+  }
+  emit();
 }
 
 function cachedPageKeys(): string[] {
@@ -213,14 +235,14 @@ function writeCache(): boolean {
   return changed;
 }
 
-function noteInput(annotation: Annotation, pageUrl: string, revision: string | null): InterfaceNoteInput {
+function noteInput(annotation: Annotation, pageUrl: string, revision: string | null): InterfaceNoteDraft {
   const { target } = agentationAttachment(annotation, 1, pageUrl, { width: window.innerWidth, height: window.innerHeight });
   return { id: annotation.id, text: agentationText(annotation), target: revision ? { ...target, revision } : target, pin: annotation };
 }
 
 /** The notes in this browser's toolbar cache before the daemon held notes are uploaded once. */
 function migrateOnce(): void {
-  if (readPersistedViewState(MIGRATED_KEY, (value) => value === true, false)) return;
+  if (!env().migrateLegacyCache || readPersistedViewState(MIGRATED_KEY, (value) => value === true, false)) return;
   for (const [path, annotations] of readCache()) {
     for (const annotation of annotations) {
       if (pending.has(annotation.id)) continue;
@@ -237,13 +259,13 @@ async function send(id: string, write: PendingWrite): Promise<Outcome> {
   try {
     if (write.kind === 'create') {
       // The daemon's record replaces the pending create at once, so the note is not missing until the next reconciliation.
-      const note = await createInterfaceNote(write.input);
+      const note = await env().transport.create(write.input);
       daemonUnfiled = [...daemonUnfiled.filter((held) => held.id !== id), note];
     }
     else if (write.kind === 'update') {
-      const note = await updateInterfaceNoteText(id, write.text);
+      const note = await env().transport.updateText(id, write.text);
       if (note.owner.kind !== 'unfiled' && !isLoadedNote(id)) return 'owner_changed';
-    } else await deleteUnfiledInterfaceNote(id);
+    } else await env().transport.deleteUnfiled(id);
     return 'done';
   } catch (error) {
     if (interfaceNoteWriteSettled(error)) {
@@ -297,12 +319,14 @@ async function runReconcile(): Promise<ReconcileResult> {
     migrateOnce();
     await flushPending();
     const issue = loaded?.id ?? null;
+    const { app, transport } = env();
     const [unfiled, issueNotes] = await Promise.all([
-      listUnfiledInterfaceNotes(),
-      issue ? listIssueInterfaceNotes(issue) : Promise.resolve(null),
+      transport.listUnfiled(),
+      issue ? transport.listIssueNotes(issue) : Promise.resolve(null),
     ]);
     daemonUnfiled = unfiled.filter((note) => !filed.has(note.id));
-    daemonLoaded = issue && issueNotes && loaded?.id === issue ? { id: issue, notes: issueNotes } : null;
+    // An issue may carry notes of several apps; only this app's belong on its pages.
+    daemonLoaded = issue && issueNotes && loaded?.id === issue ? { id: issue, notes: issueNotes.filter((note) => note.app === app) } : null;
     if (writeCache()) epoch += 1;
   } catch (error) {
     // The caches and pending writes are left as they were; the next reconciliation retries.
@@ -361,7 +385,7 @@ export function recordAdd(annotation: Annotation): void {
   const path = window.location.pathname;
   const pages = currentView();
   pages.set(path, new Map(pages.get(path)).set(annotation.id, annotation.comment));
-  record(annotation.id, { kind: 'create', input: noteInput(annotation, window.location.href, servedBackendGeneration()), at: Date.now() });
+  record(annotation.id, { kind: 'create', input: noteInput(annotation, window.location.href, env().revision()), at: Date.now() });
   emit();
   scheduleFlush();
 }
@@ -424,12 +448,14 @@ export function useInterfaceNotes(): InterfaceNotesSnapshot {
 
 /** Runs the boot reconciliation and keeps the store reconciled with the daemon's events; returns the stop function. */
 export function startInterfaceNotes(): () => void {
-  const events = acquireSharedSse();
-  events.on(INTERFACE_NOTE_CHANGED_EVENT, () => void reconcile());
-  events.onState((state, meta) => {
-    if (state === 'open' && meta.reconnected) void reconcile();
+  const { app, transport } = env();
+  const stop = transport.subscribe({
+    changed: (payload) => {
+      // Another app's notes change nothing this page shows; a null app may stand for any.
+      if (payload.app === app || payload.app == null) void reconcile();
+    },
+    reconnected: () => void reconcile(),
   });
-  events.connect();
   void reconcile();
-  return () => events.close();
+  return stop;
 }

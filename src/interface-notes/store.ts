@@ -7,7 +7,10 @@ import { resolveProjectRef } from "../ledger/project-registry.js";
 import { LedgerStore } from "../ledger/store.js";
 import type { LedgerActorInput } from "../ledger/types.js";
 import {
+  INTERFACE_NOTES_APP_PATTERN,
+  MAX_INTERFACE_NOTES_APP,
   INTERFACE_NOTES_PROJECT_SETTING,
+  MANDIBLE_INTERFACE_NOTES_APP,
   renderInterfaceNotesBody,
   type FileInterfaceNotesResult,
   type InterfaceNote,
@@ -40,17 +43,25 @@ function validated<T>(read: () => T): InterfaceNoteResult<T> {
   }
 }
 
-function validatedInput(input: unknown): InterfaceNoteResult<{ id: string; text: string; target: AnnotationTarget; pin: InterfaceNotePin }> {
+/** An app key, or null when the value is not one. An absent value is Mandible's own interface. */
+export function interfaceNotesApp(value: unknown): string | null {
+  if (value === undefined) return MANDIBLE_INTERFACE_NOTES_APP;
+  return typeof value === "string" && value.length <= MAX_INTERFACE_NOTES_APP && INTERFACE_NOTES_APP_PATTERN.test(value) ? value : null;
+}
+
+function validatedInput(input: unknown): InterfaceNoteResult<{ id: string; app: string; text: string; target: AnnotationTarget; pin: InterfaceNotePin }> {
   if (!isRecord(input)) return fail("invalid_note", "A note must be an object");
   const { id, pin } = input;
   if (typeof id !== "string" || !id || id.length > MAX_NOTE_ID) return fail("invalid_note", "A note id is 1 to 128 characters");
+  const app = interfaceNotesApp(input.app);
+  if (app === null) return fail("invalid_note", "A note's app is a project key, optionally followed by : and a path");
   const fields = validated(() => ({ text: validatedAnnotationText(input.text), target: validatedAnnotationTarget(input.target) }));
   if (!fields.ok) return fields;
   if (!URL.canParse(fields.value.target.url)) return fail("invalid_note", "A note's page URL must be absolute");
   if (!isRecord(pin) || pin.id !== id) return fail("invalid_note", "A note's pin must be an object whose id is the note id");
   const stored = { ...pin, id, comment: fields.value.text } as InterfaceNotePin;
   if (JSON.stringify(stored).length > MAX_PIN_JSON) return fail("invalid_note", "A note's pin is too large");
-  return ok({ id, text: fields.value.text, target: fields.value.target, pin: stored });
+  return ok({ id, app, text: fields.value.text, target: fields.value.target, pin: stored });
 }
 
 /**
@@ -65,9 +76,9 @@ export class InterfaceNoteStore {
     this.ledger = new LedgerStore(db);
   }
 
-  listUnfiled(): InterfaceNote[] {
-    return (this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM ${NOTE_FROM} WHERE n.comment_id IS NULL ORDER BY n.created_at, n.id`)
-      .all() as NoteRow[]).map(noteFromRow);
+  listUnfiled(app: string): InterfaceNote[] {
+    return (this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM ${NOTE_FROM} WHERE n.comment_id IS NULL AND n.app = ? ORDER BY n.created_at, n.id`)
+      .all(app) as NoteRow[]).map(noteFromRow);
   }
 
   get(id: string): InterfaceNote | null {
@@ -82,10 +93,10 @@ export class InterfaceNoteStore {
     return this.db.transaction(() => {
       if (this.get(note.id)) return fail<InterfaceNote>("note_exists");
       this.db.prepare(
-        `INSERT INTO interface_notes (id, comment_id, text, target_json, pin_json, created_at, updated_at)
-         VALUES (?, NULL, ?, ?, ?, ?, ?)`,
-      ).run(note.id, note.text, JSON.stringify(note.target), JSON.stringify(note.pin), now, now);
-      this.changed([note.id], null);
+        `INSERT INTO interface_notes (id, app, comment_id, text, target_json, pin_json, created_at, updated_at)
+         VALUES (?, ?, NULL, ?, ?, ?, ?, ?)`,
+      ).run(note.id, note.app, note.text, JSON.stringify(note.target), JSON.stringify(note.pin), now, now);
+      this.changed([note.id], note.app, null);
       return ok(this.get(note.id)!);
     })();
   }
@@ -100,7 +111,7 @@ export class InterfaceNoteStore {
       this.db.prepare("UPDATE interface_notes SET text = ?, pin_json = ?, updated_at = ? WHERE id = ?")
         .run(parsed.value, JSON.stringify({ ...note.pin, comment: parsed.value }), Date.now(), id);
       if (note.owner.kind === "comment") this.regenerate(note.owner.comment_id, actor);
-      this.changed([id], note.owner.kind === "comment" ? note.owner.issue_id : null);
+      this.changed([id], note.app, note.owner.kind === "comment" ? note.owner.issue_id : null);
       return ok(this.get(id)!);
     })();
   }
@@ -111,7 +122,7 @@ export class InterfaceNoteStore {
       if (!note) return fail<void>("note_not_found");
       if (note.owner.kind !== "unfiled") return fail<void>("note_filed");
       this.db.prepare("DELETE FROM interface_notes WHERE id = ?").run(id);
-      this.changed([id], null);
+      this.changed([id], note.app, null);
       return ok(undefined);
     })();
   }
@@ -124,7 +135,7 @@ export class InterfaceNoteStore {
       this.db.prepare("DELETE FROM interface_notes WHERE id = ?").run(id);
       if (commentCarriesInterfaceNotes(this.db, commentId)) this.regenerate(commentId, actor);
       else this.ledger.softDeleteComment(commentId, { ...actor, source: "mandible" });
-      this.changed([id], note.owner.issue_id);
+      this.changed([id], note.app, note.owner.issue_id);
       return ok(undefined);
     })();
   }
@@ -161,7 +172,9 @@ export class InterfaceNoteStore {
       const move = this.db.prepare("UPDATE interface_notes SET comment_id = ?, updated_at = ? WHERE id = ? AND comment_id IS NULL");
       for (const note of notes) move.run(comment.id, now, note.id);
       const filed = notes.map((note) => note.id);
-      this.changed(filed, issueId);
+      for (const app of new Set(notes.map((note) => note.app))) {
+        this.changed(notes.filter((note) => note.app === app).map((note) => note.id), app, issueId);
+      }
       const issue = this.ledger.getIssue(issueId);
       return ok({
         issue_id: issue.id,
@@ -185,12 +198,15 @@ export class InterfaceNoteStore {
     if (isRecord(value) && isRecord(value.new_issue) && typeof value.new_issue.title === "string") {
       const title = value.new_issue.title.trim();
       if (!title) return fail("invalid_note", "A new issue needs a title");
+      const given = value.new_issue.project;
+      if (given !== undefined && (typeof given !== "string" || !given.trim())) return fail("invalid_note", "A new issue's project is a project ref");
       const setting = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(INTERFACE_NOTES_PROJECT_SETTING) as { value: string } | undefined;
-      const project = setting?.value.trim() ? resolveProjectRef(this.db, setting.value.trim()) : null;
-      if (!project?.ok) return fail("receiving_project_unset");
+      const ref = given?.trim() ?? setting?.value.trim();
+      const project = ref ? resolveProjectRef(this.db, ref) : null;
+      if (!project?.ok) return fail("receiving_project_unset", given === undefined ? undefined : `${given} names no project`);
       return ok({ kind: "new_issue", project_id: project.project.id, title });
     }
-    return fail("invalid_note", "destination must be { issue } or { new_issue: { title } }");
+    return fail("invalid_note", "destination must be { issue } or { new_issue: { title, project? } }");
   }
 
   private regenerate(commentId: string, actor: InterfaceNoteWriteActor): void {
@@ -200,7 +216,7 @@ export class InterfaceNoteStore {
     this.ledger.updateComment(commentId, { body: renderInterfaceNotesBody(notes) }, { ...actor, source: "mandible" });
   }
 
-  private changed(ids: string[], issueId: string | null): void {
-    this.db.afterCommit(() => this.onChange({ ids, issue_id: issueId }));
+  private changed(ids: string[], app: string, issueId: string | null): void {
+    this.db.afterCommit(() => this.onChange({ ids, app, issue_id: issueId }));
   }
 }

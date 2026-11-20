@@ -99,7 +99,7 @@ const copyNotes = () => copy.prepare("SELECT id FROM interface_notes").all();
 
 it("writes every note route to the source instance as its operator and nothing to the copy", async () => {
   await until(() => events.length === 1);
-  expect(events).toEqual([{ ids: [], issue_id: null }]);
+  expect(events).toEqual([{ ids: [], app: null, issue_id: null }]);
 
   expect((await call(preview, "POST", "/api/interface-notes", input("a", "Tighten the gap"))).status).toBe(201);
   expect((await call(preview, "POST", "/api/interface-notes", input("b", "Wrong colour"))).status).toBe(201);

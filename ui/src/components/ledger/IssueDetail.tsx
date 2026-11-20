@@ -12,7 +12,7 @@ import {
   versionDetailHref,
 } from '../../resource-refs';
 import { navigateTo, viewHref } from '../../routing';
-import { interfaceNoteAttachment, interfaceNotePagePath, type InterfaceNote } from '../../../../src/interface-notes/contract';
+import { interfaceNoteAttachment, interfaceNotePagePath, MANDIBLE_INTERFACE_NOTES_APP, type InterfaceNote } from '../../../../src/interface-notes/contract';
 import { setLoadedIssue, useInterfaceNotes } from '../../annotation/interfaceNotesStore';
 import { revealToolbarPins } from '../../annotation/toolbarView';
 import { AttachmentPill, AttachmentPillRow, AttachmentPreviewModal } from '../shared/AttachmentPill';
@@ -217,6 +217,8 @@ export function LedgerIssueDetail({
   const projectRef = issueProjectRef(detail);
   const issueRef = `${projectRef}/${detail.display_id}`;
   const issueNotes = detail.comments.flatMap((comment) => comment.notes);
+  // Pins are shown only on Mandible's own pages; notes made on another app are previewed and removed here.
+  const pinnableNotes = issueNotes.filter((note) => note.app === MANDIBLE_INTERFACE_NOTES_APP);
   const pinsLoaded = loadedIssue?.id === issueRef;
   const hasIssueMetadata = Boolean(
     detail.source !== 'mandible' ||
@@ -356,7 +358,7 @@ export function LedgerIssueDetail({
         onClose={() => setNotePreview(null)}
         excludeAboveRef={headerRef}
         scrollOwnerSelector={ISSUE_DETAIL_SCROLL_OWNER_SELECTORS}
-        actions={notePreview ? (
+        actions={notePreview?.note.app === MANDIBLE_INTERFACE_NOTES_APP ? (
           <button
             type="button"
             className="detail-pane-modal__header-action"
@@ -529,7 +531,7 @@ export function LedgerIssueDetail({
               onShowWorkNotes={hasIssueWorkNotes ? () => setWorkNotesOpen(true) : undefined}
               onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
               onShowChildren={umbrellaChildren.length > 0 ? onShowChildren : undefined}
-              onShowPins={issueNotes.length > 0 && !pinsLoaded ? () => void showPins(issueNotes[0]!) : undefined}
+              onShowPins={pinnableNotes.length > 0 && !pinsLoaded ? () => void showPins(pinnableNotes[0]!) : undefined}
               onHidePins={pinsLoaded ? () => void hidePins() : undefined}
             />
           ) : undefined}

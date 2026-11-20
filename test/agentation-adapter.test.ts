@@ -8,7 +8,8 @@ const note = (id: string): Annotation => ({
 });
 const viewport = { width: 800, height: 600 };
 const staged = async (annotations: Annotation[], pageUrl: string) => {
-  const { agentationAttachment, stageAnnotationAttachments } = await import('../ui/src/annotation/agentationAdapter');
+  const { agentationAttachment } = await import('../ui/src/annotation/agentationAdapter');
+  const { stageAnnotationAttachments } = await import('../ui/src/annotation/chatDestination');
   return stageAnnotationAttachments(annotations.map((annotation, index) => agentationAttachment(annotation, index + 1, pageUrl, viewport)));
 };
 describe('Agentation to selected Chat draft', () => {

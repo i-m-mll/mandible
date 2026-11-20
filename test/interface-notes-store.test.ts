@@ -54,7 +54,7 @@ function annotation(id: string, comment: string, extra: Partial<Annotation> = {}
 
 function daemonNote(id: string, text: string, path: string, owner: InterfaceNote['owner'], createdAt = Date.now()): InterfaceNote {
   return {
-    id, text, owner, created_at: createdAt, updated_at: createdAt,
+    id, app: 'mandible', text, owner, created_at: createdAt, updated_at: createdAt,
     target: { url: `${origin}${path}`, rect: { x: 0, y: 0, width: 1, height: 1 }, viewport: { width: 800, height: 600 } },
     pin: { ...annotation(id, text, { url: `${origin}${path}` }), timestamp: createdAt },
   };
@@ -63,6 +63,7 @@ function daemonNote(id: string, text: string, path: string, owner: InterfaceNote
 const filedOn = (issue: string): InterfaceNote['owner'] => ({ kind: 'comment', issue_id: issue, comment_id: `${issue}-c1` });
 
 async function load() {
+  await import('../ui/src/annotation/mandibleNotes');
   const store = await import('../ui/src/annotation/interfaceNotesStore');
   const agentation = await import('agentation');
   /** What the toolbar reads when it mounts on, or navigates to, a page. */

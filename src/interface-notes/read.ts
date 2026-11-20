@@ -4,6 +4,7 @@ import type { InterfaceNote, InterfaceNotePin } from "./contract.js";
 
 export type NoteRow = {
   id: string;
+  app: string;
   comment_id: string | null;
   issue_id: string | null;
   text: string;
@@ -13,12 +14,13 @@ export type NoteRow = {
   updated_at: number;
 };
 
-export const NOTE_COLUMNS = "n.id, n.comment_id, c.issue_id, n.text, n.target_json, n.pin_json, n.created_at, n.updated_at";
+export const NOTE_COLUMNS = "n.id, n.app, n.comment_id, c.issue_id, n.text, n.target_json, n.pin_json, n.created_at, n.updated_at";
 export const NOTE_FROM = "interface_notes n LEFT JOIN ledger_comments c ON c.id = n.comment_id";
 
 export function noteFromRow(row: NoteRow): InterfaceNote {
   return {
     id: row.id,
+    app: row.app,
     text: row.text,
     target: JSON.parse(row.target_json) as AnnotationTarget,
     pin: JSON.parse(row.pin_json) as InterfaceNotePin,

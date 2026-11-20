@@ -30,7 +30,7 @@ const author: LedgerIssueDetailActor = { id: null, type: 'mandible_user', displa
 
 function note(id: string, text: string, path: string): InterfaceNote {
   return {
-    id, text, created_at: 1, updated_at: 1,
+    id, app: 'mandible', text, created_at: 1, updated_at: 1,
     owner: { kind: 'comment', issue_id: 'issue-1', comment_id: 'comment-1' },
     target: { url: `https://mandible.test${path}`, rect: { x: 0, y: 0, width: 1, height: 1 }, viewport: { width: 800, height: 600 } },
     pin: { id, comment: text, x: 10, y: 20 },

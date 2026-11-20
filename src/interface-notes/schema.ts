@@ -1,4 +1,4 @@
-/** Interface notes: `comment_id NULL` is unfiled; a filed note belongs to one comment. */
+/** Interface notes: `comment_id NULL` is unfiled; a filed note belongs to one comment; `app` is the interface it was made on. */
 export const INTERFACE_NOTES_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE interface_notes (
     id TEXT PRIMARY KEY,
@@ -8,6 +8,6 @@ export const INTERFACE_NOTES_SCHEMA_SQL: readonly string[] = [
     pin_json TEXT NOT NULL CHECK(json_valid(pin_json) AND json_type(pin_json) = 'object' AND json_extract(pin_json, '$.id') = id),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
-  )`,
+    , app TEXT NOT NULL DEFAULT 'mandible')`,
   "CREATE INDEX idx_interface_notes_comment ON interface_notes(comment_id)",
 ];

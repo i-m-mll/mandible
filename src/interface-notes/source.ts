@@ -82,7 +82,7 @@ export function relaySourceNoteEvents(
         response.on("end", reconnect);
         return;
       }
-      emit({ ids: [], issue_id: null });
+      emit({ ids: [], app: null, issue_id: null });
       let buffer = "";
       response.setEncoding("utf8");
       response.on("data", (chunk: string) => {
@@ -124,5 +124,7 @@ function relayFrame(data: string, emit: (payload: InterfaceNoteChangedPayload) =
     log("interface_notes_relay_malformed", { error: parsed.error });
     return;
   }
-  if (parsed.value.type === DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED) emit(parsed.value.data as InterfaceNoteChangedPayload);
+  if (parsed.value.type !== DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED) return;
+  const payload = parsed.value.data as Omit<InterfaceNoteChangedPayload, "app"> & { app?: string | null };
+  emit({ ...payload, app: payload.app ?? null });
 }

@@ -87,13 +87,14 @@ function toolbarSendButton(): void {
 }
 
 async function mount() {
+  const { mandibleNotesMenuPorts } = await import('../ui/src/annotation/mandibleNotes');
   const store = await import('../ui/src/annotation/interfaceNotesStore');
   const menu = await import('../ui/src/annotation/InterfaceNotesMenu');
   const { AgentationToggleButton } = await import('../ui/src/annotation/AgentationToggleButton');
   const drafts = await import('../ui/src/chat/attachmentDrafts');
   render(<>
     <AgentationToggleButton visible expandedRail={false} onToggle={() => undefined} />
-    <menu.InterfaceNotesMenu receivingProject="notes" />
+    <menu.InterfaceNotesMenu ports={mandibleNotesMenuPorts('notes')} />
   </>);
   toolbarSendButton();
   const items = () => screen.queryAllByRole('menuitem').map((item) => item.textContent);
