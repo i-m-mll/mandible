@@ -23,6 +23,18 @@ import {
 export type InterfaceNoteFailure = { code: InterfaceNoteErrorCode; message?: string };
 export type InterfaceNoteResult<T> = { ok: true; value: T } | { ok: false; error: InterfaceNoteFailure };
 export type InterfaceNoteWriteActor = LedgerActorInput;
+/**
+ * A write made through the embed bridge: the embedding page's origin and the apps it
+ * holds a grant for when the write arrives. Such a write may touch only notes of those
+ * apps, and a note it creates must record that origin. Mandible's own interface writes
+ * with no scope.
+ */
+export type EmbedWriteScope = { origin: string; apps: ReadonlySet<string> };
+
+function outOfScope(scope: EmbedWriteScope | null, app: string): boolean {
+  return scope !== null && !scope.apps.has(app);
+}
+
 export type InterfaceNoteChangeListener = (payload: InterfaceNoteChangedPayload) => void;
 
 const MAX_NOTE_ID = 128;
@@ -95,10 +107,11 @@ export class InterfaceNoteStore {
     return row ? noteFromRow(row) : null;
   }
 
-  create(input: unknown, now: number = Date.now()): InterfaceNoteResult<InterfaceNote> {
+  create(input: unknown, scope: EmbedWriteScope | null, now: number = Date.now()): InterfaceNoteResult<InterfaceNote> {
     const parsed = validatedInput(input);
     if (!parsed.ok) return parsed;
     const note = parsed.value;
+    if (outOfScope(scope, note.app) || (scope !== null && note.origin !== scope.origin)) return fail("origin_not_granted");
     return this.db.transaction(() => {
       if (this.get(note.id)) return fail<InterfaceNote>("note_exists");
       this.db.prepare(
@@ -110,12 +123,13 @@ export class InterfaceNoteStore {
     })();
   }
 
-  updateText(id: string, text: unknown, actor: InterfaceNoteWriteActor): InterfaceNoteResult<InterfaceNote> {
+  updateText(id: string, text: unknown, actor: InterfaceNoteWriteActor, scope: EmbedWriteScope | null): InterfaceNoteResult<InterfaceNote> {
     const parsed = validated(() => validatedAnnotationText(text));
     if (!parsed.ok) return parsed;
     return this.db.transaction(() => {
       const note = this.get(id);
       if (!note) return fail<InterfaceNote>("note_not_found");
+      if (outOfScope(scope, note.app)) return fail<InterfaceNote>("origin_not_granted");
       if (note.text === parsed.value) return ok(note);
       this.db.prepare("UPDATE interface_notes SET text = ?, pin_json = ?, updated_at = ? WHERE id = ?")
         .run(parsed.value, JSON.stringify({ ...note.pin, comment: parsed.value }), Date.now(), id);
@@ -125,10 +139,11 @@ export class InterfaceNoteStore {
     })();
   }
 
-  deleteUnfiled(id: string): InterfaceNoteResult<void> {
+  deleteUnfiled(id: string, scope: EmbedWriteScope | null): InterfaceNoteResult<void> {
     return this.db.transaction(() => {
       const note = this.get(id);
       if (!note) return fail<void>("note_not_found");
+      if (outOfScope(scope, note.app)) return fail<void>("origin_not_granted");
       if (note.owner.kind !== "unfiled") return fail<void>("note_filed");
       this.db.prepare("DELETE FROM interface_notes WHERE id = ?").run(id);
       this.changed([id], note.app, null);
@@ -136,10 +151,11 @@ export class InterfaceNoteStore {
     })();
   }
 
-  removeFromComment(id: string, commentId: string, actor: InterfaceNoteWriteActor): InterfaceNoteResult<void> {
+  removeFromComment(id: string, commentId: string, actor: InterfaceNoteWriteActor, scope: EmbedWriteScope | null): InterfaceNoteResult<void> {
     return this.db.transaction(() => {
       const note = this.get(id);
       if (!note) return fail<void>("note_not_found");
+      if (outOfScope(scope, note.app)) return fail<void>("origin_not_granted");
       if (note.owner.kind !== "comment" || note.owner.comment_id !== commentId) return fail<void>("note_owner_mismatch");
       this.db.prepare("DELETE FROM interface_notes WHERE id = ?").run(id);
       if (commentCarriesInterfaceNotes(this.db, commentId)) this.regenerate(commentId, actor);
@@ -150,7 +166,7 @@ export class InterfaceNoteStore {
   }
 
   /** File the listed notes that are still unfiled as one new comment; notes filed or deleted meanwhile are skipped. */
-  file(request: unknown, actor: InterfaceNoteWriteActor): InterfaceNoteResult<FileInterfaceNotesResult> {
+  file(request: unknown, actor: InterfaceNoteWriteActor, scope: EmbedWriteScope | null): InterfaceNoteResult<FileInterfaceNotesResult> {
     if (!isRecord(request) || !Array.isArray(request.note_ids) || request.note_ids.length === 0
         || !request.note_ids.every((id): id is string => typeof id === "string")) {
       return fail("invalid_note", "note_ids must be a non-empty list of note ids");
@@ -166,6 +182,7 @@ export class InterfaceNoteStore {
          ORDER BY n.created_at, n.id`,
       ).all(...noteIds) as NoteRow[]).map(noteFromRow);
       if (notes.length === 0) return fail<FileInterfaceNotesResult>("nothing_to_file");
+      if (notes.some((note) => outOfScope(scope, note.app))) return fail<FileInterfaceNotesResult>("origin_not_granted");
       const issueId = destination.value.kind === "issue"
         ? destination.value.issue_id
         : this.ledger.createIssue({

@@ -1,12 +1,12 @@
 import { attributionForRequest, requireIdentity, requireOperator } from "../client-auth/authz.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 import type { Db } from "../db.js";
-import { INTERFACE_NOTE_ERRORS } from "../interface-notes/contract.js";
+import { INTERFACE_NOTE_ERRORS, INTERFACE_NOTES_EMBED } from "../interface-notes/contract.js";
 import { EmbedGrants } from "../interface-notes/embed-grants.js";
 import type { EmbedProcessProbe } from "../interface-notes/embed-identity.js";
 import { listIssueInterfaceNotes } from "../interface-notes/read.js";
 import { forwardToSource, type InterfaceNotesHome } from "../interface-notes/source.js";
-import { InterfaceNoteStore, interfaceNotesApp, type InterfaceNoteResult, type InterfaceNoteWriteActor } from "../interface-notes/store.js";
+import { InterfaceNoteStore, interfaceNotesApp, type EmbedWriteScope, type InterfaceNoteResult, type InterfaceNoteWriteActor } from "../interface-notes/store.js";
 import { resolveOperationalIssueRef } from "../ledger/operational-links.js";
 import { interfaceNoteEffects } from "../security/operation-policy.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../server.js";
@@ -65,6 +65,11 @@ export function registerInterfaceNoteRoutes(server: RouteRegistrar, db: Db, home
   const grants = new EmbedGrants(db, probe);
   const source = home.kind === "source" ? home.socketPath : null;
   const route = (access: "read" | "write", local: RouteHandler): RouteHandler => source === null ? local : forwarded(db, source, access);
+  /** The bridge's writes name the embedding page's origin; the grant is read again for each one. */
+  const embedScope = (req: RequestLike): EmbedWriteScope | null => {
+    const origin = queryString(req, INTERFACE_NOTES_EMBED.originParam);
+    return origin === undefined ? null : { origin, apps: grants.grantedApps(origin) };
+  };
 
   server.get("/api/interface-notes", route("read", (req, res) => {
     requireIdentity(req);
@@ -111,20 +116,21 @@ export function registerInterfaceNoteRoutes(server: RouteRegistrar, db: Db, home
 
   server.post("/api/interface-notes", route("write", (req, res) => {
     requireOperator(db, req);
-    send(res, store.create(req.body), 201);
+    send(res, store.create(req.body, embedScope(req)), 201);
   }), { operation: { id: "post:/api/interface-notes", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
 
   server.post("/api/interface-notes/file", route("write", (req, res) => {
-    send(res, store.file(req.body, operatorActor(db, req)), 201);
+    send(res, store.file(req.body, operatorActor(db, req), embedScope(req)), 201);
   }), { operation: { id: "post:/api/interface-notes/file", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
 
   server.patch("/api/interface-notes/:id", route("write", (req, res) => {
-    send(res, store.updateText(req.params.id, bodyRecord(req).text, operatorActor(db, req)), 200);
+    send(res, store.updateText(req.params.id, bodyRecord(req).text, operatorActor(db, req), embedScope(req)), 200);
   }), { operation: { id: "patch:/api/interface-notes/:id", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
 
   server.delete("/api/interface-notes/:id", route("write", (req, res) => {
     const actor = operatorActor(db, req);
     const commentId = queryString(req, "comment");
-    send(res, commentId === undefined ? store.deleteUnfiled(req.params.id) : store.removeFromComment(req.params.id, commentId, actor), 204);
+    const scope = embedScope(req);
+    send(res, commentId === undefined ? store.deleteUnfiled(req.params.id, scope) : store.removeFromComment(req.params.id, commentId, actor, scope), 204);
   }), { operation: { id: "delete:/api/interface-notes/:id", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
 }

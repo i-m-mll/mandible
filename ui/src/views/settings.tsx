@@ -512,6 +512,12 @@ function InterfaceNotesProjectRow(props: {
   );
 }
 
+/** The project and the part of its checkout a page is served from: `feedbax, web/`, or `feedbax, checkout root`. */
+function embedGrantApp(grant: EmbedGrant): string {
+  const within = grant.app.slice(grant.app.indexOf(':') + 1);
+  return `${grant.project.name}, ${within === '.' ? 'checkout root' : `${within}/`}`;
+}
+
 /**
  * Pages of other apps that asked to show the interface-notes toolbar, by origin and
  * the directory their server ran in. The embed gets an identity only for a request
@@ -529,6 +535,24 @@ function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
     reload();
     return subscribeRouteChanges(() => setAsked(currentRoute().params.embed_origin ?? null));
   }, [reload]);
+  // The link from an embedding page lands here while the sections above are still loading and growing, so the asked
+  // row keeps itself in view as they settle, until the user scrolls or a few seconds pass.
+  const revealed = useRef(false);
+  const revealAsked = useCallback((row: HTMLLIElement | null) => {
+    if (!row || revealed.current) return;
+    revealed.current = true;
+    const content = row.closest('.settings-view__content') ?? document.body;
+    const center = () => row.scrollIntoView({ block: 'center' });
+    const observer = new ResizeObserver(center);
+    const stop = () => {
+      observer.disconnect();
+      for (const type of ['wheel', 'touchstart', 'keydown'] as const) window.removeEventListener(type, stop, true);
+    };
+    observer.observe(content);
+    for (const type of ['wheel', 'touchstart', 'keydown'] as const) window.addEventListener(type, stop, true);
+    window.setTimeout(stop, 4000);
+    center();
+  }, []);
   const act = (action: (grant: EmbedGrant) => Promise<void>, grant: EmbedGrant) => {
     setError(null);
     action(grant).then(reload, (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
@@ -538,8 +562,8 @@ function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
       <div className="settings-view__text-info">
         <span className="settings-view__text-label">Interface notes on other apps</span>
         <span className="settings-view__text-desc">
-          Development pages that load Mandible&apos;s notes toolbar. A page shows it only once allowed here; allow only
-          servers of projects whose code you trust, since an allowed page files notes in your name.
+          Development pages of other apps that asked to show the notes toolbar. An allowed page files notes in your
+          name, so allow only servers of projects whose code you trust.
         </span>
         {error && <span className="settings-view__warning" role="alert">{error}</span>}
         {grants?.length === 0 && <span className="settings-view__text-desc">No page has asked yet.</span>}
@@ -550,12 +574,16 @@ function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
                 key={`${grant.origin} ${grant.directory}`}
                 className="settings-view__embed-grant"
                 data-asked={grant.origin === asked ? 'true' : undefined}
+                ref={grant.origin === asked ? revealAsked : undefined}
               >
-                <span className="settings-view__embed-grant-origin">{grant.origin}</span>
-                <span className="settings-view__text-desc">
-                  {grant.project.name} ({grant.app}), served from {grant.directory}
-                  {grant.state === 'granted' ? ' · allowed' : ' · waiting'}
+                <span className="settings-view__embed-grant-heading">
+                  <span className="settings-view__embed-grant-origin">{grant.origin}</span>
+                  <span className={`settings-view__embed-grant-state settings-view__embed-grant-state--${grant.state}`}>
+                    {grant.state === 'granted' ? 'Allowed' : 'Not allowed yet'}
+                  </span>
                 </span>
+                <span className="settings-view__text-desc">{embedGrantApp(grant)}</span>
+                <span className="settings-view__embed-grant-directory" title={grant.directory}>{grant.directory}</span>
                 <span className="settings-view__embed-grant-actions">
                   {grant.state === 'pending' && (
                     <button type="button" className="btn btn--active btn--sm" disabled={!props.allowed} onClick={() => act(allowEmbedGrant, grant)}>Allow</button>

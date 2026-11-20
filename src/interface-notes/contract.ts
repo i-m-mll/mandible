@@ -168,6 +168,12 @@ export const INTERFACE_NOTES_EMBED = {
   grants: "/api/interface-notes/embed-grants",
   /** The Settings view, opened top-level with `embed_origin=<origin>` to show that origin's request. */
   grantView: "/settings",
+  /**
+   * The query parameter naming the embedding page's origin on every note write the bridge makes.
+   * The daemon then accepts the write only while that origin holds a grant for the note's app, so
+   * a revocation stops an open page at once; 403 `origin_not_granted` otherwise.
+   */
+  originParam: "embed_origin",
 } as const;
 
 /** The app a loopback dev origin serves: the registered project whose checkout the listening process runs in. */
@@ -198,7 +204,8 @@ export function interfaceNoteAttachment(note: InterfaceNote, ordinal: number): E
 export function renderInterfaceNotesBody(notes: readonly InterfaceNote[]): string {
   return notes.map((note, index) => {
     const text = annotationAttachmentText(interfaceNoteAttachment(note, index + 1));
-    return note.origin === null ? text : `${text}\n${interfaceNoteProvenance(note)}`;
+    // The provenance line opens the block, so no text the page wrote stands between it and the block's start.
+    return note.origin === null ? text : `${interfaceNoteProvenance(note)}\n${text}`;
   }).join("\n\n");
 }
 

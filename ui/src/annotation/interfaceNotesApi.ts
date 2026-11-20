@@ -1,5 +1,6 @@
 import {
   INTERFACE_NOTE_ROUTES,
+  INTERFACE_NOTES_EMBED,
   type FileInterfaceNotesRequest,
   type InterfaceNote,
 } from '../../../src/interface-notes/contract';
@@ -32,7 +33,8 @@ async function listIssuesWithNotes(filter: string): Promise<IssueRepoSummary[]> 
  * `embed`; filing then uses `interface_notes_project` and lists the issues of the
  * project ref the menu passes. The bridge gives the embedding page's origin, which
  * each new note records, and the project id, which receives new issues and is the
- * only project whose issues are listed.
+ * only project whose issues are listed. Each of the bridge's writes names the
+ * origin, so the daemon checks the page's grant again for every one.
  */
 export function apiTransport(options: {
   app: string;
@@ -40,6 +42,9 @@ export function apiTransport(options: {
   subscribe: InterfaceNotesTransport['subscribe'];
 }): InterfaceNotesTransport {
   const { app, embed } = options;
+  const scoped = (path: string): string => embed
+    ? `${path}${path.includes('?') ? '&' : '?'}${INTERFACE_NOTES_EMBED.originParam}=${encodeURIComponent(embed.origin)}`
+    : path;
   return {
     async listUnfiled() {
       return (await json<{ notes: InterfaceNote[] }>(await browserSessionFetch(INTERFACE_NOTE_ROUTES.unfiled(app)), 'Loading notes')).notes;
@@ -50,19 +55,19 @@ export function apiTransport(options: {
       return result.notes;
     },
     async create(input) {
-      return json<InterfaceNote>(await write('POST', INTERFACE_NOTE_ROUTES.collection, { ...input, app, ...(embed ? { origin: embed.origin } : {}) }), 'Saving the note');
+      return json<InterfaceNote>(await write('POST', scoped(INTERFACE_NOTE_ROUTES.collection), { ...input, app, ...(embed ? { origin: embed.origin } : {}) }), 'Saving the note');
     },
     async updateText(id, text) {
-      return json<InterfaceNote>(await write('PATCH', INTERFACE_NOTE_ROUTES.note(id), { text }), 'Saving the note');
+      return json<InterfaceNote>(await write('PATCH', scoped(INTERFACE_NOTE_ROUTES.note(id)), { text }), 'Saving the note');
     },
     async deleteUnfiled(id) {
-      await json<void>(await write('DELETE', INTERFACE_NOTE_ROUTES.note(id)), 'Deleting the note');
+      await json<void>(await write('DELETE', scoped(INTERFACE_NOTE_ROUTES.note(id))), 'Deleting the note');
     },
     async file(request: FileInterfaceNotesRequest) {
       const destination = 'new_issue' in request.destination && embed
         ? { new_issue: { ...request.destination.new_issue, project: embed.projectId } }
         : request.destination;
-      return json(await write('POST', INTERFACE_NOTE_ROUTES.file, { ...request, destination }), 'Filing the notes');
+      return json(await write('POST', scoped(INTERFACE_NOTE_ROUTES.file), { ...request, destination }), 'Filing the notes');
     },
     listIssuesWithNotes: (projectRef) => listIssuesWithNotes(embed
       ? `project=${encodeURIComponent(embed.projectId)}`

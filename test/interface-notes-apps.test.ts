@@ -11,6 +11,7 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
 import { INTERFACE_NOTES_PROJECT_SETTING, type EmbedGrant, type EmbedIdentity, type FileInterfaceNotesResult, type InterfaceNote } from "../src/interface-notes/contract.js";
+import { EmbedGrants, PENDING_GRANT_TTL_MS, PENDING_GRANTS_PER_PORT } from "../src/interface-notes/embed-grants.js";
 import type { EmbedProcessProbe } from "../src/interface-notes/embed-identity.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -104,7 +105,8 @@ it("records where another app's note was made, and refuses a note whose origin d
     note_ids: ["studio"], destination: { new_issue: { title: "Studio polish", project: "feedbax" } },
   });
   const body = (db.prepare("SELECT body FROM ledger_comments WHERE id = ?").get(filed.body.comment_id) as { body: string }).body;
-  expect(body).toContain(`Made on: ${EMBED_ORIGIN} (feedbax:web), not in Mandible`);
+  // The provenance line opens the note's block, ahead of any text the page wrote.
+  expect(body).toContain(`Made on: ${EMBED_ORIGIN} (feedbax:web), not in Mandible\nAnnotation 1: Note studio`);
 });
 
 it("files an app's notes onto a new issue of the app's project, where the notes listing finds it", async () => {
@@ -180,4 +182,51 @@ it("never names Mandible's own app for a page, even one served from the root of 
   const granted = await call<EmbedIdentity>("POST", "/api/interface-notes/embed-identity", { origin: "http://localhost:5180" });
   expect(granted.body.app).toBe("mandible:.");
   expect(await unfiled(`?app=${encodeURIComponent("mandible:.")}`)).toEqual([]);
+});
+
+it("accepts the bridge's writes only while the page's origin holds a grant for the note's app", async () => {
+  const web = path.join(root, "feedbax", "web");
+  machine.checkouts.set(web, { root: path.join(root, "feedbax"), remote: STUDIO_REMOTE });
+  machine.listeners.set(5173, [{ pid: 11, cwd: web }]);
+  await call("POST", "/api/interface-notes/embed-identity", { origin: EMBED_ORIGIN });
+  await call("PUT", "/api/interface-notes/embed-grants", { origin: EMBED_ORIGIN, directory: web });
+  const scoped = (route: string) => `${route}${route.includes("?") ? "&" : "?"}embed_origin=${encodeURIComponent(EMBED_ORIGIN)}`;
+  const status = async (method: string, route: string, body?: unknown) => (await call(method, scoped(route), body)).status;
+
+  expect(await status("POST", "/api/interface-notes", input("a", "feedbax:web", EMBED_ORIGIN))).toBe(201);
+  expect(await status("POST", "/api/interface-notes", input("b", "feedbax:web", EMBED_ORIGIN))).toBe(201);
+  // Another app's notes, or a note claiming another origin, are outside the page's grant.
+  expect(await status("POST", "/api/interface-notes", input("other", "feedbax:desktop", EMBED_ORIGIN))).toBe(403);
+  expect(await status("POST", "/api/interface-notes", input("port", "feedbax:web", "http://localhost:5199"))).toBe(403);
+  await note("own");
+  expect(await status("PATCH", "/api/interface-notes/own", { text: "Changed" })).toBe(403);
+  expect(await status("PATCH", "/api/interface-notes/a", { text: "Changed" })).toBe(200);
+
+  expect((await call("DELETE", `/api/interface-notes/embed-grants?origin=${encodeURIComponent(EMBED_ORIGIN)}&directory=${encodeURIComponent(web)}`)).status).toBe(204);
+  // A page still open after the revocation can write nothing more.
+  expect(await status("PATCH", "/api/interface-notes/a", { text: "Again" })).toBe(403);
+  expect(await status("DELETE", "/api/interface-notes/b")).toBe(403);
+  expect(await status("POST", "/api/interface-notes/file", { note_ids: ["a"], destination: { new_issue: { title: "T", project: "feedbax" } } })).toBe(403);
+  // Mandible's own interface still manages the notes.
+  expect((await call("DELETE", "/api/interface-notes/b")).status).toBe(204);
+});
+
+it("keeps unanswered requests for a week, and only the latest few per port", async () => {
+  const grants = new EmbedGrants(db, probe);
+  const dirs = ["a", "b", "c", "d"].map((name) => path.join(root, "feedbax", name));
+  for (const dir of dirs) machine.checkouts.set(dir, { root: path.join(root, "feedbax"), remote: STUDIO_REMOTE });
+  machine.listeners.set(5173, [{ pid: 11, cwd: dirs[0] }]);
+  machine.listeners.set(5174, [{ pid: 12, cwd: dirs[3] }]);
+  await grants.access("http://localhost:5174", 0);
+  // One port asks under many names; only its latest few stay.
+  for (const [index, host] of ["localhost", "a.localhost", "b.localhost", "c.localhost", "d.localhost"].entries()) {
+    await grants.access(`http://${host}:5173`, 1000 + index);
+  }
+  const listed = (now: number) => grants.list(now).map((grant) => grant.origin);
+  expect(listed(2000).filter((origin) => origin.endsWith(":5173"))).toEqual(
+    ["http://d.localhost:5173", "http://c.localhost:5173", "http://b.localhost:5173"].slice(0, PENDING_GRANTS_PER_PORT));
+  expect(listed(2000)).toContain("http://localhost:5174");
+  // An allowed request does not expire.
+  grants.allow("http://d.localhost:5173", dirs[0]);
+  expect(listed(PENDING_GRANT_TTL_MS + 2000)).toEqual(["http://d.localhost:5173"]);
 });
