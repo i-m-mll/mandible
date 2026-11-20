@@ -4,12 +4,16 @@ import { InterfaceNotesApiError, type InterfaceNotesTransport } from './notesTra
 
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
-export type EmbedConnection = { identity: EmbedIdentity; transport: InterfaceNotesTransport };
+export type EmbedConnection =
+  | { kind: 'granted'; identity: EmbedIdentity; transport: InterfaceNotesTransport }
+  /** The operator has not allowed this origin yet. */
+  | { kind: 'pending' };
 
 /**
  * Opens the bridge on the daemon's origin and asks it which app this page is.
  * Resolves null when the origin serves no registered project or the bridge does not
- * answer; the frame is then removed and nothing is mounted.
+ * answer, and pending when the operator has not allowed the origin; in both cases
+ * the frame is removed.
  */
 export function connectToBridge(daemonOrigin: string): Promise<EmbedConnection | null> {
   const frame = document.createElement('iframe');
@@ -49,7 +53,7 @@ export function connectToBridge(daemonOrigin: string): Promise<EmbedConnection |
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (!connection) {
+      if (connection?.kind !== 'granted') {
         window.removeEventListener('message', onMessage);
         frame.remove();
       }
@@ -58,7 +62,9 @@ export function connectToBridge(daemonOrigin: string): Promise<EmbedConnection |
     const onMessage = (event: MessageEvent) => {
       if (event.source !== frame.contentWindow || event.origin !== daemonOrigin || !isBridgeMessage(event.data)) return;
       const message = event.data as BridgeToEmbed;
-      if (message.type === 'identity') finish(message.identity ? { identity: message.identity, transport } : null);
+      if (message.type === 'identity') {
+        finish(message.identity ? { kind: 'granted', identity: message.identity, transport } : message.pending ? { kind: 'pending' } : null);
+      }
       else if (message.type === 'result') {
         const waiting = pending.get(message.id);
         pending.delete(message.id);

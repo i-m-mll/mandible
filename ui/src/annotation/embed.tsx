@@ -1,4 +1,5 @@
 import { render } from 'preact';
+import { INTERFACE_NOTES_EMBED } from '../../../src/interface-notes/contract';
 import embedStyles from 'mandible-embed-styles';
 import { AgentationHost } from './AgentationHost';
 import { connectToBridge } from './embedClient';
@@ -20,17 +21,48 @@ function Notice({ children }: { children: string }): JSX.Element {
 
 async function mount(): Promise<void> {
   if (window.top !== window || document.querySelector(HOST_ELEMENT)) return;
-  const connection = await connectToBridge(new URL(import.meta.url).origin);
+  const daemonOrigin = new URL(import.meta.url).origin;
+  const connection = await connectToBridge(daemonOrigin);
   if (!connection) return;
+  if (connection.kind === 'pending') {
+    showGrantLink(daemonOrigin);
+    return;
+  }
   const { identity, transport } = connection;
   configureInterfaceNotes({
     app: identity.app,
+    origin: window.location.origin,
     transport,
     revision: () => null,
     migrateLegacyCache: false,
     storageScope: `:${identity.app}`,
   });
 
+  const root = createHost();
+  const ports: InterfaceNotesMenuPorts = { transport, receivingProject: identity.project.key, Notice };
+  render(<><AgentationHost appName={identity.project.name} /><InterfaceNotesMenu ports={ports} /></>, root);
+  startInterfaceNotes();
+}
+
+/**
+ * On an origin the operator has not allowed, one small link to Mandible's grant view,
+ * opened as its own top-level page; nothing is granted from this page.
+ */
+function showGrantLink(daemonOrigin: string): void {
+  const root = createHost();
+  const url = new URL(INTERFACE_NOTES_EMBED.grantView, daemonOrigin);
+  url.searchParams.set('section', 'settings-issues');
+  url.searchParams.set('embed_origin', window.location.origin);
+  render(
+    <a className="interface-notes-grant-link" href={url.href} target="_blank" rel="noopener noreferrer"
+      title="This page asked to show Mandible's interface-notes toolbar. Allow it in Mandible's Settings.">
+      Allow Mandible notes
+    </a>,
+    root,
+  );
+}
+
+function createHost(): ShadowRoot {
   const host = document.createElement(HOST_ELEMENT);
   // Agentation names React components only on a page where it finds a React fiber on
   // the body, the root or one of the body's children (`isReactPage`). Rendered by
@@ -46,10 +78,7 @@ async function mount(): Promise<void> {
   style.textContent = embedStyles;
   root.appendChild(style);
   document.body.appendChild(host);
-
-  const ports: InterfaceNotesMenuPorts = { transport, receivingProject: identity.project.key, Notice };
-  render(<><AgentationHost appName={identity.project.name} /><InterfaceNotesMenu ports={ports} /></>, root);
-  startInterfaceNotes();
+  return root;
 }
 
 if (document.body) void mount();

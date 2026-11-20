@@ -5,7 +5,8 @@ import type { InterfaceNotesTransport } from './notesTransport';
  * Messages between the interface-notes embed in another app's page and the bridge,
  * a hidden iframe on Mandible's origin. The embed says hello once; the bridge takes
  * the sender's origin from that message, answers with the daemon's identity for it
- * (null: the origin serves no registered project) and from then on answers only
+ * (null: the origin serves no registered project, or the operator has not allowed it)
+ * and from then on answers only
  * that window and origin.
  */
 
@@ -22,7 +23,8 @@ export type EmbedToBridge =
   | { kind: typeof BRIDGE_MESSAGE; type: 'call'; id: number; operation: BridgeOperation; args: unknown[] };
 
 export type BridgeToEmbed =
-  | { kind: typeof BRIDGE_MESSAGE; type: 'identity'; identity: EmbedIdentity | null }
+  /** `identity` null with `pending`: the operator has not yet allowed this origin; the embed offers the grant view. */
+  | { kind: typeof BRIDGE_MESSAGE; type: 'identity'; identity: EmbedIdentity | null; pending: boolean }
   | { kind: typeof BRIDGE_MESSAGE; type: 'result'; id: number; ok: true; value: unknown }
   | { kind: typeof BRIDGE_MESSAGE; type: 'result'; id: number; ok: false; error: BridgeFailure }
   | { kind: typeof BRIDGE_MESSAGE; type: 'changed'; payload: InterfaceNoteChangedPayload }

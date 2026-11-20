@@ -26,6 +26,7 @@ const transport = apiTransport({ app: MANDIBLE_INTERFACE_NOTES_APP, subscribe })
 
 configureInterfaceNotes({
   app: MANDIBLE_INTERFACE_NOTES_APP,
+  origin: null,
   transport,
   revision: servedBackendGeneration,
   migrateLegacyCache: true,

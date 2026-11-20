@@ -160,9 +160,13 @@ describe("daemon write boundary", () => {
       await gateway("/embed/bridge", frame),
       await gateway("/embed/notes.js", frame),
       await gateway("/api/read", { ...crossSite, "Sec-Fetch-Dest": "script" }),
+      await gateway("//x/embed/bridge", frame),
     ];
     expect(forwarded.map((response) => (response.body as { reason?: string } | undefined)?.reason === "cross_site_fetch"))
-      .toEqual([false, false, true, true]);
+      .toEqual([false, false, true, true, true]);
+    // The gateway's request still passes the remaining checks: only the cross-site refusal is lifted for it.
+    expect((await gateway("/embed/bridge", { ...frame, "X-Mandible-Instance-Id": "another-instance" })).body)
+      .toMatchObject({ reason: "instance_mismatch" });
   });
 
   it("rejects cross-origin browser WebSocket upgrades", async () => {

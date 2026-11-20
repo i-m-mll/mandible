@@ -84,6 +84,7 @@ const FIXTURES: Array<[string, RegExp, Fixture]> = [
   ['GET', /^\/api\/console\/sessions$/, () => []],
   ['GET', /^\/api\/auth\/history$/, () => []],
   ['GET', /^\/api\/projects$/, () => ({ projects: [] })],
+  ['GET', /^\/api\/interface-notes\/embed-grants$/, () => ({ grants: [] })],
   ['GET', /^\/api\/tasks\/commands$/, () => ({ commands: [] })],
   ['GET', /^\/api\/artifacts\/drafts$/, () => ({ draft: null })],
   ['GET', /^\/api\/sessions$/, () => [{ id: 'sess-warm-1', status: 'active', app: 'warm-app', task: 'Warm session task' }]],

@@ -28,8 +28,8 @@ export interface InterfaceNotesTransport {
   subscribe(handlers: { changed(payload: InterfaceNoteChangedPayload): void; reconnected(): void }): () => void;
 }
 
-/** A note as the host makes it; the transport supplies its app. */
-export type InterfaceNoteDraft = Omit<InterfaceNoteInput, 'app'>;
+/** A note as the host makes it; the transport supplies its app and, through the embed, its origin. */
+export type InterfaceNoteDraft = Omit<InterfaceNoteInput, 'app' | 'origin'>;
 
 /** A refusal from the daemon. `code` is an `InterfaceNoteErrorCode` for the routes' own refusals, another daemon code otherwise, or null. */
 export class InterfaceNotesApiError extends Error {

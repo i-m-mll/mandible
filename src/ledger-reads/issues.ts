@@ -5,7 +5,7 @@ import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
 
 function filterIssueSummaries(
   summaries: IssueRepoSummary[],
-  filters: { repo?: string; status?: string; resolution?: string; label?: string; has_notes?: boolean },
+  filters: { repo?: string; project_id?: string; status?: string; resolution?: string; label?: string; has_notes?: boolean },
 ): IssueRepoSummary[] {
   let filtered = summaries;
 
@@ -21,6 +21,8 @@ function filterIssueSummaries(
         (s.project_key !== undefined && s.project_key === filters.repo),
     );
   }
+
+  if (filters.project_id) filtered = filtered.filter((s) => s.project_id === filters.project_id);
 
   if (filters.status === "open" || filters.status === "closed") {
     filtered = filtered.map((s) => ({

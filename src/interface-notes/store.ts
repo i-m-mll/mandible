@@ -2,6 +2,7 @@ import type { Db } from "../db.js";
 import { AttachmentValidationError, validatedAnnotationTarget, validatedAnnotationText } from "../conversation-control/attachment-store.js";
 import type { AnnotationTarget } from "../conversation-control/attachments.js";
 import { commentCarriesInterfaceNotes, NOTE_COLUMNS, NOTE_FROM, noteFromRow, type NoteRow } from "./read.js";
+import { loopbackOriginPort } from "./embed-identity.js";
 import { resolveOperationalIssueRef } from "../ledger/operational-links.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import { LedgerStore } from "../ledger/store.js";
@@ -49,19 +50,27 @@ export function interfaceNotesApp(value: unknown): string | null {
   return typeof value === "string" && value.length <= MAX_INTERFACE_NOTES_APP && INTERFACE_NOTES_APP_PATTERN.test(value) ? value : null;
 }
 
-function validatedInput(input: unknown): InterfaceNoteResult<{ id: string; app: string; text: string; target: AnnotationTarget; pin: InterfaceNotePin }> {
+function validatedInput(input: unknown): InterfaceNoteResult<{ id: string; app: string; origin: string | null; text: string; target: AnnotationTarget; pin: InterfaceNotePin }> {
   if (!isRecord(input)) return fail("invalid_note", "A note must be an object");
   const { id, pin } = input;
   if (typeof id !== "string" || !id || id.length > MAX_NOTE_ID) return fail("invalid_note", "A note id is 1 to 128 characters");
   const app = interfaceNotesApp(input.app);
-  if (app === null) return fail("invalid_note", "A note's app is a project key, optionally followed by : and a path");
+  if (app === null) return fail("invalid_note", "A note's app is mandible, or a project key followed by : and a path");
+  const origin = input.origin === undefined ? null : input.origin;
+  if ((origin === null) !== (app === MANDIBLE_INTERFACE_NOTES_APP)) {
+    return fail("invalid_note", "A note names an origin exactly when it was made on another app's page");
+  }
+  if (origin !== null && (typeof origin !== "string" || loopbackOriginPort(origin) === null)) {
+    return fail("invalid_note", "A note's origin is the loopback origin of the page it was made on");
+  }
   const fields = validated(() => ({ text: validatedAnnotationText(input.text), target: validatedAnnotationTarget(input.target) }));
   if (!fields.ok) return fields;
   if (!URL.canParse(fields.value.target.url)) return fail("invalid_note", "A note's page URL must be absolute");
+  if (origin !== null && new URL(fields.value.target.url).origin !== origin) return fail("invalid_note", "A note's page URL is on its origin");
   if (!isRecord(pin) || pin.id !== id) return fail("invalid_note", "A note's pin must be an object whose id is the note id");
   const stored = { ...pin, id, comment: fields.value.text } as InterfaceNotePin;
   if (JSON.stringify(stored).length > MAX_PIN_JSON) return fail("invalid_note", "A note's pin is too large");
-  return ok({ id, app, text: fields.value.text, target: fields.value.target, pin: stored });
+  return ok({ id, app, origin, text: fields.value.text, target: fields.value.target, pin: stored });
 }
 
 /**
@@ -93,9 +102,9 @@ export class InterfaceNoteStore {
     return this.db.transaction(() => {
       if (this.get(note.id)) return fail<InterfaceNote>("note_exists");
       this.db.prepare(
-        `INSERT INTO interface_notes (id, app, comment_id, text, target_json, pin_json, created_at, updated_at)
-         VALUES (?, ?, NULL, ?, ?, ?, ?, ?)`,
-      ).run(note.id, note.app, note.text, JSON.stringify(note.target), JSON.stringify(note.pin), now, now);
+        `INSERT INTO interface_notes (id, app, origin, comment_id, text, target_json, pin_json, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+      ).run(note.id, note.app, note.origin, note.text, JSON.stringify(note.target), JSON.stringify(note.pin), now, now);
       this.changed([note.id], note.app, null);
       return ok(this.get(note.id)!);
     })();

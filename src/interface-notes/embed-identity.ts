@@ -12,9 +12,6 @@ import type { EmbedIdentity } from "./contract.js";
  * registered project's identity.
  */
 
-export type EmbedIdentityFailure = "origin_not_loopback" | "origin_not_registered";
-export type EmbedIdentityResult = { ok: true; value: EmbedIdentity } | { ok: false; error: EmbedIdentityFailure };
-
 /** What the resolution reads from the machine; tests substitute it. */
 export interface EmbedProcessProbe {
   /** Pids listening on the TCP port, on any address. */
@@ -67,38 +64,42 @@ export function loopbackOriginPort(origin: string): number | null {
   return url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
 }
 
-export class EmbedIdentityResolver {
-  /** Resolved directories; a listener's working directory is read on every request, a resolved project only once. */
-  private readonly byDirectory = new Map<string, EmbedIdentity>();
+/** A resolved page: its identity and the directory its listener runs in. */
+export type ResolvedEmbedPage = EmbedIdentity & { directory: string };
 
-  constructor(private readonly db: Db, private readonly probe: EmbedProcessProbe = systemEmbedProbe) {}
+export type EmbedIdentityFailure = "origin_not_loopback" | "origin_not_registered";
+export type EmbedIdentityResult = { ok: true; value: ResolvedEmbedPage } | { ok: false; error: EmbedIdentityFailure };
 
-  async resolve(origin: string): Promise<EmbedIdentityResult> {
-    const port = loopbackOriginPort(origin);
-    if (port === null) return { ok: false, error: "origin_not_loopback" };
-    const pids = await this.probe.listeners(port);
-    const directories = new Set((await Promise.all(pids.map((pid) => this.probe.cwd(pid)))).filter((dir): dir is string => dir !== null));
-    // Listeners on one port with different directories (one on 127.0.0.1, another on ::1) leave the page's server unknown.
-    if (directories.size !== 1) return { ok: false, error: "origin_not_registered" };
-    const [directory] = directories as Set<string> & [string];
-    const identity = this.byDirectory.get(directory) ?? await this.identityOf(directory);
-    if (identity) this.byDirectory.set(directory, identity);
-    return identity ? { ok: true, value: identity } : { ok: false, error: "origin_not_registered" };
-  }
-
-  private async identityOf(directory: string): Promise<EmbedIdentity | null> {
-    const root = await this.probe.checkoutRoot(directory);
-    if (!root) return null;
-    const resolved = resolveProjectForCheckoutReadOnly(this.db, { root, remoteUrl: await this.probe.originRemote(root) });
-    const projectId = resolved.status === "resolved" ? resolved.project.id : resolved.matchedProjectId;
-    if (!projectId) return null;
-    const project = this.db.prepare("SELECT id, project_key, display_name FROM ledger_projects WHERE id = ?")
-      .get(projectId) as { id: string; project_key: string; display_name: string } | undefined;
-    if (!project) return null;
-    const within = path.relative(path.resolve(root), path.resolve(directory)).split(path.sep).join("/");
-    return {
-      app: within && !within.startsWith("..") ? `${project.project_key}:${within}` : project.project_key,
+/**
+ * Names the app a loopback origin serves. The name is a label, not authentication:
+ * a process chooses its working directory, and this assumes every loopback listener
+ * belongs to the owner. Whether a page may use the name is the operator's grant
+ * (`EmbedGrants`).
+ */
+export async function resolveEmbedPage(db: Db, probe: EmbedProcessProbe, origin: string): Promise<EmbedIdentityResult> {
+  const port = loopbackOriginPort(origin);
+  if (port === null) return { ok: false, error: "origin_not_loopback" };
+  const pids = await probe.listeners(port);
+  const directories = await Promise.all(pids.map((pid) => probe.cwd(pid)));
+  // An unreadable directory, or listeners in different directories (one on 127.0.0.1, another on ::1), leave the page's server unknown.
+  const distinct = new Set(directories);
+  if (pids.length === 0 || directories.includes(null) || distinct.size !== 1) return { ok: false, error: "origin_not_registered" };
+  const directory = directories[0]!;
+  const root = await probe.checkoutRoot(directory);
+  if (!root) return { ok: false, error: "origin_not_registered" };
+  const resolved = resolveProjectForCheckoutReadOnly(db, { root, remoteUrl: await probe.originRemote(root) });
+  const projectId = resolved.status === "resolved" ? resolved.project.id : resolved.matchedProjectId;
+  const project = projectId ? db.prepare("SELECT id, project_key, display_name FROM ledger_projects WHERE id = ?")
+    .get(projectId) as { id: string; project_key: string; display_name: string } | undefined : undefined;
+  if (!project) return { ok: false, error: "origin_not_registered" };
+  const within = path.relative(path.resolve(root), path.resolve(directory)).split(path.sep).join("/");
+  if (within.startsWith("..")) return { ok: false, error: "origin_not_registered" };
+  return {
+    ok: true,
+    value: {
+      app: `${project.project_key}:${within || "."}`,
       project: { id: project.id, key: project.project_key, name: project.display_name },
-    };
-  }
+      directory,
+    },
+  };
 }

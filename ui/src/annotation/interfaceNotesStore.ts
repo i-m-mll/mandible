@@ -21,6 +21,8 @@ import { interfaceNoteWriteSettled, InterfaceNotesApiError, type InterfaceNoteDr
 export type InterfaceNotesEnvironment = {
   /** The app whose unfiled notes this page shows. */
   app: string;
+  /** The embedding page's origin, recorded on its notes; null on Mandible's own interface. */
+  origin: string | null;
   transport: InterfaceNotesTransport;
   /** The build revision recorded on a new note's target, when the page has one. */
   revision(): string | null;
@@ -123,7 +125,7 @@ function unfiledNotes(): InterfaceNote[] {
   const loadedIds = new Set(daemonLoaded?.notes.map((note) => note.id));
   const created = [...pending].flatMap(([id, write]): InterfaceNote[] => (
     write.kind === 'create' && !held.has(id) && !loadedIds.has(id) && !filed.has(id)
-      ? [{ ...write.input, app: env().app, owner: { kind: 'unfiled' }, created_at: write.at, updated_at: write.at }]
+      ? [{ ...write.input, app: env().app, origin: env().origin, owner: { kind: 'unfiled' }, created_at: write.at, updated_at: write.at }]
       : []
   ));
   return [...overlay(daemonUnfiled), ...created].sort((a, b) => a.created_at - b.created_at);

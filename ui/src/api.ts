@@ -13,6 +13,7 @@ import type { ResolveRefResponse, SessionDescendant, SessionSummary } from '../.
 import type { EntityKind } from '../../src/app-routes';
 export type { SessionDescendant, SessionSummary } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
+import { INTERFACE_NOTES_EMBED, type EmbedGrant } from '../../src/interface-notes/contract';
 import { ROUTE_DATA_FRESH_MS } from './query/policy';
 import type { Query } from '@tanstack/preact-query';
 import type { FullTextSearchPending, FullTextSearchResponse } from '../../src/conversations/full-text-search-contract';
@@ -5777,4 +5778,19 @@ export async function detachItemFromBlocks(spaceId: string, itemId: string, fetc
 
 export async function importSpaceHistory(spaceId: string,id: string,title: string): Promise<ContractSpace> {
   return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/history/${encodeURIComponent(id)}/import`,{title})) as ContractSpace;
+}
+
+/** Embedding pages that asked for interface notes, pending first. */
+export async function listEmbedGrants(): Promise<EmbedGrant[]> {
+  return ((await (await apiGet(INTERFACE_NOTES_EMBED.grants)).json()) as { grants: EmbedGrant[] }).grants;
+}
+
+export async function allowEmbedGrant(grant: Pick<EmbedGrant, 'origin' | 'directory'>): Promise<void> {
+  await apiPut(INTERFACE_NOTES_EMBED.grants, { origin: grant.origin, directory: grant.directory });
+}
+
+/** Revokes a grant, or dismisses a pending request. */
+export async function removeEmbedGrant(grant: Pick<EmbedGrant, 'origin' | 'directory'>): Promise<void> {
+  const query = new URLSearchParams({ origin: grant.origin, directory: grant.directory });
+  await apiDelete(`${INTERFACE_NOTES_EMBED.grants}?${query}`);
 }

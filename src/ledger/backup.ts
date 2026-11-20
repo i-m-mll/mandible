@@ -36,6 +36,7 @@ const LEDGER_BACKUP_TABLES = [
 export const METADATA_BACKUP_TABLES = [
   "meta",
   "settings",
+  "interface_note_embed_grants",
   "auth_requests",
   "auth_request_responsibility",
   "responsibility_events",

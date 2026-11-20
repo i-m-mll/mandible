@@ -11,8 +11,11 @@ import { annotationAttachmentText, MAX_ANNOTATION_TEXT, type AnnotationTarget, t
 /** The app key of notes made on Mandible's own interface, and of a note whose input names no app. */
 export const MANDIBLE_INTERFACE_NOTES_APP = "mandible";
 
-/** An app key: a project key, optionally followed by `:` and a path within its checkout. */
-export const INTERFACE_NOTES_APP_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9._/-]+)?$/;
+/**
+ * An app key: `mandible`, or a project key, `:` and a path within its checkout (`.` for its root). An
+ * embedding page's key always has the separator, so no page can be given Mandible's own notes.
+ */
+export const INTERFACE_NOTES_APP_PATTERN = /^(?:mandible|[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9._/-]+)$/;
 export const MAX_INTERFACE_NOTES_APP = 256;
 
 /**
@@ -32,6 +35,8 @@ export interface InterfaceNote {
   id: string;
   /** The app whose interface the note was made on; unfiled notes, counts and the toolbar are scoped by it. */
   app: string;
+  /** The embedding page's origin for a note made through the embed; null for a note made in Mandible. */
+  origin: string | null;
   text: string;
   target: AnnotationTarget;
   pin: InterfaceNotePin;
@@ -40,8 +45,11 @@ export interface InterfaceNote {
   updated_at: number;
 }
 
-/** What the toolbar host sends when a note is made. The daemon reads an absent `app` as `mandible`. */
-export type InterfaceNoteInput = Pick<InterfaceNote, "id" | "app" | "text" | "target" | "pin">;
+/**
+ * What the toolbar host sends when a note is made. The daemon reads an absent `app` as `mandible`. Another
+ * app's note names the embedding page's `origin`, which is also its page URL's origin; Mandible's names none.
+ */
+export type InterfaceNoteInput = Pick<InterfaceNote, "id" | "app" | "text" | "target" | "pin"> & { origin?: string };
 
 export type InterfaceNoteDestination =
   | { issue: string }
@@ -96,7 +104,7 @@ export const INTERFACE_NOTE_ROUTES = {
     `/api/interface-notes/${encodeURIComponent(id)}?comment=${encodeURIComponent(commentId)}`,
   /** POST FileInterfaceNotesRequest: one new comment carrying the notes. */
   file: "/api/interface-notes/file",
-  /** GET /api/issues with this query lists only issues that carry notes, most recently annotated first. */
+  /** GET /api/issues with this query lists only issues that carry notes, most recently annotated first; `&project=<id>` limits it to one project. */
   issuesWithNotesQuery: "has_notes=true",
 } as const;
 
@@ -125,8 +133,12 @@ export const INTERFACE_NOTE_ERRORS = {
   nothing_to_file: 409,
   /** GET embed identity: the origin is not an http(s) origin on a loopback host. */
   origin_not_loopback: 400,
-  /** GET embed identity: no process listens on the port, or its directory is not a checkout of a registered project. */
+  /** Embed identity: no process listens on the port, a listener's directory is unreadable, or the directory is not a checkout of a registered project. */
   origin_not_registered: 404,
+  /** Embed identity: the operator has not allowed this origin for this directory; the request is recorded as pending. */
+  origin_not_granted: 403,
+  /** Embed grants: no request from this origin and directory. */
+  grant_not_found: 404,
   /** Any route, in a preview that keeps notes in its source instance: that instance did not answer. */
   source_unavailable: 503,
 } as const;
@@ -144,15 +156,34 @@ export const MAX_INTERFACE_NOTE_TEXT = MAX_ANNOTATION_TEXT;
 export const INTERFACE_NOTES_EMBED = {
   script: "/embed/notes.js",
   bridge: "/embed/bridge",
-  /** GET `?origin=<loopback origin>`: EmbedIdentity, or 404 `origin_not_registered`, or 400 `origin_not_loopback`. */
+  /**
+   * POST `{ origin }`: EmbedIdentity for a granted origin; 403 `origin_not_granted` with `{ grant: EmbedGrant }`
+   * after recording the request as pending; 404 `origin_not_registered`; 400 `origin_not_loopback`.
+   */
   identity: "/api/interface-notes/embed-identity",
+  /**
+   * GET: every EmbedGrant, pending first. PUT `{ origin, directory }`: allow a recorded request.
+   * DELETE `?origin=&directory=`: revoke or dismiss it. Only Mandible's own interface calls these.
+   */
+  grants: "/api/interface-notes/embed-grants",
+  /** The Settings view, opened top-level with `embed_origin=<origin>` to show that origin's request. */
+  grantView: "/settings",
 } as const;
 
 /** The app a loopback dev origin serves: the registered project whose checkout the listening process runs in. */
 export interface EmbedIdentity {
-  /** `<project key>` for the checkout root, `<project key>:<path>` for a directory within it. */
+  /** `<project key>:<path>` for a directory within the checkout, `<project key>:.` for its root. */
   app: string;
   project: { id: string; key: string; name: string };
+}
+
+/** The operator's decision on one embedding origin, as written, and the directory its listener ran in. */
+export interface EmbedGrant extends EmbedIdentity {
+  origin: string;
+  directory: string;
+  state: "pending" | "granted";
+  requested_at: number;
+  decided_at: number | null;
 }
 
 /** The attachment shape every pill, preview, Chat draft and text renderer consumes. */
@@ -165,7 +196,15 @@ export function interfaceNoteAttachment(note: InterfaceNote, ordinal: number): E
  * change to the comment's notes; it is the same text Chat delivery gives an agent.
  */
 export function renderInterfaceNotesBody(notes: readonly InterfaceNote[]): string {
-  return notes.map((note, index) => annotationAttachmentText(interfaceNoteAttachment(note, index + 1))).join("\n\n");
+  return notes.map((note, index) => {
+    const text = annotationAttachmentText(interfaceNoteAttachment(note, index + 1));
+    return note.origin === null ? text : `${text}\n${interfaceNoteProvenance(note)}`;
+  }).join("\n\n");
+}
+
+/** Where a note made through the embed came from, as its comment body states it. */
+export function interfaceNoteProvenance(note: Pick<InterfaceNote, "origin" | "app">): string {
+  return `Made on: ${note.origin} (${note.app}), not in Mandible`;
 }
 
 /** Where a note's pin is shown: the pathname of the page it was made on. */

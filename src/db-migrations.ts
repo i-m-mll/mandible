@@ -1,5 +1,6 @@
 import { exactAgentRef } from "./ambient-provider-identity.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
+import { INTERFACE_NOTE_EMBED_GRANTS_SQL } from "./interface-notes/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
 import { NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
@@ -2433,6 +2434,8 @@ export const MIGRATIONS: readonly Migration[] = [
   // Issue 8388a7c — notes made on other apps' interfaces through the embed.
   { version: 244, name: "interface_notes_app", statements: [
     "ALTER TABLE interface_notes ADD COLUMN app TEXT NOT NULL DEFAULT 'mandible'",
+    "ALTER TABLE interface_notes ADD COLUMN origin TEXT",
+    INTERFACE_NOTE_EMBED_GRANTS_SQL,
   ] },
 ];
 

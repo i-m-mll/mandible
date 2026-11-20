@@ -1,5 +1,5 @@
 import { parseChatStreamMaxWidthPx } from '../../../src/contracts';
-import { INTERFACE_NOTES_PROJECT_SETTING } from '../../../src/interface-notes/contract';
+import { INTERFACE_NOTES_EMBED, INTERFACE_NOTES_PROJECT_SETTING, type EmbedGrant } from '../../../src/interface-notes/contract';
 import { AgentIntegrations } from '../components/AgentIntegrations';
 import { currentRoute, subscribeRouteChanges, viewHref } from '../routing';
 import { NativeSelect } from '../components/shared/NativeSelect';
@@ -32,6 +32,9 @@ import {
   updateInstructionDeliverySettings,
   canPerformOperation,
   listCanonicalProjects,
+  listEmbedGrants,
+  allowEmbedGrant,
+  removeEmbedGrant,
   type BackupStatus,
   type CanonicalProject,
   type DesktopDaemonLaunchMode,
@@ -505,6 +508,67 @@ function InterfaceNotesProjectRow(props: {
           <option key={project.id} value={project.project_key}>{project.display_name || project.project_key}</option>
         ))}
       </NativeSelect>
+    </div>
+  );
+}
+
+/**
+ * Pages of other apps that asked to show the interface-notes toolbar, by origin and
+ * the directory their server ran in. The embed gets an identity only for a request
+ * allowed here, on Mandible's own top-level page; the embed's link opens this view
+ * with `embed_origin` naming its origin.
+ */
+function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
+  const [grants, setGrants] = useState<EmbedGrant[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [asked, setAsked] = useState(() => currentRoute().params.embed_origin ?? null);
+  const reload = useCallback(() => {
+    listEmbedGrants().then(setGrants, (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
+  }, []);
+  useEffect(() => {
+    reload();
+    return subscribeRouteChanges(() => setAsked(currentRoute().params.embed_origin ?? null));
+  }, [reload]);
+  const act = (action: (grant: EmbedGrant) => Promise<void>, grant: EmbedGrant) => {
+    setError(null);
+    action(grant).then(reload, (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
+  };
+  return (
+    <div className="settings-view__text-row settings-view__embed-grants" data-settings-searchable>
+      <div className="settings-view__text-info">
+        <span className="settings-view__text-label">Interface notes on other apps</span>
+        <span className="settings-view__text-desc">
+          Development pages that load Mandible&apos;s notes toolbar. A page shows it only once allowed here; allow only
+          servers of projects whose code you trust, since an allowed page files notes in your name.
+        </span>
+        {error && <span className="settings-view__warning" role="alert">{error}</span>}
+        {grants?.length === 0 && <span className="settings-view__text-desc">No page has asked yet.</span>}
+        {grants && grants.length > 0 && (
+          <ul className="settings-view__embed-grant-list">
+            {grants.map((grant) => (
+              <li
+                key={`${grant.origin} ${grant.directory}`}
+                className="settings-view__embed-grant"
+                data-asked={grant.origin === asked ? 'true' : undefined}
+              >
+                <span className="settings-view__embed-grant-origin">{grant.origin}</span>
+                <span className="settings-view__text-desc">
+                  {grant.project.name} ({grant.app}), served from {grant.directory}
+                  {grant.state === 'granted' ? ' · allowed' : ' · waiting'}
+                </span>
+                <span className="settings-view__embed-grant-actions">
+                  {grant.state === 'pending' && (
+                    <button type="button" className="btn btn--active btn--sm" disabled={!props.allowed} onClick={() => act(allowEmbedGrant, grant)}>Allow</button>
+                  )}
+                  <button type="button" className="btn btn--sm" disabled={!props.allowed} onClick={() => act(removeEmbedGrant, grant)}>
+                    {grant.state === 'granted' ? 'Revoke' : 'Dismiss'}
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
@@ -1709,6 +1773,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             onSave={saveSetting}
             allowed={canPerformOperation(instance, 'PUT', `/api/settings/${INTERFACE_NOTES_PROJECT_SETTING}`)}
           />
+          <EmbedGrantRows allowed={canPerformOperation(instance, 'PUT', INTERFACE_NOTES_EMBED.grants)} />
           <div className="settings-view__text-row" data-settings-searchable>
             <div className="settings-view__text-info">
               <span className="settings-view__text-label">Default filter</span>
