@@ -198,9 +198,9 @@ describe("auth queue", () => {
         git(repo, ["commit", "-m", "refresh reviewed head"]);
         const revisedHead = git(repo, ["rev-parse", "HEAD"]);
         git(repo, ["checkout", "main"]);
-        (await queue.update(edited.id, { merge_head_sha: revisedHead }));
-        (await expectInvalidated(edited.id));
-        await expect(approveFixtureRequest(queue, edited.id)).rejects.toThrow(/retained candidate|not_recomputable_request/);
+        // Issue 9395f25 — the head an accounted request lands changes only by resubmission.
+        await expect(queue.update(edited.id, { merge_head_sha: revisedHead })).rejects.toMatchObject({ status: 409 });
+        expect((await queue.getRequest(edited.id))?.merge_head_sha).not.toBe(revisedHead);
 
         const hier = (await submitPinnedRequest(
           queue,

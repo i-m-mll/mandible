@@ -93,9 +93,6 @@ export interface UpdateLedgerIssuePatch {
   kind?: LedgerIssueKind;
   priority?: LedgerPriority;
   author_display?: string;
-  status?: LedgerIssueStatus;
-  resolution?: LedgerIssueResolution | null;
-  closed_at?: number | null;
 }
 
 export interface UpdateLedgerIssueOptions extends LedgerActorInput {
@@ -679,170 +676,6 @@ export class LedgerStore {
     const issue = run();
     this.emitAfterCommit(emitted);
     return issue;
-  }
-
-  applyImportedIssuePatch(
-    id: string,
-    patch: UpdateLedgerIssuePatch,
-    source: LedgerEventSource,
-    actor: LedgerActorInput,
-  ): { changed: boolean; issue: LedgerIssue } {
-    const existing = this.requireIssue(id);
-    const now = Date.now();
-    const normalizedActor = this.resolveActor(actor);
-    const next = {
-      title: patch.title ?? existing.title,
-      body: patch.body ?? existing.body,
-      kind: patch.kind ?? existing.kind,
-      work_notes: patch.work_notes ?? existing.work_notes,
-      priority: patch.priority ?? existing.priority,
-      author_display: patch.author_display ?? existing.author_display,
-      status: patch.status ?? existing.status,
-      resolution: patch.resolution === undefined
-        ? patch.status === "open" ? null : existing.resolution
-        : patch.resolution,
-      closed_at: patch.closed_at === undefined
-        ? patch.status === "open" ? null : existing.closed_at
-        : patch.closed_at,
-    };
-    assertLedgerIssueLifecycle(next.status, next.resolution);
-    const changed =
-      next.title !== existing.title ||
-      next.body !== existing.body ||
-      next.work_notes !== existing.work_notes ||
-      next.kind !== existing.kind ||
-      next.priority !== existing.priority ||
-      next.author_display !== existing.author_display ||
-      next.status !== existing.status ||
-      next.resolution !== existing.resolution ||
-      next.closed_at !== existing.closed_at;
-    if (!changed) {
-      return { changed: false, issue: existing };
-    }
-    const changedFields = [
-      ...changedIssueFields(existing, next),
-      ...(next.status !== existing.status ? ["status"] : []),
-      ...(next.resolution !== existing.resolution ? ["resolution"] : []),
-      ...(next.closed_at !== existing.closed_at ? ["closed_at"] : []),
-    ];
-    const bodyChanged = changedFields.includes("body");
-    const workNotesChanged = changedFields.includes("work_notes");
-
-    const emitted: LedgerSsePayload[] = [];
-    const run = this.db.transaction(() => {
-      this.assertSingletonKindTransition(existing.project_id, id, existing, next);
-      this.db.prepare(
-         `UPDATE ledger_issues
-         SET title = ?, work_notes = ?, kind = ?, priority = ?, author_display = ?,
-             status = ?, resolution = ?, closed_at = ?, updated_at = ?
-         WHERE id = ?`,
-      ).run(
-        next.title,
-        next.work_notes,
-        next.kind,
-        next.priority,
-        next.author_display,
-        next.status,
-        next.resolution,
-        next.closed_at,
-        now,
-        id,
-      );
-      const eventType = issueLifecycleEventType(existing.status, next.status);
-      const scalarPatch = omitBodyPatch(patch);
-      const eventPayload = eventType
-        ? {
-          issue_id: id,
-          previous_status: existing.status,
-          status: next.status,
-          previous_resolution: existing.resolution,
-          resolution: next.resolution,
-          patch: scalarPatch,
-        }
-        : {
-          issue_id: id,
-          patch: scalarPatch,
-          ...(next.resolution !== existing.resolution
-            ? { previous_resolution: existing.resolution, resolution: next.resolution }
-            : {}),
-        };
-      const scalarChangedFields = changedFields.filter((field) => field !== "body" && field !== "work_notes");
-      if (bodyChanged) {
-        const { event } = this.recordBodyRevisionEvent({
-          entity_type: "issue_body",
-          entity_id: id,
-          issue_id: id,
-          project_id: existing.project_id,
-          previous_body: existing.body,
-          next_body: next.body,
-          actor: normalizedActor,
-          source,
-          reason: source === "git_bug" ? "external_update" : "edit",
-          occurred_at: now,
-          event_type: eventType ?? "issue.updated",
-          event_entity_type: "issue",
-          event_entity_id: id,
-          event_payload: eventPayload,
-          changed_fields: changedFields,
-          update_current_body: true,
-        });
-        emitted.push({ event, payload: { issue_id: id, changed_fields: changedFields } });
-      }
-      if (workNotesChanged) {
-        const { event } = this.recordBodyRevisionEvent({
-          entity_type: "issue_work_notes",
-          entity_id: id,
-          issue_id: id,
-          project_id: existing.project_id,
-          previous_body: existing.work_notes,
-          next_body: next.work_notes,
-          actor: normalizedActor,
-          source,
-          reason: source === "git_bug" ? "external_update" : "edit",
-          occurred_at: now,
-          event_type: "issue.work_notes_updated",
-          event_entity_type: "issue",
-          event_entity_id: id,
-          event_payload: { issue_id: id, work_notes: next.work_notes },
-          changed_fields: ["work_notes"],
-          update_current_body: true,
-        });
-        emitted.push({ event, payload: { issue_id: id, work_notes: next.work_notes } });
-      }
-      if (!bodyChanged && (!workNotesChanged || scalarChangedFields.length > 0)) {
-        const event = this.insertEvent({
-          entity_type: "issue",
-          entity_id: id,
-          event_type: eventType ?? "issue.updated",
-          actor_id: normalizedActor.actor_id,
-          actor_type: normalizedActor.actor_type,
-          actor_user_id: normalizedActor.actor_user_id,
-          evidence_method: normalizedActor.evidence_method,
-          evidence_id: normalizedActor.evidence_id,
-          source,
-          payload: { ...eventPayload, changed_fields: scalarChangedFields },
-          project_id: existing.project_id,
-          occurred_at: now,
-        });
-        emitted.push({ event, payload: { issue_id: id, patch: scalarPatch, changed_fields: scalarChangedFields } });
-      }
-      const issue = this.getIssue(id);
-      if (bodyChanged) {
-        this.applyTextIssueReferences({
-          source_issue_id: issue.id,
-          source_entity_type: "issue_body",
-          source_entity_id: issue.id,
-          body: issue.body,
-          source,
-          actor: normalizedActor,
-        }, emitted);
-      }
-      return issue;
-    });
-
-    const issue = run();
-    this.emitAfterCommit(emitted);
-    return { changed: true, issue };
   }
 
   setIssueStatus(
@@ -2813,14 +2646,6 @@ export class LedgerStore {
 
     return this.db.prepare("SELECT * FROM ledger_events WHERE id = ?").get(id) as LedgerEvent;
   }
-}
-
-function issueLifecycleEventType(
-  previousStatus: LedgerIssueStatus,
-  nextStatus: LedgerIssueStatus,
-): "issue.closed" | "issue.reopened" | null {
-  if (previousStatus === nextStatus) return null;
-  return nextStatus === "closed" ? "issue.closed" : "issue.reopened";
 }
 
 function normalizeActor(input: LedgerActorInput): {

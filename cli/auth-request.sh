@@ -515,7 +515,7 @@ else
     fi
     printf '%s' "$response" | jq -r '
       .issue_accounting // empty
-      | (if (.closing | length) > 0 then "Closes with the merge:", (.closing[] | "  \(.issue) \(.title)\(if .by == "done" then " (done)" else "" end)") else empty end),
+      | (if (.closing | length) > 0 then "Closes with the merge:", (.closing[] | "  \(.issue) \(.title)\(if .by == "done" then " (done)" elif .by == "fixed_by" then " (fixed_by)" else "" end)") else empty end),
         (if (.kept_open | length) > 0 then "Kept open:", (.kept_open[] | "  \(.issue) \(.title): \(.remainder)") else empty end),
         (if (.held | length) > 0 then "Held open:", (.held[] | "  \(.issue) \(.title): held by " + ([
           (if (.open_children | length) > 0 then "open children " + (.open_children | join(", ")) else empty end),

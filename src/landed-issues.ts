@@ -15,6 +15,7 @@ import type { Db } from "./db.js";
 import { authGitEnv } from "./auth-context.js";
 import { describeHolds, type AccountedIssue, type IssueAccounting } from "./contracts.js";
 import { protectedBranchNames } from "./protected-branches.js";
+import { observeRepoIdentities, requestRepoMatcher, type RequestRepoScope } from "./repo-identity.js";
 
 export type { AccountedIssue, IssueAccounting };
 
@@ -35,7 +36,10 @@ export type IssueAccountingResult =
   | { ok: false; refusals: IssueAccountingRefusal[]; accounting: IssueAccounting };
 
 export interface LandedScanInput {
-  projectId: string;
+  /** Derived members come only from this project; none when the repository is not a registered project. */
+  projectId: string | null;
+  /** The request's repository; work units of another repository are never contained in its head. */
+  request: RequestRepoScope;
   /** A checkout of the request's repository, where its Git objects live. */
   gitRoot: string;
   baseSha: string;
@@ -44,6 +48,7 @@ export interface LandedScanInput {
   ownIssueId: string | null;
   closes: ReadonlySet<string>;
   keepsOpen: ReadonlyMap<string, string>;
+  signal?: AbortSignal;
 }
 
 interface IssueRow {
@@ -53,15 +58,15 @@ interface IssueRow {
   status: string;
   worker_status: string;
   kind: string;
+  project_id: string;
 }
 
 interface UnitRow {
   id: string;
   ledger_issue_id: string;
-  state: "open" | "committed" | "resolved";
+  repo_id: string;
+  state: "open" | "committed" | "abandoned";
   branch: string | null;
-  landed_commit: string | null;
-  snapshot: string | null;
 }
 
 async function git(root: string, args: string[]): Promise<string> {
@@ -90,6 +95,7 @@ const NEVER_ACCOUNTED_KINDS = new Set(["tracker", "maintenance"]);
 /**
  * Account for every issue the merge of `headSha` into `baseSha` lands. Git
  * failures throw: a request whose landed set cannot be read is not submitted.
+ * A commit this repository does not have is not one the head contains.
  */
 export async function accountLandedIssues(db: Db, input: LandedScanInput): Promise<IssueAccountingResult> {
   const [revList, refs] = await Promise.all([
@@ -103,25 +109,45 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
     if (space > 0) tips.set(line.slice(space + 1).trim(), line.slice(0, space).toLowerCase());
   }
 
+  // Unresolved units by their branch tip, as the post-merge finalizer tests
+  // them; abandoned units count only when they land, as the finalizer then
+  // resolves them, and those it retired from merge scans do not.
   const units = db.prepare(
-    `SELECT wu.id, wu.ledger_issue_id, wu.state, wu.branch, wu.landed_commit,
-            (SELECT b.last_commit_hash FROM branches b
-               JOIN ledger_project_checkouts c ON c.root = b.repo_root AND c.project_id = i.project_id
-              WHERE b.branch = wu.branch AND b.last_commit_hash IS NOT NULL
-              ORDER BY b.repo_root LIMIT 1) AS snapshot
+    `SELECT wu.id, wu.ledger_issue_id, wu.repo_id, wu.state, wu.branch
        FROM work_units wu
-       JOIN ledger_issues i ON i.id = wu.ledger_issue_id
-      WHERE i.project_id = ? AND wu.state IN ('open', 'committed', 'resolved')`,
-  ).all(input.projectId) as UnitRow[];
+      WHERE wu.ledger_issue_id IS NOT NULL
+        AND (wu.state IN ('open', 'committed') OR (wu.state = 'abandoned' AND wu.branch IS NOT NULL AND wu.merge_scan_retired_at IS NULL))`,
+  ).all() as UnitRow[];
+  const snapshots = db.prepare(
+    `SELECT b.branch, b.repo_root, b.last_commit_hash FROM branches b
+      WHERE b.last_commit_hash IS NOT NULL
+        AND b.branch IN (SELECT wu.branch FROM work_units wu WHERE wu.state IN ('open', 'committed', 'abandoned') AND wu.branch IS NOT NULL)
+      ORDER BY b.repo_root`,
+  ).all() as Array<{ branch: string; repo_root: string; last_commit_hash: string }>;
+  const repoValues = [...new Set([...units.map((unit) => unit.repo_id), ...snapshots.map((row) => row.repo_root)])];
+  const identity = await observeRepoIdentities(db, [input.request.repo, ...repoValues],
+    [input.request.target_repo_root, input.request.cwd, ...repoValues], input.signal);
+  identity.assertCurrent();
+  const sameRepo = requestRepoMatcher(db, input.request, identity);
+  const snapshotOf = new Map<string, string>();
+  for (const row of snapshots) {
+    if (!snapshotOf.has(row.branch) && sameRepo.matches(row.repo_root)) snapshotOf.set(row.branch, row.last_commit_hash.toLowerCase());
+  }
+  const inRepo = new Map(repoValues.map((value) => [value, sameRepo.matches(value)]));
+  const tipOf = (unit: UnitRow) => inRepo.get(unit.repo_id) && unit.branch
+    ? tips.get(unit.branch) ?? snapshotOf.get(unit.branch) ?? null
+    : null;
   const unitsByIssue = new Map<string, UnitRow[]>();
   for (const unit of units) {
+    if (unit.state === "abandoned") continue;
     const list = unitsByIssue.get(unit.ledger_issue_id) ?? [];
     list.push(unit);
     unitsByIssue.set(unit.ledger_issue_id, list);
   }
-  const tipOf = (unit: UnitRow) => (unit.branch ? tips.get(unit.branch) ?? unit.snapshot?.toLowerCase() ?? null : null);
+  const resolvedUnitStmt = db.prepare("SELECT 1 FROM work_units WHERE ledger_issue_id = ? AND state = 'resolved' LIMIT 1");
+  const hasResolvedUnit = (id: string) => resolvedUnitStmt.get(id) !== undefined;
 
-  const issueStmt = db.prepare("SELECT id, short_id, title, status, worker_status, kind FROM ledger_issues WHERE id = ? AND deleted_at IS NULL");
+  const issueStmt = db.prepare("SELECT id, short_id, title, status, worker_status, kind, project_id FROM ledger_issues WHERE id = ? AND deleted_at IS NULL");
   const issues = new Map<string, IssueRow | null>();
   const issue = (id: string): IssueRow | null => {
     if (!issues.has(id)) issues.set(id, (issueStmt.get(id) as IssueRow | undefined) ?? null);
@@ -131,6 +157,7 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
     const row = issue(id);
     return Boolean(row && row.status === "open" && !NEVER_ACCOUNTED_KINDS.has(row.kind));
   };
+  const derivable = (id: string) => input.projectId !== null && accountable(id) && issue(id)!.project_id === input.projectId;
   const edges = (sql: string) => {
     const stmt = db.prepare(sql);
     const cache = new Map<string, string[]>();
@@ -154,8 +181,9 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
     if (!contained.has(sha)) {
       contained.set(sha, execFileAsync("git", ["merge-base", "--is-ancestor", sha, input.headSha], {
         cwd: input.gitRoot, env: authGitEnv(), timeout: GIT_TIMEOUT_MS,
-      }).then(() => true, (error: { code?: unknown }) => {
+      }).then(() => true, async (error: { code?: unknown }) => {
         if (error.code === 1) return false;
+        if (!(await commitExists(input.gitRoot, sha))) return false;
         throw error;
       }));
     }
@@ -166,9 +194,13 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
     if (!unmergedUnits.has(id)) {
       const result: Array<{ id: string; branch: string | null }> = [];
       for (const unit of unitsByIssue.get(id) ?? []) {
-        if (unit.state === "resolved") continue;
-        // A unit whose branch is gone without a scanner snapshot names no work
-        // to hold the issue by; the finalizer resolves it with the issue.
+        // Work in another repository is never in this head. A unit here whose
+        // branch is gone without a scanner snapshot names no work to hold the
+        // issue by; the finalizer resolves it with the issue.
+        if (!inRepo.get(unit.repo_id)) {
+          result.push({ id: unit.id, branch: unit.branch });
+          continue;
+        }
         const tip = tipOf(unit);
         if (tip && !(await headContains(tip))) result.push({ id: unit.id, branch: unit.branch });
       }
@@ -184,12 +216,18 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
     return true;
   };
   for (const unit of units) {
-    const commit = unit.state === "resolved" ? unit.landed_commit : tipOf(unit);
-    if (commit && landed.has(commit.toLowerCase())) add(unit.ledger_issue_id);
+    const tip = tipOf(unit);
+    if (tip && landed.has(tip)) add(unit.ledger_issue_id);
   }
+  const landedList = JSON.stringify([...landed]);
+  for (const row of db.prepare(`SELECT DISTINCT ledger_issue_id AS id FROM work_units
+      WHERE state = 'resolved' AND ledger_issue_id IS NOT NULL AND lower(landed_commit) IN (SELECT value FROM json_each(?))`)
+    .all(landedList) as Array<{ id: string }>) add(row.id);
   if (input.ownIssueId) add(input.ownIssueId);
   for (const id of [...input.closes, ...input.keepsOpen.keys()]) add(id);
 
+  // Issues another closing issue's delivery fulfils, through `fixed_by`.
+  const fulfilled = new Set<string>();
   type Outcome = "closing" | "kept_open" | "held" | "undecided";
   const evaluate = async () => {
     const outcomes = new Map<string, Outcome>();
@@ -207,7 +245,7 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
       const row = issue(id)!;
       const outcome: Outcome = holds ? "held"
         : input.keepsOpen.has(id) ? "kept_open"
-          : input.closes.has(id) || row.worker_status === "done" ? "closing"
+          : input.closes.has(id) || row.worker_status === "done" || fulfilled.has(id) ? "closing"
             : "undecided";
       visiting.delete(id);
       outcomes.set(id, outcome);
@@ -218,30 +256,31 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
     return { outcomes, order };
   };
 
+  // Least fixed point: each closing issue derives the issues it fulfils and a
+  // finished parent whose last open child it is. A closure only releases
+  // holds, so the closing set only grows.
+  let evaluation = await evaluate();
   for (;;) {
     let grew = false;
-    for (const id of [...set]) {
-      const provisional = (await readUnmergedUnits(id)).length === 0 && !input.keepsOpen.has(id)
-        && (input.closes.has(id) || issue(id)!.worker_status === "done");
-      if (!provisional) continue;
-      for (const child of openChildren(id)) grew = add(child) || grew;
-      for (const source of fixedBySourcesOf(id)) grew = add(source) || grew;
-    }
-    if (grew) continue;
-    const { outcomes } = await evaluate();
-    for (const [id, outcome] of outcomes) {
+    for (const [id, outcome] of evaluation.outcomes) {
       if (outcome !== "closing") continue;
+      for (const source of fixedBySourcesOf(id)) {
+        if (!derivable(source) || fulfilled.has(source)) continue;
+        fulfilled.add(source);
+        add(source);
+        grew = true;
+      }
       for (const parent of parentsOf(id)) {
-        if (set.has(parent) || !accountable(parent) || issue(parent)!.worker_status !== "done") continue;
-        if (!(unitsByIssue.get(parent) ?? []).some((unit) => unit.state === "resolved")) continue;
+        if (set.has(parent) || !derivable(parent) || issue(parent)!.worker_status !== "done" || !hasResolvedUnit(parent)) continue;
         if ((await readUnmergedUnits(parent)).length > 0) continue;
-        if (openChildren(parent).every((child) => set.has(child) && outcomes.get(child) === "closing")) grew = add(parent) || grew;
+        if (openChildren(parent).every((child) => set.has(child) && evaluation.outcomes.get(child) === "closing")) grew = add(parent) || grew;
       }
     }
     if (!grew) break;
+    evaluation = await evaluate();
   }
 
-  const { outcomes, order: evaluated } = await evaluate();
+  const { outcomes, order: evaluated } = evaluation;
   const heights = new Map<string, number>();
   const heightOf = (id: string, seen: Set<string> = new Set()): number => {
     const known = heights.get(id);
@@ -269,7 +308,7 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
     const outcome = outcomes.get(id)!;
     if (input.closes.has(id) && input.keepsOpen.has(id)) refusals.push({ kind: "conflicting_decision", issue: described(id) });
     if (outcome === "closing") {
-      accounting.closing.push({ ...described(id), by: input.closes.has(id) ? "closes_issue" : "done" });
+      accounting.closing.push({ ...described(id), by: input.closes.has(id) ? "closes_issue" : issue(id)!.worker_status === "done" ? "done" : "fixed_by" });
     } else if (outcome === "kept_open") {
       accounting.kept_open.push({ ...described(id), remainder: input.keepsOpen.get(id)! });
     } else if (outcome === "held") {
@@ -420,6 +459,14 @@ export async function triageLandedOpen(db: Db, projectId: string): Promise<Lande
   }
   triage.with_remainder.sort((a, b) => a.remainder_set_at - b.remainder_set_at);
   return triage;
+}
+
+async function commitExists(root: string, sha: string): Promise<boolean> {
+  return execFileAsync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: root, env: authGitEnv(), timeout: GIT_TIMEOUT_MS })
+    .then(() => true, (error: { code?: unknown }) => {
+      if (error.code === 1 || error.code === 128) return false;
+      throw error;
+    });
 }
 
 /** Every commit reachable from a protected branch of the project's checkouts. */

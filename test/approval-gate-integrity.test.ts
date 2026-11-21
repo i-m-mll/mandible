@@ -90,8 +90,7 @@ describe("an approval is of what was reviewed, one sheet at a time", () => {
     try {
       const request = await r.submit("feature/reviewed");
       const shown = r.queue.lifecycleRevision(request.id)!;
-      git(r.repo, ["checkout", "feature/reviewed"]); git(r.repo, ["commit", "--allow-empty", "-m", "newer head"]); git(r.repo, ["checkout", "main"]);
-      await r.queue.update(request.id, { merge_head_sha: git(r.repo, ["rev-parse", "feature/reviewed"]) });
+      await r.queue.update(request.id, { title: "Revised after it was shown" });
       expect(r.queue.lifecycleRevision(request.id)).not.toBe(shown);
       await expect(r.queue.approveAsOperator(request.id, operatorCaller(r.operatorId), shown)).rejects.toMatchObject({ code: "lifecycle_conflict" });
       expect(r.signer.touches).toHaveLength(0);

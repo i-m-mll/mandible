@@ -95,7 +95,7 @@ import {
   describeRecomputeRefusal,
   type RecomputeRefusal,
 } from "./auth-recompute-refusal.js";
-import { canonicalRepoKeyForPath, observeRepoIdentities, RepoIdentityReadSetChanged, type RepoIdentityObservation } from "./repo-identity.js";
+import { canonicalRepoKeyForPath, observeRepoIdentities, RepoIdentityReadSetChanged, requestRepoMatcher, type RepoIdentityObservation } from "./repo-identity.js";
 import { REMOVE_MERGED_BRANCHES_STEP } from "./notices/contract.js";
 import { checkoutTopLevel, isRetriedKeptBranch, listLandedBranches, removeLandedBranch, type BranchRemoval, type MergeLanding } from "./merged-branch-removal.js";
 import {
@@ -2358,12 +2358,15 @@ export class AuthQueue {
     mergeCheck: AuthMergeCheckReport,
     custody: WorkUnitCustody | null,
   ): Promise<{ accounting: IssueAccounting; actions: AuthRequestActionInput[]; closures: string[] } | null> {
-    if ((payload.type ?? "merge") !== "merge" || mergeCheck.status !== "clean" || !mergeCheck.target_head_sha) return null;
-    if (!payload.cwd || !payload.head_branch || !payload.repo) return null;
-    // The submit route refuses a merge whose project is not registered; a
-    // project the registry does not know has no issues to account for.
-    const project = resolveProjectRef(this.db, payload.repo);
-    if (!project.ok) return null;
+    // The submit route resolves every merge's checkout; only a direct queue
+    // caller can submit one without, and that request has no Git to account from.
+    if ((payload.type ?? "merge") !== "merge" || !payload.head_branch || !payload.base_branch || !payload.cwd) return null;
+    if (!mergeCheck.target_head_sha) {
+      throw new AuthQueueError("merge_check_failed",
+        `A merge request accounts for the issues it lands from its target head, which the merge check did not resolve${mergeCheck.reason ? `: ${mergeCheck.reason}` : ""}.`,
+        undefined, mergeCheck);
+    }
+    const project = payload.repo ? resolveProjectRef(this.db, payload.repo) : null;
     const headSha = payload.merge_head_sha ?? (await this.resolveBranchHeadForCheck(payload.cwd, payload.head_branch));
     if (!headSha) throw new AuthQueueError("merge_check_failed", `Head branch ${payload.head_branch} does not resolve to a commit.`);
 
@@ -2391,8 +2394,10 @@ export class AuthQueue {
     }
 
     const result = await accountLandedIssues(this.db, {
-      projectId: project.project!.id,
+      projectId: project?.ok ? project.project!.id : null,
+      request: { repo: normalizeRepoRef(payload.repo ?? null), cwd: payload.cwd, target_repo_root: payload.target_repo_root },
       gitRoot: payload.cwd,
+      signal: this.phaseAbort.signal,
       baseSha: mergeCheck.target_head_sha,
       headSha,
       ownIssueId: custody?.ledger_issue_id ?? null,
@@ -2859,9 +2864,12 @@ export class AuthQueue {
   private assertIssueDecisionsFrozen(request: AuthRequest, kinds: Array<AuthRequestActionKind | null>): void {
     if (!request.issue_accounting) return;
     if (!kinds.some((kind) => kind === "issue_close" || kind === "issue_keep_open")) return;
+    throw new AuthQueueError("invalid_command", this.accountedRequestFrozenMessage(request));
+  }
+
+  private accountedRequestFrozenMessage(request: AuthRequest): string {
     const ref = shortRef(this.db, "auth_request", request.id);
-    throw new AuthQueueError("invalid_command",
-      `Request ${ref} accounted for every issue it lands when it was submitted; its closures and remainders change only by resubmitting: mandible auth request --supersedes ${ref} with --closes-issue <id> or --keeps-open <id>=<what remains>.`);
+    return `Request ${ref} accounted for every issue it lands when it was submitted; what it merges, its closures and its remainders change only by resubmitting: mandible auth request --supersedes ${ref} with --closes-issue <id> or --keeps-open <id>=<what remains>.`;
   }
 
   private stagedActionKind(request: AuthRequest, actionId: string): AuthRequestActionKind | null {
@@ -2872,6 +2880,7 @@ export class AuthQueue {
 
   setActionVeto(requestId: string, actionId: string, vetoed: boolean, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
     const request = this.requireActionVetoableRequest(requestId);
+    this.assertIssueDecisionsFrozen(request, [this.stagedActionKind(request, actionId)]);
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => setAuthRequestActionVeto(this.db, request.id, actionId, vetoed, this.now()));
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.requireRequest(request.id), action } });
@@ -3288,6 +3297,12 @@ export class AuthQueue {
           message:
             "The captured merge candidate and its change report are immutable; submit a guarded supersession for changed candidate bytes.",
         };
+      }
+      // Issue 9395f25 — the accounting decided every landed issue from these
+      // fields; closures and the merge that lands follow only from it.
+      const accountedFields = ["issue_closures", "issues", "repo", "cwd", "base_branch", "head_branch", "merge_head_sha"];
+      if (request.issue_accounting && accountedFields.some((field) => field in fields)) {
+        throw { status: 409, message: this.accountedRequestFrozenMessage(request) };
       }
       const priorSnapshot = authRequestSnapshot(this.db, request.id);
       const custody = actor
@@ -6811,10 +6826,9 @@ export class AuthQueue {
     if (rows.length === 0) return [];
     const identity = await observeRepoIdentities(this.db, [request.repo, ...rows.map(row => row.repo_id)],
       [request.target_repo_root, request.cwd, ...rows.map(row => row.repo_id)], this.phaseAbort.signal);
-    const repoRoots = this.authRequestRepoRoots(request);
-    const requestKeys = this.canonicalKeysForRequest(request, identity);
+    const sameRepo = requestRepoMatcher(this.db, request, identity);
     return rows
-      .filter(row => this.workUnitRepoMatchesRequest(row.repo_id, request, repoRoots, requestKeys, identity))
+      .filter(row => sameRepo.matches(row.repo_id))
       .map(row => row.branch);
   }
 
@@ -7910,8 +7924,7 @@ export class AuthQueue {
 
     const resolvedIds = new Set<string>();
     const explicitClosureIssueRefs = this.explicitClosureIssueRefs(completed);
-    const repoRoots = this.authRequestRepoRoots(completed);
-    const requestKeys = this.canonicalKeysForRequest(completed, identity);
+    const sameRepo = requestRepoMatcher(this.db, completed, identity);
 
     // 1. Match by auth_request_id
     const byAuthId = this.db
@@ -7937,7 +7950,7 @@ export class AuthQueue {
       for (const row of byBranch) {
         if (
           !resolvedIds.has(row.id) &&
-          this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots, requestKeys, identity)
+          sameRepo.matches(row.repo_id)
         ) {
           mutateWorkUnit(this.db, row.id, () => resolveStmt.run(now, completed.id, row.id));
           resolvedIds.add(row.id);
@@ -8200,11 +8213,7 @@ export class AuthQueue {
     const branchStates = new Map(candidates.map(row => [row.id, readBranch(row.branch)]));
     const identity = await observeRepoIdentities(this.db, [completed.repo, ...candidates.flatMap(row => [row.repo_id, row.repo_root])], [completed.target_repo_root, completed.cwd, ...candidates.flatMap(row => [row.repo_id, row.repo_root])], this.phaseAbort.signal);
     identity.assertCurrent();
-    const repoRoots = this.authRequestRepoRoots(completed);
-    // Issue ded17e6 — canonical repo identity for the completed request, computed
-    // once. Unifies path/symlink aliases and the `dotfiles`/`.dotfiles` repo-string
-    // mismatch so those work units resolve on merge.
-    const requestKeys = this.canonicalKeysForRequest(completed, identity);
+    const sameRepo = requestRepoMatcher(this.db, completed, identity);
     // Issue 93d978e — the caller owns one batch per pass so its git-build
     // outcomes (see AncestryBatch.hadFailure) can gate the retirement sweep;
     // the reachable-commit sets and branch tip maps are cached for this request
@@ -8218,13 +8227,13 @@ export class AuthQueue {
       if (row.branch === completed.head_branch) {
         continue;
       }
-      if (!this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots, requestKeys, identity)) {
+      if (!sameRepo.matches(row.repo_id)) {
         continue;
       }
       const branchSnapshotMatchesRequest = row.repo_root
-        ? this.workUnitRepoMatchesRequest(row.repo_root, completed, repoRoots, requestKeys, identity)
+        ? sameRepo.matches(row.repo_root)
         : true;
-      const roots = [...repoRoots];
+      const roots = [...sameRepo.roots];
       if (row.repo_root && branchSnapshotMatchesRequest) roots.unshift(row.repo_root);
       const uniqueRoots = [...new Set(roots.filter(Boolean))];
       const lastCommitHash = branchSnapshotMatchesRequest ? row.last_commit_hash : null;
@@ -8303,78 +8312,6 @@ export class AuthQueue {
       }
     }
     return false;
-  }
-
-  private authRequestRepoRoots(completed: AuthRequest): string[] {
-    const roots = new Set<string>();
-    for (const value of [completed.target_repo_root, completed.cwd]) {
-      if (value) roots.add(value);
-    }
-    if (completed.repo) {
-      try {
-        const rows = this.db.prepare(
-          `SELECT root FROM work_repos
-           WHERE id = ? OR name = ? OR root = ?`
-        ).all(completed.repo, completed.repo, completed.repo) as Array<{ root: string }>;
-        for (const row of rows) roots.add(row.root);
-      } catch {
-        // work_repos is unavailable in some lightweight tests.
-      }
-    }
-    return [...roots];
-  }
-
-  private workUnitRepoMatchesRequest(
-    repoValue: string,
-    completed: AuthRequest,
-    repoRoots: string[],
-    requestKeys: Set<string>,
-    identity: RepoIdentityObservation,
-  ): boolean {
-    // Issue ded17e6 — canonical identity match first. Resolve the work unit's
-    // repo value (a repo string like "dotfiles" or a checkout root path) to its
-    // canonical keys and match against the request's precomputed key set. This
-    // is what makes work unit repo_id="dotfiles" resolve against request
-    // repo=".dotfiles" when the registry roots both at one physical repo.
-    if (requestKeys.size > 0) {
-      for (const key of identity.keysForRef(repoValue)) {
-        if (requestKeys.has(key)) {
-          return true;
-        }
-      }
-      const pathKey = identity.keyForPath(repoValue);
-      if (pathKey && requestKeys.has(pathKey)) {
-        return true;
-      }
-    }
-    // String-based fallback (unchanged) — never matches less than before.
-    if (!completed.repo && repoRoots.length === 0) {
-      return true;
-    }
-    if (repoValue === completed.repo || repoRoots.includes(repoValue)) {
-      return true;
-    }
-    const suffix = `/${repoValue}`;
-    return Boolean(completed.repo?.endsWith(suffix)) || repoRoots.some((root) => root.endsWith(suffix));
-  }
-
-  /**
-   * Issue ded17e6 — the canonical repo keys reachable from a completed request:
-   * its resolved execution roots (target_repo_root, cwd) plus every key its
-   * free-form `repo` string resolves to through the registry.
-   */
-  private canonicalKeysForRequest(request: AuthRequest, identity: RepoIdentityObservation): Set<string> {
-    const keys = new Set<string>();
-    for (const path of [request.target_repo_root, request.cwd]) {
-      const key = identity.keyForPath(path);
-      if (key) {
-        keys.add(key);
-      }
-    }
-    for (const key of identity.keysForRef(request.repo)) {
-      keys.add(key);
-    }
-    return keys;
   }
 
   /**
