@@ -495,6 +495,7 @@ export type AuthChangeReport = {
 export const AUTH_REQUEST_ACTION_KINDS = [
   "comment_add",
   "issue_close",
+  "issue_keep_open",
   "worker_status_set",
   "label_add",
   "label_rm",
@@ -505,6 +506,23 @@ export const AUTH_REQUEST_ACTION_KINDS = [
 ] as const;
 export type AuthRequestActionKind = (typeof AUTH_REQUEST_ACTION_KINDS)[number];
 export type AuthRequestActionState = "staged" | "applied" | "failed" | "skipped_stale" | "vetoed";
+
+/** Issue 9395f25 — an issue a merge request lands, by short ref. */
+export interface AccountedIssue {
+  issue: string;
+  issue_id: string;
+  title: string;
+}
+
+/**
+ * Issue 9395f25 — what a merge request does to each issue it lands, computed
+ * at submission. `closing` is in application order, children first.
+ */
+export interface IssueAccounting {
+  closing: Array<AccountedIssue & { by: "closes_issue" | "done" }>;
+  kept_open: Array<AccountedIssue & { remainder: string }>;
+  held: Array<AccountedIssue & { open_children: string[]; unmerged_units: Array<{ id: string; branch: string | null }> }>;
+}
 
 export type AuthRequestActionInput = {
   kind: AuthRequestActionKind;
@@ -558,6 +576,7 @@ export type AuthRequest = {
   post_merge_handoff?: string | null;
   issue_references?: string[] | null;
   issue_closures?: string[] | null;
+  issue_accounting?: IssueAccounting | null;
   issue_ids?: string[] | null;
   issues?: string[] | null;
   depends_on_ids?: string[];

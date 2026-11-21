@@ -39,6 +39,7 @@ beforeEach(() => {
       activated_at INTEGER,
       auth_request_id TEXT,
       resolved_at INTEGER,
+      landed_commit TEXT,
       created_at INTEGER NOT NULL DEFAULT 0
     );
 
@@ -279,7 +280,7 @@ describe("work unit reconciler", () => {
         id TEXT PRIMARY KEY, type TEXT NOT NULL, head_branch TEXT,
         repo TEXT, cwd TEXT, target_repo_root TEXT, status TEXT NOT NULL,
         exit_code INTEGER, created_at INTEGER NOT NULL, resolved_at INTEGER,
-        merge_finalized_at INTEGER
+        merge_finalized_at INTEGER, output TEXT NOT NULL DEFAULT ''
       );
       INSERT INTO ledger_projects VALUES (
         'project-dotfiles', 'dotfiles', 'dotfiles', 'example/dotfiles', '',
@@ -296,7 +297,7 @@ describe("work unit reconciler", () => {
       );
       INSERT INTO auth_requests VALUES (
         'auth-dotfiles', 'merge', 'feature/dot123', '.dotfiles',
-        '${repo}', '${repo}', 'completed', 0, 20, 30, 40
+        '${repo}', '${repo}', 'completed', 0, 20, 30, 40, ''
       );
     `);
 

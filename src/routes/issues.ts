@@ -17,7 +17,7 @@ import {
 } from "../session-liveness.js";
 import { sessionConversationTarget, summarizeSessionKey } from "../session-summary.js";
 import { mapWorkUnitRow, computeWorkUnitLiveness } from "../work-unit-utils.js";
-import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore, storedWorkerStatusError } from "../ledger/store.js";
+import { ledgerIssueLifecycleError, LedgerOpenChildrenError, LedgerSingletonKindError, LedgerStore, storedWorkerStatusError } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
 import {
   attributionForRequest,
@@ -1939,6 +1939,10 @@ export function registerIssueRoutes(
       }
     } catch (error) {
       if (sendSingletonKindConflict(res, error)) return;
+      if (error instanceof LedgerOpenChildrenError) {
+        sendJson(res, 409, { error: error.message, code: error.code, open_children: error.openChildRefs });
+        return;
+      }
       if (isBodyRevisionConflict(error)) {
         sendJson(res, 409, { error: error instanceof Error ? error.message : "stale body revision" });
         return;

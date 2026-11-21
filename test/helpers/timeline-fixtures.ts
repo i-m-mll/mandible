@@ -180,6 +180,8 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
   });
   store.setLabel(shared.id, "needs-review", true, "mandible", SYSTEM_ACTOR);
   store.setLabel(nested.id, "needs-review", true, "mandible", SYSTEM_ACTOR);
+  store.setIssueStatus(rootA.id, "closed", "delivered", SYSTEM_ACTOR);
+  store.setIssueStatus(rootA.id, "open", null, SYSTEM_ACTOR);
   for (const [parent, child] of [
     [rootA, shared],
     [shared, nested],
@@ -194,8 +196,6 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
       provenance: "manual",
     });
   }
-  store.setIssueStatus(rootA.id, "closed", "delivered", SYSTEM_ACTOR);
-  store.setIssueStatus(rootA.id, "open", null, SYSTEM_ACTOR);
   store.setLabel(rootB.id, "needs-review", true, "mandible", SYSTEM_ACTOR);
   store.setLabel(rootB.id, "needs-review", false, "mandible", SYSTEM_ACTOR);
   db.prepare(

@@ -100,7 +100,7 @@ describe("auth queue", () => {
       await queue.approveAsOperator(request.id, operatorCaller(signing.operatorId), queue.lifecycleRevision(request.id)!);
       await waitForStatus(queue, request.id, "completed");
       expect(signer.touches).toHaveLength(4);
-      const touch = signer.touches[1]!;
+      const touch = signer.touches.at(-1)!;
       expect(touch).toMatchObject({ namespace: "git" });
       const tip = git(repo, ["rev-parse", "main"]);
       const published = git(repo, ["cat-file", "commit", tip]);

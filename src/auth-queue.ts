@@ -24,6 +24,7 @@ import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js
 import {
   authorizedMergeSignerLines,
   extractSuccessfulMergeCommitSha,
+  landedCommitOfMerge,
   extractAtomicMergeState,
   isValidCommitSha,
   verifyApprovedMerge,
@@ -120,6 +121,7 @@ import {
 } from "./ledger/operational-links.js";
 import { getLedgerIssueContentDigest } from "./ledger/issue-heads.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
+import { accountLandedIssues, describeAccountingRefusals, type IssueAccounting } from "./landed-issues.js";
 import { LedgerStore } from "./ledger/store.js";
 import {
   assertEvidenceMethod,
@@ -359,7 +361,7 @@ function completionSignal(): { promise: Promise<void>; resolve(): void } {
 }
 
 export class AuthQueueError extends Error {
-  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "lifecycle_precondition_required" | "lifecycle_conflict" | "recovery_refused" | "operator_required";
+  readonly code: "not_found" | "invalid_status" | "invalid_command" | "issue_accounting_refused" | "merge_conflict" | "merge_check_failed" | "requester_control_required" | "action_disposition_required" | "target_mismatch" | "custody_required" | "custody_conflict" | "lifecycle_precondition_required" | "lifecycle_conflict" | "recovery_refused" | "operator_required";
   readonly status?: AuthRequestStatus;
   readonly details?: unknown;
 
@@ -1999,6 +2001,8 @@ export class AuthQueue {
         }
       }
 
+      const accounted = await this.accountSubmissionIssues(payload, mergeCheck, custody);
+
       const now = this.now();
       const requestId = randomUUID();
       let request: AuthRequest = {
@@ -2036,7 +2040,8 @@ export class AuthQueue {
         deletions: payload.deletions ?? 0,
         post_merge_handoff: payload.post_merge_handoff ?? null,
         issue_references: payload.issue_references ?? null,
-        issue_closures: payload.issue_closures ?? payload.issues ?? null,
+        issue_closures: accounted?.closures ?? payload.issue_closures ?? payload.issues ?? null,
+        issue_accounting: accounted?.accounting ?? null,
         issue_ids: null,
         issues: payload.issues ?? null,
         depends_on_ids: canonicalAuthDependencies(this.db, payload.depends_on_ids === undefined ? predecessor?.depends_on_ids ?? [] : payload.depends_on_ids, requestId),
@@ -2094,6 +2099,7 @@ export class AuthQueue {
         post_merge_handoff,
         issue_references,
         issue_closures,
+        issue_accounting_json,
         issue_ids,
         issues,
         depends_on_id,
@@ -2149,6 +2155,7 @@ export class AuthQueue {
         @post_merge_handoff,
         @issue_references,
         @issue_closures,
+        @issue_accounting_json,
         @issue_ids,
         @issues,
         NULL,
@@ -2172,7 +2179,7 @@ export class AuthQueue {
       )`
       );
 
-      const actions = normalizeAuthActionInputs(payload.actions);
+      const actions = accounted?.actions ?? normalizeAuthActionInputs(payload.actions);
       const supersessionIdentity = predecessor ? await this.observeRequestIdentities([predecessor, request]) : null;
       if (predecessor) this.assertObservation(predecessor.id, predecessorObservation!);
       const dispositions = predecessor
@@ -2222,6 +2229,7 @@ export class AuthQueue {
           post_merge_handoff: request.post_merge_handoff ?? null,
           issue_references: request.issue_references ? JSON.stringify(request.issue_references) : null,
           issue_closures: request.issue_closures ? JSON.stringify(request.issue_closures) : null,
+          issue_accounting_json: request.issue_accounting ? JSON.stringify(request.issue_accounting) : null,
           issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null,
           issues: request.issues ? JSON.stringify(request.issues) : null
         });
@@ -2335,6 +2343,91 @@ export class AuthQueue {
 
       return request;
     } finally { finishObservation(); }
+  }
+
+  /**
+   * Issue 9395f25 — account for every issue the merge lands and turn the
+   * decisions into the request's staged closures and remainders, closing
+   * children before their parents. Refuses a request that leaves a landed
+   * issue undecided or names a held issue.
+   */
+  private async accountSubmissionIssues(
+    payload: AuthRequestInput,
+    mergeCheck: AuthMergeCheckReport,
+    custody: WorkUnitCustody | null,
+  ): Promise<{ accounting: IssueAccounting; actions: AuthRequestActionInput[]; closures: string[] } | null> {
+    if ((payload.type ?? "merge") !== "merge" || mergeCheck.status !== "clean" || !mergeCheck.target_head_sha) return null;
+    if (!payload.cwd || !payload.head_branch || !payload.repo) return null;
+    // The submit route refuses a merge whose project is not registered; a
+    // project the registry does not know has no issues to account for.
+    const project = resolveProjectRef(this.db, payload.repo);
+    if (!project.ok) return null;
+    const headSha = payload.merge_head_sha ?? (await this.resolveBranchHeadForCheck(payload.cwd, payload.head_branch));
+    if (!headSha) throw new AuthQueueError("merge_check_failed", `Head branch ${payload.head_branch} does not resolve to a commit.`);
+
+    const actions = normalizeAuthActionInputs(payload.actions);
+    const issueIdOf = (ref: string) => {
+      const resolved = resolveOperationalIssueRef(this.db, ref, payload.repo);
+      return resolved.ok ? resolved.issue_id : null;
+    };
+    const closeActions = new Map<string, AuthRequestActionInput>();
+    const unaccountedCloses: AuthRequestActionInput[] = [];
+    const keepActions = new Map<string, AuthRequestActionInput>();
+    const closeRefs = new Set(actions.filter((action) => action.kind === "issue_close").map((action) => action.target_issue_ref));
+    const legacyCloses = (payload.issue_closures ?? payload.issues ?? []).filter((ref) => !closeRefs.has(ref))
+      .map((ref): AuthRequestActionInput => ({ kind: "issue_close", target_issue_ref: ref, payload: {} }));
+    for (const action of [...actions, ...legacyCloses]) {
+      if (action.kind !== "issue_close" && action.kind !== "issue_keep_open") continue;
+      const issueId = issueIdOf(action.target_issue_ref);
+      const decisions = action.kind === "issue_close" ? closeActions : keepActions;
+      if (!issueId) {
+        if (action.kind === "issue_keep_open") throw new AuthQueueError("invalid_command", `--keeps-open ${action.target_issue_ref} does not name an issue.`);
+        unaccountedCloses.push(action);
+      } else if (!decisions.has(issueId)) {
+        decisions.set(issueId, action);
+      }
+    }
+
+    const result = await accountLandedIssues(this.db, {
+      projectId: project.project!.id,
+      gitRoot: payload.cwd,
+      baseSha: mergeCheck.target_head_sha,
+      headSha,
+      ownIssueId: custody?.ledger_issue_id ?? null,
+      closes: new Set(closeActions.keys()),
+      keepsOpen: new Map([...keepActions].map(([issueId, action]) => [issueId, String(action.payload.remainder)])),
+    });
+    if (!result.ok) {
+      throw new AuthQueueError("issue_accounting_refused", describeAccountingRefusals(result.refusals), undefined,
+        { refusals: result.refusals, accounting: result.accounting });
+    }
+    const { accounting } = result;
+    const kept = new Set(accounting.kept_open.map((issue) => issue.issue_id));
+    for (const [issueId, action] of keepActions) {
+      if (!kept.has(issueId)) throw new AuthQueueError("invalid_command", `--keeps-open ${action.target_issue_ref} refused: only an open issue that is neither a tracker nor a maintenance issue is kept open.`);
+    }
+    // Named actions keep their places; the closures fill the closure places
+    // children first, and the closures the daemon derived follow.
+    const closingOrder = new Map(accounting.closing.map((issue, index) => [issue.issue_id, index]));
+    const named = new Set([...closeActions.values()]);
+    const staged: AuthRequestActionInput[] = [
+      ...[...actions, ...legacyCloses].filter((action) => action.kind !== "issue_close" || named.has(action) || unaccountedCloses.includes(action)),
+      ...accounting.closing.filter((issue) => !closeActions.has(issue.issue_id))
+        .map((issue): AuthRequestActionInput => ({ kind: "issue_close", target_issue_ref: issue.issue, payload: {} })),
+    ];
+    const closingOf = (action: AuthRequestActionInput) => {
+      if (action.kind !== "issue_close") return undefined;
+      const issueId = issueIdOf(action.target_issue_ref);
+      return issueId === null ? undefined : closingOrder.get(issueId);
+    };
+    const slots = staged.flatMap((action, index) => closingOf(action) === undefined ? [] : [index]);
+    const ordered = slots.map((index) => staged[index]!).sort((a, b) => closingOf(a)! - closingOf(b)!);
+    slots.forEach((slot, index) => { staged[slot] = ordered[index]!; });
+    return {
+      accounting,
+      actions: staged,
+      closures: staged.filter((action) => action.kind === "issue_close").map((action) => action.target_issue_ref),
+    };
   }
 
   private resolveSubmissionCustody(payload: AuthRequestInput, actor: AuthLifecycleActor): WorkUnitCustody | null {
@@ -7389,6 +7482,12 @@ export class AuthQueue {
           throw new Error(`Issue-close action did not establish closed/delivered for ${action.target_issue_ref}`);
         }
         break;
+      case "issue_keep_open":
+        if (target.status === "closed") {
+          return { state: "applied", detail: `Issue was already closed (${target.resolution}); no remainder recorded.`, appliedAt: now };
+        }
+        store.setIssueRemainder(issueId, stringPayload(action.payload, "remainder"), actor, "auth_queue");
+        break;
       case "worker_status_set": {
         const value = stringPayload(action.payload, "value");
         if (!VALID_WORKER_STATUSES.includes(value)) {
@@ -7775,11 +7874,13 @@ export class AuthQueue {
 
   private resolveDirectWorkUnitsFromIdentities(completed: AuthRequest, identity: RepoIdentityObservation): string[] {
     const now = this.now();
-    const resolveStmt = this.db.prepare(
+    const landed = landedCommitOfMerge(completed.output);
+    const update = this.db.prepare(
       `UPDATE work_units
-       SET state = 'resolved', resolved_at = ?, auth_request_id = COALESCE(auth_request_id, ?)
+       SET state = 'resolved', resolved_at = ?, auth_request_id = COALESCE(auth_request_id, ?), landed_commit = ?
        WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
     );
+    const resolveStmt = { run: (at: number, requestId: string, id: string) => update.run(at, requestId, landed, id) };
 
     const resolvedIds = new Set<string>();
     const explicitClosureIssueRefs = this.explicitClosureIssueRefs(completed);
@@ -7896,16 +7997,19 @@ export class AuthQueue {
    */
   private async resolveAncestryWorkUnitsOnMerge(completed: AuthRequest, acceptOwnedSuccessor?: (decision: string) => void): Promise<string[]> {
     const now = this.now();
-    const recoverMergedStmt = this.db.prepare(
+    const landed = landedCommitOfMerge(completed.output);
+    const recoverMerged = this.db.prepare(
       `UPDATE work_units
-       SET state = 'resolved', resolved_at = ?
+       SET state = 'resolved', resolved_at = ?, landed_commit = ?
        WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
     );
-    const recoverClosedMergedStmt = this.db.prepare(
+    const recoverMergedStmt = { run: (at: number, id: string) => recoverMerged.run(at, landed, id) };
+    const recoverClosedMerged = this.db.prepare(
       `UPDATE work_units
-       SET state = 'resolved', resolved_at = ?, auth_request_id = COALESCE(auth_request_id, ?)
+       SET state = 'resolved', resolved_at = ?, auth_request_id = COALESCE(auth_request_id, ?), landed_commit = ?
        WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
     );
+    const recoverClosedMergedStmt = { run: (at: number, requestId: string, id: string) => recoverClosedMerged.run(at, requestId, landed, id) };
 
     // Stage 2 already attached direct matches to this request. Carry them into
     // the durable Stage 3 output so auth:finalized reports the complete set,

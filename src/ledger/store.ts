@@ -156,6 +156,26 @@ const SINGLETON_CONFLICT_LISTED_IDS = 3;
 
 export type SingletonKindTransition = "create" | "kind_change" | "reopen";
 
+/** Issue 9395f25 — an issue closes only after its children; there is no override. */
+export class LedgerOpenChildrenError extends Error {
+  readonly code = "open_children";
+  constructor(readonly issueRef: string, readonly openChildRefs: string[]) {
+    super(`cannot close ${issueRef}: its children ${openChildRefs.join(", ")} are open. Close them, keep ${issueRef} open, or re-parent them first.`);
+  }
+}
+
+/** Short refs of the open children of `issueId`, oldest link first. */
+export function openChildRefs(db: Db, issueId: string): string[] {
+  return (db.prepare(
+    `SELECT child.short_id AS ref
+       FROM ledger_relationship_edges e
+       JOIN ledger_issues child ON child.id = e.target_issue_id AND child.deleted_at IS NULL
+      WHERE e.source_issue_id = ? AND +e.source_entity_type = 'issue' AND +e.target_entity_type = 'issue'
+        AND +e.link_type = 'parent_child' AND e.deleted_at IS NULL AND child.status = 'open'
+      ORDER BY e.created_at, e.id`,
+  ).all(issueId) as Array<{ ref: string }>).map((row) => row.ref);
+}
+
 export class LedgerSingletonKindError extends Error {
   readonly code = "singleton_kind_open";
   constructor(
@@ -248,7 +268,7 @@ export interface UnlinkRelationshipEdgesInput {
 
 export interface ReconcileTextIssueReferencesInput {
   source_issue_id: string;
-  source_entity_type: "issue_body" | "comment";
+  source_entity_type: "issue_body" | "comment" | "issue_remainder";
   source_entity_id: string;
   body: string;
   source?: LedgerEventSource;
@@ -846,6 +866,11 @@ export class LedgerStore {
         kind: existing.kind,
         status,
       });
+      if (status === "closed") {
+        const children = openChildRefs(this.db, id);
+        if (children.length > 0) throw new LedgerOpenChildrenError(existing.short_id || id, children);
+        if (existing.remainder !== null) this.writeIssueRemainder(existing, null, actor, source, emitted);
+      }
       this.db.prepare(
         `UPDATE ledger_issues
          SET status = ?, resolution = ?, closed_at = ?, updated_at = ?
@@ -1969,6 +1994,68 @@ export class LedgerStore {
     const degraded = run();
     this.emitAfterCommit(emitted);
     return degraded;
+  }
+
+  /**
+   * Issue 9395f25 — what remains of an open issue that a merge kept open. Each
+   * set replaces the previous text; `null` clears it, as closing does. Its
+   * `[issue:<id>]` references are recorded like any authored reference.
+   */
+  setIssueRemainder(
+    id: string,
+    remainder: string | null,
+    actor: LedgerActorInput,
+    source: LedgerEventSource = "mandible",
+  ): LedgerIssue {
+    const existing = this.requireIssue(id);
+    const text = remainder === null ? null : remainder.trim();
+    if (text === "") throw new Error("A remainder must say what remains.");
+    if (text !== null && existing.status !== "open") throw new Error(`Issue ${existing.short_id || id} is closed; only an open issue has a remainder.`);
+    if (existing.remainder === text) return existing;
+    const emitted: LedgerSsePayload[] = [];
+    const issue = this.db.transaction(() => {
+      this.writeIssueRemainder(existing, text, actor, source, emitted);
+      return this.getIssue(id);
+    })();
+    this.emitAfterCommit(emitted);
+    return issue;
+  }
+
+  private writeIssueRemainder(
+    existing: LedgerIssue,
+    remainder: string | null,
+    actor: LedgerActorInput,
+    source: LedgerEventSource,
+    emitted: LedgerSsePayload[],
+  ): void {
+    const now = Date.now();
+    const normalizedActor = this.resolveActor(actor);
+    this.db.prepare("UPDATE ledger_issues SET remainder = ?, remainder_set_at = ?, updated_at = ? WHERE id = ?")
+      .run(remainder, remainder === null ? null : now, now, existing.id);
+    this.applyTextIssueReferences({
+      source_issue_id: existing.id,
+      source_entity_type: "issue_remainder",
+      source_entity_id: existing.id,
+      body: remainder ?? "",
+      source,
+      actor,
+    }, emitted);
+    const payload = { issue_id: existing.id, previous_remainder: existing.remainder, remainder };
+    const event = this.insertEvent({
+      entity_type: "issue",
+      entity_id: existing.id,
+      event_type: "issue.remainder.updated",
+      actor_id: normalizedActor.actor_id,
+      actor_type: normalizedActor.actor_type,
+      actor_user_id: normalizedActor.actor_user_id,
+      evidence_method: normalizedActor.evidence_method,
+      evidence_id: normalizedActor.evidence_id,
+      source,
+      payload,
+      project_id: existing.project_id,
+      occurred_at: now,
+    });
+    emitted.push({ event, payload });
   }
 
   reconcileTextIssueReferences(input: ReconcileTextIssueReferencesInput): void {
