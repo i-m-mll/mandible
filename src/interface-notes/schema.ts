@@ -3,18 +3,19 @@
  * was made on, and `origin` the embedding page's origin for a note made through the embed (null on Mandible's own).
  */
 /**
- * The operator's decisions on embedding pages: one row per origin as written and the directory its listener
- * ran in when the page asked. `pending` until the operator allows it in Mandible's own interface.
+ * The operator's decisions on other apps: one row per app of a project, `pending` until the operator allows it
+ * in Mandible's own interface. `origin` and `directory` are where the latest page that asked was served from,
+ * shown to the operator and never part of the decision.
  */
 export const INTERFACE_NOTE_EMBED_GRANTS_SQL = `CREATE TABLE interface_note_embed_grants (
+    project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE CASCADE,
+    app TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('pending', 'granted')),
     origin TEXT NOT NULL,
     directory TEXT NOT NULL,
-    app TEXT NOT NULL,
-    project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE CASCADE,
-    state TEXT NOT NULL CHECK(state IN ('pending', 'granted')),
     requested_at INTEGER NOT NULL,
     decided_at INTEGER,
-    PRIMARY KEY (origin, directory)
+    PRIMARY KEY (project_id, app)
   )`;
 
 export const INTERFACE_NOTES_SCHEMA_SQL: readonly string[] = [

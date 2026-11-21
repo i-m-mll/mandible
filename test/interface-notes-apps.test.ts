@@ -10,8 +10,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
+import { MIGRATIONS } from "../src/db-migrations.js";
 import { INTERFACE_NOTES_PROJECT_SETTING, type EmbedGrant, type EmbedIdentity, type FileInterfaceNotesResult, type InterfaceNote } from "../src/interface-notes/contract.js";
-import { EmbedGrants, PENDING_GRANT_TTL_MS, PENDING_GRANTS_PER_PORT } from "../src/interface-notes/embed-grants.js";
+import { EmbedGrants, PENDING_GRANT_TTL_MS } from "../src/interface-notes/embed-grants.js";
 import type { EmbedProcessProbe } from "../src/interface-notes/embed-identity.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -133,10 +134,14 @@ it("files an app's notes onto a new issue of the app's project, where the notes 
   })).body).toMatchObject({ error: "receiving_project_unset" });
 });
 
+const identity = (origin: string) => call<EmbedIdentity & { error?: string; grant?: EmbedGrant }>("POST", "/api/interface-notes/embed-identity", { origin });
+const grantList = async () => (await call<{ grants: EmbedGrant[] }>("GET", "/api/interface-notes/embed-grants")).body.grants;
+const projectId = (key: string) => (db.prepare("SELECT id FROM ledger_projects WHERE project_key = ?").get(key) as { id: string }).id;
+const allow = (app: string, project = "feedbax") => call("PUT", "/api/interface-notes/embed-grants", { project: projectId(project), app });
+const revoke = (app: string, project = "feedbax") =>
+  call("DELETE", `/api/interface-notes/embed-grants?project=${encodeURIComponent(projectId(project))}&app=${encodeURIComponent(app)}`);
+
 it("names the app of an allowed loopback origin from its listener's checkout, a worktree included, and nothing else", async () => {
-  const identity = (origin: string) => call<EmbedIdentity & { error?: string; grant?: EmbedGrant }>("POST", "/api/interface-notes/embed-identity", { origin });
-  const grants = async () => (await call<{ grants: EmbedGrant[] }>("GET", "/api/interface-notes/embed-grants")).body.grants;
-  const allow = (origin: string, directory: string) => call("PUT", "/api/interface-notes/embed-grants", { origin, directory });
   const worktree = path.join(root, "feedbax-worktrees", "studio-notes");
   const web = path.join(worktree, "web");
   machine.checkouts.set(web, { root: worktree, remote: STUDIO_REMOTE });
@@ -146,23 +151,23 @@ it("names the app of an allowed loopback origin from its listener's checkout, a 
   machine.listeners.set(5175, [{ pid: 31, cwd: web }, { pid: 32, cwd: path.join(root, "unregistered") }]);
   machine.listeners.set(5177, [{ pid: 51, cwd: web }, { pid: 52, cwd: null }]);
 
-  // Unknown until allowed: the request is recorded as pending, and each origin as written is its own request.
-  expect(await identity(EMBED_ORIGIN)).toMatchObject({ status: 403, body: { error: "origin_not_granted", grant: { origin: EMBED_ORIGIN, app: "feedbax:web", state: "pending" } } });
+  // Unknown until allowed: the app's request is recorded as pending, once however many names the page asks under.
+  expect(await identity(EMBED_ORIGIN)).toMatchObject({ status: 403, body: { error: "origin_not_granted", grant: { origin: EMBED_ORIGIN, directory: web, app: "feedbax:web", state: "pending" } } });
   expect((await identity("http://[::1]:5173")).body).toMatchObject({ error: "origin_not_granted" });
-  expect((await grants()).map((grant) => [grant.origin, grant.state])).toEqual(expect.arrayContaining([[EMBED_ORIGIN, "pending"], ["http://[::1]:5173", "pending"]]));
+  expect((await grantList()).map((grant) => [grant.app, grant.origin, grant.state])).toEqual([["feedbax:web", "http://[::1]:5173", "pending"]]);
 
-  expect((await allow(EMBED_ORIGIN, web)).status).toBe(200);
+  expect((await allow("feedbax:web")).status).toBe(200);
   const resolved = await identity(EMBED_ORIGIN);
   expect(resolved.status).toBe(200);
   expect(resolved.body).toMatchObject({ app: "feedbax:web", project: { key: "feedbax" } });
-  expect((await identity("http://[::1]:5173")).status).toBe(403);
-  // A server in another directory on the allowed port is a new request.
+  expect((await identity("http://[::1]:5173")).status).toBe(200);
+  // Another app on the allowed port asks.
   machine.listeners.set(5173, [{ pid: 13, cwd: worktree }]);
   machine.checkouts.set(worktree, { root: worktree, remote: STUDIO_REMOTE });
-  expect(await identity(EMBED_ORIGIN)).toMatchObject({ status: 403, body: { grant: { app: "feedbax:." } } });
+  expect(await identity(EMBED_ORIGIN)).toMatchObject({ status: 403, body: { grant: { app: "feedbax:.", state: "pending" } } });
   machine.listeners.set(5173, [{ pid: 11, cwd: web }]);
   expect((await identity(EMBED_ORIGIN)).status).toBe(200);
-  expect((await call("DELETE", `/api/interface-notes/embed-grants?origin=${encodeURIComponent(EMBED_ORIGIN)}&directory=${encodeURIComponent(web)}`)).status).toBe(204);
+  expect((await revoke("feedbax:web")).status).toBe(204);
   expect((await identity(EMBED_ORIGIN)).status).toBe(403);
 
   expect(await identity("https://example.com:5173")).toMatchObject({ status: 400, body: { error: "origin_not_loopback" } });
@@ -172,37 +177,66 @@ it("names the app of an allowed loopback origin from its listener's checkout, a 
   }
 });
 
+it("covers an allowed app's server in every checkout of its project, on any port, and no other project's", async () => {
+  const first = path.join(root, "feedbax-worktrees", "one");
+  const second = path.join(root, "feedbax-worktrees", "two");
+  for (const checkout of [first, second]) machine.checkouts.set(path.join(checkout, "web"), { root: checkout, remote: STUDIO_REMOTE });
+  machine.listeners.set(5173, [{ pid: 11, cwd: path.join(first, "web") }]);
+  await identity(EMBED_ORIGIN);
+  await allow("feedbax:web");
+  machine.listeners.set(6006, [{ pid: 12, cwd: path.join(second, "web") }]);
+  expect(await identity("http://127.0.0.1:6006")).toMatchObject({ status: 200, body: { app: "feedbax:web" } });
+  // No new request; the row shows the latest page served under the grant.
+  expect((await grantList()).map((grant) => [grant.app, grant.origin, grant.directory, grant.state]))
+    .toEqual([["feedbax:web", "http://127.0.0.1:6006", path.join(second, "web"), "granted"]]);
+  // The same path in another project is that project's app.
+  const mandibleRoot = path.join(root, "mandible");
+  machine.checkouts.set(path.join(mandibleRoot, "web"), { root: mandibleRoot, remote: "git@github.com:example/mandible.git" });
+  machine.listeners.set(6006, [{ pid: 13, cwd: path.join(mandibleRoot, "web") }]);
+  expect(await identity("http://127.0.0.1:6006")).toMatchObject({ status: 403, body: { grant: { app: "mandible:web", state: "pending" } } });
+});
+
+it("ties a grant to its project, not to the key its app is written with", () => {
+  const grants = new EmbedGrants(db, probe);
+  db.prepare(`INSERT INTO interface_note_embed_grants (project_id, app, state, origin, directory, requested_at, decided_at)
+    VALUES (?, 'feedbax:web', 'granted', 'http://localhost:5173', '/w/web', 1, 2)`).run(projectId("mandible"));
+  // A row keyed to another project does not grant feedbax's app.
+  expect(grants.isGranted("feedbax:web")).toBe(false);
+  db.prepare("UPDATE interface_note_embed_grants SET project_id = ? WHERE project_id = ?").run(projectId("feedbax"), projectId("mandible"));
+  expect(grants.isGranted("feedbax:web")).toBe(true);
+});
+
 it("never names Mandible's own app for a page, even one served from the root of a Mandible checkout", async () => {
   const mandibleRoot = path.join(root, "mandible");
   machine.checkouts.set(mandibleRoot, { root: mandibleRoot, remote: "git@github.com:example/mandible.git" });
   machine.listeners.set(5180, [{ pid: 61, cwd: mandibleRoot }]);
-  const asked = await call<{ grant: EmbedGrant }>("POST", "/api/interface-notes/embed-identity", { origin: "http://localhost:5180" });
-  expect(asked.body.grant.app).toBe("mandible:.");
-  await call("PUT", "/api/interface-notes/embed-grants", { origin: "http://localhost:5180", directory: mandibleRoot });
-  const granted = await call<EmbedIdentity>("POST", "/api/interface-notes/embed-identity", { origin: "http://localhost:5180" });
+  const asked = await identity("http://localhost:5180");
+  expect(asked.body.grant?.app).toBe("mandible:.");
+  await allow("mandible:.", "mandible");
+  const granted = await identity("http://localhost:5180");
   expect(granted.body.app).toBe("mandible:.");
   expect(await unfiled(`?app=${encodeURIComponent("mandible:.")}`)).toEqual([]);
 });
 
-it("accepts the bridge's writes only while the page's origin holds a grant for the note's app", async () => {
+it("accepts the bridge's writes only while the note's app is granted", async () => {
   const web = path.join(root, "feedbax", "web");
   machine.checkouts.set(web, { root: path.join(root, "feedbax"), remote: STUDIO_REMOTE });
   machine.listeners.set(5173, [{ pid: 11, cwd: web }]);
-  await call("POST", "/api/interface-notes/embed-identity", { origin: EMBED_ORIGIN });
-  await call("PUT", "/api/interface-notes/embed-grants", { origin: EMBED_ORIGIN, directory: web });
+  await identity(EMBED_ORIGIN);
+  await allow("feedbax:web");
   const scoped = (route: string) => `${route}${route.includes("?") ? "&" : "?"}embed_origin=${encodeURIComponent(EMBED_ORIGIN)}`;
   const status = async (method: string, route: string, body?: unknown) => (await call(method, scoped(route), body)).status;
 
   expect(await status("POST", "/api/interface-notes", input("a", "feedbax:web", EMBED_ORIGIN))).toBe(201);
   expect(await status("POST", "/api/interface-notes", input("b", "feedbax:web", EMBED_ORIGIN))).toBe(201);
-  // Another app's notes, or a note claiming another origin, are outside the page's grant.
+  // Another app's notes, or a note claiming another origin than the page's, are refused.
   expect(await status("POST", "/api/interface-notes", input("other", "feedbax:desktop", EMBED_ORIGIN))).toBe(403);
   expect(await status("POST", "/api/interface-notes", input("port", "feedbax:web", "http://localhost:5199"))).toBe(403);
   await note("own");
   expect(await status("PATCH", "/api/interface-notes/own", { text: "Changed" })).toBe(403);
   expect(await status("PATCH", "/api/interface-notes/a", { text: "Changed" })).toBe(200);
 
-  expect((await call("DELETE", `/api/interface-notes/embed-grants?origin=${encodeURIComponent(EMBED_ORIGIN)}&directory=${encodeURIComponent(web)}`)).status).toBe(204);
+  expect((await revoke("feedbax:web")).status).toBe(204);
   // A page still open after the revocation can write nothing more.
   expect(await status("PATCH", "/api/interface-notes/a", { text: "Again" })).toBe(403);
   expect(await status("DELETE", "/api/interface-notes/b")).toBe(403);
@@ -211,22 +245,30 @@ it("accepts the bridge's writes only while the page's origin holds a grant for t
   expect((await call("DELETE", "/api/interface-notes/b")).status).toBe(204);
 });
 
-it("keeps unanswered requests for a week, and only the latest few per port", async () => {
+it("keeps an unanswered request for a week, and an allowed app for good", async () => {
   const grants = new EmbedGrants(db, probe);
-  const dirs = ["a", "b", "c", "d"].map((name) => path.join(root, "feedbax", name));
-  for (const dir of dirs) machine.checkouts.set(dir, { root: path.join(root, "feedbax"), remote: STUDIO_REMOTE });
-  machine.listeners.set(5173, [{ pid: 11, cwd: dirs[0] }]);
-  machine.listeners.set(5174, [{ pid: 12, cwd: dirs[3] }]);
+  const [web, desktop] = ["web", "desktop"].map((name) => path.join(root, "feedbax", name));
+  for (const dir of [web, desktop]) machine.checkouts.set(dir, { root: path.join(root, "feedbax"), remote: STUDIO_REMOTE });
+  machine.listeners.set(5173, [{ pid: 11, cwd: web }]);
+  machine.listeners.set(5174, [{ pid: 12, cwd: desktop }]);
+  await grants.access("http://localhost:5173", 0);
   await grants.access("http://localhost:5174", 0);
-  // One port asks under many names; only its latest few stay.
-  for (const [index, host] of ["localhost", "a.localhost", "b.localhost", "c.localhost", "d.localhost"].entries()) {
-    await grants.access(`http://${host}:5173`, 1000 + index);
-  }
-  const listed = (now: number) => grants.list(now).map((grant) => grant.origin);
-  expect(listed(2000).filter((origin) => origin.endsWith(":5173"))).toEqual(
-    ["http://d.localhost:5173", "http://c.localhost:5173", "http://b.localhost:5173"].slice(0, PENDING_GRANTS_PER_PORT));
-  expect(listed(2000)).toContain("http://localhost:5174");
-  // An allowed request does not expire.
-  grants.allow("http://d.localhost:5173", dirs[0]);
-  expect(listed(PENDING_GRANT_TTL_MS + 2000)).toEqual(["http://d.localhost:5173"]);
+  grants.allow({ project_id: projectId("feedbax"), app: "feedbax:web" });
+  expect(grants.list(PENDING_GRANT_TTL_MS + 1).map((grant) => grant.app)).toEqual(["feedbax:web"]);
+});
+
+it("moves grants by origin and directory to one per app, a granted row winning", () => {
+  const statements = (version: number) => MIGRATIONS.find((migration) => migration.version === version)!.statements as readonly string[];
+  db.exec("DROP TABLE interface_note_embed_grants");
+  db.exec(statements(244).find((sql) => sql.includes("CREATE TABLE interface_note_embed_grants"))!);
+  const insert = db.prepare("INSERT INTO interface_note_embed_grants (origin, directory, app, project_id, state, requested_at, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  const feedbax = projectId("feedbax");
+  insert.run("http://localhost:3095", "/w/one/web", "feedbax:web", feedbax, "granted", 1, 2);
+  insert.run("http://localhost:4000", "/w/two/web", "feedbax:web", feedbax, "pending", 5, null);
+  insert.run("http://localhost:4001", "/w/two/desktop", "feedbax:desktop", feedbax, "pending", 6, null);
+  for (const sql of statements(245)) db.exec(sql);
+  expect(db.prepare("SELECT app, state, origin, directory, decided_at FROM interface_note_embed_grants ORDER BY app").all()).toEqual([
+    { app: "feedbax:desktop", state: "pending", origin: "http://localhost:4001", directory: "/w/two/desktop", decided_at: null },
+    { app: "feedbax:web", state: "granted", origin: "http://localhost:3095", directory: "/w/one/web", decided_at: 2 },
+  ]);
 });

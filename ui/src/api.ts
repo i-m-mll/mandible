@@ -5785,12 +5785,12 @@ export async function listEmbedGrants(): Promise<EmbedGrant[]> {
   return ((await (await apiGet(INTERFACE_NOTES_EMBED.grants)).json()) as { grants: EmbedGrant[] }).grants;
 }
 
-export async function allowEmbedGrant(grant: Pick<EmbedGrant, 'origin' | 'directory'>): Promise<void> {
-  await apiPut(INTERFACE_NOTES_EMBED.grants, { origin: grant.origin, directory: grant.directory });
+export async function allowEmbedGrant(grant: Pick<EmbedGrant, 'project' | 'app'>): Promise<void> {
+  await apiPut(INTERFACE_NOTES_EMBED.grants, { project: grant.project.id, app: grant.app });
 }
 
 /** Revokes a grant, or dismisses a pending request. */
-export async function removeEmbedGrant(grant: Pick<EmbedGrant, 'origin' | 'directory'>): Promise<void> {
-  const query = new URLSearchParams({ origin: grant.origin, directory: grant.directory });
+export async function removeEmbedGrant(grant: Pick<EmbedGrant, 'project' | 'app'>): Promise<void> {
+  const query = new URLSearchParams({ project: grant.project.id, app: grant.app });
   await apiDelete(`${INTERFACE_NOTES_EMBED.grants}?${query}`);
 }

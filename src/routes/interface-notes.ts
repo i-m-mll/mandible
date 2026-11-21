@@ -68,7 +68,7 @@ export function registerInterfaceNoteRoutes(server: RouteRegistrar, db: Db, home
   /** The bridge's writes name the embedding page's origin; the grant is read again for each one. */
   const embedScope = (req: RequestLike): EmbedWriteScope | null => {
     const origin = queryString(req, INTERFACE_NOTES_EMBED.originParam);
-    return origin === undefined ? null : { origin, apps: grants.grantedApps(origin) };
+    return origin === undefined ? null : { origin, granted: (app) => grants.isGranted(app) };
   };
 
   server.get("/api/interface-notes", route("read", (req, res) => {
@@ -102,15 +102,15 @@ export function registerInterfaceNoteRoutes(server: RouteRegistrar, db: Db, home
 
   server.put("/api/interface-notes/embed-grants", route("write", (req, res) => {
     requireOperator(db, req);
-    const { origin, directory } = bodyRecord(req);
-    const grant = typeof origin === "string" && typeof directory === "string" ? grants.allow(origin, directory) : null;
+    const { project, app } = bodyRecord(req);
+    const grant = typeof project === "string" && typeof app === "string" ? grants.allow({ project_id: project, app }) : null;
     if (!grant) return sendFailure(res, { code: "grant_not_found" });
     sendJson(res, 200, grant);
   }), { operation: { id: "put:/api/interface-notes/embed-grants", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
 
   server.delete("/api/interface-notes/embed-grants", route("write", (req, res) => {
     requireOperator(db, req);
-    if (!grants.remove(queryString(req, "origin") ?? "", queryString(req, "directory") ?? "")) return sendFailure(res, { code: "grant_not_found" });
+    if (!grants.remove({ project_id: queryString(req, "project") ?? "", app: queryString(req, "app") ?? "" })) return sendFailure(res, { code: "grant_not_found" });
     res.status(204).empty?.();
   }), { operation: { id: "delete:/api/interface-notes/embed-grants", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
 
