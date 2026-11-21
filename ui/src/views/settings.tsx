@@ -536,7 +536,7 @@ function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
     return subscribeRouteChanges(() => setAsked(currentRoute().params.embed_origin ?? null));
   }, [reload]);
   // The link from an embedding page lands here while the sections above are still loading and growing, so the asked
-  // row keeps itself in view as they settle, until the user scrolls or a few seconds pass.
+  // row keeps itself in view as they settle, until the user scrolls, clicks or types, or fifteen seconds pass.
   const revealed = useRef(false);
   const revealAsked = useCallback((row: HTMLLIElement | null) => {
     if (!row || revealed.current) return;
@@ -546,11 +546,11 @@ function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
     const observer = new ResizeObserver(center);
     const stop = () => {
       observer.disconnect();
-      for (const type of ['wheel', 'touchstart', 'keydown'] as const) window.removeEventListener(type, stop, true);
+      for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const) window.removeEventListener(type, stop, true);
     };
     observer.observe(content);
-    for (const type of ['wheel', 'touchstart', 'keydown'] as const) window.addEventListener(type, stop, true);
-    window.setTimeout(stop, 4000);
+    for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const) window.addEventListener(type, stop, true);
+    window.setTimeout(stop, 15_000);
     center();
   }, []);
   const act = (action: (grant: EmbedGrant) => Promise<void>, grant: EmbedGrant) => {
@@ -577,19 +577,21 @@ function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
                 data-asked={grant.origin === asked ? 'true' : undefined}
                 ref={grant.origin === asked ? revealAsked : undefined}
               >
-                <span className="settings-view__embed-grant-heading">
-                  <span className="settings-view__embed-grant-app">{embedGrantApp(grant)}</span>
-                  <span className={`settings-view__embed-grant-state settings-view__embed-grant-state--${grant.state}`}>
-                    {grant.state === 'granted' ? 'Allowed' : 'Not allowed yet'}
+                <span className="settings-view__embed-grant-info">
+                  <span className="settings-view__embed-grant-heading">
+                    <span className="settings-view__embed-grant-app">{embedGrantApp(grant)}</span>
+                    <span className={`settings-view__embed-grant-state settings-view__embed-grant-state--${grant.state}`}>
+                      {grant.state === 'granted' ? 'Allowed' : 'Not allowed yet'}
+                    </span>
                   </span>
+                  {grant.app.endsWith(':.') && (
+                    <span className="settings-view__embed-grant-warning">
+                      Covers every server started from a checkout root of this project, where agents and tools run.
+                    </span>
+                  )}
+                  <span className="settings-view__embed-grant-detail">{grant.origin}</span>
+                  <span className="settings-view__embed-grant-detail" title={grant.directory}>{grant.directory}</span>
                 </span>
-                {grant.app.endsWith(':.') && (
-                  <span className="settings-view__embed-grant-warning">
-                    Covers every server started from a checkout root of this project, where agents and tools run.
-                  </span>
-                )}
-                <span className="settings-view__embed-grant-detail">{grant.origin}</span>
-                <span className="settings-view__embed-grant-detail" title={grant.directory}>{grant.directory}</span>
                 <span className="settings-view__embed-grant-actions">
                   {grant.state === 'pending' && (
                     <button type="button" className="btn btn--active btn--sm" disabled={!props.allowed} onClick={() => act(allowEmbedGrant, grant)}>Allow</button>
