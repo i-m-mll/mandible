@@ -748,10 +748,15 @@
   white-space: nowrap;
 }
 
+.settings-view__embed-grant-warning {
+  color: var(--accent-yellow);
+  font-size: 12px;
+}
+
 .settings-view__embed-grant-actions {
   display: flex;
   gap: 6px;
   grid-column: 2;
-  grid-row: 1 / span 3;
+  grid-row: 1 / -1;
   align-self: center;
 }

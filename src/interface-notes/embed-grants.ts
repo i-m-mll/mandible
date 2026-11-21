@@ -68,9 +68,16 @@ export class EmbedGrants {
     return { ok: false, error: "origin_not_granted", grant: this.get(key)! };
   }
 
-  /** Whether notes of this app may be written through the embed. */
+  /**
+   * Whether notes of this app may be written through the embed: a grant for the app in the
+   * project its key names now, so a grant never carries over to another project that takes the key.
+   */
   isGranted(app: string): boolean {
-    return this.db.prepare("SELECT 1 FROM interface_note_embed_grants WHERE app = ? AND state = 'granted'").get(app) !== undefined;
+    const key = app.slice(0, app.indexOf(":"));
+    return this.db.prepare(
+      `SELECT 1 FROM interface_note_embed_grants g JOIN ledger_projects p ON p.id = g.project_id
+       WHERE g.app = ? AND g.state = 'granted' AND p.project_key = ?`,
+    ).get(app, key) !== undefined;
   }
 
   list(now: number = Date.now()): EmbedGrant[] {

@@ -196,6 +196,16 @@ it("covers an allowed app's server in every checkout of its project, on any port
   expect(await identity("http://127.0.0.1:6006")).toMatchObject({ status: 403, body: { grant: { app: "mandible:web", state: "pending" } } });
 });
 
+it("ties a grant to its project, not to the key its app is written with", () => {
+  const grants = new EmbedGrants(db, probe);
+  db.prepare(`INSERT INTO interface_note_embed_grants (project_id, app, state, origin, directory, requested_at, decided_at)
+    VALUES (?, 'feedbax:web', 'granted', 'http://localhost:5173', '/w/web', 1, 2)`).run(projectId("mandible"));
+  // A row keyed to another project does not grant feedbax's app.
+  expect(grants.isGranted("feedbax:web")).toBe(false);
+  db.prepare("UPDATE interface_note_embed_grants SET project_id = ? WHERE project_id = ?").run(projectId("feedbax"), projectId("mandible"));
+  expect(grants.isGranted("feedbax:web")).toBe(true);
+});
+
 it("never names Mandible's own app for a page, even one served from the root of a Mandible checkout", async () => {
   const mandibleRoot = path.join(root, "mandible");
   machine.checkouts.set(mandibleRoot, { root: mandibleRoot, remote: "git@github.com:example/mandible.git" });

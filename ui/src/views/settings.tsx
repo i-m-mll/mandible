@@ -583,6 +583,11 @@ function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
                     {grant.state === 'granted' ? 'Allowed' : 'Not allowed yet'}
                   </span>
                 </span>
+                {grant.app.endsWith(':.') && (
+                  <span className="settings-view__embed-grant-warning">
+                    Covers every server started from a checkout root of this project, where agents and tools run.
+                  </span>
+                )}
                 <span className="settings-view__embed-grant-detail">{grant.origin}</span>
                 <span className="settings-view__embed-grant-detail" title={grant.directory}>{grant.directory}</span>
                 <span className="settings-view__embed-grant-actions">
