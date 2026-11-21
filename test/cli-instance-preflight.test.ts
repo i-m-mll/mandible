@@ -343,6 +343,22 @@ describe("CLI instance mutation preflight", () => {
     for (const result of results) expect({ stdout: result.stdout, stderr: result.stderr }).toEqual({ stdout: "ignored", stderr: "" });
   });
 
+  it("refuses a mutation when the daemon reached is not the instance the environment names", async () => {
+    const target = await listenForInstancePreflight({ instance: MAIN_INSTANCE });
+    const reached = operations.runtime.instance_id;
+
+    const refused = await bash(capture("POST", "/api/ledger/issues/abc/comments"), target.port, { MANDIBLE_INSTANCE_ID: "preview-elsewhere" });
+    const matched = await bash(capture("POST", "/api/ledger/issues/abc/comments"), target.port, { MANDIBLE_INSTANCE_ID: reached });
+
+    expect(refused.stderr).toContain("preview-elsewhere");
+    expect(refused.stderr).toContain(reached);
+    expect(JSON.parse(refused.stdout.slice(refused.stdout.indexOf("\n") + 1))).toMatchObject({
+      error: "cli_instance_mismatch", expected_instance_id: "preview-elsewhere", reached_instance_id: reached, request_sent: false,
+    });
+    expect(matched.stdout).toBe("200\n{\"id\":\"comment-1\"}");
+    expect(lines(target.requests)).toEqual(["GET /api/instance", "GET /api/instance", "POST /api/ledger/issues/abc/comments"]);
+  });
+
   it("allows mutation immediately after ready while warm completion is still pending", async () => {
     const target = await listenForInstancePreflight({ instance: MAIN_INSTANCE });
     const receipt = writeRestartAvailability(target.port, {

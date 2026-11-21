@@ -26,6 +26,7 @@ const require = createRequire(import.meta.url);
 const { liveDbPath } = require("../cli/mandible-paths.cjs");
 import SqliteDatabase from "../src/sqlite.ts";
 import { effectsForInstance } from "../src/security/effect-policy.ts";
+import { localApiSocketPath } from "../src/local-api-socket.ts";
 import { conversationStructureCachePath, CONVERSATION_STRUCTURE_CACHE_VERSION } from "../src/conversations/structure-cache-path.ts";
 import { projectConversationCache } from "../src/conversations/structure-cache.ts";
 
@@ -1717,6 +1718,7 @@ export function previewInstanceEnv(details) {
     MANDIBLE_DB: details.dbCopy,
     MANDIBLE_PID_FILE: details.pidFile,
     MANDIBLE_INSTANCE_ID: instanceId,
+    MANDIBLE_SOCKET: localApiSocketPath({ role: "preview", instance_id: instanceId }, { HOME: process.env.HOME }),
     MANDIBLE_INSTALLATION_ID: installationId,
     MANDIBLE_PUBLIC_ORIGIN: `https://${instanceId}.mandible.localhost:19421`,
     MANDIBLE_BACKEND_GENERATION: details.generation ?? "preview-generation",
