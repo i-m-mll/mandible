@@ -28,8 +28,11 @@ export interface UndecidedIssue extends AccountedIssue {
 
 export type IssueAccountingRefusal =
   | { kind: "undecided"; issues: UndecidedIssue[] }
-  | { kind: "held_closure"; issue: IssueAccounting["held"][number]; flag: "--closes-issue" | "--keeps-open" }
-  | { kind: "conflicting_decision"; issue: AccountedIssue };
+  | { kind: "held_closure"; issue: IssueAccounting["held"][number]; decision: IssueDecision }
+  | { kind: "conflicting_decision"; issue: AccountedIssue }
+  | { kind: "unkeepable"; issue: string };
+
+export type IssueDecision = "close" | "keep_open";
 
 export type IssueAccountingResult =
   | { ok: true; accounting: IssueAccounting }
@@ -318,32 +321,54 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
         unmerged_units: await readUnmergedUnits(id),
       };
       accounting.held.push(held);
-      if (input.closes.has(id)) refusals.push({ kind: "held_closure", issue: held, flag: "--closes-issue" });
-      if (input.keepsOpen.has(id)) refusals.push({ kind: "held_closure", issue: held, flag: "--keeps-open" });
+      if (input.closes.has(id)) refusals.push({ kind: "held_closure", issue: held, decision: "close" });
+      if (input.keepsOpen.has(id)) refusals.push({ kind: "held_closure", issue: held, decision: "keep_open" });
     } else {
       undecided.push({ ...described(id), worker_status: issue(id)!.worker_status });
     }
+  }
+  for (const id of input.keepsOpen.keys()) {
+    if (!set.has(id)) refusals.push({ kind: "unkeepable", issue: issue(id)?.short_id || id });
   }
   if (undecided.length > 0) refusals.unshift({ kind: "undecided", issues: undecided });
   return refusals.length > 0 ? { ok: false, refusals, accounting } : { ok: true, accounting };
 }
 
-export function describeAccountingRefusals(refusals: readonly IssueAccountingRefusal[]): string {
+/** How the requester states each decision where a refusal is read. */
+export interface DecisionSyntax {
+  /** The flag or command that makes the decision. */
+  decide(decision: IssueDecision, issue: string): string;
+  /** The decision as a refusal names it. */
+  name(decision: IssueDecision, issue: string): string;
+  /** What to do about a refused decision of a held issue. */
+  dropHeld: string;
+}
+
+export const SUBMISSION_DECISION_SYNTAX: DecisionSyntax = {
+  decide: (decision, issue) => decision === "close" ? `--closes-issue ${issue}` : `--keeps-open ${issue}=<what remains>`,
+  name: (decision, issue) => decision === "close" ? `--closes-issue ${issue}` : `--keeps-open ${issue}`,
+  dropHeld: " Drop the flag.",
+};
+
+export function describeAccountingRefusals(refusals: readonly IssueAccountingRefusal[], syntax: DecisionSyntax): string {
   const lines: string[] = [];
   for (const refusal of refusals) {
     switch (refusal.kind) {
       case "undecided":
-        lines.push(`This merge lands ${refusal.issues.length === 1 ? "an issue" : `${refusal.issues.length} issues`} with no decision. Pass one flag for each:`);
+        lines.push(`This merge lands ${refusal.issues.length === 1 ? "an issue" : `${refusal.issues.length} issues`} with no decision. Decide each:`);
         for (const issue of refusal.issues) {
           lines.push(`  ${issue.issue} ${issue.title} (worker status ${issue.worker_status}):`);
-          lines.push(`    --closes-issue ${issue.issue}   or   --keeps-open ${issue.issue}=<what remains>`);
+          lines.push(`    ${syntax.decide("close", issue.issue)}   or   ${syntax.decide("keep_open", issue.issue)}`);
         }
         break;
       case "held_closure":
-        lines.push(`${refusal.flag} ${refusal.issue.issue} refused: ${refusal.issue.issue} stays open after this merge, held by ${describeHolds(refusal.issue)}. Drop the flag.`);
+        lines.push(`${syntax.name(refusal.decision, refusal.issue.issue)} refused: ${refusal.issue.issue} stays open after this merge, held by ${describeHolds(refusal.issue)}.${syntax.dropHeld}`);
         break;
       case "conflicting_decision":
-        lines.push(`${refusal.issue.issue} is named by both --closes-issue and --keeps-open; pass one.`);
+        lines.push(`${refusal.issue.issue} is both closed and kept open; decide it once.`);
+        break;
+      case "unkeepable":
+        lines.push(`${syntax.name("keep_open", refusal.issue)} refused: only an open issue that is neither a tracker nor a maintenance issue is kept open.`);
         break;
     }
   }

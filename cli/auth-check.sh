@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mandible auth check: Check whether a branch is independent from the auth queue.
+# mandible auth check: Check whether a branch is independent from the auth queue, and what its merge decides for the issues it lands.
 #
 # Usage: {{command auth.check}}
 
@@ -18,12 +18,14 @@ repo=""
 target_override=""
 cwd_override=""
 json=0
+ISSUE_CLOSURES=()
+KEEPS_OPEN=()
 
 usage() {
   mandible_command_help auth check
 }
 
-binding=$(mandible_bind_main_arguments "auth.check" '{"branch":[{"option":"branch"},{"position":0}],"repo":{"option":"repo"},"target_override":{"option":["target","base"]},"cwd_override":{"option":"cwd"},"json":{"option":"json","constant":"1"}}' "$@") || exit $?
+binding=$(mandible_bind_main_arguments "auth.check" '{"branch":[{"option":"branch"},{"position":0}],"repo":{"option":"repo"},"target_override":{"option":["target","base"]},"cwd_override":{"option":"cwd"},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"KEEPS_OPEN":{"option":"keeps-open","array":true},"json":{"option":"json","constant":"1"}}' "$@") || exit $?
 eval "$binding"
 # The daemon resolves a relative path against its own working directory.
 [[ -z "$cwd_override" ]] || cwd_override=$(api_resolve_user_path "$cwd_override")
@@ -70,7 +72,23 @@ if [[ -z "$repo" ]]; then
   repo=$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")" 2>/dev/null) || repo=""
 fi
 
+actions_json='[]'
+for close in ${ISSUE_CLOSURES[@]+"${ISSUE_CLOSURES[@]}"}; do
+  actions_json=$(jq -c --arg issue "$close" '. + [{kind: "issue_close", target_issue_ref: $issue, payload: {}}]' <<<"$actions_json")
+done
+for keep in ${KEEPS_OPEN[@]+"${KEEPS_OPEN[@]}"}; do
+  keep_issue="${keep%%=*}"
+  keep_remainder="${keep#*=}"
+  if [[ "$keep_issue" == "$keep" || -z "${keep_issue//[[:space:]]/}" || -z "${keep_remainder//[[:space:]]/}" ]]; then
+    echo "Error: --keeps-open must be <id>=<what remains>, with both parts non-empty" >&2
+    exit 2
+  fi
+  actions_json=$(jq -c --arg issue "$keep_issue" --arg remainder "$keep_remainder" \
+    '. + [{kind: "issue_keep_open", target_issue_ref: $issue, payload: {remainder: $remainder}}]' <<<"$actions_json")
+done
+
 payload=$(jq -nc \
+  --argjson actions "$actions_json" \
   --arg repo "$repo" \
   --arg base_branch "$base_branch" \
   --arg head_branch "$branch" \
@@ -79,7 +97,8 @@ payload=$(jq -nc \
     repo: (if $repo == "" then null else $repo end),
     base_branch: (if $base_branch == "" then null else $base_branch end),
     head_branch: $head_branch,
-    cwd: (if $cwd == "" then null else $cwd end)
+    cwd: (if $cwd == "" then null else $cwd end),
+    actions: $actions
   }')
 
 response=$(api_send POST "/api/auth/check" "$payload") || {
@@ -87,11 +106,26 @@ response=$(api_send POST "/api/auth/check" "$payload") || {
   exit 1
 }
 
+# Issue 2c30125 — what submission would decide for every issue the branch lands.
+accounting_refused=$(printf '%s' "$response" | jq -r 'if .issue_accounting_refusal then "1" else "0" end')
 if [[ "$json" == "1" ]]; then
   printf '%s\n' "$response"
   status=$(printf '%s' "$response" | jq -r '.check.status // "unknown"')
-  [[ "$status" == "clean" ]]
+  [[ "$status" == "clean" && "$accounting_refused" == "0" ]]
   exit $?
+fi
+
+printf '%s' "$response" | jq -r '
+  .issue_accounting // empty
+  | (.closing[] | "Closing: \(.issue) \(.title)"),
+    (.kept_open[] | "Kept open: \(.issue) \(.title): \(.remainder)"),
+    (.held[] | "Held: \(.issue) \(.title) by " + ([
+      (if (.open_children | length) > 0 then "open children " + (.open_children | join(", ")) else empty end),
+      (if (.unmerged_units | length) > 0 then "work the head does not contain (" + ([.unmerged_units[] | "\(.id[0:8]) on \(.branch // "no branch")"] | join(", ")) + ")" else empty end)
+    ] | join(" and ")))
+'
+if [[ "$accounting_refused" == "1" ]]; then
+  printf '%s' "$response" | jq -r '.issue_accounting_refusal.message' >&2
 fi
 
 status=$(printf '%s' "$response" | jq -r '.check.status // "unknown"')
@@ -103,7 +137,8 @@ case "$status" in
     if [[ -n "$blocker" ]]; then
       printf 'Publication blocked: %s\n' "$blocker"
     fi
-    exit 0
+    [[ "$accounting_refused" == "0" ]]
+    exit $?
     ;;
   conflict)
     printf 'Auth check: conflict\n' >&2

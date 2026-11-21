@@ -41,6 +41,8 @@ import {
   listAuthRequestActions,
   normalizeAuthActionInput,
   normalizeAuthActionInputs,
+  replaceAuthRequestActionsLocked,
+  requireAuthAction,
   setAuthRequestActionVeto,
   updateAuthRequestAction,
 } from "./auth-actions.js";
@@ -122,7 +124,10 @@ import {
 } from "./ledger/operational-links.js";
 import { getLedgerIssueContentDigest } from "./ledger/issue-heads.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
-import { accountLandedIssues, describeAccountingRefusals, type IssueAccounting } from "./landed-issues.js";
+import {
+  SUBMISSION_DECISION_SYNTAX, accountLandedIssues, describeAccountingRefusals,
+  type DecisionSyntax, type IssueAccounting, type IssueAccountingRefusal,
+} from "./landed-issues.js";
 import { LedgerStore } from "./ledger/store.js";
 import {
   assertEvidenceMethod,
@@ -386,6 +391,34 @@ export interface AuthMergeCheckInput {
   head_branch?: string | null;
   cwd?: string | null;
   request_id?: string | null;
+}
+
+/** The candidate a merge's issue decisions are accounted against. */
+interface IssueDecisionScope {
+  repo: string | null;
+  cwd: string;
+  target_repo_root: string | null;
+  baseSha: string;
+  headSha: string;
+  ownIssueId: string | null;
+}
+
+type StagedIssueDecisions =
+  | { ok: true; accounting: IssueAccounting; actions: AuthRequestActionInput[]; closures: string[] }
+  | { ok: false; refusals: IssueAccountingRefusal[]; accounting: IssueAccounting };
+
+/** What `auth check` reports submission would decide. */
+export type IssueAccountingPreview =
+  | { ok: true; issue_accounting: IssueAccounting }
+  | { ok: false; issue_accounting: IssueAccounting; refusals: IssueAccountingRefusal[]; message: string };
+
+function isIssueDecision(kind: AuthRequestActionKind): boolean {
+  return kind === "issue_close" || kind === "issue_keep_open";
+}
+
+function accountingRefusal(staged: Extract<StagedIssueDecisions, { ok: false }>, syntax: DecisionSyntax): AuthQueueError {
+  return new AuthQueueError("issue_accounting_refused", describeAccountingRefusals(staged.refusals, syntax), undefined,
+    { refusals: staged.refusals, accounting: staged.accounting });
 }
 
 export interface AuthMergeConflict {
@@ -2366,59 +2399,66 @@ export class AuthQueue {
         `A merge request accounts for the issues it lands from its target head, which the merge check did not resolve${mergeCheck.reason ? `: ${mergeCheck.reason}` : ""}.`,
         undefined, mergeCheck);
     }
-    const project = payload.repo ? resolveProjectRef(this.db, payload.repo) : null;
     const headSha = payload.merge_head_sha ?? (await this.resolveBranchHeadForCheck(payload.cwd, payload.head_branch));
     if (!headSha) throw new AuthQueueError("merge_check_failed", `Head branch ${payload.head_branch} does not resolve to a commit.`);
-
     const actions = normalizeAuthActionInputs(payload.actions);
-    const issueIdOf = (ref: string) => {
-      const resolved = resolveOperationalIssueRef(this.db, ref, payload.repo);
-      return resolved.ok ? resolved.issue_id : null;
-    };
-    const closeActions = new Map<string, AuthRequestActionInput>();
-    const unaccountedCloses: AuthRequestActionInput[] = [];
-    const keepActions = new Map<string, AuthRequestActionInput>();
     const closeRefs = new Set(actions.filter((action) => action.kind === "issue_close").map((action) => action.target_issue_ref));
     const legacyCloses = (payload.issue_closures ?? payload.issues ?? []).filter((ref) => !closeRefs.has(ref))
       .map((ref): AuthRequestActionInput => ({ kind: "issue_close", target_issue_ref: ref, payload: {} }));
-    for (const action of [...actions, ...legacyCloses]) {
+    const staged = await this.stageIssueDecisions({
+      repo: payload.repo ?? null, cwd: payload.cwd, target_repo_root: payload.target_repo_root ?? null,
+      baseSha: mergeCheck.target_head_sha, headSha, ownIssueId: custody?.ledger_issue_id ?? null,
+    }, [...actions, ...legacyCloses]);
+    if (!staged.ok) throw accountingRefusal(staged, SUBMISSION_DECISION_SYNTAX);
+    return staged;
+  }
+
+  /**
+   * Issue 2c30125 — the one rule that turns a merge's actions into its issue
+   * accounting and staged actions, shared by submission, decision edits and
+   * `auth check`. Actions keep their places; the closures fill the closure
+   * places children first, and the closures the accounting derives follow.
+   */
+  private async stageIssueDecisions(scope: IssueDecisionScope, actions: readonly AuthRequestActionInput[]): Promise<StagedIssueDecisions> {
+    const project = scope.repo ? resolveProjectRef(this.db, scope.repo) : null;
+    const issueIdOf = (ref: string) => {
+      const resolved = resolveOperationalIssueRef(this.db, ref, scope.repo ?? undefined);
+      return resolved.ok ? resolved.issue_id : null;
+    };
+    const closeActions = new Map<string, AuthRequestActionInput>();
+    const unaccountedCloses = new Set<AuthRequestActionInput>();
+    const keepActions = new Map<string, AuthRequestActionInput>();
+    const refusals: IssueAccountingRefusal[] = [];
+    for (const action of actions) {
       if (action.kind !== "issue_close" && action.kind !== "issue_keep_open") continue;
       const issueId = issueIdOf(action.target_issue_ref);
       const decisions = action.kind === "issue_close" ? closeActions : keepActions;
       if (!issueId) {
-        if (action.kind === "issue_keep_open") throw new AuthQueueError("invalid_command", `--keeps-open ${action.target_issue_ref} does not name an issue.`);
-        unaccountedCloses.push(action);
+        if (action.kind === "issue_keep_open") refusals.push({ kind: "unkeepable", issue: action.target_issue_ref });
+        else unaccountedCloses.add(action);
       } else if (!decisions.has(issueId)) {
         decisions.set(issueId, action);
       }
     }
-
     const result = await accountLandedIssues(this.db, {
       projectId: project?.ok ? project.project!.id : null,
-      request: { repo: normalizeRepoRef(payload.repo ?? null), cwd: payload.cwd, target_repo_root: payload.target_repo_root },
-      gitRoot: payload.cwd,
+      request: { repo: normalizeRepoRef(scope.repo), cwd: scope.cwd, target_repo_root: scope.target_repo_root },
+      gitRoot: scope.cwd,
       signal: this.phaseAbort.signal,
-      baseSha: mergeCheck.target_head_sha,
-      headSha,
-      ownIssueId: custody?.ledger_issue_id ?? null,
+      baseSha: scope.baseSha,
+      headSha: scope.headSha,
+      ownIssueId: scope.ownIssueId,
       closes: new Set(closeActions.keys()),
       keepsOpen: new Map([...keepActions].map(([issueId, action]) => [issueId, String(action.payload.remainder)])),
     });
-    if (!result.ok) {
-      throw new AuthQueueError("issue_accounting_refused", describeAccountingRefusals(result.refusals), undefined,
-        { refusals: result.refusals, accounting: result.accounting });
+    if (!result.ok || refusals.length > 0) {
+      return { ok: false, refusals: [...(result.ok ? [] : result.refusals), ...refusals], accounting: result.accounting };
     }
     const { accounting } = result;
-    const kept = new Set(accounting.kept_open.map((issue) => issue.issue_id));
-    for (const [issueId, action] of keepActions) {
-      if (!kept.has(issueId)) throw new AuthQueueError("invalid_command", `--keeps-open ${action.target_issue_ref} refused: only an open issue that is neither a tracker nor a maintenance issue is kept open.`);
-    }
-    // Named actions keep their places; the closures fill the closure places
-    // children first, and the closures the daemon derived follow.
     const closingOrder = new Map(accounting.closing.map((issue, index) => [issue.issue_id, index]));
     const named = new Set([...closeActions.values()]);
     const staged: AuthRequestActionInput[] = [
-      ...[...actions, ...legacyCloses].filter((action) => action.kind !== "issue_close" || named.has(action) || unaccountedCloses.includes(action)),
+      ...actions.filter((action) => action.kind !== "issue_close" || named.has(action) || unaccountedCloses.has(action)),
       ...accounting.closing.filter((issue) => !closeActions.has(issue.issue_id))
         .map((issue): AuthRequestActionInput => ({ kind: "issue_close", target_issue_ref: issue.issue, payload: {} })),
     ];
@@ -2431,10 +2471,47 @@ export class AuthQueue {
     const ordered = slots.map((index) => staged[index]!).sort((a, b) => closingOf(a)! - closingOf(b)!);
     slots.forEach((slot, index) => { staged[slot] = ordered[index]!; });
     return {
+      ok: true,
       accounting,
       actions: staged,
       closures: staged.filter((action) => action.kind === "issue_close").map((action) => action.target_issue_ref),
     };
+  }
+
+  /**
+   * Issue 2c30125 — what submission would decide for a branch, for
+   * `auth check`. Stores nothing; null when the check resolved no target head.
+   */
+  async previewIssueAccounting(input: AuthMergeCheckInput, report: AuthMergeCheckReport, actions: readonly AuthRequestActionInput[]): Promise<IssueAccountingPreview | null> {
+    if (!input.cwd || !input.head_branch || !report.target_head_sha) return null;
+    const headSha = await this.resolveBranchHeadForCheck(input.cwd, input.head_branch);
+    if (!headSha) return null;
+    const staged = await this.stageIssueDecisions({
+      repo: input.repo ?? null, cwd: input.cwd, target_repo_root: input.cwd,
+      baseSha: report.target_head_sha, headSha, ownIssueId: this.branchDeliveryIssue(input, actions),
+    }, actions);
+    return staged.ok
+      ? { ok: true, issue_accounting: staged.accounting }
+      : { ok: false, issue_accounting: staged.accounting, refusals: staged.refusals, message: describeAccountingRefusals(staged.refusals, SUBMISSION_DECISION_SYNTAX) };
+  }
+
+  /** The issue of the branch's delivery work unit, as submission would bind it. */
+  private branchDeliveryIssue(input: AuthMergeCheckInput, actions: readonly AuthRequestActionInput[]): string | null {
+    const project = input.repo ? resolveProjectRef(this.db, input.repo) : null;
+    if (!project?.ok) return null;
+    const issues = new Set((this.db.prepare(
+      `SELECT ledger_issue_id, repo_id FROM work_units
+       WHERE state = 'committed' AND resolved_at IS NULL AND branch = ? AND auth_request_id IS NULL AND ledger_issue_id IS NOT NULL`,
+    ).all(input.head_branch) as Array<{ ledger_issue_id: string; repo_id: string }>).filter((row) => {
+      const unitProject = resolveProjectRef(this.db, row.repo_id);
+      return unitProject.ok && unitProject.project.id === project.project!.id;
+    }).map((row) => row.ledger_issue_id));
+    if (issues.size <= 1) return [...issues][0] ?? null;
+    const named = actions.flatMap((action) => {
+      const resolved = resolveOperationalIssueRef(this.db, action.target_issue_ref, input.repo ?? undefined);
+      return resolved.ok && issues.has(resolved.issue_id) ? [resolved.issue_id] : [];
+    });
+    return new Set(named).size === 1 ? named[0]! : null;
   }
 
   private resolveSubmissionCustody(payload: AuthRequestInput, actor: AuthLifecycleActor): WorkUnitCustody | null {
@@ -2827,49 +2904,151 @@ export class AuthQueue {
     return countAuthRequestActions(this.db, request.id);
   }
 
-  addAction(requestId: string, input: unknown, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
+  async addAction(requestId: string, input: unknown, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): Promise<AuthRequestAction> {
     const request = this.requireActionEditableRequest(requestId);
-    this.assertIssueDecisionsFrozen(request, [normalizeAuthActionInput(input).kind]);
+    const added = normalizeAuthActionInput(input);
+    if (this.editsIssueDecisions(request, [added.kind])) {
+      return this.editIssueDecisions(request, null, added, actor, expectedRevision, expectedGeneration);
+    }
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => addAuthRequestAction(this.db, request, input, this.now()));
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request, action } });
     return action;
   }
 
-  updateAction(requestId: string, actionId: string, input: unknown, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
+  async updateAction(requestId: string, actionId: string, input: unknown, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): Promise<AuthRequestAction> {
     const request = this.requireActionEditableRequest(requestId);
-    this.assertIssueDecisionsFrozen(request, [this.stagedActionKind(request, actionId), normalizeAuthActionInput(input).kind]);
+    const replacement = normalizeAuthActionInput(input);
+    if (this.editsIssueDecisions(request, [this.stagedActionKind(request, actionId), replacement.kind])) {
+      return this.editIssueDecisions(request, actionId, replacement, actor, expectedRevision, expectedGeneration);
+    }
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => updateAuthRequestAction(this.db, request, actionId, input, this.now()));
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request, action } });
     return action;
   }
 
-  deleteAction(requestId: string, actionId: string, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
+  async deleteAction(requestId: string, actionId: string, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): Promise<AuthRequestAction> {
     const request = this.requireActionEditableRequest(requestId);
-    this.assertIssueDecisionsFrozen(request, [this.stagedActionKind(request, actionId)]);
+    if (this.editsIssueDecisions(request, [this.stagedActionKind(request, actionId)])) {
+      return this.editIssueDecisions(request, actionId, null, actor, expectedRevision, expectedGeneration);
+    }
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => deleteAuthRequestAction(this.db, request.id, actionId));
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request, deleted_action_id: action.id } });
     return action;
   }
 
-  /**
-   * Issue 9395f25 — a request that accounted for the issues it lands decided
-   * each of them as one whole: removing a decision can leave an issue
-   * undecided, and moving one changes what its parent and children may do,
-   * which only the head scan at submission sees. Its closures and remainders
-   * change by resubmitting with `--supersedes`, which accounts again.
-   */
-  private assertIssueDecisionsFrozen(request: AuthRequest, kinds: Array<AuthRequestActionKind | null>): void {
-    if (!request.issue_accounting) return;
-    if (!kinds.some((kind) => kind === "issue_close" || kind === "issue_keep_open")) return;
-    throw new AuthQueueError("invalid_command", this.accountedRequestFrozenMessage(request));
+  /** Whether an action edit changes the issue decisions of a request that accounted for the issues it lands. */
+  private editsIssueDecisions(request: AuthRequest, kinds: Array<AuthRequestActionKind | null>): boolean {
+    return Boolean(request.issue_accounting) && kinds.some((kind) => kind !== null && isIssueDecision(kind));
   }
 
-  private accountedRequestFrozenMessage(request: AuthRequest): string {
+  /**
+   * Issue 2c30125 — replace the action `replacedId` (none for an addition)
+   * with `decision` (none for a removal), re-run the accounting on the
+   * request's unchanged candidate, and store the result as one revision. A
+   * refused accounting writes nothing. One decision per issue: a decision for
+   * an issue that already has one replaces it.
+   */
+  private async editIssueDecisions(
+    request: AuthRequest,
+    replacedId: string | null,
+    decision: AuthRequestActionInput | null,
+    actor: AuthLifecycleActor | undefined,
+    expectedRevision: number | undefined,
+    expectedGeneration: number | undefined,
+  ): Promise<AuthRequestAction> {
+    if (request.status !== "pending") {
+      throw new AuthQueueError("invalid_status", `Request is ${request.status}; only a pending request's issue decisions change.`, request.status);
+    }
+    if (!actor) throw new AuthQueueError("lifecycle_precondition_required", "Changing a request's issue decisions requires the requester's custody.");
+    if (!request.cwd || !request.merge_head_sha || !request.merge_preflight_base_sha) {
+      throw new AuthQueueError("merge_check_failed", "The request records no candidate head and base to account from.");
+    }
+    const replaced = replacedId ? requireAuthAction(this.db, request.id, replacedId) : null;
+    const issueOf = (ref: string) => {
+      const resolved = resolveOperationalIssueRef(this.db, ref, request.repo ?? undefined);
+      return resolved.ok ? resolved.issue_id : ref;
+    };
+    const decidedIssue = decision && isIssueDecision(decision.kind) ? issueOf(decision.target_issue_ref) : null;
+    const rows = listAuthRequestActions(this.db, request.id);
+    const entries: Array<{ id: string | null; input: AuthRequestActionInput }> = [];
+    const undecided = new Set<string>();
+    let slot: { index: number; id: string } | null = null;
+    for (const row of rows) {
+      const decidesSame = decidedIssue !== null && isIssueDecision(row.kind) && issueOf(row.target_issue_ref) === decidedIssue;
+      if (row.id !== replaced?.id && !decidesSame) {
+        entries.push({ id: row.id, input: { kind: row.kind, target_issue_ref: row.target_issue_ref, payload: row.payload } });
+        continue;
+      }
+      if (row.kind === "issue_close") undecided.add(issueOf(row.target_issue_ref));
+      slot ??= { index: entries.length, id: row.id };
+    }
+    if (decision) entries.splice(slot?.index ?? entries.length, 0, { id: slot?.id ?? null, input: decision });
+    if (decidedIssue) undecided.delete(decidedIssue);
+
+    // A closure the accounting derived is derived again, so it keeps its reason.
+    const derived = new Set(request.issue_accounting!.closing.filter((issue) => issue.by !== "closes_issue").map((issue) => issue.issue_id));
+    const derivedClosure = (entry: (typeof entries)[number]) =>
+      entry.input !== decision && entry.input.kind === "issue_close" && derived.has(issueOf(entry.input.target_issue_ref));
+    const custody = request.custody_work_unit_id
+      ? this.db.prepare("SELECT ledger_issue_id FROM work_units WHERE id = ?").get(request.custody_work_unit_id) as { ledger_issue_id: string | null } | undefined
+      : undefined;
+    const staged = await this.stageIssueDecisions({
+      repo: request.repo ?? null, cwd: request.cwd, target_repo_root: request.target_repo_root ?? null,
+      baseSha: request.merge_preflight_base_sha, headSha: request.merge_head_sha, ownIssueId: custody?.ledger_issue_id ?? null,
+    }, entries.filter((entry) => !derivedClosure(entry)).map((entry) => entry.input));
+    const syntax = this.decisionEditSyntax(request);
+    if (!staged.ok) throw accountingRefusal(staged, syntax);
+    const stillClosing = staged.accounting.closing.filter((issue) => undecided.has(issue.issue_id));
+    if (stillClosing.length > 0) {
+      throw new AuthQueueError("issue_accounting_refused", stillClosing.map((issue) =>
+        `${issue.issue} closes with this merge without a named closure, because ${issue.by === "done" ? "its worker status is done" : "a closing issue fixes it"}; to keep it open: ${syntax.decide("keep_open", issue.issue)}`).join("\n"),
+      undefined, { refusals: [], accounting: staged.accounting });
+    }
+
+    // Staged decisions reuse the rows that decided the same issue, so a row
+    // another request's supersession references keeps its identity.
+    const rowOfIssue = new Map(entries.flatMap((entry) => entry.id && isIssueDecision(entry.input.kind) ? [[issueOf(entry.input.target_issue_ref), entry.id] as const] : []));
+    const claimed = new Set<string>();
+    const next = staged.actions.map((input) => {
+      const known = entries.find((entry) => entry.input === input);
+      const id = known ? known.id : isIssueDecision(input.kind) ? rowOfIssue.get(issueOf(input.target_issue_ref)) ?? null : null;
+      if (id && claimed.has(id)) return { id: null, input };
+      if (id) claimed.add(id);
+      return { id, input };
+    });
+    this.withActionCustody(request, actor, expectedRevision, expectedGeneration, () => {
+      replaceAuthRequestActionsLocked(this.db, request, next, this.now());
+      this.db.prepare("UPDATE auth_requests SET issue_closures = ?, issue_accounting_json = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(staged.closures), JSON.stringify(staged.accounting), this.now(), request.id);
+    });
+    const updated = this.requireRequest(request.id);
+    const actions = listAuthRequestActions(this.db, request.id);
+    const result = decision
+      ? actions.find((action) => action.kind === decision.kind && issueOf(action.target_issue_ref) === issueOf(decision.target_issue_ref))!
+      : replaced!;
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: decision ? { request: updated, action: result } : { request: updated, deleted_action_id: result.id } });
+    return result;
+  }
+
+  /** The commands that decide an issue of a pending request, at its current revision. */
+  private decisionEditSyntax(request: AuthRequest): DecisionSyntax {
     const ref = shortRef(this.db, "auth_request", request.id);
-    return `Request ${ref} accounted for every issue it lands when it was submitted; what it merges, its closures and its remainders change only by resubmitting: mandible auth request --supersedes ${ref} with --closes-issue <id> or --keeps-open <id>=<what remains>.`;
+    const precondition = `--expected-revision ${this.lifecycleRevision(request.id) ?? 0} --expected-custody-generation ${this.requestResponsibility(request).custody_generation}`;
+    return {
+      decide: (decision, issue) => decision === "close"
+        ? `mandible auth action add ${ref} --kind issue_close --issue ${issue} ${precondition}`
+        : `mandible auth action add ${ref} --kind issue_keep_open --issue ${issue} --remainder '<what remains>' ${precondition}`,
+      name: (decision, issue) => `${decision === "close" ? "issue_close" : "issue_keep_open"} ${issue}`,
+      dropHeld: "",
+    };
+  }
+
+  private decisionEditMessage(request: AuthRequest): string {
+    const ref = shortRef(this.db, "auth_request", request.id);
+    return `Request ${ref}'s closures and remainders are its issue_close and issue_keep_open actions, which its requester changes with mandible auth action add|edit|rm ${ref}; what it merges changes only by superseding.`;
   }
 
   private stagedActionKind(request: AuthRequest, actionId: string): AuthRequestActionKind | null {
@@ -2880,7 +3059,9 @@ export class AuthQueue {
 
   setActionVeto(requestId: string, actionId: string, vetoed: boolean, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
     const request = this.requireActionVetoableRequest(requestId);
-    this.assertIssueDecisionsFrozen(request, [this.stagedActionKind(request, actionId)]);
+    if (this.editsIssueDecisions(request, [this.stagedActionKind(request, actionId)])) {
+      throw new AuthQueueError("invalid_command", `An issue decision is not vetoed, since the decisions of the issues a merge lands depend on each other. ${this.decisionEditMessage(request)}`);
+    }
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => setAuthRequestActionVeto(this.db, request.id, actionId, vetoed, this.now()));
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.requireRequest(request.id), action } });
@@ -3302,7 +3483,7 @@ export class AuthQueue {
       // fields; closures and the merge that lands follow only from it.
       const accountedFields = ["issue_closures", "issues", "repo", "cwd", "base_branch", "head_branch", "merge_head_sha"];
       if (request.issue_accounting && accountedFields.some((field) => field in fields)) {
-        throw { status: 409, message: this.accountedRequestFrozenMessage(request) };
+        throw { status: 409, message: this.decisionEditMessage(request) };
       }
       const priorSnapshot = authRequestSnapshot(this.db, request.id);
       const custody = actor

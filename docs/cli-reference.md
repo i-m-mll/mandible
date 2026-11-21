@@ -49,7 +49,7 @@ mandible issue markdown <audit|normalize|export> [opts]
 
 ## AUTH
 mandible auth list [--json] [--repo R] [--head B] [--base B] [--status S] [--type T]
-mandible auth check [--branch B] [--repo R] [--target B] [--cwd P] [--json]
+mandible auth check [--branch B] [--repo R] [--target B] [--cwd P] [--closes-issue <id>]... [--keeps-open <id>=<what remains>]... [--json]
 mandible auth request <branch> --title <text> [--issue <id>]... [--closes-issue <id>]... [--keeps-open <id>=<what remains>]...
   (--message T | --message-file F) --verification T
 mandible auth request --type <type> --command <command> --cwd <path> --repo <ref> --title <text> --issue <id>

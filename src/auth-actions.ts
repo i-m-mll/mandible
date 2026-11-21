@@ -255,6 +255,45 @@ function validatePreviewTeardown(db: Db, request: AuthRequest, branch: string, r
   }
 }
 
+/**
+ * Rewrite a request's actions to `entries`, in order, inside the caller's
+ * transaction. An entry with an `id` rewrites that row in place, so rows that
+ * other requests reference keep their identity; rows no entry names are deleted.
+ */
+export function replaceAuthRequestActionsLocked(
+  db: Db,
+  request: AuthRequest,
+  entries: ReadonlyArray<{ id: string | null; input: AuthRequestActionInput }>,
+  now: number,
+): void {
+  const kept = new Set(entries.flatMap((entry) => entry.id ? [entry.id] : []));
+  for (const row of listAuthRequestActions(db, request.id)) {
+    if (!kept.has(row.id)) db.prepare("DELETE FROM auth_request_actions WHERE id = ? AND auth_request_id = ?").run(row.id, request.id);
+  }
+  const update = db.prepare(
+    `UPDATE auth_request_actions
+     SET ordinal = ?, kind = ?, target_issue_ref = ?, payload = ?, target_digest = ?, updated_at = ?
+     WHERE id = ? AND auth_request_id = ?`,
+  );
+  for (const [index, entry] of entries.entries()) {
+    const existing = entry.id ? requireAuthAction(db, request.id, entry.id) : null;
+    if (!existing) {
+      const [row] = insertAuthRequestActionsLocked(db, request, [entry.input], now);
+      db.prepare("UPDATE auth_request_actions SET ordinal = ? WHERE id = ?").run(index + 1, row!.id);
+      continue;
+    }
+    const unchanged = existing.kind === entry.input.kind && existing.target_issue_ref === entry.input.target_issue_ref &&
+      JSON.stringify(existing.payload) === JSON.stringify(entry.input.payload);
+    if (unchanged) {
+      if (existing.ordinal !== index + 1) db.prepare("UPDATE auth_request_actions SET ordinal = ? WHERE id = ?").run(index + 1, existing.id);
+      continue;
+    }
+    const action = validateAuthActionForRequest(db, request, normalizeAuthActionInput(entry.input), existing.id);
+    update.run(index + 1, action.kind, action.target_issue_ref, JSON.stringify(action.payload),
+      stagedTargetDigest(db, request, action), now, existing.id, request.id);
+  }
+}
+
 export function deleteAuthRequestAction(db: Db, requestId: string, actionId: string): AuthRequestAction {
   const existing = requireAuthAction(db, requestId, actionId);
   db.prepare("DELETE FROM auth_request_actions WHERE id = ? AND auth_request_id = ?").run(existing.id, requestId);
@@ -437,7 +476,7 @@ function stagedTargetDigest(
   return null;
 }
 
-function requireAuthAction(db: Db, requestId: string, actionId: string): AuthRequestAction {
+export function requireAuthAction(db: Db, requestId: string, actionId: string): AuthRequestAction {
   const resolved = resolveId(db, "auth_action", actionId);
   if (!resolved.ok && resolved.error === "ambiguous") {
     throw new AuthActionValidationError(`Ambiguous action prefix '${actionId}'. Use a longer prefix.`, 409);
