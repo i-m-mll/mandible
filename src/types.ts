@@ -481,6 +481,8 @@ export interface IssueRepoSummary {
   // detail surface and /r/issue redirect emit. Optional: scanner-only summaries
   // omit it.
   project_key?: string;
+  /** The ledger project's id, on ledger-backed summaries; `?project=<id>` matches only it. */
+  project_id?: string;
   open_count: number;
   delivered_count: number;
   closed_count: number;

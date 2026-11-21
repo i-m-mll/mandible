@@ -1,0 +1,85 @@
+import { render } from 'preact';
+import { INTERFACE_NOTES_EMBED } from '../../../src/interface-notes/contract';
+import embedStyles from 'mandible-embed-styles';
+import { AgentationHost } from './AgentationHost';
+import { connectToBridge } from './embedClient';
+import { InterfaceNotesMenu, type InterfaceNotesMenuPorts } from './InterfaceNotesMenu';
+import { configureInterfaceNotes, startInterfaceNotes } from './interfaceNotesStore';
+
+/**
+ * The interface-notes embed: the module script another app's dev page loads from
+ * Mandible's origin. It mounts the Agentation toolbar and the Send menu for the
+ * page's app once the bridge names it, and nothing on a page whose origin serves
+ * no registered project.
+ */
+
+const HOST_ELEMENT = 'mandible-interface-notes';
+
+function Notice({ children }: { children: string }): JSX.Element {
+  return <div className="interface-notes-menu__error" role="alert">{children}</div>;
+}
+
+async function mount(): Promise<void> {
+  if (window.top !== window || document.querySelector(HOST_ELEMENT)) return;
+  const daemonOrigin = new URL(import.meta.url).origin;
+  const connection = await connectToBridge(daemonOrigin);
+  if (!connection) return;
+  if (connection.kind === 'pending') {
+    showGrantLink(daemonOrigin);
+    return;
+  }
+  const { identity, transport } = connection;
+  configureInterfaceNotes({
+    app: identity.app,
+    origin: window.location.origin,
+    transport,
+    revision: () => null,
+    migrateLegacyCache: false,
+    storageScope: `:${identity.app}`,
+  });
+
+  const root = createHost();
+  const ports: InterfaceNotesMenuPorts = { transport, receivingProject: identity.project.key, Notice };
+  render(<><AgentationHost appName={identity.project.name} /><InterfaceNotesMenu ports={ports} /></>, root);
+  startInterfaceNotes();
+}
+
+/**
+ * On an origin the operator has not allowed, one small link to Mandible's grant view,
+ * opened as its own top-level page; nothing is granted from this page.
+ */
+function showGrantLink(daemonOrigin: string): void {
+  const root = createHost();
+  const url = new URL(INTERFACE_NOTES_EMBED.grantView, daemonOrigin);
+  url.searchParams.set('section', 'settings-issues');
+  url.searchParams.set('embed_origin', window.location.origin);
+  render(
+    <a className="interface-notes-grant-link" href={url.href} target="_blank" rel="noopener noreferrer"
+      title="This page asked to show Mandible's interface-notes toolbar. Allow it in Mandible's Settings.">
+      Allow Mandible notes
+    </a>,
+    root,
+  );
+}
+
+function createHost(): ShadowRoot {
+  const host = document.createElement(HOST_ELEMENT);
+  // Agentation names React components only on a page where it finds a React fiber on
+  // the body, the root or one of the body's children (`isReactPage`). Rendered by
+  // React it supplies one itself; rendered by Preact it does not, and a React 18
+  // createRoot app has only `__reactContainer$` on its root. This key is what it looks for.
+  (host as unknown as Record<string, unknown>)['__reactProps$mandibleInterfaceNotes'] = {};
+  const light = window.matchMedia('(prefers-color-scheme: light)');
+  const theme = () => host.setAttribute('data-theme', light.matches ? 'light' : 'dark');
+  theme();
+  light.addEventListener('change', theme);
+  const root = host.attachShadow({ mode: 'open' });
+  const style = document.createElement('style');
+  style.textContent = embedStyles;
+  root.appendChild(style);
+  document.body.appendChild(host);
+  return root;
+}
+
+if (document.body) void mount();
+else document.addEventListener('DOMContentLoaded', () => void mount(), { once: true });

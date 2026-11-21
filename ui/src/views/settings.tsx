@@ -1,5 +1,5 @@
 import { parseChatStreamMaxWidthPx } from '../../../src/contracts';
-import { INTERFACE_NOTES_PROJECT_SETTING } from '../../../src/interface-notes/contract';
+import { INTERFACE_NOTES_EMBED, INTERFACE_NOTES_PROJECT_SETTING, type EmbedGrant } from '../../../src/interface-notes/contract';
 import { AgentIntegrations } from '../components/AgentIntegrations';
 import { currentRoute, subscribeRouteChanges, viewHref } from '../routing';
 import { NativeSelect } from '../components/shared/NativeSelect';
@@ -32,6 +32,9 @@ import {
   updateInstructionDeliverySettings,
   canPerformOperation,
   listCanonicalProjects,
+  listEmbedGrants,
+  allowEmbedGrant,
+  removeEmbedGrant,
   type BackupStatus,
   type CanonicalProject,
   type DesktopDaemonLaunchMode,
@@ -505,6 +508,95 @@ function InterfaceNotesProjectRow(props: {
           <option key={project.id} value={project.project_key}>{project.display_name || project.project_key}</option>
         ))}
       </NativeSelect>
+    </div>
+  );
+}
+
+/** The project and the part of its checkout a page is served from: `feedbax, web/`, or `feedbax, checkout root`. */
+function embedGrantApp(grant: EmbedGrant): string {
+  const within = grant.app.slice(grant.app.indexOf(':') + 1);
+  return `${grant.project.name}, ${within === '.' ? 'checkout root' : `${within}/`}`;
+}
+
+/**
+ * Pages of other apps that asked to show the interface-notes toolbar, by origin and
+ * the directory their server ran in. The embed gets an identity only for a request
+ * allowed here, on Mandible's own top-level page; the embed's link opens this view
+ * with `embed_origin` naming its origin.
+ */
+function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
+  const [grants, setGrants] = useState<EmbedGrant[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [asked, setAsked] = useState(() => currentRoute().params.embed_origin ?? null);
+  const reload = useCallback(() => {
+    listEmbedGrants().then(setGrants, (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
+  }, []);
+  useEffect(() => {
+    reload();
+    return subscribeRouteChanges(() => setAsked(currentRoute().params.embed_origin ?? null));
+  }, [reload]);
+  // The link from an embedding page lands here while the sections above are still loading and growing, so the asked
+  // row keeps itself in view as they settle, until the user scrolls or a few seconds pass.
+  const revealed = useRef(false);
+  const revealAsked = useCallback((row: HTMLLIElement | null) => {
+    if (!row || revealed.current) return;
+    revealed.current = true;
+    const content = row.closest('.settings-view__content') ?? document.body;
+    const center = () => row.scrollIntoView({ block: 'center' });
+    const observer = new ResizeObserver(center);
+    const stop = () => {
+      observer.disconnect();
+      for (const type of ['wheel', 'touchstart', 'keydown'] as const) window.removeEventListener(type, stop, true);
+    };
+    observer.observe(content);
+    for (const type of ['wheel', 'touchstart', 'keydown'] as const) window.addEventListener(type, stop, true);
+    window.setTimeout(stop, 4000);
+    center();
+  }, []);
+  const act = (action: (grant: EmbedGrant) => Promise<void>, grant: EmbedGrant) => {
+    setError(null);
+    action(grant).then(reload, (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
+  };
+  return (
+    <div className="settings-view__text-row settings-view__embed-grants" data-settings-searchable>
+      <div className="settings-view__text-info">
+        <span className="settings-view__text-label">Interface notes on other apps</span>
+        <span className="settings-view__text-desc">
+          Development pages of other apps that asked to show the notes toolbar. An allowed page files notes in your
+          name, so allow only servers of projects whose code you trust.
+        </span>
+        {error && <span className="settings-view__warning" role="alert">{error}</span>}
+        {grants?.length === 0 && <span className="settings-view__text-desc">No page has asked yet.</span>}
+        {grants && grants.length > 0 && (
+          <ul className="settings-view__embed-grant-list">
+            {grants.map((grant) => (
+              <li
+                key={`${grant.origin} ${grant.directory}`}
+                className="settings-view__embed-grant"
+                data-asked={grant.origin === asked ? 'true' : undefined}
+                ref={grant.origin === asked ? revealAsked : undefined}
+              >
+                <span className="settings-view__embed-grant-heading">
+                  <span className="settings-view__embed-grant-origin">{grant.origin}</span>
+                  <span className={`settings-view__embed-grant-state settings-view__embed-grant-state--${grant.state}`}>
+                    {grant.state === 'granted' ? 'Allowed' : 'Not allowed yet'}
+                  </span>
+                </span>
+                <span className="settings-view__text-desc">{embedGrantApp(grant)}</span>
+                <span className="settings-view__embed-grant-directory" title={grant.directory}>{grant.directory}</span>
+                <span className="settings-view__embed-grant-actions">
+                  {grant.state === 'pending' && (
+                    <button type="button" className="btn btn--active btn--sm" disabled={!props.allowed} onClick={() => act(allowEmbedGrant, grant)}>Allow</button>
+                  )}
+                  <button type="button" className="btn btn--sm" disabled={!props.allowed} onClick={() => act(removeEmbedGrant, grant)}>
+                    {grant.state === 'granted' ? 'Revoke' : 'Dismiss'}
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
@@ -1709,6 +1801,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             onSave={saveSetting}
             allowed={canPerformOperation(instance, 'PUT', `/api/settings/${INTERFACE_NOTES_PROJECT_SETTING}`)}
           />
+          <EmbedGrantRows allowed={canPerformOperation(instance, 'PUT', INTERFACE_NOTES_EMBED.grants)} />
           <div className="settings-view__text-row" data-settings-searchable>
             <div className="settings-view__text-info">
               <span className="settings-view__text-label">Default filter</span>

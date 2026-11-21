@@ -940,6 +940,7 @@ export function registerIssueRoutes(
     const resolutionFilter = getQueryParam(req, "resolution");
     const labelFilter = getQueryParam(req, "label");
     const hasNotes = getQueryParam(req, "has_notes") === "true";
+    const projectFilter = getQueryParam(req, "project");
     if (statusFilter && !["all", "open", "closed"].includes(statusFilter)) {
       sendJson(res, 400, { error: "status must be open, closed, or all; use resolution=delivered instead of status=merged" });
       return;
@@ -951,7 +952,7 @@ export function registerIssueRoutes(
     try {
       const summaries = await reader.run("issue_summaries", {
         repos: workScanner.getRepos(),
-        filters: { repo: repoFilter, status: statusFilter, resolution: resolutionFilter, label: labelFilter, has_notes: hasNotes },
+        filters: { repo: repoFilter, project_id: projectFilter, status: statusFilter, resolution: resolutionFilter, label: labelFilter, has_notes: hasNotes },
       });
       sendJson(res, 200, summaries);
     } catch (error) {

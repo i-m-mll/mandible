@@ -25,7 +25,7 @@ export const PROJECT_REFERENCE_POLICIES: readonly ProjectReferencePolicy[] = [
   move("ledger_commit_issue_links"), move("ledger_reconciliation_mismatches"),
   move("artifact", "source_project_id"), move("project_artifact_associations"), move("spaces"),
   move("trash_entries"), move("auth_request_merge_succeeded_facts"), move("briefing_destination_mutations"),
-  move("ledger_project_historical_roots"),
+  move("ledger_project_historical_roots"), move("interface_note_embed_grants"),
   column("ledger_project_checkouts", "project_id", { disposition: "merge", handler: "checkout" }),
   column("ledger_change_feed_state", "project_id", { disposition: "merge", handler: "feed" }),
   column("ledger_change_log", "project_id", { disposition: "merge", handler: "feed" }),

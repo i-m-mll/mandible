@@ -20,6 +20,7 @@ import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./
 import type { DaemonMemorySnapshot } from "./daemon-memory.js";
 import type { EventLoopLagSnapshot } from "./daemon-event-loop.js";
 import { OperatorNotConfiguredError } from "./identity/resolver.js";
+import { INTERFACE_NOTES_EMBED } from "./interface-notes/contract.js";
 import { ClientAuthzError } from "./client-auth/authz.js";
 import { requestOriginForRequest, withRequestOrigin } from "./request-origin.js";
 import { ENTITY_TAB, parseAppPath } from "./app-routes.js";
@@ -1043,12 +1044,20 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
       }
     });
 
+    const embedAsset = transport === "http" ? embedAssetFor(method, pathname) : null;
+    const crossSite: CrossSiteExemption | null = embedAsset
+      ? { dest: embedAsset.dest, scope: "document" }
+      : transport === "http" ? previewEmbedAuthorization(req, method, pathname) : null;
     const boundary = transport === "http"
-      ? validateDaemonWriteBoundary(req, method, isApi, instance)
+      ? validateDaemonWriteBoundary(req, method, isApi, instance, crossSite)
       : { ok: true } as const;
     if (!boundary.ok) {
       logger("warn", "request_forbidden", { method, pathname, reason: boundary.reason });
       writeJsonResponse(res, 403, { error: "forbidden", reason: boundary.reason });
+      return;
+    }
+    if (embedAsset) {
+      await sendEmbedAsset(embedAsset, method, res, uiDistDir);
       return;
     }
 
@@ -1491,11 +1500,89 @@ function isApiPath(pathname: string): boolean {
 
 type WriteBoundaryResult = { ok: true } | { ok: false; reason: string };
 
+/**
+ * The two interface-notes embed documents other apps' dev pages load from this
+ * origin: the script, as a cross-site module script, and the bridge, as a
+ * cross-site iframe. Each is exempt from the cross-site refusal only for its own
+ * request destination; the bridge's own requests are same-origin like any page's.
+ */
+type EmbedAsset = { kind: "script"; dest: "script" } | { kind: "bridge"; dest: "iframe" };
+
+/**
+ * A cross-site request admitted for its destination. `document`: the embed document
+ * itself, which a cross-site page loads with that page's Origin, so the remaining
+ * checks do not apply. `authorization`: a preview gateway's forward-auth request for
+ * such a document, which carries this instance's Origin and passes the remaining
+ * checks like any other request.
+ */
+type CrossSiteExemption = { dest: EmbedAsset["dest"]; scope: "document" | "authorization" };
+
+function embedAssetFor(method: string, pathname: string): EmbedAsset | null {
+  if (method !== "GET" && method !== "HEAD") return null;
+  if (pathname === INTERFACE_NOTES_EMBED.script) return { kind: "script", dest: "script" };
+  if (pathname === INTERFACE_NOTES_EMBED.bridge) return { kind: "bridge", dest: "iframe" };
+  return null;
+}
+
+/**
+ * A preview's gateway authorizes each request to the preview by asking this
+ * instance's forward-auth route with the original request's headers and its
+ * method and URI in `X-Forwarded-Method` and `X-Forwarded-Uri`, so an embed
+ * document of a preview is exempt here on the same terms as on its own origin.
+ */
+function previewEmbedAuthorization(req: http.IncomingMessage, method: string, pathname: string): CrossSiteExemption | null {
+  if (method !== "GET" || pathname !== "/api/client-auth/forward-auth") return null;
+  const forwardedUri = firstHeader(req, "x-forwarded-uri");
+  const forwardedMethod = firstHeader(req, "x-forwarded-method")?.toUpperCase();
+  // The URI as sent: an absolute path, read up to its query, never resolved against a base.
+  if (!forwardedUri?.startsWith("/") || forwardedUri.startsWith("//") || !forwardedMethod) return null;
+  const asset = embedAssetFor(forwardedMethod, forwardedUri.split(/[?#]/, 1)[0]!);
+  return asset ? { dest: asset.dest, scope: "authorization" } : null;
+}
+
+/** Loopback origins, the only pages that may frame the bridge; the bridge checks each message's origin again. */
+const EMBED_FRAME_ANCESTORS = ["localhost", "127.0.0.1", "[::1]", "*.localhost"]
+  .flatMap((host) => [`http://${host}:*`, `https://${host}:*`]).join(" ");
+
+const EMBED_BRIDGE_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>Mandible notes bridge</title>
+<script type="module" src="/dist/interface-notes-bridge.js"></script></head><body></body></html>`;
+
+async function sendEmbedAsset(asset: EmbedAsset, method: string, res: http.ServerResponse, distDir: string): Promise<void> {
+  if (asset.kind === "bridge") {
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Length": Buffer.byteLength(EMBED_BRIDGE_HTML),
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": `frame-ancestors ${EMBED_FRAME_ANCESTORS}`,
+      "Referrer-Policy": "no-referrer",
+    });
+    res.end(method === "HEAD" ? undefined : EMBED_BRIDGE_HTML);
+    return;
+  }
+  let body: Buffer;
+  try {
+    body = await fs.promises.readFile(path.join(distDir, "interface-notes-embed.js"));
+  } catch {
+    writeJsonResponse(res, 404, { error: "not_found" });
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/javascript; charset=utf-8",
+    "Content-Length": body.length,
+    "Cache-Control": "no-cache",
+    // A module script from another origin loads only with CORS; the script carries no data.
+    "Access-Control-Allow-Origin": "*",
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(method === "HEAD" ? undefined : body);
+}
+
 function validateDaemonWriteBoundary(
   req: http.IncomingMessage,
   method: string,
   isApi: boolean,
   instance: InstanceInfo,
+  crossSite: CrossSiteExemption | null = null,
 ): WriteBoundaryResult {
   const normalizedMethod = method.toUpperCase();
   if (!isBrowserRequest(req.headers)) {
@@ -1503,7 +1590,7 @@ function validateDaemonWriteBoundary(
   }
   return validateDaemonBrowserBoundary(
     req, instance, isApi && UNSAFE_METHODS.has(normalizedMethod),
-    normalizedMethod === "GET" && !isApi,
+    normalizedMethod === "GET" && !isApi, crossSite,
   );
 }
 
@@ -1512,6 +1599,7 @@ function validateDaemonBrowserBoundary(
   instance: InstanceInfo,
   requireOrigin: boolean,
   allowDocumentNavigation: boolean,
+  crossSite: CrossSiteExemption | null = null,
 ): WriteBoundaryResult {
   const hostHeader = firstHeader(req, "host");
   const host = parseHostHeader(hostHeader);
@@ -1526,7 +1614,11 @@ function validateDaemonBrowserBoundary(
     && firstHeader(req, "sec-fetch-mode") === "navigate"
     && firstHeader(req, "sec-fetch-dest") === "document"
     && !origin;
-  if (secFetchSite === "cross-site" && !isTopLevelDocumentNavigation) {
+  const exempt = crossSite !== null && firstHeader(req, "sec-fetch-dest") === crossSite.dest;
+  if (crossSite?.scope === "document") {
+    return exempt || secFetchSite !== "cross-site" ? { ok: true } : { ok: false, reason: "cross_site_fetch" };
+  }
+  if (secFetchSite === "cross-site" && !isTopLevelDocumentNavigation && !exempt) {
     return { ok: false, reason: "cross_site_fetch" };
   }
 

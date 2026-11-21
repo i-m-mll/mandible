@@ -1,10 +1,12 @@
 import { attributionForRequest, requireIdentity, requireOperator } from "../client-auth/authz.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 import type { Db } from "../db.js";
-import { INTERFACE_NOTE_ERRORS } from "../interface-notes/contract.js";
+import { INTERFACE_NOTE_ERRORS, INTERFACE_NOTES_EMBED } from "../interface-notes/contract.js";
+import { EmbedGrants } from "../interface-notes/embed-grants.js";
+import type { EmbedProcessProbe } from "../interface-notes/embed-identity.js";
 import { listIssueInterfaceNotes } from "../interface-notes/read.js";
 import { forwardToSource, type InterfaceNotesHome } from "../interface-notes/source.js";
-import { InterfaceNoteStore, type InterfaceNoteResult, type InterfaceNoteWriteActor } from "../interface-notes/store.js";
+import { InterfaceNoteStore, interfaceNotesApp, type EmbedWriteScope, type InterfaceNoteResult, type InterfaceNoteWriteActor } from "../interface-notes/store.js";
 import { resolveOperationalIssueRef } from "../ledger/operational-links.js";
 import { interfaceNoteEffects } from "../security/operation-policy.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../server.js";
@@ -58,36 +60,77 @@ function forwarded(db: Db, socketPath: string, access: "read" | "write"): RouteH
   };
 }
 
-export function registerInterfaceNoteRoutes(server: RouteRegistrar, db: Db, home: InterfaceNotesHome): void {
+export function registerInterfaceNoteRoutes(server: RouteRegistrar, db: Db, home: InterfaceNotesHome, probe?: EmbedProcessProbe): void {
   const store = new InterfaceNoteStore(db, (payload) => broadcast(DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED, payload));
+  const grants = new EmbedGrants(db, probe);
   const source = home.kind === "source" ? home.socketPath : null;
   const route = (access: "read" | "write", local: RouteHandler): RouteHandler => source === null ? local : forwarded(db, source, access);
+  /** The bridge's writes name the embedding page's origin; the grant is read again for each one. */
+  const embedScope = (req: RequestLike): EmbedWriteScope | null => {
+    const origin = queryString(req, INTERFACE_NOTES_EMBED.originParam);
+    return origin === undefined ? null : { origin, apps: grants.grantedApps(origin) };
+  };
 
   server.get("/api/interface-notes", route("read", (req, res) => {
     requireIdentity(req);
     const issueRef = queryString(req, "issue");
-    if (issueRef === undefined) return sendJson(res, 200, { notes: store.listUnfiled() });
+    if (issueRef === undefined) {
+      const app = interfaceNotesApp(queryString(req, "app"));
+      if (app === null) return sendJson(res, INTERFACE_NOTE_ERRORS.invalid_note, { error: "invalid_note", message: "app is mandible, or a project key followed by : and a path" });
+      return sendJson(res, 200, { notes: store.listUnfiled(app) });
+    }
     const resolved = resolveOperationalIssueRef(db, issueRef);
     if (!resolved.ok) return sendJson(res, INTERFACE_NOTE_ERRORS.issue_not_found, { error: "issue_not_found" });
     sendJson(res, 200, { notes: listIssueInterfaceNotes(db, resolved.issue_id) });
   }), { operation: { id: "get:/api/interface-notes", effects: (context) => interfaceNoteEffects(context, "ledger:read"), requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
+  server.post("/api/interface-notes/embed-identity", route("write", async (req, res) => {
+    requireOperator(db, req);
+    const origin = bodyRecord(req).origin;
+    const result = await grants.access(typeof origin === "string" ? origin : "");
+    if (result.ok) return sendJson(res, 200, result.value);
+    if (result.error === "origin_not_granted") {
+      return sendJson(res, INTERFACE_NOTE_ERRORS.origin_not_granted, { error: result.error, grant: result.grant });
+    }
+    sendFailure(res, { code: result.error });
+  }), { operation: { id: "post:/api/interface-notes/embed-identity", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  server.get("/api/interface-notes/embed-grants", route("read", (req, res) => {
+    requireOperator(db, req);
+    sendJson(res, 200, { grants: grants.list() });
+  }), { operation: { id: "get:/api/interface-notes/embed-grants", effects: (context) => interfaceNoteEffects(context, "ledger:read"), requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  server.put("/api/interface-notes/embed-grants", route("write", (req, res) => {
+    requireOperator(db, req);
+    const { origin, directory } = bodyRecord(req);
+    const grant = typeof origin === "string" && typeof directory === "string" ? grants.allow(origin, directory) : null;
+    if (!grant) return sendFailure(res, { code: "grant_not_found" });
+    sendJson(res, 200, grant);
+  }), { operation: { id: "put:/api/interface-notes/embed-grants", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
+
+  server.delete("/api/interface-notes/embed-grants", route("write", (req, res) => {
+    requireOperator(db, req);
+    if (!grants.remove(queryString(req, "origin") ?? "", queryString(req, "directory") ?? "")) return sendFailure(res, { code: "grant_not_found" });
+    res.status(204).empty?.();
+  }), { operation: { id: "delete:/api/interface-notes/embed-grants", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
+
   server.post("/api/interface-notes", route("write", (req, res) => {
     requireOperator(db, req);
-    send(res, store.create(req.body), 201);
+    send(res, store.create(req.body, embedScope(req)), 201);
   }), { operation: { id: "post:/api/interface-notes", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
 
   server.post("/api/interface-notes/file", route("write", (req, res) => {
-    send(res, store.file(req.body, operatorActor(db, req)), 201);
+    send(res, store.file(req.body, operatorActor(db, req), embedScope(req)), 201);
   }), { operation: { id: "post:/api/interface-notes/file", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
 
   server.patch("/api/interface-notes/:id", route("write", (req, res) => {
-    send(res, store.updateText(req.params.id, bodyRecord(req).text, operatorActor(db, req)), 200);
+    send(res, store.updateText(req.params.id, bodyRecord(req).text, operatorActor(db, req), embedScope(req)), 200);
   }), { operation: { id: "patch:/api/interface-notes/:id", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
 
   server.delete("/api/interface-notes/:id", route("write", (req, res) => {
     const actor = operatorActor(db, req);
     const commentId = queryString(req, "comment");
-    send(res, commentId === undefined ? store.deleteUnfiled(req.params.id) : store.removeFromComment(req.params.id, commentId, actor), 204);
+    const scope = embedScope(req);
+    send(res, commentId === undefined ? store.deleteUnfiled(req.params.id, scope) : store.removeFromComment(req.params.id, commentId, actor, scope), 204);
   }), { operation: { id: "delete:/api/interface-notes/:id", effects: (context) => interfaceNoteEffects(context, "ledger:write"), requestSchema: null, reportingCategory: "ledger" }, fileRpc: "deny" });
 }

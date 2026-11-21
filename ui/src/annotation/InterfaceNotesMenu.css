@@ -76,3 +76,29 @@
 }
 
 .interface-notes-menu__title-input:focus { border-color: var(--border-focus); outline: none; }
+
+.interface-notes-menu__error {
+  padding: 4px 8px 6px;
+  color: var(--status-danger-fg);
+  font-size: var(--text-sm);
+}
+
+.interface-notes-grant-link {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: var(--z-anchored-menu);
+  padding: 4px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  text-decoration: none;
+  box-shadow: var(--shadow-soft);
+}
+
+.interface-notes-grant-link:hover {
+  color: var(--text-primary);
+}

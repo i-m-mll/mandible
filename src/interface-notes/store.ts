@@ -2,12 +2,16 @@ import type { Db } from "../db.js";
 import { AttachmentValidationError, validatedAnnotationTarget, validatedAnnotationText } from "../conversation-control/attachment-store.js";
 import type { AnnotationTarget } from "../conversation-control/attachments.js";
 import { commentCarriesInterfaceNotes, NOTE_COLUMNS, NOTE_FROM, noteFromRow, type NoteRow } from "./read.js";
+import { loopbackOriginPort } from "./embed-identity.js";
 import { resolveOperationalIssueRef } from "../ledger/operational-links.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import { LedgerStore } from "../ledger/store.js";
 import type { LedgerActorInput } from "../ledger/types.js";
 import {
+  INTERFACE_NOTES_APP_PATTERN,
+  MAX_INTERFACE_NOTES_APP,
   INTERFACE_NOTES_PROJECT_SETTING,
+  MANDIBLE_INTERFACE_NOTES_APP,
   renderInterfaceNotesBody,
   type FileInterfaceNotesResult,
   type InterfaceNote,
@@ -19,6 +23,18 @@ import {
 export type InterfaceNoteFailure = { code: InterfaceNoteErrorCode; message?: string };
 export type InterfaceNoteResult<T> = { ok: true; value: T } | { ok: false; error: InterfaceNoteFailure };
 export type InterfaceNoteWriteActor = LedgerActorInput;
+/**
+ * A write made through the embed bridge: the embedding page's origin and the apps it
+ * holds a grant for when the write arrives. Such a write may touch only notes of those
+ * apps, and a note it creates must record that origin. Mandible's own interface writes
+ * with no scope.
+ */
+export type EmbedWriteScope = { origin: string; apps: ReadonlySet<string> };
+
+function outOfScope(scope: EmbedWriteScope | null, app: string): boolean {
+  return scope !== null && !scope.apps.has(app);
+}
+
 export type InterfaceNoteChangeListener = (payload: InterfaceNoteChangedPayload) => void;
 
 const MAX_NOTE_ID = 128;
@@ -40,17 +56,33 @@ function validated<T>(read: () => T): InterfaceNoteResult<T> {
   }
 }
 
-function validatedInput(input: unknown): InterfaceNoteResult<{ id: string; text: string; target: AnnotationTarget; pin: InterfaceNotePin }> {
+/** An app key, or null when the value is not one. An absent value is Mandible's own interface. */
+export function interfaceNotesApp(value: unknown): string | null {
+  if (value === undefined) return MANDIBLE_INTERFACE_NOTES_APP;
+  return typeof value === "string" && value.length <= MAX_INTERFACE_NOTES_APP && INTERFACE_NOTES_APP_PATTERN.test(value) ? value : null;
+}
+
+function validatedInput(input: unknown): InterfaceNoteResult<{ id: string; app: string; origin: string | null; text: string; target: AnnotationTarget; pin: InterfaceNotePin }> {
   if (!isRecord(input)) return fail("invalid_note", "A note must be an object");
   const { id, pin } = input;
   if (typeof id !== "string" || !id || id.length > MAX_NOTE_ID) return fail("invalid_note", "A note id is 1 to 128 characters");
+  const app = interfaceNotesApp(input.app);
+  if (app === null) return fail("invalid_note", "A note's app is mandible, or a project key followed by : and a path");
+  const origin = input.origin === undefined ? null : input.origin;
+  if ((origin === null) !== (app === MANDIBLE_INTERFACE_NOTES_APP)) {
+    return fail("invalid_note", "A note names an origin exactly when it was made on another app's page");
+  }
+  if (origin !== null && (typeof origin !== "string" || loopbackOriginPort(origin) === null)) {
+    return fail("invalid_note", "A note's origin is the loopback origin of the page it was made on");
+  }
   const fields = validated(() => ({ text: validatedAnnotationText(input.text), target: validatedAnnotationTarget(input.target) }));
   if (!fields.ok) return fields;
   if (!URL.canParse(fields.value.target.url)) return fail("invalid_note", "A note's page URL must be absolute");
+  if (origin !== null && new URL(fields.value.target.url).origin !== origin) return fail("invalid_note", "A note's page URL is on its origin");
   if (!isRecord(pin) || pin.id !== id) return fail("invalid_note", "A note's pin must be an object whose id is the note id");
   const stored = { ...pin, id, comment: fields.value.text } as InterfaceNotePin;
   if (JSON.stringify(stored).length > MAX_PIN_JSON) return fail("invalid_note", "A note's pin is too large");
-  return ok({ id, text: fields.value.text, target: fields.value.target, pin: stored });
+  return ok({ id, app, origin, text: fields.value.text, target: fields.value.target, pin: stored });
 }
 
 /**
@@ -65,9 +97,9 @@ export class InterfaceNoteStore {
     this.ledger = new LedgerStore(db);
   }
 
-  listUnfiled(): InterfaceNote[] {
-    return (this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM ${NOTE_FROM} WHERE n.comment_id IS NULL ORDER BY n.created_at, n.id`)
-      .all() as NoteRow[]).map(noteFromRow);
+  listUnfiled(app: string): InterfaceNote[] {
+    return (this.db.prepare(`SELECT ${NOTE_COLUMNS} FROM ${NOTE_FROM} WHERE n.comment_id IS NULL AND n.app = ? ORDER BY n.created_at, n.id`)
+      .all(app) as NoteRow[]).map(noteFromRow);
   }
 
   get(id: string): InterfaceNote | null {
@@ -75,62 +107,66 @@ export class InterfaceNoteStore {
     return row ? noteFromRow(row) : null;
   }
 
-  create(input: unknown, now: number = Date.now()): InterfaceNoteResult<InterfaceNote> {
+  create(input: unknown, scope: EmbedWriteScope | null, now: number = Date.now()): InterfaceNoteResult<InterfaceNote> {
     const parsed = validatedInput(input);
     if (!parsed.ok) return parsed;
     const note = parsed.value;
+    if (outOfScope(scope, note.app) || (scope !== null && note.origin !== scope.origin)) return fail("origin_not_granted");
     return this.db.transaction(() => {
       if (this.get(note.id)) return fail<InterfaceNote>("note_exists");
       this.db.prepare(
-        `INSERT INTO interface_notes (id, comment_id, text, target_json, pin_json, created_at, updated_at)
-         VALUES (?, NULL, ?, ?, ?, ?, ?)`,
-      ).run(note.id, note.text, JSON.stringify(note.target), JSON.stringify(note.pin), now, now);
-      this.changed([note.id], null);
+        `INSERT INTO interface_notes (id, app, origin, comment_id, text, target_json, pin_json, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+      ).run(note.id, note.app, note.origin, note.text, JSON.stringify(note.target), JSON.stringify(note.pin), now, now);
+      this.changed([note.id], note.app, null);
       return ok(this.get(note.id)!);
     })();
   }
 
-  updateText(id: string, text: unknown, actor: InterfaceNoteWriteActor): InterfaceNoteResult<InterfaceNote> {
+  updateText(id: string, text: unknown, actor: InterfaceNoteWriteActor, scope: EmbedWriteScope | null): InterfaceNoteResult<InterfaceNote> {
     const parsed = validated(() => validatedAnnotationText(text));
     if (!parsed.ok) return parsed;
     return this.db.transaction(() => {
       const note = this.get(id);
       if (!note) return fail<InterfaceNote>("note_not_found");
+      if (outOfScope(scope, note.app)) return fail<InterfaceNote>("origin_not_granted");
       if (note.text === parsed.value) return ok(note);
       this.db.prepare("UPDATE interface_notes SET text = ?, pin_json = ?, updated_at = ? WHERE id = ?")
         .run(parsed.value, JSON.stringify({ ...note.pin, comment: parsed.value }), Date.now(), id);
       if (note.owner.kind === "comment") this.regenerate(note.owner.comment_id, actor);
-      this.changed([id], note.owner.kind === "comment" ? note.owner.issue_id : null);
+      this.changed([id], note.app, note.owner.kind === "comment" ? note.owner.issue_id : null);
       return ok(this.get(id)!);
     })();
   }
 
-  deleteUnfiled(id: string): InterfaceNoteResult<void> {
+  deleteUnfiled(id: string, scope: EmbedWriteScope | null): InterfaceNoteResult<void> {
     return this.db.transaction(() => {
       const note = this.get(id);
       if (!note) return fail<void>("note_not_found");
+      if (outOfScope(scope, note.app)) return fail<void>("origin_not_granted");
       if (note.owner.kind !== "unfiled") return fail<void>("note_filed");
       this.db.prepare("DELETE FROM interface_notes WHERE id = ?").run(id);
-      this.changed([id], null);
+      this.changed([id], note.app, null);
       return ok(undefined);
     })();
   }
 
-  removeFromComment(id: string, commentId: string, actor: InterfaceNoteWriteActor): InterfaceNoteResult<void> {
+  removeFromComment(id: string, commentId: string, actor: InterfaceNoteWriteActor, scope: EmbedWriteScope | null): InterfaceNoteResult<void> {
     return this.db.transaction(() => {
       const note = this.get(id);
       if (!note) return fail<void>("note_not_found");
+      if (outOfScope(scope, note.app)) return fail<void>("origin_not_granted");
       if (note.owner.kind !== "comment" || note.owner.comment_id !== commentId) return fail<void>("note_owner_mismatch");
       this.db.prepare("DELETE FROM interface_notes WHERE id = ?").run(id);
       if (commentCarriesInterfaceNotes(this.db, commentId)) this.regenerate(commentId, actor);
       else this.ledger.softDeleteComment(commentId, { ...actor, source: "mandible" });
-      this.changed([id], note.owner.issue_id);
+      this.changed([id], note.app, note.owner.issue_id);
       return ok(undefined);
     })();
   }
 
   /** File the listed notes that are still unfiled as one new comment; notes filed or deleted meanwhile are skipped. */
-  file(request: unknown, actor: InterfaceNoteWriteActor): InterfaceNoteResult<FileInterfaceNotesResult> {
+  file(request: unknown, actor: InterfaceNoteWriteActor, scope: EmbedWriteScope | null): InterfaceNoteResult<FileInterfaceNotesResult> {
     if (!isRecord(request) || !Array.isArray(request.note_ids) || request.note_ids.length === 0
         || !request.note_ids.every((id): id is string => typeof id === "string")) {
       return fail("invalid_note", "note_ids must be a non-empty list of note ids");
@@ -146,6 +182,7 @@ export class InterfaceNoteStore {
          ORDER BY n.created_at, n.id`,
       ).all(...noteIds) as NoteRow[]).map(noteFromRow);
       if (notes.length === 0) return fail<FileInterfaceNotesResult>("nothing_to_file");
+      if (notes.some((note) => outOfScope(scope, note.app))) return fail<FileInterfaceNotesResult>("origin_not_granted");
       const issueId = destination.value.kind === "issue"
         ? destination.value.issue_id
         : this.ledger.createIssue({
@@ -161,7 +198,9 @@ export class InterfaceNoteStore {
       const move = this.db.prepare("UPDATE interface_notes SET comment_id = ?, updated_at = ? WHERE id = ? AND comment_id IS NULL");
       for (const note of notes) move.run(comment.id, now, note.id);
       const filed = notes.map((note) => note.id);
-      this.changed(filed, issueId);
+      for (const app of new Set(notes.map((note) => note.app))) {
+        this.changed(notes.filter((note) => note.app === app).map((note) => note.id), app, issueId);
+      }
       const issue = this.ledger.getIssue(issueId);
       return ok({
         issue_id: issue.id,
@@ -185,12 +224,15 @@ export class InterfaceNoteStore {
     if (isRecord(value) && isRecord(value.new_issue) && typeof value.new_issue.title === "string") {
       const title = value.new_issue.title.trim();
       if (!title) return fail("invalid_note", "A new issue needs a title");
+      const given = value.new_issue.project;
+      if (given !== undefined && (typeof given !== "string" || !given.trim())) return fail("invalid_note", "A new issue's project is a project ref");
       const setting = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(INTERFACE_NOTES_PROJECT_SETTING) as { value: string } | undefined;
-      const project = setting?.value.trim() ? resolveProjectRef(this.db, setting.value.trim()) : null;
-      if (!project?.ok) return fail("receiving_project_unset");
+      const ref = given?.trim() ?? setting?.value.trim();
+      const project = ref ? resolveProjectRef(this.db, ref) : null;
+      if (!project?.ok) return fail("receiving_project_unset", given === undefined ? undefined : `${given} names no project`);
       return ok({ kind: "new_issue", project_id: project.project.id, title });
     }
-    return fail("invalid_note", "destination must be { issue } or { new_issue: { title } }");
+    return fail("invalid_note", "destination must be { issue } or { new_issue: { title, project? } }");
   }
 
   private regenerate(commentId: string, actor: InterfaceNoteWriteActor): void {
@@ -200,7 +242,7 @@ export class InterfaceNoteStore {
     this.ledger.updateComment(commentId, { body: renderInterfaceNotesBody(notes) }, { ...actor, source: "mandible" });
   }
 
-  private changed(ids: string[], issueId: string | null): void {
-    this.db.afterCommit(() => this.onChange({ ids, issue_id: issueId }));
+  private changed(ids: string[], app: string, issueId: string | null): void {
+    this.db.afterCommit(() => this.onChange({ ids, app, issue_id: issueId }));
   }
 }

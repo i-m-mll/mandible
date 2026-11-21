@@ -682,3 +682,76 @@
   margin-bottom: 8px;
   color: var(--text-muted);
 }
+
+.settings-view__embed-grants {
+  align-items: flex-start;
+}
+
+.settings-view__embed-grant-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-view__embed-grant {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+}
+
+.settings-view__embed-grant[data-asked='true'] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.settings-view__embed-grant-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-view__embed-grant-origin {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.settings-view__embed-grant-state {
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.settings-view__embed-grant-state--pending {
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+}
+
+.settings-view__embed-grant-state--granted {
+  background: color-mix(in srgb, var(--accent-green) 18%, transparent);
+  color: var(--accent-green);
+}
+
+.settings-view__embed-grant-directory {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-view__embed-grant-actions {
+  display: flex;
+  gap: 6px;
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  align-self: center;
+}

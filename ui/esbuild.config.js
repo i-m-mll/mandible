@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { build, context } from 'esbuild';
 import { frontendBuildOutput } from '../scripts/desktop-build-layout.mjs';
+import { embedBuildOptions } from './embed-build.mjs';
 
 const isWatch = process.argv.includes('--watch');
 const outdir = outdirArgument(process.argv) ?? frontendBuildOutput;
@@ -118,10 +119,14 @@ const buildOptions = {
   plugins: [assetManifestPlugin],
 };
 
+const embedOptions = embedBuildOptions({ outdir, isWatch, alias: buildOptions.alias });
+
 if (isWatch) {
   const ctx = await context(buildOptions);
-  await ctx.watch();
+  const embedCtx = await context(embedOptions);
+  await Promise.all([ctx.watch(), embedCtx.watch()]);
 } else {
   await fs.rm(buildOptions.outdir, { recursive: true, force: true });
   await build(buildOptions);
+  await build(embedOptions);
 }

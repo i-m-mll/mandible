@@ -2,10 +2,21 @@ import { annotationAttachmentText, MAX_ANNOTATION_TEXT, type AnnotationTarget, t
 
 /**
  * Interface notes: annotations made with the Agentation toolbar on Mandible's own
- * interface, kept by the daemon from the moment they are saved and filed onto
- * issue comments. This file is the contract between the server, the toolbar host,
- * the Send menu and the issue view; see docs/specs/interface-annotations-and-attachments.md.
+ * interface or on another app's dev server, kept by the daemon from the moment they
+ * are saved and filed onto issue comments. This file is the contract between the
+ * server, the toolbar host, the interface-notes embed, the Send menu and the issue
+ * view; see docs/specs/interface-annotations-and-attachments.md.
  */
+
+/** The app key of notes made on Mandible's own interface, and of a note whose input names no app. */
+export const MANDIBLE_INTERFACE_NOTES_APP = "mandible";
+
+/**
+ * An app key: `mandible`, or a project key, `:` and a path within its checkout (`.` for its root). An
+ * embedding page's key always has the separator, so no page can be given Mandible's own notes.
+ */
+export const INTERFACE_NOTES_APP_PATTERN = /^(?:mandible|[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9._/-]+)$/;
+export const MAX_INTERFACE_NOTES_APP = 256;
 
 /**
  * Agentation's own annotation record, stored verbatim so the toolbar can draw the
@@ -22,6 +33,10 @@ export type InterfaceNoteOwner =
 export interface InterfaceNote {
   /** Agentation's annotation id; the toolbar's cache and the daemon share it. */
   id: string;
+  /** The app whose interface the note was made on; unfiled notes, counts and the toolbar are scoped by it. */
+  app: string;
+  /** The embedding page's origin for a note made through the embed; null for a note made in Mandible. */
+  origin: string | null;
   text: string;
   target: AnnotationTarget;
   pin: InterfaceNotePin;
@@ -30,12 +45,16 @@ export interface InterfaceNote {
   updated_at: number;
 }
 
-/** What the toolbar host sends when a note is made. */
-export type InterfaceNoteInput = Pick<InterfaceNote, "id" | "text" | "target" | "pin">;
+/**
+ * What the toolbar host sends when a note is made. The daemon reads an absent `app` as `mandible`. Another
+ * app's note names the embedding page's `origin`, which is also its page URL's origin; Mandible's names none.
+ */
+export type InterfaceNoteInput = Pick<InterfaceNote, "id" | "app" | "text" | "target" | "pin"> & { origin?: string };
 
 export type InterfaceNoteDestination =
   | { issue: string }
-  | { new_issue: { title: string } };
+  /** `project` is the project ref the embedding app declares; without it, the `interface_notes_project` setting. */
+  | { new_issue: { title: string; project?: string } };
 
 export interface FileInterfaceNotesRequest {
   /** The unfiled notes the user saw when choosing; notes filed meanwhile are skipped. */
@@ -51,19 +70,27 @@ export interface FileInterfaceNotesResult {
   filed: string[];
 }
 
-/** Project (any project ref) whose issues receive filed notes. Unset: Send offers Chat only. */
+/** Project (any project ref) whose issues receive Mandible's own filed notes. Unset: Send offers Chat only. */
 export const INTERFACE_NOTES_PROJECT_SETTING = "interface_notes_project";
 
-/** SSE event after any note write; the payload names the notes and the issue, if any, they touched. */
+/**
+ * SSE event after any note write; the payload names the notes, their app and the issue, if any, they touched.
+ * `app` is null only on the event a preview emits when its relay (re)connects, which may stand for any app.
+ */
 export const INTERFACE_NOTE_CHANGED_EVENT = "interface_note:changed";
 export interface InterfaceNoteChangedPayload {
   ids: string[];
+  app: string | null;
   issue_id: string | null;
 }
 
 export const INTERFACE_NOTE_ROUTES = {
-  /** GET: unfiled notes, or `?issue=<ref>` for one issue's filed notes. POST InterfaceNoteInput: 201, or 409 `note_exists`. */
+  /**
+   * GET: one app's unfiled notes (`?app=<app>`, default `mandible`), or `?issue=<ref>` for one issue's filed notes of every app.
+   * POST InterfaceNoteInput: 201, or 409 `note_exists`.
+   */
   collection: "/api/interface-notes",
+  unfiled: (app: string): string => `/api/interface-notes?app=${encodeURIComponent(app)}`,
   /**
    * PATCH `{ text }`: edit, whoever owns the note; a filed note's edit revises its comment body. 404 `note_not_found`.
    * DELETE: delete an unfiled note. 404 `note_not_found`; 409 `note_filed` when the note has an owner, which is left untouched.
@@ -77,7 +104,7 @@ export const INTERFACE_NOTE_ROUTES = {
     `/api/interface-notes/${encodeURIComponent(id)}?comment=${encodeURIComponent(commentId)}`,
   /** POST FileInterfaceNotesRequest: one new comment carrying the notes. */
   file: "/api/interface-notes/file",
-  /** GET /api/issues with this query lists only issues that carry notes, most recently annotated first. */
+  /** GET /api/issues with this query lists only issues that carry notes, most recently annotated first; `&project=<id>` limits it to one project. */
   issuesWithNotesQuery: "has_notes=true",
 } as const;
 
@@ -100,16 +127,70 @@ export const INTERFACE_NOTE_ERRORS = {
   invalid_note: 400,
   /** POST file: the issue ref does not resolve. */
   issue_not_found: 404,
-  /** POST file with `new_issue`: `interface_notes_project` is unset or does not resolve. */
+  /** POST file with `new_issue`: neither the given project nor `interface_notes_project` resolves. */
   receiving_project_unset: 409,
   /** POST file: every listed note was filed or deleted meanwhile; no comment or issue is created. */
   nothing_to_file: 409,
+  /** GET embed identity: the origin is not an http(s) origin on a loopback host. */
+  origin_not_loopback: 400,
+  /** Embed identity: no process listens on the port, a listener's directory is unreadable, or the directory is not a checkout of a registered project. */
+  origin_not_registered: 404,
+  /** Embed identity: the operator has not allowed this origin for this directory; the request is recorded as pending. */
+  origin_not_granted: 403,
+  /** Embed grants: no request from this origin and directory. */
+  grant_not_found: 404,
   /** Any route, in a preview that keeps notes in its source instance: that instance did not answer. */
   source_unavailable: 503,
 } as const;
 export type InterfaceNoteErrorCode = keyof typeof INTERFACE_NOTE_ERRORS;
 
 export const MAX_INTERFACE_NOTE_TEXT = MAX_ANNOTATION_TEXT;
+
+/**
+ * The interface-notes embed, for apps other than Mandible. A dev page loads `script`
+ * from the daemon's origin; it opens `bridge`, a hidden iframe on that origin, and
+ * sends note operations to it with postMessage. The bridge asks `identity` which app
+ * and project the embedding page's origin is, and makes ordinary same-origin requests
+ * with that app and project. See docs/specs/interface-annotations-and-attachments.md.
+ */
+export const INTERFACE_NOTES_EMBED = {
+  script: "/embed/notes.js",
+  bridge: "/embed/bridge",
+  /**
+   * POST `{ origin }`: EmbedIdentity for a granted origin; 403 `origin_not_granted` with `{ grant: EmbedGrant }`
+   * after recording the request as pending; 404 `origin_not_registered`; 400 `origin_not_loopback`.
+   */
+  identity: "/api/interface-notes/embed-identity",
+  /**
+   * GET: every EmbedGrant, pending first. PUT `{ origin, directory }`: allow a recorded request.
+   * DELETE `?origin=&directory=`: revoke or dismiss it. Only Mandible's own interface calls these.
+   */
+  grants: "/api/interface-notes/embed-grants",
+  /** The Settings view, opened top-level with `embed_origin=<origin>` to show that origin's request. */
+  grantView: "/settings",
+  /**
+   * The query parameter naming the embedding page's origin on every note write the bridge makes.
+   * The daemon then accepts the write only while that origin holds a grant for the note's app, so
+   * a revocation stops an open page at once; 403 `origin_not_granted` otherwise.
+   */
+  originParam: "embed_origin",
+} as const;
+
+/** The app a loopback dev origin serves: the registered project whose checkout the listening process runs in. */
+export interface EmbedIdentity {
+  /** `<project key>:<path>` for a directory within the checkout, `<project key>:.` for its root. */
+  app: string;
+  project: { id: string; key: string; name: string };
+}
+
+/** The operator's decision on one embedding origin, as written, and the directory its listener ran in. */
+export interface EmbedGrant extends EmbedIdentity {
+  origin: string;
+  directory: string;
+  state: "pending" | "granted";
+  requested_at: number;
+  decided_at: number | null;
+}
 
 /** The attachment shape every pill, preview, Chat draft and text renderer consumes. */
 export function interfaceNoteAttachment(note: InterfaceNote, ordinal: number): Extract<ChatAttachment, { kind: "annotation" }> {
@@ -121,7 +202,16 @@ export function interfaceNoteAttachment(note: InterfaceNote, ordinal: number): E
  * change to the comment's notes; it is the same text Chat delivery gives an agent.
  */
 export function renderInterfaceNotesBody(notes: readonly InterfaceNote[]): string {
-  return notes.map((note, index) => annotationAttachmentText(interfaceNoteAttachment(note, index + 1))).join("\n\n");
+  return notes.map((note, index) => {
+    const text = annotationAttachmentText(interfaceNoteAttachment(note, index + 1));
+    // The provenance line opens the block, so no text the page wrote stands between it and the block's start.
+    return note.origin === null ? text : `${interfaceNoteProvenance(note)}\n${text}`;
+  }).join("\n\n");
+}
+
+/** Where a note made through the embed came from, as its comment body states it. */
+export function interfaceNoteProvenance(note: Pick<InterfaceNote, "origin" | "app">): string {
+  return `Made on: ${note.origin} (${note.app}), not in Mandible`;
 }
 
 /** Where a note's pin is shown: the pathname of the page it was made on. */

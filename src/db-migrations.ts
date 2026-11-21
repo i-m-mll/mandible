@@ -1,7 +1,7 @@
 import { exactAgentRef } from "./ambient-provider-identity.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
+import { INTERFACE_NOTE_EMBED_GRANTS_SQL } from "./interface-notes/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
-import { INTERFACE_NOTES_SCHEMA_SQL } from "./interface-notes/schema.js";
 import { NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
@@ -2347,7 +2347,18 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 233, name: "exact_agent_work_unit_identity", statements: EXACT_AGENT_WORK_UNIT_SCHEMA_SQL },
   { version: 234, name: "historical_project_roots", statements: HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL },
-  { version: 235, name: "interface_notes", statements: [...INTERFACE_NOTES_SCHEMA_SQL] },
+  { version: 235, name: "interface_notes", statements: [
+    `CREATE TABLE interface_notes (
+      id TEXT PRIMARY KEY,
+      comment_id TEXT REFERENCES ledger_comments(id) ON DELETE CASCADE,
+      text TEXT NOT NULL,
+      target_json TEXT NOT NULL CHECK(json_valid(target_json) AND json_type(target_json) = 'object'),
+      pin_json TEXT NOT NULL CHECK(json_valid(pin_json) AND json_type(pin_json) = 'object' AND json_extract(pin_json, '$.id') = id),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+    "CREATE INDEX idx_interface_notes_comment ON interface_notes(comment_id)",
+  ] },
   { version: 236, name: "notifications", statements: [...NOTIFICATIONS_SCHEMA_SQL] },
   { version: 237, name: "preview_teardown_action", statements: [...AUTH_REQUEST_ACTIONS_REBUILD_SQL], requires_foreign_keys_off: true },
   { version: 238, name: "retire_delivery_columns", statements: [
@@ -2420,6 +2431,12 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   // Issue 077f152 — a later verified go-live settles a predecessor it contains.
   { version: 243, name: "auth_go_live_supersessions", statements: [AUTH_GO_LIVE_SUPERSESSIONS_TABLE_SQL] },
+  // Issue 8388a7c — notes made on other apps' interfaces through the embed.
+  { version: 244, name: "interface_notes_app", statements: [
+    "ALTER TABLE interface_notes ADD COLUMN app TEXT NOT NULL DEFAULT 'mandible'",
+    "ALTER TABLE interface_notes ADD COLUMN origin TEXT",
+    INTERFACE_NOTE_EMBED_GRANTS_SQL,
+  ] },
 ];
 
 /**

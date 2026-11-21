@@ -18,6 +18,9 @@ function stubChromeSettingsFetch(): void {
   }, {
     name: 'projects for the interface notes setting', method: 'GET', path: '/api/projects',
     respond: () => jsonFixture({ projects: [] }),
+  }, {
+    name: 'embedding pages for interface notes', method: 'GET', path: '/api/interface-notes/embed-grants',
+    respond: () => jsonFixture({ grants: [] }),
   }]);
 }
 

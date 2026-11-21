@@ -67,6 +67,7 @@ export function listLedgerIssueSummaries(
       repo_name: checkout.repo_name,
       repo_root: checkout.repo_root,
       project_key: checkout.project_key || undefined,
+      project_id: checkout.project_id,
       open_count: issues.filter((issue) => issue.status === "open").length,
       delivered_count: issues.filter((issue) => issue.resolution === "delivered").length,
       closed_count: issues.filter((issue) => issue.status === "closed").length,

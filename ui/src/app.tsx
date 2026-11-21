@@ -166,6 +166,7 @@ import { startInterfaceNotes } from './annotation/interfaceNotesStore';
 import { AgentationToggleButton } from './annotation/AgentationToggleButton';
 import { setToolbarVisible, useToolbarVisible } from './annotation/toolbarView';
 import { InterfaceNotesMenu } from './annotation/InterfaceNotesMenu';
+import { mandibleNotesMenuPorts } from './annotation/mandibleNotes';
 import { INTERFACE_NOTES_PROJECT_SETTING } from '../../src/interface-notes/contract';
 import type { ConversationAppendPayload } from './query/conversationData';
 import {
@@ -561,6 +562,8 @@ function App(): JSX.Element {
     ...initialState,
     ...loadCachedState(),
   }));
+  const receivingProject = state.settings[INTERFACE_NOTES_PROJECT_SETTING]?.trim() || null;
+  const notesMenuPorts = useMemo(() => mandibleNotesMenuPorts(receivingProject), [receivingProject]);
   const navigation = useAppHistory();
   const route = useMemo(() => {
     const url = new URL(navigation.href);
@@ -2838,9 +2841,9 @@ function App(): JSX.Element {
             />
           ) : null}
         </AppFrame>
-        <InterfaceNotesMenu receivingProject={state.settings[INTERFACE_NOTES_PROJECT_SETTING]?.trim() || null} />
+        <InterfaceNotesMenu ports={notesMenuPorts} />
       </AppShellProvider>
-      {agentationVisible && <AgentationHost />}
+      {agentationVisible && <AgentationHost appName="Mandible" />}
     </>
   );
 }

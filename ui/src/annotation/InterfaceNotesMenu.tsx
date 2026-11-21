@@ -1,27 +1,39 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
-  interfaceNoteAttachment,
   interfaceNotePagePath,
   type InterfaceNote,
   type InterfaceNoteDestination,
 } from '../../../src/interface-notes/contract';
 import type { IssueRepoSummary } from '../../../src/types';
-import { getLedgerIssueInitialDetailByIssueId } from '../api';
-import { getSelectedWritableChatTarget, getWritableChatTarget, highlightDraftAttachments } from '../chat/attachmentDrafts';
 import { appTip } from '../components/shared/AppHoverTips';
-import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { useAnchoredMenu, type AnchoredMenuPlacement } from '../hooks/useAnchoredMenu';
-import { navigateTo, viewHref } from '../routing';
-import { stageAnnotationAttachments } from './agentationAdapter';
-import { fileInterfaceNotes, InterfaceNotesApiError, listIssuesWithInterfaceNotes } from './interfaceNotesApi';
+import { InterfaceNotesApiError, type InterfaceNotesTransport } from './notesTransport';
 import { getInterfaceNotesSnapshot, markFiled, reconcile, setLoadedIssue, useInterfaceNotes } from './interfaceNotesStore';
 import './InterfaceNotesMenu.css';
 
 /**
- * The Send menu: files every unfiled note in the app onto an issue, or stages
- * them to the selected Chat. One menu is open at a time, opened by the toolbar's
- * Send (whose promise the menu settles) or by the rail control's context menu.
+ * The Send menu: files every unfiled note of the app onto an issue, or, in
+ * Mandible, stages them to the selected Chat. One menu is open at a time, opened
+ * by the toolbar's Send (whose promise the menu settles) or by the rail control's
+ * context menu.
  */
+
+export type InterfaceNotesMenuPorts = {
+  transport: InterfaceNotesTransport;
+  /** The project ref whose issues receive notes; null offers no issue destination. */
+  receivingProject: string | null;
+  /** How a refusal is shown. */
+  Notice(props: { children: string }): JSX.Element | null;
+  /** Mandible only: the Chat destination. */
+  chat?: {
+    /** The selected writable Chat, or null when there is none. */
+    target(): string | null;
+    /** Stages the notes, in this order, on the selected Chat's draft and shows it; returns a refusal message or null. */
+    stage(notes: readonly InterfaceNote[]): string | null;
+  };
+  /** Mandible only: the display id and title of the loaded issue. */
+  issueTitle?(issueRef: string): Promise<{ id: string; title: string }>;
+};
 
 type MenuRequest = {
   key: number;
@@ -115,8 +127,10 @@ function filingError(error: unknown): string {
 
 function focusItem(menu: HTMLElement | null, step: number | 'first'): void {
   const items = Array.from(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? []);
-  if (!items.length) return;
-  const index = step === 'first' ? 0 : items.indexOf(document.activeElement as HTMLElement) + step;
+  if (!menu || !items.length) return;
+  // In the embed the menu lives in a shadow root, whose focused element the document does not expose.
+  const focused = (menu.getRootNode() as Document | ShadowRoot).activeElement;
+  const index = step === 'first' ? 0 : items.indexOf(focused as HTMLElement) + step;
   items[(index + items.length) % items.length]?.focus({ preventScroll: true });
 }
 
@@ -129,12 +143,13 @@ function IssueLabel({ id, title }: { id: string; title: string }): JSX.Element {
   );
 }
 
-export function InterfaceNotesMenu({ receivingProject }: { receivingProject: string | null }): JSX.Element | null {
+export function InterfaceNotesMenu({ ports }: { ports: InterfaceNotesMenuPorts }): JSX.Element | null {
   const current = useMenuRequest();
-  return current ? <OpenMenu key={current.key} request={current} receivingProject={receivingProject} /> : null;
+  return current ? <OpenMenu key={current.key} request={current} ports={ports} /> : null;
 }
 
-function OpenMenu({ request: opened, receivingProject }: { request: MenuRequest; receivingProject: string | null }): JSX.Element {
+function OpenMenu({ request: opened, ports }: { request: MenuRequest; ports: InterfaceNotesMenuPorts }): JSX.Element {
+  const { transport, receivingProject, Notice, chat, issueTitle } = ports;
   const { unfiled, loadedIssue } = useInterfaceNotes();
   const anchorRef = useMemo(() => ({ current: opened.anchor }), [opened]);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -158,7 +173,7 @@ function OpenMenu({ request: opened, receivingProject }: { request: MenuRequest;
   useEffect(() => {
     if (!receivingProject) return undefined;
     let live = true;
-    listIssuesWithInterfaceNotes(receivingProject)
+    transport.listIssuesWithNotes(receivingProject)
       .then((repos) => { if (live) setRecent(recentIssues(repos)); })
       .catch((reason: unknown) => { if (live) setError(filingError(reason)); });
     return () => { live = false; };
@@ -166,11 +181,11 @@ function OpenMenu({ request: opened, receivingProject }: { request: MenuRequest;
 
   const loadedId = loadedIssue?.id ?? null;
   useEffect(() => {
-    if (!loadedId) return undefined;
+    if (!loadedId || !issueTitle) return undefined;
     let live = true;
     // Without the title the loaded issue is still offered under its ref.
-    getLedgerIssueInitialDetailByIssueId(loadedId)
-      .then((detail) => { if (live) setLoadedDetail({ ref: loadedId, id: detail.display_id, title: detail.title }); })
+    issueTitle(loadedId)
+      .then((detail) => { if (live) setLoadedDetail({ ref: loadedId, ...detail }); })
       .catch((reason: unknown) => console.error('Loading the loaded issue’s title failed.', reason));
     return () => { live = false; };
   }, [loadedId]);
@@ -191,7 +206,7 @@ function OpenMenu({ request: opened, receivingProject }: { request: MenuRequest;
     // Notes made just now may still be pending creates; they land before filing names them.
     await reconcile();
     try {
-      const result = await fileInterfaceNotes({ note_ids: ids, destination });
+      const result = await transport.file({ note_ids: ids, destination });
       markFiled(result.filed);
       settle({ ok: true });
       void reconcile();
@@ -202,18 +217,14 @@ function OpenMenu({ request: opened, receivingProject }: { request: MenuRequest;
     }
   };
 
-  const chatTarget = getSelectedWritableChatTarget();
+  const chatTarget = chat?.target() ?? null;
   const stageToChat = () => {
-    const staged = stageAnnotationAttachments(chatOrder(getInterfaceNotesSnapshot().unfiled)
-      .map((note, index) => interfaceNoteAttachment(note, index + 1)));
-    if (!staged.ok) {
-      setError(staged.error);
+    const refusal = chat?.stage(chatOrder(getInterfaceNotesSnapshot().unfiled));
+    if (refusal) {
+      setError(refusal);
       return;
     }
-    highlightDraftAttachments(staged.value.target, staged.value.addedIds);
     settle({ ok: true });
-    // Opening a conversation reloads it, so a Chat that is already showing is left as it is.
-    if (getWritableChatTarget() !== staged.value.target) navigateTo(viewHref('console', { conversation: staged.value.target }));
   };
 
   const unload = () => {
@@ -244,7 +255,7 @@ function OpenMenu({ request: opened, receivingProject }: { request: MenuRequest;
       }}
     >
       <div className="interface-notes-menu__count">{count}</div>
-      {error ? <DetailPaneNotice severity="error" density="compact">{error}</DetailPaneNotice> : null}
+      {error ? <Notice>{error}</Notice> : null}
       {title !== null ? (
         <form
           className="interface-notes-menu__title"
@@ -282,12 +293,14 @@ function OpenMenu({ request: opened, receivingProject }: { request: MenuRequest;
               <IssueLabel id={issue.id} title={issue.title} />
             </button>
           )) : null}
-          {receivingProject ? <div role="separator" className="interface-notes-menu__separator" /> : null}
-          <button type="button" role="menuitem" className="interface-notes-menu__item" disabled={inert || !chatTarget}
-            {...(chatTarget ? {} : appTip('Select a writable Chat first'))}
-            onClick={stageToChat}>
-            Chat
-          </button>
+          {receivingProject && chat ? <div role="separator" className="interface-notes-menu__separator" /> : null}
+          {chat ? (
+            <button type="button" role="menuitem" className="interface-notes-menu__item" disabled={inert || !chatTarget}
+              {...(chatTarget ? {} : appTip('Select a writable Chat first'))}
+              onClick={stageToChat}>
+              Chat
+            </button>
+          ) : null}
           {opened.offersUnload && loadedId ? (
             <>
               <div role="separator" className="interface-notes-menu__separator" />

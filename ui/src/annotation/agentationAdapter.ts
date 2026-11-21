@@ -1,6 +1,5 @@
 import type { Annotation as AgentationAnnotation } from 'agentation';
 import type { ChatAttachment } from '../../../src/conversation-control/attachments';
-import { addDraftAttachments, getConversationDraft, getSelectedWritableChatTarget, type AttachmentDraftResult } from '../chat/attachmentDrafts';
 
 type ChatAnnotation = Extract<ChatAttachment, { kind: 'annotation' }>;
 
@@ -36,15 +35,4 @@ export function agentationAttachment(annotation: AgentationAnnotation, ordinal: 
       viewport,
     },
   };
-}
-
-/** Appends annotations to the selected writable Chat's draft, skipping ones it already holds. */
-export function stageAnnotationAttachments(annotations: readonly ChatAnnotation[]): AttachmentDraftResult<{ target: string; addedIds: string[] }> {
-  if (!annotations.length) return { ok: false, error: 'There are no notes to send.' };
-  const target = getSelectedWritableChatTarget();
-  if (!target) return { ok: false, error: 'Select a writable Chat before sending notes.' };
-  const existing = new Set(getConversationDraft(target).attachments.flatMap((attachment) => (attachment.kind === 'annotation' ? [attachment.id] : [])));
-  const added = annotations.filter((annotation) => !existing.has(annotation.id));
-  const result = addDraftAttachments(target, added);
-  return result.ok ? { ok: true, value: { target, addedIds: added.map((annotation) => annotation.id) } } : result;
 }

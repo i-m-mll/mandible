@@ -1,5 +1,8 @@
+import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientAuthzError } from "../src/client-auth/authz.js";
 import { attachWebSocketUpgrade, createServer, Router } from "../src/server.js";
@@ -13,8 +16,11 @@ interface TestServer {
 }
 
 let testServer: TestServer | null = null;
+let uiDistDir: string;
 
 beforeEach(async () => {
+  uiDistDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-boundary-dist-"));
+  fs.writeFileSync(path.join(uiDistDir, "interface-notes-embed.js"), "export {};\n");
   const router = new Router();
   router.post("/api/issues/test-write", (req, res) => {
     res.json({ ok: true, body: req.body });
@@ -31,6 +37,7 @@ beforeEach(async () => {
     version: "test",
     router,
     getStartupInfo: () => null,
+    uiDistDir,
   });
   attachWebSocketUpgrade(server, (_req, socket) => {
     socket.write(
@@ -47,6 +54,7 @@ afterEach(async () => {
     await close(testServer.server);
     testServer = null;
   }
+  fs.rmSync(uiDistDir, { recursive: true, force: true });
 });
 
 describe("daemon write boundary", () => {
@@ -124,6 +132,41 @@ describe("daemon write boundary", () => {
     expect(await requestStatus("GET", "/", { ...navigation, "Sec-Fetch-Dest": "iframe" })).toBe(403);
     expect(await requestStatus("GET", "/", { ...navigation, Origin: "https://example.com" })).toBe(403);
     expect(await requestStatus("GET", "/", { ...navigation, Host: "example.com:19420" })).toBe(403);
+  });
+
+  it("serves the interface-notes embed cross-site only as a script, and its bridge only as a frame of a loopback page", async () => {
+    const crossSite = { Host: "app.mandible.localhost:19420", "Sec-Fetch-Site": "cross-site", Origin: "http://localhost:3008" };
+    const script = await requestHead("/embed/notes.js", { ...crossSite, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "script" });
+    expect(script.status).toBe(200);
+    expect(script.headers["access-control-allow-origin"]).toBe("*");
+    const frame = { Host: "app.mandible.localhost:19420", "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe" };
+    const bridge = await requestHead("/embed/bridge", frame);
+    expect(bridge.status).toBe(200);
+    const ancestors = (bridge.headers["content-security-policy"] as string).replace(/^frame-ancestors /, "").split(" ");
+    expect(ancestors).toContain("http://localhost:*");
+    expect(ancestors.every((source) => /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|\*\.localhost):\*$/.test(source))).toBe(true);
+
+    expect((await requestHead("/embed/bridge", { ...crossSite, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty" })).status).toBe(403);
+    expect((await requestHead("/embed/notes.js", frame)).status).toBe(403);
+    expect((await requestHead("/", frame)).status).toBe(403);
+    expect((await requestJson("GET", "/api/read", undefined, { ...crossSite, "Sec-Fetch-Dest": "script" })).status).toBe(403);
+    expect((await requestHead("/embed/bridge", { ...frame, Host: "example.com:19420" })).status).toBe(403);
+
+    // A preview's gateway asks forward-auth with the original request's headers.
+    const gateway = (uri: string, headers: Record<string, string>) =>
+      requestJson("GET", "/api/client-auth/forward-auth", undefined, { ...headers, Origin: "https://app.mandible.localhost:19420", "X-Forwarded-Method": "GET", "X-Forwarded-Uri": uri });
+    const forwarded = [
+      await gateway("/embed/notes.js?v=1", { ...crossSite, "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "script" }),
+      await gateway("/embed/bridge", frame),
+      await gateway("/embed/notes.js", frame),
+      await gateway("/api/read", { ...crossSite, "Sec-Fetch-Dest": "script" }),
+      await gateway("//x/embed/bridge", frame),
+    ];
+    expect(forwarded.map((response) => (response.body as { reason?: string } | undefined)?.reason === "cross_site_fetch"))
+      .toEqual([false, false, true, true, true]);
+    // The gateway's request still passes the remaining checks: only the cross-site refusal is lifted for it.
+    expect((await gateway("/embed/bridge", { ...frame, "X-Mandible-Instance-Id": "another-instance" })).body)
+      .toMatchObject({ reason: "instance_mismatch" });
   });
 
   it("rejects cross-origin browser WebSocket upgrades", async () => {
@@ -214,6 +257,18 @@ function requestJson(
     );
     req.on("error", reject);
     req.end(data);
+  });
+}
+
+function requestHead(path: string, headers: Record<string, string>): Promise<{ status: number; headers: http.IncomingHttpHeaders }> {
+  const { port } = requireServer();
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: "127.0.0.1", port, path, method: "GET", headers }, (res) => {
+      res.resume();
+      res.on("end", () => resolve({ status: res.statusCode ?? 500, headers: res.headers }));
+    });
+    req.on("error", reject);
+    req.end();
   });
 }
 
