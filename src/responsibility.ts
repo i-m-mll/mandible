@@ -6,6 +6,7 @@ import type { RequestLike } from "./server.js";
 import { requireIdentity, ClientAuthzError, hasAgentMarker, isUserRequest } from "./client-auth/authz.js";
 import { resolveProviderSessionAttributionResult } from "./identity/resolver.js";
 import { requestOriginJson } from "./request-origin.js";
+import { conversationAncestorAgentRefs } from "./conversation-lineage.js";
 
 /** Who holds an item: an agent session, or the user (no session). */
 export interface ResponsibilityHolder { user_id: string; session_id: string | null }
@@ -38,23 +39,45 @@ export function actorHolder(actor: ResponsibilityActor): ResponsibilityHolder {
 export interface CustodyOwner { owner_user_id: string | null; responsibility_session_id: string | null }
 
 /**
- * `allowed` with the holder the user passed over, or `refused` with the holder
- * an agent is not. Unheld items refuse agents; callers that let an agent claim
- * an unheld item decide that before asking.
+ * `allowed` with how the actor's authority arises, or `refused` with the
+ * holder an agent is not. An agent has the authority of the holder it is
+ * (`holder`) or descends from (`ancestor`); custody stays with the holder.
+ * The user always acts, as `operator` when passing over another holder or an
+ * unheld item. Unheld items refuse agents; callers that let an agent claim an
+ * unheld item decide that before asking.
  */
-export type CustodyDecision =
-  | { allowed: true; passed_over: ResponsibilityHolder | null }
-  | { allowed: false; holder: ResponsibilityHolder | null };
+export type CustodyDecision = CustodyGrant | { allowed: false; holder: ResponsibilityHolder | null };
+
+export type CustodyGrant =
+  | { allowed: true; authority: "holder" | "ancestor"; passed_over: null }
+  | { allowed: true; authority: "operator"; passed_over: ResponsibilityHolder | null };
 
 export function custodyGate(db: Db, owner: CustodyOwner, actor: ResponsibilityActor): CustodyDecision {
   const holder = owner.owner_user_id ? { user_id: owner.owner_user_id, session_id: owner.responsibility_session_id } : null;
   if (actor.kind === "user") {
-    const own = holder !== null && holder.user_id === actor.user_id && holder.session_id === null;
-    return { allowed: true, passed_over: own ? null : holder };
+    return holder !== null && holder.user_id === actor.user_id && holder.session_id === null
+      ? { allowed: true, authority: "holder", passed_over: null }
+      : { allowed: true, authority: "operator", passed_over: holder };
   }
-  return holder && holdsResponsibility(db, owner, actorHolder(actor))
-    ? { allowed: true, passed_over: null }
+  if (!holder || holder.user_id !== actor.user_id) return { allowed: false, holder };
+  if (holdsResponsibility(db, owner, actorHolder(actor))) return { allowed: true, authority: "holder", passed_over: null };
+  return holder.session_id && descendsFrom(db, holder.session_id, actor.session_id)
+    ? { allowed: true, authority: "ancestor", passed_over: null }
     : { allowed: false, holder };
+}
+
+/**
+ * Whether the session `descendant` was started, directly or through others,
+ * by `ancestor`: a Claude subagent descends from its session's main thread,
+ * and a conversation descends from every session its recorded lineage reaches.
+ */
+function descendsFrom(db: Db, descendant: string, ancestor: string): boolean {
+  const ref = parseExactAgentRef(descendant) ? descendant : resolveSessionAlias(db, descendant)?.agent_ref ?? null;
+  if (!ref) return false;
+  const exact = parseExactAgentRef(ref)!;
+  if (exact.provider === "claude" && exact.agent_id !== exact.session_id
+    && sameResponsibilitySession(db, exactAgentRef({ provider: "claude", agent_id: exact.session_id, session_id: exact.session_id }), ancestor)) return true;
+  return conversationAncestorAgentRefs(db, ref).some((candidate) => sameResponsibilitySession(db, candidate, ancestor));
 }
 
 export function sameResponsibilitySession(db: Db, left: string | null | undefined, right: string | null | undefined): boolean {

@@ -319,3 +319,30 @@ export function childrenOfSessionSql(childAlias: string, sessionIdSql = "?"): st
     SELECT family.id FROM conversations family WHERE family.session_id = ${sessionIdSql}
   )`;
 }
+
+/**
+ * The exact agent refs of every session that the conversations of `agentRef`
+ * descend from, following `parent_conversation_id` upward through every row
+ * of each ancestor session.
+ */
+export function conversationAncestorAgentRefs(db: Db, agentRef: string): string[] {
+  const identity = parseExactAgentRef(agentRef);
+  if (!identity) return [];
+  const source = identity.provider === "claude" ? "claude_code" : identity.provider;
+  const rows = (db.prepare("SELECT id, session_id, agent_id FROM conversations WHERE source = ? AND session_id = ?")
+    .all(source, identity.session_id ?? identity.agent_id) as Array<{ id: string; session_id: string; agent_id: string | null }>)
+    .filter((row) => conversationAgentRef({ ...row, source }) === agentRef);
+  if (!rows.length) return [];
+  const ancestors = db.prepare(`WITH RECURSIVE ancestor(id, source, session_id, agent_id) AS (
+      SELECT parent.id, parent.source, parent.session_id, parent.agent_id
+        FROM conversations child JOIN conversations parent ON parent.id = child.parent_conversation_id
+       WHERE child.id IN (${rows.map(() => "?").join(", ")})
+      UNION
+      SELECT parent.id, parent.source, parent.session_id, parent.agent_id
+        FROM ancestor
+        JOIN conversations family ON family.source = ancestor.source AND family.session_id = ancestor.session_id
+        JOIN conversations parent ON parent.id = family.parent_conversation_id
+    )
+    SELECT DISTINCT source, session_id, agent_id FROM ancestor`).all(...rows.map((row) => row.id)) as Array<{ source: string; session_id: string; agent_id: string | null }>;
+  return ancestors.map(conversationAgentRef).filter((ref): ref is string => ref !== null && ref !== agentRef);
+}
