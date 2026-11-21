@@ -717,8 +717,8 @@
   min-width: 0;
 }
 
-.settings-view__embed-grant-origin {
-  font-family: var(--font-mono);
+.settings-view__embed-grant-app {
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
@@ -739,7 +739,7 @@
   color: var(--accent-green);
 }
 
-.settings-view__embed-grant-directory {
+.settings-view__embed-grant-detail {
   overflow: hidden;
   color: var(--text-secondary);
   font-family: var(--font-mono);

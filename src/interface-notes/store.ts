@@ -24,15 +24,15 @@ export type InterfaceNoteFailure = { code: InterfaceNoteErrorCode; message?: str
 export type InterfaceNoteResult<T> = { ok: true; value: T } | { ok: false; error: InterfaceNoteFailure };
 export type InterfaceNoteWriteActor = LedgerActorInput;
 /**
- * A write made through the embed bridge: the embedding page's origin and the apps it
- * holds a grant for when the write arrives. Such a write may touch only notes of those
- * apps, and a note it creates must record that origin. Mandible's own interface writes
- * with no scope.
+ * A write made through the embed bridge: the embedding page's origin, and whether an app
+ * is granted when the write arrives. Such a write may touch only notes of granted apps,
+ * and a note it creates must record that origin. Mandible's own interface writes with
+ * no scope.
  */
-export type EmbedWriteScope = { origin: string; apps: ReadonlySet<string> };
+export type EmbedWriteScope = { origin: string; granted(app: string): boolean };
 
 function outOfScope(scope: EmbedWriteScope | null, app: string): boolean {
-  return scope !== null && !scope.apps.has(app);
+  return scope !== null && !scope.granted(app);
 }
 
 export type InterfaceNoteChangeListener = (payload: InterfaceNoteChangedPayload) => void;

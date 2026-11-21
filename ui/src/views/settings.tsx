@@ -519,10 +519,10 @@ function embedGrantApp(grant: EmbedGrant): string {
 }
 
 /**
- * Pages of other apps that asked to show the interface-notes toolbar, by origin and
- * the directory their server ran in. The embed gets an identity only for a request
- * allowed here, on Mandible's own top-level page; the embed's link opens this view
- * with `embed_origin` naming its origin.
+ * Apps of other projects whose pages asked to show the interface-notes toolbar, each
+ * with the origin and directory of the latest page that asked. The embed gets an
+ * identity only for an app allowed here, on Mandible's own top-level page; the embed's
+ * link opens this view with `embed_origin` naming its origin.
  */
 function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
   const [grants, setGrants] = useState<EmbedGrant[] | null>(null);
@@ -562,8 +562,9 @@ function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
       <div className="settings-view__text-info">
         <span className="settings-view__text-label">Interface notes on other apps</span>
         <span className="settings-view__text-desc">
-          Development pages of other apps that asked to show the notes toolbar. An allowed page files notes in your
-          name, so allow only servers of projects whose code you trust.
+          Apps of other projects whose development pages asked to show the notes toolbar. Allowing an app covers its
+          server in every checkout of the project, on any local port, and those pages file notes in your name, so allow
+          only apps of projects whose code you trust.
         </span>
         {error && <span className="settings-view__warning" role="alert">{error}</span>}
         {grants?.length === 0 && <span className="settings-view__text-desc">No page has asked yet.</span>}
@@ -571,19 +572,19 @@ function EmbedGrantRows(props: { allowed: boolean }): JSX.Element {
           <ul className="settings-view__embed-grant-list">
             {grants.map((grant) => (
               <li
-                key={`${grant.origin} ${grant.directory}`}
+                key={`${grant.project.id} ${grant.app}`}
                 className="settings-view__embed-grant"
                 data-asked={grant.origin === asked ? 'true' : undefined}
                 ref={grant.origin === asked ? revealAsked : undefined}
               >
                 <span className="settings-view__embed-grant-heading">
-                  <span className="settings-view__embed-grant-origin">{grant.origin}</span>
+                  <span className="settings-view__embed-grant-app">{embedGrantApp(grant)}</span>
                   <span className={`settings-view__embed-grant-state settings-view__embed-grant-state--${grant.state}`}>
                     {grant.state === 'granted' ? 'Allowed' : 'Not allowed yet'}
                   </span>
                 </span>
-                <span className="settings-view__text-desc">{embedGrantApp(grant)}</span>
-                <span className="settings-view__embed-grant-directory" title={grant.directory}>{grant.directory}</span>
+                <span className="settings-view__embed-grant-detail">{grant.origin}</span>
+                <span className="settings-view__embed-grant-detail" title={grant.directory}>{grant.directory}</span>
                 <span className="settings-view__embed-grant-actions">
                   {grant.state === 'pending' && (
                     <button type="button" className="btn btn--active btn--sm" disabled={!props.allowed} onClick={() => act(allowEmbedGrant, grant)}>Allow</button>

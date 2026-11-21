@@ -2435,7 +2435,27 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 244, name: "interface_notes_app", statements: [
     "ALTER TABLE interface_notes ADD COLUMN app TEXT NOT NULL DEFAULT 'mandible'",
     "ALTER TABLE interface_notes ADD COLUMN origin TEXT",
+    `CREATE TABLE interface_note_embed_grants (
+      origin TEXT NOT NULL,
+      directory TEXT NOT NULL,
+      app TEXT NOT NULL,
+      project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE CASCADE,
+      state TEXT NOT NULL CHECK(state IN ('pending', 'granted')),
+      requested_at INTEGER NOT NULL,
+      decided_at INTEGER,
+      PRIMARY KEY (origin, directory)
+    )`,
+  ] },
+  // Issue 8388a7c — embed grants are per app. Of an app's rows, a granted one wins, then the latest request.
+  { version: 245, name: "interface_note_embed_grants_per_app", statements: [
+    "ALTER TABLE interface_note_embed_grants RENAME TO interface_note_embed_grants_v244",
     INTERFACE_NOTE_EMBED_GRANTS_SQL,
+    `INSERT INTO interface_note_embed_grants (project_id, app, state, origin, directory, requested_at, decided_at)
+     SELECT project_id, app, state, origin, directory, requested_at, decided_at FROM (
+       SELECT *, ROW_NUMBER() OVER (PARTITION BY project_id, app ORDER BY state = 'granted' DESC, requested_at DESC) AS rank
+       FROM interface_note_embed_grants_v244
+     ) WHERE rank = 1`,
+    "DROP TABLE interface_note_embed_grants_v244",
   ] },
 ];
 

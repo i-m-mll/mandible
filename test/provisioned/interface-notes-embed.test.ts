@@ -3,7 +3,9 @@
  * The interface-notes embed on another app's React page records the React
  * components of the element a note is made on. Agentation does so only in a
  * development build on a page it detects as React, so a package bump that
- * breaks either condition shows here as a note without components.
+ * breaks either condition shows here as a note without components. The Send
+ * menu, in the embed's shadow root, is the toolbar's own interface: a click in
+ * it acts on the menu and never reaches Agentation as a click on the page.
  */
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -41,7 +43,8 @@ addEventListener('message', (event) => {
     parent.postMessage({ kind: 'test-created', note }, '*');
     return reply({ type: 'result', id: data.id, ok: true, value: note });
   }
-  reply({ type: 'result', id: data.id, ok: true, value: data.operation === 'listUnfiled' || data.operation === 'listIssuesWithNotes' ? [] : null });
+  const value = data.operation === 'listUnfiled' ? created : data.operation === 'listIssuesWithNotes' ? [] : null;
+  reply({ type: 'result', id: data.id, ok: true, value });
 });
 </script>`;
 
@@ -51,7 +54,7 @@ async function listen(server: Server, host: string): Promise<number> {
   return (server.address() as AddressInfo).port;
 }
 
-it('records the React components of the element a note is made on', async () => {
+it('records the React components of the element a note is made on, and keeps Send menu clicks off the page', async () => {
   await build({ ...embedBuildOptions({ outdir: directory, alias: PREACT_ALIAS }), logLevel: 'silent', minify: false });
   const embed = readFileSync(join(directory, 'interface-notes-embed.js'));
   const daemonPort = await listen(createServer((req, res) => {
@@ -89,6 +92,12 @@ it('records the React components of the element a note is made on', async () => 
     await tab.getByPlaceholder('What should change?').fill('Make this bolder');
     await tab.keyboard.press('Enter');
     expect((await created).target.react_components).toContain('StudioPanel');
+
+    // Feedback mode stays on; the menu opens over the page, and one click on New issue opens its title field.
+    await tab.locator('[aria-label="Send Annotations"]').click();
+    await tab.getByRole('menuitem', { name: 'New issue' }).click();
+    await expect.poll(() => tab.getByLabel('New issue title').isVisible()).toBe(true);
+    expect(await tab.locator('[data-annotation-popup]').count()).toBe(0);
   } finally {
     await browser.close();
   }

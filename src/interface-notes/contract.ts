@@ -162,15 +162,15 @@ export const INTERFACE_NOTES_EMBED = {
    */
   identity: "/api/interface-notes/embed-identity",
   /**
-   * GET: every EmbedGrant, pending first. PUT `{ origin, directory }`: allow a recorded request.
-   * DELETE `?origin=&directory=`: revoke or dismiss it. Only Mandible's own interface calls these.
+   * GET: every EmbedGrant, pending first. PUT `{ project, app }` (project id): allow a recorded request.
+   * DELETE `?project=&app=`: revoke or dismiss it. Only Mandible's own interface calls these.
    */
   grants: "/api/interface-notes/embed-grants",
   /** The Settings view, opened top-level with `embed_origin=<origin>` to show that origin's request. */
   grantView: "/settings",
   /**
    * The query parameter naming the embedding page's origin on every note write the bridge makes.
-   * The daemon then accepts the write only while that origin holds a grant for the note's app, so
+   * The daemon then accepts the write only while the note's app is granted, so
    * a revocation stops an open page at once; 403 `origin_not_granted` otherwise.
    */
   originParam: "embed_origin",
@@ -183,9 +183,11 @@ export interface EmbedIdentity {
   project: { id: string; key: string; name: string };
 }
 
-/** The operator's decision on one embedding origin, as written, and the directory its listener ran in. */
+/** The operator's decision on one app of a project, with where the latest page that asked was served from. */
 export interface EmbedGrant extends EmbedIdentity {
+  /** The latest requesting page's origin, as written; shown only. */
   origin: string;
+  /** The directory that page's listener ran in; shown only. */
   directory: string;
   state: "pending" | "granted";
   requested_at: number;

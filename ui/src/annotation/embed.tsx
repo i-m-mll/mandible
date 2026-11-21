@@ -64,6 +64,10 @@ function showGrantLink(daemonOrigin: string): void {
 
 function createHost(): ShadowRoot {
   const host = document.createElement(HOST_ELEMENT);
+  // Everything in this shadow root (the Send menu, the grant link) is the toolbar's own interface. Agentation tests
+  // some events and hit points against the element it sees, which outside the shadow root is this host, so the
+  // marker is on the host as well as on the menu.
+  host.setAttribute('data-feedback-toolbar', '');
   // Agentation names React components only on a page where it finds a React fiber on
   // the body, the root or one of the body's children (`isReactPage`). Rendered by
   // React it supplies one itself; rendered by Preact it does not, and a React 18

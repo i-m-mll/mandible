@@ -1,25 +1,29 @@
 import type { Db } from "../db.js";
 import type { EmbedGrant, EmbedIdentity } from "./contract.js";
-import { loopbackOriginPort, resolveEmbedPage, systemEmbedProbe, type EmbedProcessProbe } from "./embed-identity.js";
+import { resolveEmbedPage, systemEmbedProbe, type EmbedProcessProbe } from "./embed-identity.js";
 
 /**
- * The operator's grants to embedding pages. A page's origin, as written, and the
- * directory its listener runs in are one request; the bridge gets an identity only
- * for a request the operator allowed in Mandible's own interface. Any other request
- * is recorded as pending so the operator can find it there.
+ * The operator's grants to other apps. A grant is for an app of a project
+ * (`feedbax:web`): once allowed, a page whose listener runs in that app's
+ * directory of any checkout of the project, on any loopback port, gets the
+ * toolbar. A page of an app not yet allowed is recorded as a pending request,
+ * with the origin and directory it came from, so the operator can find it in
+ * Mandible's own interface.
  *
- * Pending requests are bounded, since any page on a loopback port can ask under
- * many `*.localhost` names: an unanswered request expires after a week, and each
- * port keeps only its latest few.
+ * Requests are bounded by the apps that exist: a page cannot invent an app, since
+ * the app is read from its listener's directory, so asking under many
+ * `*.localhost` names updates one row. An unanswered request expires after a week.
  */
 
 export const PENDING_GRANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-export const PENDING_GRANTS_PER_PORT = 3;
 
 export type EmbedAccess =
   | { ok: true; value: EmbedIdentity }
   | { ok: false; error: "origin_not_loopback" | "origin_not_registered" }
   | { ok: false; error: "origin_not_granted"; grant: EmbedGrant };
+
+/** A grant's key: an app of a project. */
+export type EmbedGrantKey = { project_id: string; app: string };
 
 type GrantRow = {
   origin: string; directory: string; app: string; state: "pending" | "granted"; requested_at: number; decided_at: number | null;
@@ -45,62 +49,53 @@ export class EmbedGrants {
     const page = await resolveEmbedPage(this.db, this.probe, origin);
     if (!page.ok) return page;
     const { directory, ...identity } = page.value;
-    const existing = this.get(origin, directory);
-    if (existing?.state === "granted" && existing.project.id === identity.project.id && existing.app === identity.app) {
+    const key = { project_id: identity.project.id, app: identity.app };
+    if (this.get(key)?.state === "granted") {
+      // Shown as the latest page served under the grant; a write only when it changed.
+      this.db.prepare(
+        `UPDATE interface_note_embed_grants SET origin = ?, directory = ?
+         WHERE project_id = ? AND app = ? AND (origin <> ? OR directory <> ?)`,
+      ).run(origin, directory, key.project_id, key.app, origin, directory);
       return { ok: true, value: identity };
     }
-    // A request whose directory now names another app is asked afresh.
-    this.prunePending(now, origin, directory);
+    this.pruneExpired(now);
     this.db.prepare(
-      `INSERT INTO interface_note_embed_grants (origin, directory, app, project_id, state, requested_at, decided_at)
-       VALUES (?, ?, ?, ?, 'pending', ?, NULL)
-       ON CONFLICT (origin, directory) DO UPDATE SET app = excluded.app, project_id = excluded.project_id,
-         state = 'pending', requested_at = excluded.requested_at, decided_at = NULL`,
-    ).run(origin, directory, identity.app, identity.project.id, now);
-    return { ok: false, error: "origin_not_granted", grant: this.get(origin, directory)! };
+      `INSERT INTO interface_note_embed_grants (project_id, app, state, origin, directory, requested_at, decided_at)
+       VALUES (?, ?, 'pending', ?, ?, ?, NULL)
+       ON CONFLICT (project_id, app) DO UPDATE SET origin = excluded.origin, directory = excluded.directory,
+         requested_at = excluded.requested_at`,
+    ).run(key.project_id, key.app, origin, directory, now);
+    return { ok: false, error: "origin_not_granted", grant: this.get(key)! };
   }
 
-  /** The apps an origin is allowed to write notes for: one per granted directory. */
-  grantedApps(origin: string): ReadonlySet<string> {
-    const rows = this.db.prepare("SELECT app FROM interface_note_embed_grants WHERE origin = ? AND state = 'granted'").all(origin) as Array<{ app: string }>;
-    return new Set(rows.map((row) => row.app));
+  /** Whether notes of this app may be written through the embed. */
+  isGranted(app: string): boolean {
+    return this.db.prepare("SELECT 1 FROM interface_note_embed_grants WHERE app = ? AND state = 'granted'").get(app) !== undefined;
   }
 
   list(now: number = Date.now()): EmbedGrant[] {
-    this.prunePending(now);
+    this.pruneExpired(now);
     return (this.db.prepare(`${GRANT_SELECT} ORDER BY g.state = 'granted', g.requested_at DESC`).all() as GrantRow[]).map(grantFromRow);
   }
 
-  get(origin: string, directory: string): EmbedGrant | null {
-    const row = this.db.prepare(`${GRANT_SELECT} WHERE g.origin = ? AND g.directory = ?`).get(origin, directory) as GrantRow | undefined;
+  get(key: EmbedGrantKey): EmbedGrant | null {
+    const row = this.db.prepare(`${GRANT_SELECT} WHERE g.project_id = ? AND g.app = ?`).get(key.project_id, key.app) as GrantRow | undefined;
     return row ? grantFromRow(row) : null;
   }
 
-  allow(origin: string, directory: string, now: number = Date.now()): EmbedGrant | null {
+  allow(key: EmbedGrantKey, now: number = Date.now()): EmbedGrant | null {
     const changed = this.db.prepare(
-      "UPDATE interface_note_embed_grants SET state = 'granted', decided_at = ? WHERE origin = ? AND directory = ?",
-    ).run(now, origin, directory).changes;
-    return changed ? this.get(origin, directory) : null;
+      "UPDATE interface_note_embed_grants SET state = 'granted', decided_at = ? WHERE project_id = ? AND app = ?",
+    ).run(now, key.project_id, key.app).changes;
+    return changed ? this.get(key) : null;
   }
 
-  /** Revokes a grant or dismisses a pending request; the page asks afresh on its next load. */
-  remove(origin: string, directory: string): boolean {
-    return this.db.prepare("DELETE FROM interface_note_embed_grants WHERE origin = ? AND directory = ?").run(origin, directory).changes > 0;
+  /** Revokes a grant or dismisses a pending request; the app's pages ask afresh on their next load. */
+  remove(key: EmbedGrantKey): boolean {
+    return this.db.prepare("DELETE FROM interface_note_embed_grants WHERE project_id = ? AND app = ?").run(key.project_id, key.app).changes > 0;
   }
 
-  /**
-   * Drops expired pending requests and, when `origin` is about to ask, that port's
-   * oldest pending requests beyond the cap less one, leaving room for the new one.
-   */
-  private prunePending(now: number, origin?: string, directory?: string): void {
+  private pruneExpired(now: number): void {
     this.db.prepare("DELETE FROM interface_note_embed_grants WHERE state = 'pending' AND requested_at < ?").run(now - PENDING_GRANT_TTL_MS);
-    if (origin === undefined) return;
-    const port = loopbackOriginPort(origin);
-    const samePort = (this.db.prepare(
-      "SELECT origin, directory FROM interface_note_embed_grants WHERE state = 'pending' ORDER BY requested_at DESC",
-    ).all() as Array<{ origin: string; directory: string }>)
-      .filter((row) => loopbackOriginPort(row.origin) === port && !(row.origin === origin && row.directory === directory));
-    const remove = this.db.prepare("DELETE FROM interface_note_embed_grants WHERE origin = ? AND directory = ?");
-    for (const row of samePort.slice(PENDING_GRANTS_PER_PORT - 1)) remove.run(row.origin, row.directory);
   }
 }
