@@ -1,7 +1,7 @@
 import { currentLedgerMutationActor } from "./mutation-history.js";
 import { forEachInEventLoopSlices } from "../event-loop-slices.js";
 import type { Db } from "../db.js";
-import { tableExists } from "../db-introspection.js";
+import { columnExists, tableExists } from "../db-introspection.js";
 import { createLedgerId } from "./ids.js";
 import { LedgerStore, type ResolveIssueRefResult } from "./store.js";
 import { assertEvidenceMethod, systemAction } from "../identity/resolver.js";
@@ -507,9 +507,19 @@ function* authClosureTargets(
       yield null;
     }
   }
+  // Issue 9395f25 — an accounted request closes exactly the issues its
+  // approved accounting staged as actions; a link closes nothing more.
+  if (requestIsAccounted(db, input.auth_request_id)) return;
   for (const id of new Set(linkedIds)) {
     if (!owned.has(id)) yield id;
   }
+}
+
+function requestIsAccounted(db: Db, authRequestId: string): boolean {
+  if (!columnExists(db, "auth_requests", "issue_accounting_json")) return false;
+  const row = db.prepare("SELECT issue_accounting_json IS NOT NULL AS accounted FROM auth_requests WHERE id = ?").get(authRequestId) as
+    { accounted: number } | undefined;
+  return row?.accounted === 1;
 }
 
 function closeAuthRequestIssue(

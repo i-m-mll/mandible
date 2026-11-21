@@ -221,3 +221,51 @@ export async function observeRepoIdentities(db: Db, refs: readonly (string | nul
     },
   };
 }
+
+/** The repository fields of an auth request, submitted or stored. */
+export interface RequestRepoScope {
+  repo?: string | null;
+  cwd?: string | null;
+  target_repo_root?: string | null;
+}
+
+export interface RequestRepoMatcher {
+  /** Checkout roots the request names directly or through the WorkScanner. */
+  roots: string[];
+  matches(repoValue: string): boolean;
+}
+
+/**
+ * Issue ded17e6 — whether a repo value (a repo string such as a work unit's
+ * `repo_id`, or a checkout root) names the request's repository. Canonical
+ * identity decides when both sides have keys, so `dotfiles` matches a request
+ * for `.dotfiles` rooted at one physical repo; registry-less values fall back
+ * to string comparison. Every value passed must have been observed by
+ * `identity`, as a ref and as a path.
+ */
+export function requestRepoMatcher(db: Db, request: RequestRepoScope, identity: RepoIdentityObservation): RequestRepoMatcher {
+  const roots = new Set<string>();
+  for (const value of [request.target_repo_root, request.cwd]) if (value) roots.add(value);
+  if (request.repo && tableExists(db, "work_repos")) {
+    for (const row of db.prepare("SELECT root FROM work_repos WHERE id = ? OR name = ? OR root = ?")
+      .all(request.repo, request.repo, request.repo) as Array<{ root: string }>) roots.add(row.root);
+  }
+  const keys = new Set<string>();
+  for (const root of [request.target_repo_root, request.cwd]) {
+    const key = identity.keyForPath(root);
+    if (key) keys.add(key);
+  }
+  for (const key of identity.keysForRef(request.repo)) keys.add(key);
+  const matches = (repoValue: string) => {
+    if (keys.size > 0) {
+      for (const key of identity.keysForRef(repoValue)) if (keys.has(key)) return true;
+      const pathKey = identity.keyForPath(repoValue);
+      if (pathKey && keys.has(pathKey)) return true;
+    }
+    if (!request.repo && roots.size === 0) return true;
+    if (repoValue === request.repo || roots.has(repoValue)) return true;
+    const suffix = `/${repoValue}`;
+    return Boolean(request.repo?.endsWith(suffix)) || [...roots].some((root) => root.endsWith(suffix));
+  };
+  return { roots: [...roots], matches };
+}

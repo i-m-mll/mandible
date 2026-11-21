@@ -519,7 +519,7 @@ export interface AccountedIssue {
  * at submission. `closing` is in application order, children first.
  */
 export interface IssueAccounting {
-  closing: Array<AccountedIssue & { by: "closes_issue" | "done" }>;
+  closing: Array<AccountedIssue & { by: "closes_issue" | "done" | "fixed_by" }>;
   kept_open: Array<AccountedIssue & { remainder: string }>;
   held: Array<AccountedIssue & { open_children: string[]; unmerged_units: Array<{ id: string; branch: string | null }> }>;
 }

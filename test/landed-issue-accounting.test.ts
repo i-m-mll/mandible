@@ -53,9 +53,17 @@ function parent(of: { id: string }, child: { id: string }) {
   });
 }
 
-function unit(id: string, of: { id: string }, branch: string, state = "committed") {
+function unit(id: string, of: { id: string }, branch: string, state = "committed", repoId = path.basename(repo)) {
   db.prepare(`INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, created_at)
-    VALUES (?, ?, ?, ?, ?, 'solo', ?, 1)`).run(id, of.id, of.id, path.basename(repo), branch, state);
+    VALUES (?, ?, ?, ?, ?, 'solo', ?, 1)`).run(id, of.id, of.id, repoId, branch, state);
+}
+
+async function land(requestId: string) {
+  await awaitFixtureResolution(queue, requestId, async () => {
+    await approveFixtureRequest(queue, requestId);
+    await waitForStatus(queue, requestId, "completed");
+  });
+  await queue.drainFinalizers();
 }
 
 function submit(head: string, patch: Partial<AuthRequestInput> = {}) {
@@ -99,38 +107,128 @@ describe("landed issue accounting", () => {
     expect(request.issue_closures).toEqual([]);
   });
 
-  it("closes the done children of a closing parent first, and the merge applies exactly the stored decisions", async () => {
+  it("closes a named child before its parent, derives the parent above and the issue it fixes, and the merge applies exactly that", async () => {
+    const program = issue("Program", "done");
     const umbrella = issue("Umbrella", "done");
-    const child = issue("Finished lane", "done");
-    const fixedLater = issue("Symptom", "done");
+    const child = issue("Finished lane");
+    const fixedLater = issue("Symptom");
     const kept = issue("Follow-up", "blocked");
+    parent(program, umbrella);
     parent(umbrella, child);
     store.linkRelationshipEdges({
       actor: SYSTEM_ACTOR, provenance: "manual", link_type: "fixed_by",
       source_entity: { entity_type: "issue", entity_id: fixedLater.id },
       target_entities: [{ entity_type: "issue", entity_id: umbrella.id }],
     });
+    db.prepare(`INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, created_at)
+      VALUES ('wu-program', ?, ?, ?, NULL, 'solo', 'resolved', 1)`).run(program.id, program.id, path.basename(repo));
     commitOnBranch(repo, "integration/delivery", { "delivery.txt": "delivery\n" });
     unit("wu-delivery", umbrella, "integration/delivery");
     unit("wu-follow-up", kept, "integration/delivery");
 
-    const request = await submit("integration/delivery", { actions: [keepOpen(kept, "Second half after [issue:" + child.short_id + "]")] });
-    const closing = request.issue_accounting!.closing.map((entry) => entry.issue_id);
-    expect(new Set(closing)).toEqual(new Set([umbrella.id, child.id, fixedLater.id]));
-    expect(closing.indexOf(child.id)).toBeLessThan(closing.indexOf(umbrella.id));
-
-    await awaitFixtureResolution(queue, request.id, async () => {
-      await approveFixtureRequest(queue, request.id);
-      await waitForStatus(queue, request.id, "completed");
+    const request = await submit("integration/delivery", {
+      issue_closures: [child.short_id],
+      actions: [keepOpen(kept, "Second half after [issue:" + child.short_id + "]")],
     });
-    await queue.drainFinalizers();
-    for (const closed of [umbrella, child, fixedLater]) expect(store.getIssue(closed.id).status).toBe("closed");
+    const closing = request.issue_accounting!.closing.map((entry) => entry.issue_id);
+    expect(new Set(closing)).toEqual(new Set([program.id, umbrella.id, child.id, fixedLater.id]));
+    expect(closing.indexOf(child.id)).toBeLessThan(closing.indexOf(umbrella.id));
+    expect(closing.indexOf(umbrella.id)).toBeLessThan(closing.indexOf(program.id));
+
+    await land(request.id);
+    for (const closed of [program, umbrella, child, fixedLater]) expect(store.getIssue(closed.id).status).toBe("closed");
     expect(store.getIssue(kept.id)).toMatchObject({ status: "open", remainder: `Second half after [issue:${child.short_id}]` });
     expect(db.prepare(`SELECT source_issue_id FROM ledger_issue_relationship_sources
       WHERE source_entity_type = 'issue_remainder' AND target_issue_id = ? AND deleted_at IS NULL`).all(child.id))
       .toEqual([{ source_issue_id: kept.id }]);
     const mergeSha = git(repo, ["rev-parse", "main"]);
     expect(db.prepare("SELECT landed_commit FROM work_units WHERE id = 'wu-delivery'").get()).toEqual({ landed_commit: mergeSha });
+  });
+
+  it("does not derive children: an open child nothing lands holds its parent and stays out of the set", async () => {
+    const umbrella = issue("Umbrella", "done");
+    const untouched = issue("Untouched lane");
+    const doneElsewhere = issue("Done lane, not landed here", "done");
+    parent(umbrella, untouched);
+    parent(umbrella, doneElsewhere);
+    commitOnBranch(repo, "integration/partial", { "partial.txt": "partial\n" });
+    unit("wu-umbrella", umbrella, "integration/partial");
+
+    const { closing, kept_open, held } = (await submit("integration/partial")).issue_accounting!;
+    expect({ closing, kept_open, held: held.map((entry) => entry.issue_id) }).toEqual({ closing: [], kept_open: [], held: [umbrella.id] });
+    expect(new Set(held[0]!.open_children)).toEqual(new Set([untouched.short_id, doneElsewhere.short_id]));
+  });
+
+  it("holds an issue whose other unit is in another repository, even on a branch of the same name", async () => {
+    const multi = issue("Two-repository issue", "done");
+    commitOnBranch(repo, "feature/multi", { "multi.txt": "multi\n" });
+    unit("wu-here", multi, "feature/multi");
+    unit("wu-there", multi, "feature/multi", "committed", "other-repository");
+
+    const request = await submit("feature/multi");
+    expect(request.issue_accounting).toMatchObject({
+      closing: [], held: [{ issue_id: multi.id, unmerged_units: [{ id: "wu-there", branch: "feature/multi" }] }],
+    });
+  });
+
+  it("holds an issue whose unit's last known commit this repository does not have, instead of failing submission", async () => {
+    const issueWithGoneWork = issue("Work recorded elsewhere", "done");
+    commitOnBranch(repo, "feature/here", { "here.txt": "here\n" });
+    unit("wu-here", issueWithGoneWork, "feature/here");
+    unit("wu-gone", issueWithGoneWork, "feature/gone");
+    db.prepare("INSERT INTO branches (repo_root, branch, last_commit_hash) VALUES (?, 'feature/gone', ?)").run(repo, "ab".repeat(20));
+
+    const request = await submit("feature/here");
+    expect(request.issue_accounting).toMatchObject({
+      closing: [], held: [{ issue_id: issueWithGoneWork.id, unmerged_units: [{ id: "wu-gone", branch: "feature/gone" }] }],
+    });
+  });
+
+  it("accounts for an abandoned unit whose branch the head lands, as the finalizer resolves it", async () => {
+    const abandoned = issue("Abandoned, then merged", "blocked");
+    commitOnBranch(repo, "feature/abandoned", { "abandoned.txt": "abandoned\n" });
+    unit("wu-abandoned", abandoned, "feature/abandoned", "abandoned");
+
+    await expect(submit("feature/abandoned")).rejects.toThrow(`--closes-issue ${abandoned.short_id}`);
+  });
+
+  it("accounts for a request submitted while a queued request's branch is gone", async () => {
+    commitOnBranch(repo, "feature/stale", { "stale.txt": "stale\n" });
+    await submit("feature/stale");
+    git(repo, ["branch", "-D", "feature/stale"]);
+    const undecided = issue("Partly delivered", "blocked");
+    commitOnBranch(repo, "feature/live", { "live.txt": "live\n" });
+    unit("wu-live", undecided, "feature/live");
+
+    await expect(submit("feature/live")).rejects.toThrow(`--closes-issue ${undecided.short_id}`);
+  });
+
+  it("refuses revising what an accounted request closes, so a held issue stays open through the merge", async () => {
+    const held = issue("Held by other work", "done");
+    commitOnBranch(repo, "feature/one", { "one.txt": "one\n" });
+    commitOnBranch(repo, "feature/two", { "two.txt": "two\n" });
+    unit("wu-one", held, "feature/one");
+    unit("wu-two", held, "feature/two");
+    const request = await submit("feature/one");
+    expect(request.issue_accounting!.held).toEqual([expect.objectContaining({ issue_id: held.id })]);
+
+    await expect(queue.update(request.id, { issue_closures: [held.short_id] })).rejects.toMatchObject({ status: 409 });
+    await expect(queue.update(request.id, { issues: [held.short_id] })).rejects.toMatchObject({ status: 409 });
+    await land(request.id);
+    expect(store.getIssue(held.id).status).toBe("open");
+  });
+
+  it("refuses vetoing a closure of an accounted request, since its parent's closure depends on it", async () => {
+    const umbrella = issue("Umbrella", "done");
+    const child = issue("Lane", "done");
+    parent(umbrella, child);
+    commitOnBranch(repo, "feature/veto", { "veto.txt": "veto\n" });
+    unit("wu-umbrella", umbrella, "feature/veto");
+    unit("wu-child", child, "feature/veto");
+    const request = await submit("feature/veto");
+    const childClosure = queue.listActions(request.id).find((action) => action.target_issue_ref === child.short_id)!;
+
+    expect(() => queue.setActionVeto(request.id, childClosure.id, true)).toThrow("--supersedes");
   });
 
   it("finds an issue whose unit wt merge resolved into the integration branch after that branch is gone", async () => {
