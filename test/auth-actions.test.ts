@@ -436,7 +436,7 @@ describe("auth request action queue persistence", () => {
       expect(before.map((action) => action.target_digest)).toEqual([digest, digest, digest]);
 
       now = 2000;
-      queue.updateAction(request.id, before[1].id, {
+      await queue.updateAction(request.id, before[1].id, {
         kind: "label_rm",
         target_issue_ref: issue.short_id,
         payload: { label: "ready" },
@@ -475,11 +475,11 @@ describe("auth request action queue persistence", () => {
       }));
       (await seedHistoricalAuthCompletion(queue, request.id, "ok"));
 
-      expect(() => queue.addAction(request.id, {
+      await expect(queue.addAction(request.id, {
         kind: "label_add",
         target_issue_ref: "abc123",
         payload: { label: "late" },
-      })).toThrow(AuthQueueError);
+      })).rejects.toThrow(AuthQueueError);
     } finally {
       db.close();
     }
