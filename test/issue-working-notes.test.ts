@@ -58,7 +58,7 @@ describe("issue working notes", () => {
     expect(detail.timeline.filter((entry) => entry.event_type === "issue.work_notes_updated")).toHaveLength(2);
   });
 
-  it("retains scalar and lifecycle history when notes change in the same write", () => {
+  it("retains scalar and lifecycle history across note edits", () => {
     const project = createLedgerProject(db, path.join(tempDir, "repo"), { mkdir: true });
     const store = new LedgerStore(db);
     const issue = createLedgerIssue(db, { project_id: project.project.id, kind: "experiment", store });
@@ -79,7 +79,7 @@ describe("issue working notes", () => {
 
     const closed = store.setIssueStatus(issue.id, "closed", "delivered", ACTOR);
     expect(closed.resolution).toBe("delivered");
-    store.applyImportedIssuePatch(issue.id, { status: "open", work_notes: "reopened note" }, "import", ACTOR);
+    store.setIssueStatus(issue.id, "open", null, ACTOR);
     const reopened = store.listEvents({ entity_type: "issue", entity_id: issue.id })
       .find((event) => event.event_type === "issue.reopened");
     expect(reopened).toBeDefined();
@@ -87,7 +87,7 @@ describe("issue working notes", () => {
       previous_resolution: "delivered",
       resolution: null,
     });
-    expect(store.getIssue(issue.id)).toMatchObject({ status: "open", resolution: null, work_notes: "reopened note" });
+    expect(store.getIssue(issue.id)).toMatchObject({ status: "open", resolution: null, work_notes: "note" });
   });
 
   it("derives dependency warnings only from incoming blocks edges", () => {

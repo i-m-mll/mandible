@@ -43,7 +43,9 @@ import {
   createLedgerIssue as createSharedLedgerIssue,
   createLedgerProject as createSharedLedgerProject,
   createMigratedDb as createSharedMigratedDb,
+  SYSTEM_ACTOR,
 } from "./ledger-fixtures.js";
+import { LedgerStore } from "../../src/ledger/store.js";
 import {
   addCredential,
   addEnclaveApprovalKey,
@@ -344,19 +346,21 @@ export function createLedgerProject(db: Db, root: string) {
   return createSharedLedgerProject(db, root, { mkdir: true, defaultBranch: "main", remoteUrl: "" });
 }
 
+/** A delivery issue whose work is done, so the merge that lands it closes it by default. */
 export function createLedgerIssue(
   db: Db,
   projectId: string,
   shortId: string,
   title = `Issue ${shortId}`,
 ) {
-  return createSharedLedgerIssue(db, {
+  const issue = createSharedLedgerIssue(db, {
     project_id: projectId,
     title,
     kind: "feature",
     source: "mandible",
     aliases: [{ alias_kind: "git_bug_short", alias: shortId, source: "mandible", is_primary: true }],
   });
+  return new LedgerStore(db).setWorkerStatus(issue.id, "done", SYSTEM_ACTOR);
 }
 
 export function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {

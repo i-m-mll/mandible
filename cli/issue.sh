@@ -271,8 +271,12 @@ cmd_close() {
   require_tools
   local message_payload status_payload resolution_payload repo_id
   status_payload=$(jq -n --arg resolution "$resolution" '{status:"closed", resolution:$resolution}')
-  api_send PATCH "/api/ledger/issues/$(urlencode "$id")" "$status_payload" >/dev/null \
-    || die "${RED}Failed to close issue ${id}${RESET}" 1
+  local close_status close_response tmp_response
+  tmp_response=$(mktemp)
+  close_status=$(api_send_capture PATCH "/api/ledger/issues/$(urlencode "$id")" "$status_payload" "$tmp_response")
+  close_response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  [[ "$close_status" =~ ^2 ]] || die_api_status "Failed to close issue ${id}" "$close_status" "$close_response"
 
   if [[ "$resolution" == "delivered" && "$commit_provided" == "1" && -n "$sha" && "$sha" != "unknown" ]]; then
     message_payload=$(jq -n --arg message "Resolved as delivered by commit ${sha:0:12}" '{message:$message}')
@@ -460,9 +464,14 @@ cmd_triage() {
   local repo=""
 
   local binding
-  binding=$(mandible_bind_arguments "issue.triage" '{"status":{"option":"status"},"resolution":{"option":"resolution"},"label":{"option":"label"},"kind":{"option":"kind"},"priority":{"option":"priority"},"repo":{"option":"repo"},"stale_days":{"option":"stale-days"},"limit":{"option":"limit"},"notes":{"option":"notes","constant":"1"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  local landed_open=0
+  binding=$(mandible_bind_arguments "issue.triage" '{"landed_open":{"option":"landed-open","constant":"1"},"status":{"option":"status"},"resolution":{"option":"resolution"},"label":{"option":"label"},"kind":{"option":"kind"},"priority":{"option":"priority"},"repo":{"option":["repo","project"]},"stale_days":{"option":"stale-days"},"limit":{"option":"limit"},"notes":{"option":"notes","constant":"1"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
   eval "$binding"
 
+  if [[ "$landed_open" == "1" ]]; then
+    cmd_triage_landed_open "$repo" "$json"
+    return
+  fi
   case "$status" in
     open|closed|all) ;;
     *) die "Unknown status: $status (expected open, closed, or all; use --status closed --resolution delivered for delivered issues)" 2 ;;
@@ -519,6 +528,74 @@ cmd_triage() {
         else .[] | "\(.display_id // .short_id // .id)\t\(.status)\t\(.kind // "unknown")\t\(.priority)\t\(.resolution // "-")\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
         end
     '
+}
+
+# Issue 9395f25 — open issues whose work landed and that nothing holds open.
+cmd_triage_landed_open() {
+  local repo="$1" json="$2"
+  require_tools
+  if [[ -z "$repo" ]]; then
+    repo=$(require_inferred_repo_ref) || exit $?
+  fi
+  local response status tmp_response
+  tmp_response=$(mktemp)
+  status=$(api_send_capture GET "/api/ledger/landed-open?project=$(urlencode "$repo")" "" "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  [[ "$status" =~ ^2 ]] || die_api_status "Failed to triage landed issues of ${repo}" "$status" "$response"
+  if [[ "$json" == "1" ]]; then
+    printf '%s\n' "$response" | jq .
+    return
+  fi
+  printf '%s\n' "$response" | jq -r --argjson now "$(date +%s)" '
+    def parent: if .parent then "\(.parent.issue) [\(.parent.status)]" else "-" end;
+    def row: "  \(.issue)\t\(.worker_status)\t\(.reach // "-")\t\(parent)\t\(.title)";
+    def age: (($now * 1000 - .remainder_set_at) / 86400000 | floor) as $days | if $days < 1 then "today" else "\($days)d" end;
+    def group(title; rows; line): if (rows | length) > 0 then title + " (\(rows | length))", (rows[] | line) else empty end;
+    group("Without a remainder: close with `mandible issue close`, or keep with `mandible issue remainder set`"; .without_remainder; row),
+    group("With a remainder"; .with_remainder; row + "\n    \(age): " + (.remainder | gsub("\\s+"; " "))),
+    group("Open under a closed parent"; .under_closed_parent; row)
+  '
+}
+
+cmd_remainder() {
+  local action="${1:-}"
+  shift || true
+  local issue_ref="" text="" binding payload
+  case "$action" in
+    set)
+      binding=$(mandible_bind_arguments "issue.remainder.set" '{"issue_ref":{"position":0},"text":{"position":1}}' "$@") || return $?
+      eval "$binding"
+      [[ -n "${text//[[:space:]]/}" ]] || die "A remainder must say what remains." 2
+      payload=$(jq -n --arg remainder "$text" '{remainder:$remainder}')
+      ;;
+    clear)
+      binding=$(mandible_bind_arguments "issue.remainder.clear" '{"issue_ref":{"position":0}}' "$@") || return $?
+      eval "$binding"
+      payload='{"remainder":null}'
+      ;;
+    ""|-h|--help)
+      cat <<'REMAINDER_USAGE' | mandible_render_commands
+Usage:
+  {{command issue.remainder.set}}
+  {{command issue.remainder.clear}}
+REMAINDER_USAGE
+      return 0
+      ;;
+    *) die "Unknown remainder action: $action (expected set or clear)" 2 ;;
+  esac
+  require_tools
+  local response status tmp_response
+  tmp_response=$(mktemp)
+  status=$(api_send_capture POST "/api/ledger/issues/$(urlencode "$issue_ref")/remainder" "$payload" "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  [[ "$status" =~ ^2 ]] || die_api_status "Failed to ${action} the remainder of ${issue_ref}" "$status" "$response"
+  if [[ "$action" == set ]]; then
+    err "${GREEN}Set the remainder of ${issue_ref}${RESET}"
+  else
+    err "${GREEN}Cleared the remainder of ${issue_ref}${RESET}"
+  fi
 }
 
 cmd_status() {
@@ -1837,6 +1914,7 @@ case "$subcmd" in
   work-notes) cmd_work_notes "$@" ;;
   kind)    cmd_kind "$@" ;;
   priority) cmd_priority "$@" ;;
+  remainder) cmd_remainder "$@" ;;
   comment) cmd_comment "$@" ;;
   body-history) cmd_description_history "$@" ;;
   comment-history) cmd_comment_history "$@" ;;

@@ -330,6 +330,7 @@ function synthesizeLedgerIssueDetail(
     worker_status: 'none',
     work_notes: '',
     work_notes_revision: null,
+    remainder: null,
     issue_branches: [],
     dependencies: [],
     dependency_warning: false,

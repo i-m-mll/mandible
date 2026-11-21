@@ -1,5 +1,6 @@
 import { AUTH_REQUEST_TYPES, describeAuthExecutionFailure } from "./contracts.js";
 import type { AuthRequest, AuthRequestStatus, AuthRequestType } from "./types.js";
+import type { IssueAccounting } from "./contracts.js";
 import type { ProtectedRootDirtyAction } from "./auth-protected-root-dirty-action.js";
 
 export function mapRow(row: Record<string, unknown>): AuthRequest {
@@ -78,6 +79,7 @@ export function mapRow(row: Record<string, unknown>): AuthRequest {
     // views and crash recovery read it. Kept as a string to match the column.
     merge_finalizer_state: row.merge_finalizer_state == null ? null : String(row.merge_finalizer_state),
     change_report: parseChangeReport(row.change_report_json),
+    issue_accounting: row.issue_accounting_json == null ? null : JSON.parse(String(row.issue_accounting_json)) as IssueAccounting,
     protected_root_dirty_action: row.protected_root_dirty_action_json == null
       ? null
       : JSON.parse(String(row.protected_root_dirty_action_json)) as ProtectedRootDirtyAction,

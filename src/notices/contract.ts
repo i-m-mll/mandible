@@ -57,6 +57,11 @@ export interface OutcomeReport {
   /** The rejection reason, the first error line, or the superseding request, by status. */
   reason: string | null;
   steps: OutcomeStep[];
+  /**
+   * Issue 9395f25 — the landed issues a completed merge left open, kept open
+   * first, each with what remains of it: the approved remainder, or what holds it.
+   */
+  left_open: Array<{ issue: string; remains: string }>;
 }
 
 /** Reads one request's current report; null when its status is not in `NOTICE_STATUSES`. */

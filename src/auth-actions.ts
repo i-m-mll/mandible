@@ -30,6 +30,7 @@ import { recordedPreview } from '../scripts/preview-custody.mjs';
 export const WITHHOLD_UNTIL_CONVERGED: Record<AuthRequestActionKind, boolean> = {
   comment_add: false,
   issue_close: true,
+  issue_keep_open: true,
   worker_status_set: false,
   label_add: false,
   label_rm: false,
@@ -308,6 +309,9 @@ function normalizePayload(kind: AuthRequestActionKind, payload: unknown): Record
         ...(onStale == null ? {} : { on_stale: onStale }),
       };
     }
+    case "issue_keep_open":
+      rejectUnexpectedKeys(record, ["remainder"], kind);
+      return { remainder: requireMarkdownBody(record.remainder, "remainder") };
     case "worker_status_set": {
       const value = typeof record.value === "string" ? record.value.trim() : "";
       if (!VALID_WORKER_STATUSES.includes(value)) {

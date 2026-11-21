@@ -57,6 +57,15 @@
 #   --issue <id>            Issue ID to reference for context (repeatable; does not close)
 #   --ref-issue <id>        Alias for --issue
 #   --closes-issue <id>     Issue ID to close on successful merge (repeatable)
+#   --keeps-open <id>=<what remains>
+#                           Keep a landed issue open and record what remains of it
+#                           once the merge completes (repeatable)
+#
+#   The daemon accounts for every issue the merge lands (relative to the
+#   target): an issue whose worker status is done closes unless kept open; an
+#   issue with an open child or work the head does not contain stays open by
+#   itself; any other landed issue needs --closes-issue or --keeps-open, and the
+#   request is refused until each has one.
 #   --promote-briefing <group> <expected-base> <proposal>
 #                           After successful convergence, promote the exact
 #                           active proposal to this Briefing group's Base
@@ -135,6 +144,7 @@ expected_custody_generation=""
 SUPERSEDED_ACTION_DISPOSITIONS=()
 ISSUE_REFERENCES=()
 ISSUE_CLOSURES=()
+KEEPS_OPEN=()
 TEARDOWN_PREVIEW_BRANCHES=()
 repo=""
 cwd_override=""
@@ -150,7 +160,7 @@ promote_briefing_group=""
 promote_briefing_expected_base=""
 promote_briefing_proposal=""
 
-binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"TEARDOWN_PREVIEW_BRANCHES":{"option":"teardown-preview","array":true},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"json":{"option":"json","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
+binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"KEEPS_OPEN":{"option":"keeps-open","array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"TEARDOWN_PREVIEW_BRANCHES":{"option":"teardown-preview","array":true},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"json":{"option":"json","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
 eval "$binding"
 # The daemon resolves a relative path against its own working directory.
 [[ -z "$cwd_override" ]] || cwd_override=$(api_resolve_user_path "$cwd_override")
@@ -159,10 +169,21 @@ if [[ -z "$title" ]]; then
   echo "Error: --title is required" >&2
   exit 2
 fi
-if [ $(( ${#ISSUE_REFERENCES[@]} + ${#ISSUE_CLOSURES[@]} )) -eq 0 ]; then
-  echo "Error: at least one --issue <id> or --closes-issue <id> is required" >&2
+if [ $(( ${#ISSUE_REFERENCES[@]} + ${#ISSUE_CLOSURES[@]} + ${#KEEPS_OPEN[@]} )) -eq 0 ]; then
+  echo "Error: at least one --issue <id>, --closes-issue <id>, or --keeps-open <id>=<what remains> is required" >&2
   exit 1
 fi
+keeps_open_actions_json='[]'
+for keep in ${KEEPS_OPEN[@]+"${KEEPS_OPEN[@]}"}; do
+  keep_issue="${keep%%=*}"
+  keep_remainder="${keep#*=}"
+  if [[ "$keep_issue" == "$keep" || -z "${keep_issue//[[:space:]]/}" || -z "${keep_remainder//[[:space:]]/}" ]]; then
+    echo "Error: --keeps-open must be <id>=<what remains>, with both parts non-empty" >&2
+    exit 2
+  fi
+  keeps_open_actions_json=$(jq -c --arg issue "$keep_issue" --arg remainder "$keep_remainder" \
+    '. + [{kind: "issue_keep_open", target_issue_ref: $issue, payload: {remainder: $remainder}}]' <<<"$keeps_open_actions_json")
+done
 # Issue 7d64d8f — the canonical change message has exactly one source.
 if [[ -n "$change_message_text" && -n "$change_message_file" ]]; then
   echo "Error: --message and --message-file are mutually exclusive" >&2
@@ -205,7 +226,7 @@ if [[ "$auth_type" == "merge" ]]; then
     exit 2
   fi
 else
-  if [[ -n "$branch" || -n "$target_override" || -n "$dirty_policy" || -n "$dirty_branch_prefix" || "$force" == "true" || -n "$verification_text" || -n "$post_merge_handoff" || ${#ISSUE_CLOSURES[@]} -gt 0 ]]; then
+  if [[ -n "$branch" || -n "$target_override" || -n "$dirty_policy" || -n "$dirty_branch_prefix" || "$force" == "true" || -n "$verification_text" || -n "$post_merge_handoff" || ${#ISSUE_CLOSURES[@]} -gt 0 || ${#KEEPS_OPEN[@]} -gt 0 ]]; then
     echo "Error: branches, verification, closure, handoff, and protected-root options require --type merge" >&2
     exit 2
   fi
@@ -295,19 +316,21 @@ issue_closures_json="null"
 if [[ ${#ISSUE_CLOSURES[@]} -gt 0 ]]; then
   issue_closures_json=$(printf '%s\n' "${ISSUE_CLOSURES[@]}" | jq -R . | jq -sc .)
 fi
-actions_json=$(jq -nc --argjson closures "$issue_closures_json" '
-  ($closures // []) | map({
+actions_json=$(jq -nc --argjson closures "$issue_closures_json" --argjson keeps "$keeps_open_actions_json" '
+  (($closures // []) | map({
     kind: "issue_close",
     target_issue_ref: .,
     payload: {}
-  })
+  })) + $keeps
 ')
-# Actions about no issue are filed under the request's first referenced issue, else its first closure.
+# Actions about no issue are filed under the request's first referenced issue, else its first closure or kept issue.
 action_target_issue=""
 if [[ ${#ISSUE_REFERENCES[@]} -gt 0 ]]; then
   action_target_issue="${ISSUE_REFERENCES[0]}"
-else
+elif [[ ${#ISSUE_CLOSURES[@]} -gt 0 ]]; then
   action_target_issue="${ISSUE_CLOSURES[0]}"
+else
+  action_target_issue="${KEEPS_OPEN[0]%%=*}"
 fi
 if [[ -n "$promote_briefing_group" ]]; then
   actions_json=$(jq -nc \
@@ -490,6 +513,15 @@ else
     else
       echo "Files: server-captured (this daemon did not return headline counts)"
     fi
+    printf '%s' "$response" | jq -r '
+      .issue_accounting // empty
+      | (if (.closing | length) > 0 then "Closes with the merge:", (.closing[] | "  \(.issue) \(.title)\(if .by == "done" then " (done)" elif .by == "fixed_by" then " (fixed_by)" else "" end)") else empty end),
+        (if (.kept_open | length) > 0 then "Kept open:", (.kept_open[] | "  \(.issue) \(.title): \(.remainder)") else empty end),
+        (if (.held | length) > 0 then "Held open:", (.held[] | "  \(.issue) \(.title): held by " + ([
+          (if (.open_children | length) > 0 then "open children " + (.open_children | join(", ")) else empty end),
+          (if (.unmerged_units | length) > 0 then "work the head does not contain (" + ([.unmerged_units[] | "\(.id[0:8]) on \(.branch // "no branch")"] | join(", ")) + ")" else empty end)
+        ] | join(" and "))) else empty end)
+    '
   fi
 fi
 

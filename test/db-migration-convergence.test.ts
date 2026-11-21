@@ -1413,7 +1413,9 @@ it("retires project ACL schema and rows while preserving global capability IDs a
     const projectRows = db.prepare("SELECT id, display_name, project_key, created_at, updated_at FROM ledger_projects ORDER BY id").all();
     const tables = ["ledger_issues", "ledger_comments", "ledger_body_revisions", "ledger_events", "users", "user_groups", "user_group_members",
       "work_unit_custody_events", "auth_request_lifecycle_events"];
-    const history = () => Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+    // v246 adds the remainder columns to issues; the authored history is the rest of each row.
+    const authored = (row: unknown) => { const { remainder: _r, remainder_set_at: _a, ...rest } = row as Record<string, unknown>; return rest; };
+    const history = () => Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all().map(authored)]));
     const before = history();
     const violations = db.pragma("foreign_key_check");
     migrate(db);

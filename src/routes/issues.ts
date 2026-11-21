@@ -17,7 +17,7 @@ import {
 } from "../session-liveness.js";
 import { sessionConversationTarget, summarizeSessionKey } from "../session-summary.js";
 import { mapWorkUnitRow, computeWorkUnitLiveness } from "../work-unit-utils.js";
-import { ledgerIssueLifecycleError, LedgerSingletonKindError, LedgerStore, storedWorkerStatusError } from "../ledger/store.js";
+import { ledgerIssueLifecycleError, LedgerOpenChildrenError, LedgerSingletonKindError, LedgerStore, openChildRefs, storedWorkerStatusError } from "../ledger/store.js";
 import type { AttributionContext } from "../identity/resolver.js";
 import {
   attributionForRequest,
@@ -81,6 +81,7 @@ import type { RequestLike, ResponseLike, RouteOptions } from "../server.js";
 import { sendJson } from "./http.js";
 import { entityRefs, resolveCommentRef } from "../entity-refs.js";
 import { parseJsonObject } from "../row-coerce.js";
+import { triageLandedOpen } from "../landed-issues.js";
 
 export interface RouteHandler<Request = RequestLike, Response = ResponseLike> {
   (req: Request, res: Response): unknown;
@@ -654,7 +655,7 @@ function buildUmbrellaChildSummaries(
   if (childIds.length === 0) return [];
   const { sql, bindings } = placeholders(childIds, "issue");
   const rows = db.prepare(
-    `SELECT id, short_id, title, status, ${effectiveWorkerStatusSql("ledger_issues")} AS worker_status, kind
+    `SELECT id, short_id, title, status, ${effectiveWorkerStatusSql("ledger_issues")} AS worker_status, kind, remainder, remainder_set_at
        FROM ledger_issues
       WHERE id IN (${sql}) AND deleted_at IS NULL`,
   ).all(bindings) as Array<{
@@ -664,6 +665,8 @@ function buildUmbrellaChildSummaries(
     status: string;
     worker_status: string;
     kind: LedgerIssueKind;
+    remainder: string | null;
+    remainder_set_at: number | null;
   }>;
   const byId = new Map(rows.map((row) => [row.id, row]));
   const labels = labelsByIssue(db, childIds);
@@ -693,6 +696,8 @@ function buildUmbrellaChildSummaries(
       auth_requests: authRequests.get(childId) ?? [],
       latest_comment: latestComments.get(childId) ?? null,
       latest_closeout: closeouts.get(childId) ?? null,
+      remainder: row.remainder === null ? null : { text: row.remainder, set_at: row.remainder_set_at! },
+      open_children: row.status === "open" ? openChildRefs(db, childId) : [],
     });
   }
   return summaries;
@@ -720,6 +725,8 @@ export function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: b
       auth_requests: child.auth_requests,
       latest_comment: latestComment(child),
       latest_closeout: latestCheckpoint(child, "closeout"),
+      remainder: child.remainder,
+      open_children: child.status === "open" ? openChildRefs(db, childId) : [],
     };
     if (!options.deep) return summary;
     return {
@@ -1001,6 +1008,21 @@ export function registerIssueRoutes(
       profile: getQueryParam(req, "profile") === "1",
     });
   }, { operation: { id: "get:/api/ledger/issues/:issueId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  // Issue 9395f25 — open issues whose work landed and that nothing holds open.
+  server.get("/api/ledger/landed-open", async (req, res) => {
+    const project = getQueryParam(req, "project");
+    if (!project) return sendJson(res, 400, { error: "project is required" });
+    const db = getDb();
+    const resolved = resolveProjectRef(db, project);
+    if (!resolved.ok && resolved.reason === "ambiguous") return sendJson(res, 409, { error: `ambiguous project ref: ${project}`, candidates: resolved.candidates ?? [] });
+    if (!resolved.ok) return sendJson(res, 400, { error: `unknown project: ${project}`, suggestions: suggestProjectRefs(db, project) });
+    try {
+      sendJson(res, 200, await triageLandedOpen(db, resolved.project.id));
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+  }, { operation: { id: "get:/api/ledger/landed-open", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/ledger/issues/:issueId/umbrella-status", (req, res) => {
     const issueRef = getParam(req, "issueId");
@@ -1939,6 +1961,10 @@ export function registerIssueRoutes(
       }
     } catch (error) {
       if (sendSingletonKindConflict(res, error)) return;
+      if (error instanceof LedgerOpenChildrenError) {
+        sendJson(res, 409, { error: error.message, code: error.code, open_children: error.openChildRefs });
+        return;
+      }
       if (isBodyRevisionConflict(error)) {
         sendJson(res, 409, { error: error instanceof Error ? error.message : "stale body revision" });
         return;
@@ -1976,6 +2002,30 @@ export function registerIssueRoutes(
     );
     sendLedgerIssueProjection(res, db, resolved.issue_id);
   }, { operation: { id: "post:/api/ledger/issues/:issueId/worker-status", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
+
+  // Issue 9395f25 — what remains of an open issue; null clears it.
+  server.post("/api/ledger/issues/:issueId/remainder", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) return sendJson(res, 400, { error: "missing issueId" });
+    const body = getBody(req) ?? {};
+    if (body.remainder !== null && typeof body.remainder !== "string") {
+      return sendJson(res, 400, { error: "remainder must be text, or null to clear it" });
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) return sendJson(res, resolved.status, { error: resolved.error });
+    try {
+      new LedgerStore(db).setIssueRemainder(
+        resolved.issue_id,
+        body.remainder,
+        { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
+        "mandible",
+      );
+    } catch (error) {
+      return sendJson(res, 422, { error: error instanceof Error ? error.message : String(error) });
+    }
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  }, { operation: { id: "post:/api/ledger/issues/:issueId/remainder", effects: ["ledger:write"], requestSchema: null, reportingCategory: "ledger" }, fileRpc: "allow" });
 
   server.post("/api/ledger/issues/:issueId/branches", (req, res) => {
     const issueRef = getParam(req, "issueId");

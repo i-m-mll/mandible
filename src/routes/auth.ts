@@ -282,6 +282,7 @@ export function registerAuthRoutes(
         files_changed: request.files_changed,
         additions: request.additions,
         deletions: request.deletions,
+        issue_accounting: request.issue_accounting ?? null,
         publication_blocker: await authQueue.publicationBlockerForRequest(request),
       });
     } catch (error) {
@@ -1367,6 +1368,10 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
     if (error.code === "custody_conflict" || error.code === "lifecycle_conflict" ||
         error.code === "lifecycle_precondition_required" || error.code === "recovery_refused") {
       res.status(409).json({ error: error.message, code: error.code });
+      return;
+    }
+    if (error.code === "issue_accounting_refused") {
+      res.status(422).json({ error: error.message, code: error.code, issue_accounting: error.details });
       return;
     }
     if (error.code === "action_disposition_required" || error.code === "target_mismatch") {

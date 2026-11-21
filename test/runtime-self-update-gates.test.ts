@@ -87,6 +87,11 @@ async function submit(branch = "feature/self-update", patch: Partial<AuthRequest
     issue_references: ["5e1f0d0"], ...patch }, operatorId));
 }
 
+/** The request's staged actions other than the closure of the delivered issue. */
+function releaseActions(id: string) {
+  return queue.listActions(id).filter((action) => action.kind !== 'issue_close');
+}
+
 async function acceptanceOf(id: string) {
   return queue.candidateAcceptanceForRequest((await queue.getRequest(id))!);
 }
@@ -220,7 +225,7 @@ describe('automatic accepted-package binding', () => {
     legacy.start();
     legacy.enqueue(first.id, candidate, () => ({ repoRoot: repo, pinSha: candidate.pin_sha, projectId, workUnitId: first.custody_work_unit_id!, env: {} }));
     await legacy.idle();
-    expect(db.prepare('SELECT id FROM auth_request_actions WHERE auth_request_id = ?').all(first.id)).toEqual([]);
+    expect(db.prepare('SELECT id, kind FROM auth_request_actions WHERE auth_request_id = ?').all(first.id).filter((row: any) => row.kind !== 'issue_close')).toEqual([]);
     const accepted = db.prepare("SELECT id FROM auth_candidate_acceptances WHERE auth_request_id = ? AND status = 'passed'").get(first.id) as { id: string };
     queue = new AuthQueue({ db, hookManager: createInstalledServiceHookManager(db, { serviceDefinitionInspector: inspector }), backgroundMaintenance: false,
       executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
@@ -239,9 +244,9 @@ describe('automatic accepted-package binding', () => {
     runs[1].settle({ status: 'passed', result: {}, error: null });
     await queue.drainCandidateAcceptances();
     expect(await acceptanceOf(second.id)).toMatchObject({ state: 'passed' });
-    expect(queue.listActions(second.id)).toHaveLength(1);
+    expect(releaseActions(second.id)).toHaveLength(1);
     expect(queue.listLifecycleEvents(second.id).at(-1)).toMatchObject({ authority_path: 'system', event_type: 'revised' });
-    expect(queue.listActions(first.id)[0].payload.payload).toEqual({ acceptanceId: accepted.id, reference });
+    expect(releaseActions(first.id)[0].payload.payload).toEqual({ acceptanceId: accepted.id, reference });
   });
 
   it('commits one selection and canonical revision with a compacted pass, then replays without revision', async () => {
@@ -253,17 +258,17 @@ describe('automatic accepted-package binding', () => {
       .get(request.id) as { id: string; status: string; result_json: string };
     expect(accepted.status).toBe('passed');
     expect(accepted.result_json!.length).toBeLessThan(64 * 1024);
-    const actions = queue.listActions(request.id);
+    const actions = releaseActions(request.id);
     expect(actions).toHaveLength(1);
     expect(actions[0]).toMatchObject({ target_issue_ref: issue.id, state: 'staged', payload: {
       kind: 'accepted-release', payload: { acceptanceId: accepted.id, reference: JSON.parse(accepted.result_json!).receipt },
     } });
     const revisions = queue.listLifecycleEvents(request.id);
     expect(revisions.at(-1)).toMatchObject({ event_type: 'revised', authority_path: 'system', evidence_method: 'system_internal' });
-    expect(JSON.parse(revisions.at(-1)!.prior_snapshot_json!).actions).toEqual([]);
+    expect(JSON.parse(revisions.at(-1)!.prior_snapshot_json!).actions.filter((action: { kind: string }) => action.kind !== 'issue_close')).toEqual([]);
     bindAcceptedRelease(db, (await queue.getRequest(request.id))!, accepted.id, issue.id, Date.now());
     expect(queue.listLifecycleEvents(request.id)).toHaveLength(revisions.length);
-    expect(queue.listActions(request.id)).toEqual(actions);
+    expect(releaseActions(request.id)).toEqual(actions);
   });
 
   it('reruns the exact pending selection when its legacy acceptance evidence is gone', async () => {
@@ -299,7 +304,7 @@ describe('automatic accepted-package binding', () => {
     runs[0].settle({ status: 'passed', result: change === 'receipt' ? { receipt: 'invalid' } : wrongOwner, error: null });
     await queue.drainCandidateAcceptances();
     expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('recording its verdict on the request failed') });
-    expect(queue.listActions(request.id)).toEqual([]);
+    expect(releaseActions(request.id)).toEqual([]);
     expect(db.prepare("SELECT id FROM auth_candidate_acceptances WHERE status IN ('running', 'passed')").all()).toEqual([]);
   });
 
@@ -311,7 +316,7 @@ describe('automatic accepted-package binding', () => {
     runs[0].settle({ status: 'passed', result: {}, error: null });
     await queue.drainCandidateAcceptances();
     expect(latestCandidateAcceptance(db, request.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('revision fixture failure') });
-    expect(queue.listActions(request.id)).toEqual([]);
+    expect(releaseActions(request.id)).toEqual([]);
     expect(queue.listLifecycleEvents(request.id)).toEqual(revisions);
   });
 
@@ -320,7 +325,7 @@ describe('automatic accepted-package binding', () => {
     await waitUntilPasses(() => expect(runs).toHaveLength(1));
     runs[0].settle({ status: 'passed', result: {}, error: null });
     await queue.drainCandidateAcceptances();
-    const initial = queue.listActions(request.id)[0];
+    const initial = releaseActions(request.id)[0];
     const actor = { user_id: operatorId, credential_id: credentialId, evidence_method: 'api_token' as const };
     const revision = queue.listLifecycleEvents(request.id).at(-1)!.revision;
     if (change === 'veto') queue.setActionVeto(request.id, initial.id, true, actor, revision, 1);
@@ -332,7 +337,7 @@ describe('automatic accepted-package binding', () => {
       queue.updateAction(request.id, initial.id, { ...initial, payload: { kind: 'accepted-release', payload: { ...initial.payload.payload, reference } } }, actor, revision, 1);
     }
     if (change === 'delete') queue.deleteAction(request.id, initial.id, actor, revision, 1);
-    const before = queue.listActions(request.id);
+    const before = releaseActions(request.id);
     advanceMainViaAuthorizedMerge(db, repo, 'feature/other', 'merge-other');
     await queue.refreshPendingCandidates();
     await waitUntilPasses(() => expect(runs).toHaveLength(2));
@@ -342,11 +347,11 @@ describe('automatic accepted-package binding', () => {
       .get(request.id) as { id: string; status: string };
     if (change === 'unchanged') {
       expect(latest.status).toBe('passed');
-      expect(queue.listActions(request.id)).toHaveLength(1);
-      expect(queue.listActions(request.id)[0]).toMatchObject({ id: initial.id, payload: { payload: { acceptanceId: latest.id } } });
+      expect(releaseActions(request.id)).toHaveLength(1);
+      expect(releaseActions(request.id)[0]).toMatchObject({ id: initial.id, payload: { payload: { acceptanceId: latest.id } } });
     } else {
       expect(latest.status).toBe('failed');
-      expect(queue.listActions(request.id)).toEqual(before);
+      expect(releaseActions(request.id)).toEqual(before);
       await expect(approveAsFixtureOperator(queue, request.id, operatorId)).rejects.toThrow('acceptance');
     }
   });

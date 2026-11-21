@@ -6,6 +6,7 @@ import path from "node:path";
 import { getDb, type Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
 import { observeRepoIdentities, checkoutRootsForRef } from "./repo-identity.js";
+import { landedCommitOfMerge } from "./auth-signature-verification.js";
 import { freshSessionAliasResolver } from "./session-liveness.js";
 import type { Logger } from "./types.js";
 import type { WorkUnitSessionResolver } from "./work-unit-utils.js";
@@ -17,7 +18,7 @@ import { listLocalBranches } from "./work-scanner.js";
  * abandon a work unit.
  */
 type AuthPipelineMatch =
-  | { status: "matched"; id: string; completed: boolean; resolved_at: number | null }
+  | { status: "matched"; id: string; completed: boolean; resolved_at: number | null; landed_commit: string | null }
   | { status: "none" }
   | { status: "unknown" };
 
@@ -205,7 +206,7 @@ export class WorkUnitReconciler {
     const resolveStmt = db.prepare(
       `UPDATE work_units
        SET state = 'resolved', resolved_at = COALESCE(resolved_at, ?),
-           auth_request_id = COALESCE(auth_request_id, ?)
+           auth_request_id = COALESCE(auth_request_id, ?), landed_commit = ?
        WHERE id = ? AND state = 'committed'`
     );
 
@@ -236,7 +237,7 @@ export class WorkUnitReconciler {
         }
         if (authRequest.status === "matched") {
           if (authRequest.completed) {
-            mutateWorkUnit(db, row.id, () => resolveStmt.run(authRequest.resolved_at ?? Date.now(), authRequest.id, row.id));
+            mutateWorkUnit(db, row.id, () => resolveStmt.run(authRequest.resolved_at ?? Date.now(), authRequest.id, authRequest.landed_commit, row.id));
           }
           continue;
         }
@@ -296,7 +297,7 @@ export class WorkUnitReconciler {
     if (!tableExists(db, "auth_requests")) return { match: { status: "none" }, isCurrent: () => !tableExists(db, "auth_requests") };
     try {
       const read = () => db.prepare(
-        `SELECT id, repo, cwd, target_repo_root, status, resolved_at
+        `SELECT id, repo, cwd, target_repo_root, status, resolved_at, output
          FROM auth_requests
          WHERE type = 'merge' AND head_branch = ? AND created_at >= ?
            AND (
@@ -310,6 +311,7 @@ export class WorkUnitReconciler {
         target_repo_root: string | null;
         status: string;
         resolved_at: number | null;
+        output: string;
       }>;
       const requests = read();
       const identity = await observeRepoIdentities(db, [workUnit.repo_id, ...requests.flatMap(request => [request.target_repo_root, request.cwd, request.repo])], [], this.abort.signal);
@@ -332,7 +334,8 @@ export class WorkUnitReconciler {
           ? [...workUnitKeys].some((key) => requestKeys.has(key))
           : refs.includes(workUnit.repo_id);
         if (matches) {
-          return result({ status: "matched", id: request.id, completed: request.status === "completed", resolved_at: request.resolved_at });
+          return result({ status: "matched", id: request.id, completed: request.status === "completed", resolved_at: request.resolved_at,
+            landed_commit: request.status === "completed" ? landedCommitOfMerge(request.output) : null });
         }
       }
       return result({ status: "none" });

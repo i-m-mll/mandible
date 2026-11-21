@@ -229,6 +229,25 @@
         ]
       }
     },
+    "issue.remainder.set": {
+      "route": ["issue", "remainder", "set"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "issue-ref","value": {"type": "string"}},
+          {"kind": "argument","name": "text","value": {"type": "string"}}
+        ]
+      }
+    },
+    "issue.remainder.clear": {
+      "route": ["issue", "remainder", "clear"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "issue-ref","value": {"type": "string"}}
+        ]
+      }
+    },
     "issue.priority.set": {
       "route": ["issue", "priority", "set"],
       "grammar": {
@@ -275,7 +294,7 @@
           {"kind": "optional","item": {"kind": "option","names": ["--space-publication"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}},
           {"kind": "argument","name": "branch","value": {"type": "string"}},
           {"kind": "option","names": ["--title"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
-          {"kind":"repeat","min":1,"item":{"kind":"choice","items":[{"kind":"option","names":["--issue","--ref-issue","--references-issue"],"values":[{"kind":"argument","name":"id","value":{"type":"string"}}]},{"kind":"option","names":["--closes-issue","--close-issue"],"values":[{"kind":"argument","name":"id","value":{"type":"string"}}]}]}},
+          {"kind":"repeat","min":1,"item":{"kind":"choice","items":[{"kind":"option","names":["--issue","--ref-issue","--references-issue"],"values":[{"kind":"argument","name":"id","value":{"type":"string"}}]},{"kind":"option","names":["--closes-issue","--close-issue"],"values":[{"kind":"argument","name":"id","value":{"type":"string"}}]},{"kind":"option","names":["--keeps-open"],"values":[{"kind":"argument","name":"id=what-remains","value":{"type":"string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--supersedes"],"values": [{"kind": "argument","name": "request","value": {"type": "string"}}]},{"kind": "option","names": ["--expected-revision"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},{"kind": "option","names": ["--expected-custody-generation"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "repeat","min": 1,"item": {"kind": "option","names": ["--drop-superseded-action"],"values": [{"kind": "argument","name": "ordinal:reason","value": {"type": "string"}}]}}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--promote-briefing"],"values": [{"kind": "argument","name": "group","value": {"type": "string"}},{"kind": "argument","name": "expected-base","value": {"type": "string"}},{"kind": "argument","name": "proposal","value": {"type": "string"}}]}]}},
@@ -3061,12 +3080,13 @@
       "grammar": {
         "kind": "sequence",
         "items": [
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--landed-open"],"values": []}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--status"],"values": [{"kind": "argument","name": "open|closed|all","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--resolution"],"values": [{"kind": "argument","name": "delivered|duplicate|wontfix","value": {"type": "enum","values": ["delivered","duplicate","wontfix"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--label"],"values": [{"kind": "argument","name": "label","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--kind"],"values": [{"kind": "argument","name": "kind","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--priority"],"values": [{"kind": "argument","name": "priority","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--repo"],"values": [{"kind": "argument","name": "repo","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--repo","--project"],"values": [{"kind": "argument","name": "repo","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--stale-days"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--notes"],"values": []}]}},

@@ -36,7 +36,11 @@ print_status_response() {
       "operation: \(.operation.kind // "-")",
       "created_edges: \((.operation.created_child_refs // []) | length)",
       "pending_auth: \((.auth_queue.pending_requests // []) | length)",
-      "active_auth: \((.auth_queue.active_requests // []) | length)"
+      "active_auth: \((.auth_queue.active_requests // []) | length)",
+      ([(.children // [])[] | select(.status == "open" and .remainder != null)] as $kept
+        | if ($kept | length) > 0 then "kept_open:", ($kept[] | "  \(.short_id) \(.title): \(.remainder.text)") else empty end),
+      ([(.children // [])[] | select(.status == "open" and ((.open_children // []) | length) > 0)] as $held
+        | if ($held | length) > 0 then "held:", ($held[] | "  \(.short_id) \(.title): open children \(.open_children | join(", "))") else empty end)
     '
   fi
 }

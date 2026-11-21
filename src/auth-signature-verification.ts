@@ -42,6 +42,11 @@ const TRUSTED_SSH_KEYGEN_PATHS = ["/usr/bin/ssh-keygen", "/bin/ssh-keygen"];
  * refreshed issue metadata. A marker appended with a different SHA — or any
  * malformed marker — is tamper evidence, never something to skip past.
  */
+/** Issue 9395f25 — the commit a successful merge request landed, as a work unit records it. */
+export function landedCommitOfMerge(output: string): string | null {
+  return extractSuccessfulMergeCommitSha(output)?.toLowerCase() ?? null;
+}
+
 export function extractSuccessfulMergeCommitSha(output: string): string | null {
   const markerLines = output
     .split(/\r?\n/)

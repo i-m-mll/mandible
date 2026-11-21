@@ -250,6 +250,8 @@ export interface LedgerIssueDetailProjection {
   body: string;
   work_notes: string;
   work_notes_revision: string | null;
+  /** Issue 9395f25 — what remains of an open issue a merge kept open. */
+  remainder: { text: string; set_at: number } | null;
   status: LedgerIssueStatus;
   worker_status: LedgerWorkerStatus;
   resolution: LedgerIssueResolution | null;

@@ -36,7 +36,7 @@ it("renders the approved notice text", () => {
       ...["a", "b", "c"].map((hook): OutcomeStep => ({ kind: "hook", hook_id: hook, required: true, state: "done", reason: null })),
       ...Array.from({ length: 16 }, (_, i) => branch(`done/${i}`, "done", null)),
       ...steps,
-    ] });
+    ], left_open: [] });
   expect(renderNotice(report([
     ...kept.map((name) => branch(name, "kept", "not_merged")),
     branch("integration/mandible-iab-preview-20261102-282088f", "kept", "preview_running"),
@@ -47,7 +47,7 @@ More: mandible auth show a6e526bf`);
   expect(renderNotice(report(Array.from({ length: 9 }, (_, i) => branch(`more/${i}`, "done", null))), MAIN, "main"))
     .toBe("Mandible: auth a6e526bf merged as fdd818f8. All follow-ups done: 18 issues closed, 25 branches and worktrees removed, 3 hooks passed.");
   const failed: OutcomeReport = { request_id: "0123456789", type: "command", status: "failed", merge_commit: null, reason: "exit 3", steps:
-    Array.from({ length: 12 }, (_, i): OutcomeStep => ({ kind: "hook", hook_id: `h${i}`, required: true, state: "failed", reason: "timed out" })) };
+    Array.from({ length: 12 }, (_, i): OutcomeStep => ({ kind: "hook", hook_id: `h${i}`, required: true, state: "failed", reason: "timed out" })), left_open: [] };
   expect(renderNotice(failed, { provider: "claude", agent_id: "a9", session_id: "s1" }, "main")).toBe(`Mandible: auth 01234567 failed: exit 3. (submitted by agent a9)
 Failed, timed out (12): h0 h1 h2 h3 h4 h5 h6 h7 h8 h9 +2 more
 More: mandible auth show 01234567`);
@@ -57,7 +57,7 @@ it("renders declared preview teardowns: done as a count, the rest grouped by sta
   const teardown = (name: string, state: OutcomeStep["state"], reason: string | null): OutcomeStep =>
     ({ kind: "preview_teardown", branch: name, state, reason });
   const report = (steps: OutcomeStep[]): OutcomeReport => ({ request_id: "a6e526bf-0000-4000-8000-000000000000", type: "merge",
-    status: "completed", merge_commit: "fdd818f8".padEnd(40, "0"), reason: null, steps: [branch("done/0", "done", null), ...steps] });
+    status: "completed", merge_commit: "fdd818f8".padEnd(40, "0"), reason: null, steps: [branch("done/0", "done", null), ...steps], left_open: [] });
   expect(renderNotice(report([teardown("p/1", "done", null), teardown("p/2", "skipped", "vetoed")]), MAIN, "main"))
     .toBe("Mandible: auth a6e526bf merged as fdd818f8. All follow-ups done: 1 branch and worktree removed, 1 preview torn down.");
   expect(renderNotice(report([
