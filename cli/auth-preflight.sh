@@ -25,10 +25,16 @@ mandible_auth_merge_preflight() {
     args+=(--repo "$repo")
   fi
 
-  local output
-  if ! output=$(bash "$check_script" "${args[@]}" 2>&1); then
+  local output status errors
+  errors=$(mktemp)
+  output=$(bash "$check_script" "${args[@]}" 2>"$errors") || true
+  status=$(printf '%s' "$output" | jq -r '.check.status // empty' 2>/dev/null)
+  if [[ "$status" != "clean" ]]; then
+    cat "$errors" >&2
+    rm -f "$errors"
     printf "%s\n" "$output" >&2
     printf "Error: Mandible merge preflight failed. Resolve dirty state or conflicts before continuing.\n" >&2
     return 1
   fi
+  rm -f "$errors"
 }
