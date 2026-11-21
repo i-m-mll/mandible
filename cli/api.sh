@@ -1339,7 +1339,7 @@ api_preflight_operational_mutation() {
   local method="$1"
   local request_path="$2"
   local output_file="${3:-}"
-  local category tmp_response fetch_status role policy db_path source_db_path message bindings preflight_error
+  local category tmp_response fetch_status role policy db_path source_db_path message bindings preflight_error instance_id
 
   case "$method" in
     POST|PUT|PATCH|DELETE) ;;
@@ -1390,6 +1390,17 @@ api_preflight_operational_mutation() {
       jq -n --arg error "$catalog_error" --arg message "$catalog_message" '{error:$error,message:$message,request_sent:false}' > "$output_file"
     fi
     rm -f "$tmp_response"
+    return 22
+  fi
+  if [[ -n "${MANDIBLE_INSTANCE_ID:-}" && "$instance_id" != "$MANDIBLE_INSTANCE_ID" ]]; then
+    rm -f "$tmp_response"
+    message="Refusing mutation: this environment names Mandible instance ${MANDIBLE_INSTANCE_ID}, but the daemon reached is instance ${instance_id:-unknown}."
+    printf '%s\n' "$message" >&2
+    if [[ -n "$output_file" ]]; then
+      jq -n --arg message "$message" --arg expected "$MANDIBLE_INSTANCE_ID" --arg reached "$instance_id" \
+        '{error:"cli_instance_mismatch", message:$message, expected_instance_id:$expected, reached_instance_id:$reached, request_sent:false}' \
+        > "$output_file"
+    fi
     return 22
   fi
   [[ -n "$category" ]] || { rm -f "$tmp_response"; return 0; }
