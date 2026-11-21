@@ -549,6 +549,7 @@ function formatActionKind(kind: AuthRequestAction['kind']): string {
   switch (kind) {
     case 'comment_add': return 'Comment';
     case 'issue_close': return 'Close issue';
+    case 'issue_keep_open': return 'Keep open';
     case 'worker_status_set': return 'Worker status';
     case 'label_add': return 'Add label';
     case 'label_rm': return 'Remove label';
@@ -574,6 +575,8 @@ function actionPayloadSummary(action: AuthRequestAction, preview = true): string
       return payload.reason_comment
         ? `Reason: ${summarize(String(payload.reason_comment), 160)}`
         : '';
+    case 'issue_keep_open':
+      return summarize(String(payload.remainder ?? ''), 180);
     case 'worker_status_set':
       return `Set to ${String(payload.value ?? '')}`;
     case 'label_add':

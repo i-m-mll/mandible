@@ -35,7 +35,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 245;
+export const BASELINE_SCHEMA_VERSION = 246;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -419,6 +419,26 @@ export const SESSION_EXECUTION_SCHEMA_SQL = `CREATE TABLE provider_session_execu
     OR (source IN ('claude_sdk_hook','codex_app_server') AND controller_instance_id IS NOT NULL AND controller_generation IS NOT NULL AND controller_generation >= 0))
 )`;
 
+/** Authored-reference provenance: the issue body, a comment, or an issue's remainder (issue 9395f25). */
+export const LEDGER_ISSUE_RELATIONSHIP_SOURCES_SCHEMA_SQL: readonly string[] = [
+  "CREATE TABLE ledger_issue_relationship_sources (\n          id TEXT PRIMARY KEY,\n          relationship_id TEXT NOT NULL REFERENCES ledger_issue_relationships(id) ON DELETE CASCADE,\n          source_entity_type TEXT NOT NULL CHECK(source_entity_type IN ('issue_body','comment','issue_remainder')),\n          source_entity_id TEXT NOT NULL,\n          source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n          target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n          relationship_type TEXT NOT NULL\n            CHECK(relationship_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),\n          ref_kind TEXT NOT NULL CHECK(ref_kind IN ('issue','comment')),\n          raw_ref TEXT NOT NULL,\n          normalized_ref TEXT NOT NULL,\n          metadata_json TEXT NOT NULL DEFAULT '{}',\n          created_at INTEGER NOT NULL,\n          updated_at INTEGER NOT NULL,\n          deleted_at INTEGER,\n          UNIQUE(source_entity_type, source_entity_id, target_issue_id, relationship_type, ref_kind, normalized_ref)\n        )",
+  "CREATE INDEX idx_ledger_relationship_sources_relationship\n          ON ledger_issue_relationship_sources(relationship_id)",
+  "CREATE INDEX idx_ledger_relationship_sources_source\n          ON ledger_issue_relationship_sources(source_entity_type, source_entity_id)",
+  "CREATE INDEX idx_ledger_relationship_sources_target\n          ON ledger_issue_relationship_sources(target_issue_id)",
+];
+
+/**
+ * Issue 9395f25 — the commit on the target branch that holds a resolved unit's
+ * work, the stated remainder of an issue kept open by a merge, and the issue
+ * accounting a merge request was submitted with.
+ */
+export const LANDED_ISSUE_ACCOUNTING_COLUMNS_SQL: readonly string[] = [
+  "ALTER TABLE work_units ADD COLUMN landed_commit TEXT CHECK(landed_commit IS NULL OR (length(landed_commit) IN (40, 64) AND landed_commit NOT GLOB '*[^0-9a-f]*'))",
+  "ALTER TABLE ledger_issues ADD COLUMN remainder TEXT CHECK(remainder IS NULL OR length(trim(remainder)) > 0)",
+  "ALTER TABLE ledger_issues ADD COLUMN remainder_set_at INTEGER",
+  "ALTER TABLE auth_requests ADD COLUMN issue_accounting_json TEXT CHECK(issue_accounting_json IS NULL OR json_valid(issue_accounting_json))",
+];
+
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   SESSION_EXECUTION_SCHEMA_SQL,
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        logical_name      TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -473,7 +493,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE ledger_events (\n        id TEXT PRIMARY KEY,\n        entity_type TEXT NOT NULL,\n        entity_id TEXT NOT NULL,\n        event_type TEXT NOT NULL,\n        actor_id TEXT,\n        actor_type TEXT NOT NULL\n          CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),\n        source TEXT NOT NULL\n          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        payload_json TEXT NOT NULL DEFAULT '{}',\n        occurred_at INTEGER NOT NULL,\n        observed_at INTEGER NOT NULL\n      , actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, evidence_method TEXT, evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL)",
   "CREATE TABLE ledger_issue_aliases (\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        alias_kind TEXT NOT NULL,\n        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE CASCADE,\n        alias TEXT NOT NULL,\n        external_id TEXT NOT NULL DEFAULT '',\n        source TEXT NOT NULL,\n        is_primary INTEGER NOT NULL DEFAULT 0,\n        created_at INTEGER NOT NULL,\n        PRIMARY KEY (alias_kind, project_id, alias)\n      )",
   "CREATE TABLE ledger_issue_checkpoints (\n        id TEXT PRIMARY KEY,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        kind TEXT NOT NULL,\n        payload_json TEXT NOT NULL,\n        author_actor_id TEXT,\n        author_actor_type TEXT NOT NULL CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),\n        author_display TEXT NOT NULL DEFAULT '',\n        source TEXT NOT NULL CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        created_at INTEGER NOT NULL\n      , author_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, evidence_method TEXT, evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL)",
-  "CREATE TABLE ledger_issue_relationship_sources (\n          id TEXT PRIMARY KEY,\n          relationship_id TEXT NOT NULL REFERENCES ledger_issue_relationships(id) ON DELETE CASCADE,\n          source_entity_type TEXT NOT NULL CHECK(source_entity_type IN ('issue_body','comment')),\n          source_entity_id TEXT NOT NULL,\n          source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n          target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n          relationship_type TEXT NOT NULL\n            CHECK(relationship_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),\n          ref_kind TEXT NOT NULL CHECK(ref_kind IN ('issue','comment')),\n          raw_ref TEXT NOT NULL,\n          normalized_ref TEXT NOT NULL,\n          metadata_json TEXT NOT NULL DEFAULT '{}',\n          created_at INTEGER NOT NULL,\n          updated_at INTEGER NOT NULL,\n          deleted_at INTEGER,\n          UNIQUE(source_entity_type, source_entity_id, target_issue_id, relationship_type, ref_kind, normalized_ref)\n        )",
+  ...LEDGER_ISSUE_RELATIONSHIP_SOURCES_SCHEMA_SQL,
   "CREATE TABLE ledger_issue_relationships (\n        id TEXT PRIMARY KEY,\n        source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        relationship_type TEXT NOT NULL\n          CHECK(relationship_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),\n        provenance TEXT NOT NULL DEFAULT 'manual'\n          CHECK(provenance IN ('manual','imported','derived','system')),\n        confidence TEXT NOT NULL DEFAULT 'observed',\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        deleted_at INTEGER,\n        UNIQUE(source_issue_id, target_issue_id, relationship_type)\n      )",
   "CREATE TABLE ledger_issues (\n        id TEXT PRIMARY KEY,\n        short_id TEXT NOT NULL DEFAULT '',\n        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        title TEXT NOT NULL,\n        body TEXT NOT NULL DEFAULT '',\n        work_notes TEXT NOT NULL DEFAULT '',\n        status TEXT NOT NULL CHECK(status IN ('open','closed')),\n        resolution TEXT CHECK(resolution IN ('delivered','duplicate','wontfix') OR resolution IS NULL),\n        kind TEXT NOT NULL DEFAULT 'unknown'\n          CHECK(kind IN ('bug','feature','maintenance','experiment','tracker','umbrella','unknown')),\n        priority TEXT NOT NULL DEFAULT 'normal'\n          CHECK(priority IN ('low','normal','high','urgent')),\n        author_actor_id TEXT,\n        author_actor_type TEXT NOT NULL DEFAULT 'external_adapter'\n          CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),\n        author_display TEXT NOT NULL DEFAULT '',\n        source TEXT NOT NULL DEFAULT 'mandible'\n          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        closed_at INTEGER,\n        deleted_at INTEGER\n      , worker_status TEXT NOT NULL DEFAULT 'none'\n        CHECK(worker_status IN ('none','in_progress','done','blocked','pivot-needed')), author_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, evidence_method TEXT, evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL,\n        CHECK((status = 'open' AND resolution IS NULL) OR (status = 'closed' AND resolution IS NOT NULL)))",
   "CREATE TABLE ledger_labels (\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        label TEXT NOT NULL,\n        source TEXT NOT NULL DEFAULT 'mandible',\n        created_at INTEGER NOT NULL,\n        deleted_at INTEGER,\n        PRIMARY KEY (issue_id, label)\n      )",
@@ -629,9 +649,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_ledger_relationship_edges_source_issue\n        ON ledger_relationship_edges(source_issue_id, deleted_at)",
   "CREATE INDEX idx_ledger_relationship_edges_target\n        ON ledger_relationship_edges(target_entity_type, target_entity_id, deleted_at)",
   "CREATE INDEX idx_ledger_relationship_edges_target_issue\n        ON ledger_relationship_edges(target_issue_id, deleted_at)",
-  "CREATE INDEX idx_ledger_relationship_sources_relationship\n          ON ledger_issue_relationship_sources(relationship_id)",
-  "CREATE INDEX idx_ledger_relationship_sources_source\n          ON ledger_issue_relationship_sources(source_entity_type, source_entity_id)",
-  "CREATE INDEX idx_ledger_relationship_sources_target\n          ON ledger_issue_relationship_sources(target_issue_id)",
   "CREATE INDEX idx_ledger_relationships_source\n        ON ledger_issue_relationships(source_issue_id)",
   "CREATE INDEX idx_ledger_relationships_target\n        ON ledger_issue_relationships(target_issue_id)",
   "CREATE INDEX idx_ledger_relationships_type\n        ON ledger_issue_relationships(relationship_type)",
@@ -1144,6 +1161,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     db.exec("ALTER TABLE work_units ADD COLUMN responsibility_session_id TEXT");
     for (const sql of RESPONSIBILITY_SCHEMA_SQL) db.exec(sql);
     for (const statement of EXACT_AGENT_WORK_UNIT_SCHEMA_SQL) db.exec(statement);
+    for (const statement of LANDED_ISSUE_ACCOUNTING_COLUMNS_SQL) db.exec(statement);
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
       .run("schema_version", String(schemaVersion));
 

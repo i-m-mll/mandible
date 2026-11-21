@@ -88,6 +88,7 @@ import type {
 } from "./identity/read-projection.js";
 import { AUTH_REQUEST_ACTION_KINDS } from "./contracts.js";
 import type {
+  IssueAccounting,
   AuthRequestActionKind,
   AuthRequestActionState,
   AuthRequestOutcome,
@@ -286,6 +287,7 @@ export interface AuthRequest {
   post_merge_handoff?: string | null;
   issue_references?: string[] | null;
   issue_closures?: string[] | null;
+  issue_accounting?: IssueAccounting | null;
   issue_ids?: string[] | null;
   /** @deprecated Legacy close-on-merge issue list. Use issue_closures. */
   issues?: string[] | null;

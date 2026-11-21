@@ -19,6 +19,8 @@ import { resolveSessionOwnerUserId } from "../session-ownership.js";
 import { readBody, sendJson } from "./http.js";
 import { attributionForRequest } from "../client-auth/authz.js";
 import { LedgerStore } from "../ledger/store.js";
+import { branchTip } from "../landed-issues.js";
+import { checkoutRootsForRef } from "../repo-identity.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import {
   mapWorkUnitRow as mapRow,
@@ -835,12 +837,21 @@ export function registerWorkUnitRoutes(
 
   // PATCH /api/work-units/:id — update mutable fields
   // Bug: 8a281b3
-  server.patch("/api/work-units/:id", (req, res) => {
+  server.patch("/api/work-units/:id", async (req, res) => {
     const id = req.params.id;
     if (!id) {
       sendJson(res, 400, { error: "Missing work unit id" });
       return;
     }
+
+    const body = readBody<PatchInput>(req);
+    const before = db.prepare("SELECT repo_id, branch, state FROM work_units WHERE id = ?")
+      .get(id) as { repo_id: string; branch: string | null; state: string } | undefined;
+    // Issue 9395f25 — a unit resolved outside a merge request (wt merge, wt rm,
+    // `work-unit resolve`) records its branch tip, which the target now contains.
+    const landedCommit = body.state === "resolved" && before?.state !== "resolved" && before?.branch
+      ? await branchTip(checkoutRootsForRef(db, before.repo_id), before.branch)
+      : null;
 
     const existing = db
       .prepare("SELECT * FROM work_units WHERE id = ?")
@@ -851,7 +862,6 @@ export function registerWorkUnitRoutes(
       return;
     }
 
-    const body = readBody<PatchInput>(req);
     if ((body.reason !== undefined && (typeof body.reason !== "string" || !body.reason.trim())) ||
         (body.state === "abandoned" && !body.reason?.trim())) {
       sendJson(res, 400, { error: "A non-empty reason is required to abandon work." }); return;
@@ -884,6 +894,10 @@ export function registerWorkUnitRoutes(
       if (body.state === "resolved") {
         updates.push("resolved_at = ?");
         params.push(Date.now());
+        if (landedCommit) {
+          updates.push("landed_commit = ?");
+          params.push(landedCommit);
+        }
       }
     }
 

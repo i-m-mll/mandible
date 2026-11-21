@@ -191,6 +191,9 @@ export interface LedgerIssue {
   updated_at: number;
   closed_at: number | null;
   deleted_at: number | null;
+  /** Issue 9395f25 — what remains of an issue a merge kept open; null once closed. */
+  remainder: string | null;
+  remainder_set_at: number | null;
 }
 
 export interface LedgerIssueAlias {
@@ -299,7 +302,7 @@ export interface LedgerIssueRelationship {
 export interface LedgerIssueRelationshipSource {
   id: string;
   relationship_id: string;
-  source_entity_type: "issue_body" | "comment";
+  source_entity_type: "issue_body" | "comment" | "issue_remainder";
   source_entity_id: string;
   source_issue_id: string;
   target_issue_id: string;

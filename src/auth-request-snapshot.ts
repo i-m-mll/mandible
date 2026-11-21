@@ -92,15 +92,24 @@ export const AUTH_SNAPSHOT_SHAPE_V240: AuthSnapshotShape = Object.freeze({
   actions: AUTH_SNAPSHOT_SHAPE_V238.actions,
 });
 
-export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE_V240;
+export const AUTH_SNAPSHOT_SHAPE_V246: AuthSnapshotShape = Object.freeze({
+  request: Object.freeze([...AUTH_SNAPSHOT_SHAPE_V240.request, "issue_accounting_json"]),
+  actions: AUTH_SNAPSHOT_SHAPE_V240.actions,
+});
+
+export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE_V246;
 
 // Columns added after receipts existed appear only when set, so receipts
 // recorded before them keep verifying.
-const OMITTED_WHEN_NULL = ["depends_on_ids", "space_publication_id", "protected_root_dirty_action_json"];
-const JSON_REQUEST_COLUMNS = ["depends_on_ids", "issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json", "protected_root_dirty_action_json"];
+const OMITTED_WHEN_NULL = ["depends_on_ids", "space_publication_id", "protected_root_dirty_action_json", "issue_accounting_json"];
+const JSON_REQUEST_COLUMNS = ["depends_on_ids", "issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json", "protected_root_dirty_action_json", "issue_accounting_json"];
 
 export function authRequestSnapshot(db: Db, requestId: string, shape: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE): string {
-  const row = db.prepare(`SELECT ${shape.request.join(", ")} FROM auth_requests WHERE id = ?`).get(requestId) as
+  // A column omitted when null serializes the same whether it is null or not
+  // yet added, so a database below the migration that adds it still snapshots.
+  const present = new Set((db.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>).map((column) => column.name));
+  const columns = shape.request.filter((column) => present.has(column) || !OMITTED_WHEN_NULL.includes(column));
+  const row = db.prepare(`SELECT ${columns.join(", ")} FROM auth_requests WHERE id = ?`).get(requestId) as
     | Record<string, unknown>
     | undefined;
   if (!row) throw new Error(`Auth request '${requestId}' is missing.`);

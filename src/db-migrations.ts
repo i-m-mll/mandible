@@ -32,6 +32,8 @@ import {
   CONVERSATION_OPENING_LINEAGE_SQL,
   CONVERSATION_SIDEBAR_INDEX_SQL,
   PROJECT_ISSUE_READ_INDEX_SQL,
+  LEDGER_ISSUE_RELATIONSHIP_SOURCES_SCHEMA_SQL,
+  LANDED_ISSUE_ACCOUNTING_COLUMNS_SQL,
   ARTIFACT_BLOB_CONTENT_HASH_INDEX_SQL,
   AUTH_REQUEST_HISTORY_INDEX_SQL,
   GRAPH_READ_INDEX_SQL,
@@ -2456,6 +2458,20 @@ export const MIGRATIONS: readonly Migration[] = [
        FROM interface_note_embed_grants_v244
      ) WHERE rank = 1`,
     "DROP TABLE interface_note_embed_grants_v244",
+  ] },
+  // Issue 9395f25 — a merge request accounts for every issue it lands.
+  { version: 246, name: "landed_issue_accounting", requires_foreign_keys_off: true, statements: [
+    ...LANDED_ISSUE_ACCOUNTING_COLUMNS_SQL,
+    ...AUTH_REQUEST_ACTIONS_REBUILD_SQL,
+    "DROP INDEX idx_ledger_relationship_sources_source_issue",
+    "DROP INDEX idx_ledger_relationship_sources_relationship",
+    "DROP INDEX idx_ledger_relationship_sources_source",
+    "DROP INDEX idx_ledger_relationship_sources_target",
+    "ALTER TABLE ledger_issue_relationship_sources RENAME TO ledger_issue_relationship_sources_v245",
+    ...LEDGER_ISSUE_RELATIONSHIP_SOURCES_SCHEMA_SQL,
+    "INSERT INTO ledger_issue_relationship_sources SELECT * FROM ledger_issue_relationship_sources_v245",
+    "DROP TABLE ledger_issue_relationship_sources_v245",
+    PROJECT_ISSUE_READ_INDEX_SQL.find((sql) => sql.includes("idx_ledger_relationship_sources_source_issue"))!,
   ] },
 ];
 

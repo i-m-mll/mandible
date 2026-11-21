@@ -268,7 +268,7 @@ mandible auth request <branch> --title <text> --issue <id> (--message <text> | -
 |---|---|
 | `<branch>` | Branch to merge into the protected branch |
 | `--title <text>` | Dashboard title |
-| `--issue <id>` or `--closes-issue <id>` | At least one issue (repeatable) |
+| `--issue <id>`, `--closes-issue <id>`, or `--keeps-open <id>=<what remains>` | At least one issue (repeatable) |
 | `--message <text>` | Agent-authored canonical change message (see below) |
 | `--message-file <file>` | Alternative to `--message`: read the change message from a file (`-` for stdin) |
 | `--verification <text>` | The checks run and their results; becomes the `Verification:` section |
@@ -281,6 +281,7 @@ mandible auth request <branch> --title <text> --issue <id> (--message <text> | -
 | `--issue <id>` | Issue ID to reference for context; does not close on merge (repeatable) |
 | `--ref-issue <id>` | Alias for `--issue` |
 | `--closes-issue <id>` | Issue ID to close on successful merge (repeatable) |
+| `--keeps-open <id>=<what remains>` | Keep a landed issue open and record what remains of it (repeatable) |
 | `--diff-summary <text>` | Override diff (auto-generated, truncated at 100KB) |
 | `--handoff <text>` | Post-merge handoff note for next session |
 | `--depends-on <id>` | Auth request ID that must complete first |
