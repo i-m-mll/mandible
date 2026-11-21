@@ -8,6 +8,7 @@
  * it acts on the menu and never reaches Agentation as a click on the page.
  * The toolbar and the menu stay above whatever the host page opens over itself:
  * a modal dialog, a fixed overlay at the highest z-index, a later popover.
+ * Keys typed into the embed never reach the host's own key handling.
  */
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -149,5 +150,39 @@ it.each(['modal', 'overlay', 'popover'] as const)('keeps the toolbar and the Sen
     await tab.locator(LAUNCHER).click();
     expect(await tab.evaluate(() => document.querySelector('[data-agentation-portal]')?.parentElement === document.body)).toBe(true);
   }
+  await tab.close();
+});
+
+it.each(['a document Escape listener', 'its native cancel'] as const)('keeps Escape typed in a note from closing a host dialog through %s', async (closer) => {
+  const { tab, created } = await openHost();
+  await tab.evaluate(cover, 'modal');
+  if (closer === 'a document Escape listener') {
+    await tab.evaluate(() => {
+      const dialog = document.getElementById('cover') as HTMLDialogElement;
+      dialog.addEventListener('cancel', (event) => event.preventDefault());
+      document.addEventListener('keydown', (event) => { if (event.key === 'Escape') dialog.close(); });
+    });
+  }
+  await tab.locator(LAUNCHER).click();
+  await tab.locator('#cover-title').click();
+  const field = tab.getByPlaceholder('What should change?');
+  await field.fill('Draft');
+  await field.press('Escape');
+  await expect.poll(() => field.count()).toBe(0);
+  const open = () => tab.evaluate(() => (document.getElementById('cover') as HTMLDialogElement).open);
+  expect(await open()).toBe(true);
+
+  // Nor does Escape typed in the Send menu's title field.
+  await tab.locator('[aria-label="Exit"]').click();
+  await noteAndSend(tab, created, '#cover-title', `Note under ${closer}`);
+  await tab.getByLabel('New issue title').press('Escape');
+  await expect.poll(() => tab.getByLabel('New issue title').count()).toBe(0);
+  expect(await open()).toBe(true);
+
+  // Escape on the page itself still reaches the host, once the menu and feedback mode have taken theirs.
+  await tab.locator('[aria-label="Exit"]').click();
+  await tab.locator('#cover-title').click();
+  await tab.keyboard.press('Escape');
+  await expect.poll(open).toBe(false);
   await tab.close();
 });
