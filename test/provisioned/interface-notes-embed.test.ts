@@ -6,14 +6,16 @@
  * breaks either condition shows here as a note without components. The Send
  * menu, in the embed's shadow root, is the toolbar's own interface: a click in
  * it acts on the menu and never reaches Agentation as a click on the page.
+ * The toolbar and the menu stay above whatever the host page opens over itself:
+ * a modal dialog, a fixed overlay at the highest z-index, a later popover.
  */
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { build, buildSync } from 'esbuild';
-import { chromium } from 'playwright-core';
-import { afterAll, expect, it } from 'vitest';
+import { chromium, type Browser, type Page } from 'playwright-core';
+import { afterAll, beforeAll, expect, it } from 'vitest';
 import { launchTestBrowser } from '../helpers/chromium';
 import { testRuntimeRoot } from '../helpers/runtime-isolation';
 // @ts-expect-error The build module is plain JavaScript.
@@ -22,7 +24,10 @@ import { embedBuildOptions } from '../../ui/embed-build.mjs';
 const PREACT_ALIAS = { react: 'preact/compat', 'react-dom': 'preact/compat', 'react-dom/client': 'preact/compat/client', 'react/jsx-runtime': 'preact/jsx-runtime' };
 const directory = mkdtempSync(join(testRuntimeRoot, 'notes-embed-'));
 const servers: Server[] = [];
-afterAll(() => {
+let browser: Browser;
+let hostUrl: string;
+afterAll(async () => {
+  await browser?.close();
   for (const server of servers) server.close();
   rmSync(directory, { recursive: true, force: true });
 });
@@ -54,7 +59,7 @@ async function listen(server: Server, host: string): Promise<number> {
   return (server.address() as AddressInfo).port;
 }
 
-it('records the React components of the element a note is made on, and keeps Send menu clicks off the page', async () => {
+beforeAll(async () => {
   await build({ ...embedBuildOptions({ outdir: directory, alias: PREACT_ALIAS }), logLevel: 'silent', minify: false });
   const embed = readFileSync(join(directory, 'interface-notes-embed.js'));
   const daemonPort = await listen(createServer((req, res) => {
@@ -75,30 +80,74 @@ it('records the React components of the element a note is made on, and keeps Sen
     if (req.url === '/host.js') res.writeHead(200, { 'Content-Type': 'text/javascript' }).end(host);
     else res.writeHead(200, { 'Content-Type': 'text/html' }).end(page);
   }), '127.0.0.1');
+  hostUrl = `http://localhost:${hostPort}/`;
+  browser = await launchTestBrowser(chromium);
+});
 
-  const browser = await launchTestBrowser(chromium);
-  try {
-    const tab = await browser.newPage();
-    tab.setDefaultTimeout(5000);
-    const created = new Promise<{ target: { react_components?: string | null } }>((done) => {
-      void tab.exposeFunction('testCreated', done);
-    });
-    await tab.addInitScript(() => addEventListener('message', (event) => {
-      if (event.data?.kind === 'test-created') (window as unknown as { testCreated(note: unknown): void }).testCreated(event.data.note);
-    }));
-    await tab.goto(`http://localhost:${hostPort}/`);
-    await tab.locator('[aria-label="Start feedback mode"]').click();
-    await tab.locator('#panel-title').click();
-    await tab.getByPlaceholder('What should change?').fill('Make this bolder');
-    await tab.keyboard.press('Enter');
-    expect((await created).target.react_components).toContain('StudioPanel');
+type CreatedNote = { text: string; target: Record<string, unknown> & { react_components?: string | null } };
 
-    // Feedback mode stays on; the menu opens over the page, and one click on New issue opens its title field.
-    await tab.locator('[aria-label="Send Annotations"]').click();
-    await tab.getByRole('menuitem', { name: 'New issue' }).click();
-    await expect.poll(() => tab.getByLabel('New issue title').isVisible()).toBe(true);
-    expect(await tab.locator('[data-annotation-popup]').count()).toBe(0);
-  } finally {
-    await browser.close();
+/** The host page, and the notes the bridge records from it in order. */
+async function openHost(): Promise<{ tab: Page; created: CreatedNote[] }> {
+  const tab = await browser.newPage();
+  tab.setDefaultTimeout(5000);
+  const created: CreatedNote[] = [];
+  await tab.exposeFunction('testCreated', (note: CreatedNote) => { created.push(note); });
+  await tab.addInitScript(() => addEventListener('message', (event) => {
+    if (event.data?.kind === 'test-created') (window as unknown as { testCreated(note: unknown): void }).testCreated(event.data.note);
+  }));
+  await tab.goto(hostUrl);
+  await tab.locator(LAUNCHER).waitFor();
+  return { tab, created };
+}
+
+const LAUNCHER = '[aria-label="Start feedback mode"]';
+
+/** Makes a note on `target` through the toolbar, then opens Send's New issue title field. */
+async function noteAndSend(tab: Page, created: CreatedNote[], target: string, text: string): Promise<CreatedNote> {
+  await tab.locator(LAUNCHER).click();
+  await tab.locator(target).click();
+  await tab.getByPlaceholder('What should change?').fill(text);
+  await tab.keyboard.press('Enter');
+  await expect.poll(() => created.find((note) => note.text === text)).toBeTruthy();
+  await tab.locator('[aria-label="Send Annotations"]').click();
+  await tab.getByRole('menuitem', { name: 'New issue' }).click();
+  await expect.poll(() => tab.getByLabel('New issue title').isVisible()).toBe(true);
+  return created.find((note) => note.text === text)!;
+}
+
+it('records the React components of the element a note is made on, and keeps Send menu clicks off the page', async () => {
+  const { tab, created } = await openHost();
+  // Feedback mode stays on; the menu opens over the page, and one click on New issue opens its title field.
+  const note = await noteAndSend(tab, created, '#panel-title', 'Make this bolder');
+  expect(note.target.react_components).toContain('StudioPanel');
+  expect(await tab.locator('[data-annotation-popup]').count()).toBe(0);
+  await tab.close();
+});
+
+/** Covers the viewport with an element of the given kind, holding a heading `#cover-title`. */
+function cover(kind: 'modal' | 'overlay' | 'popover'): void {
+  const element = document.createElement(kind === 'modal' ? 'dialog' : 'div');
+  element.id = 'cover';
+  element.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;margin:0;'
+    + 'padding:0;border:0;background:white;z-index:2147483647';
+  element.innerHTML = '<h2 id="cover-title">Run settings</h2>';
+  if (kind === 'popover') element.setAttribute('popover', 'manual');
+  document.body.appendChild(element);
+  if (element instanceof HTMLDialogElement) element.showModal();
+  else if (kind === 'popover') element.showPopover();
+}
+
+it.each(['modal', 'overlay', 'popover'] as const)('keeps the toolbar and the Send menu above a host %s', async (kind) => {
+  const { tab, created } = await openHost();
+  await tab.evaluate(cover, kind);
+  const note = await noteAndSend(tab, created, '#cover-title', `Note under ${kind}`);
+  expect(JSON.stringify(note.target)).toContain('Run settings');
+  if (kind === 'modal') {
+    // Once the dialog closes, the toolbar is back on the page and still takes clicks.
+    await tab.evaluate(() => (document.getElementById('cover') as HTMLDialogElement).close());
+    await tab.locator('[aria-label="Exit"]').click();
+    await tab.locator(LAUNCHER).click();
+    expect(await tab.evaluate(() => document.querySelector('[data-agentation-portal]')?.parentElement === document.body)).toBe(true);
   }
+  await tab.close();
 });

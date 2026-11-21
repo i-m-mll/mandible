@@ -70,7 +70,7 @@ const checks = {
       return [`reached ${report.reachedCount} of ${report.totalCount} modules; the walker is broken`];
     }
     return report.unreachable.map(
-      (file) => `${file}: unreachable from ${report.entry}; delete it or add it to ALLOWED_UNREACHABLE with a reason`,
+      (file) => `${file}: unreachable from ${report.entries.join(', ')}; delete it or add it to ALLOWED_UNREACHABLE with a reason`,
     );
   },
 

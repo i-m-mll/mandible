@@ -5,18 +5,23 @@ import { AgentationHost } from './AgentationHost';
 import { connectToBridge } from './embedClient';
 import { InterfaceNotesMenu, type InterfaceNotesMenuPorts } from './InterfaceNotesMenu';
 import { configureInterfaceNotes, startInterfaceNotes } from './interfaceNotesStore';
+import { keepOnTop, useTopLayerContainer } from './topLayer';
 
 /**
  * The interface-notes embed: the module script another app's dev page loads from
  * Mandible's origin. It mounts the Agentation toolbar and the Send menu for the
  * page's app once the bridge names it, and nothing on a page whose origin serves
- * no registered project.
+ * no registered project. Both stay above everything the host page draws (`topLayer.ts`).
  */
 
 const HOST_ELEMENT = 'mandible-interface-notes';
 
 function Notice({ children }: { children: string }): JSX.Element {
   return <div className="interface-notes-menu__error" role="alert">{children}</div>;
+}
+
+function EmbedToolbar({ appName }: { appName: string }): JSX.Element | null {
+  return <AgentationHost appName={appName} portalContainer={useTopLayerContainer()} />;
 }
 
 async function mount(): Promise<void> {
@@ -40,7 +45,7 @@ async function mount(): Promise<void> {
 
   const root = createHost();
   const ports: InterfaceNotesMenuPorts = { transport, receivingProject: identity.project.key, Notice };
-  render(<><AgentationHost appName={identity.project.name} /><InterfaceNotesMenu ports={ports} /></>, root);
+  render(<><EmbedToolbar appName={identity.project.name} /><InterfaceNotesMenu ports={ports} /></>, root);
   startInterfaceNotes();
 }
 
@@ -81,7 +86,7 @@ function createHost(): ShadowRoot {
   const style = document.createElement('style');
   style.textContent = embedStyles;
   root.appendChild(style);
-  document.body.appendChild(host);
+  keepOnTop(host);
   return root;
 }
 
