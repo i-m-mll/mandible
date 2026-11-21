@@ -14,6 +14,7 @@ mandible issue parent-role status <umbrella> [--json]
 mandible issue parent-role assume <umbrella> --reason T --expected-checkpoint ID|none [--session S] [--json]
 mandible issue parent-role release <umbrella> --reason T --expected-checkpoint ID|none [--json]
 mandible issue triage [--status open|closed|all] [--resolution R] [--kind K] [--priority P] [--label L] [--repo R] [--stale-days N] [--limit N] [--notes] [--json]
+mandible issue triage --landed-open [--project P] [--json]
 mandible issue search <words>... [--repo R] [--status open|closed|all] [--limit N] [--json]  # titles, bodies, comments; all projects
 mandible issue heads <id>... [--json]
 mandible issue changed --since-manifest <file> [--json]
@@ -39,6 +40,8 @@ mandible issue work-notes clear <ref> [--base-revision <rev>]
 mandible issue work-notes history <ref> [--json] [--with-body]
 mandible issue kind set <ref> bug|feature|umbrella|maintenance|experiment|tracker|unknown
 mandible issue priority set <ref> low|normal|high|urgent
+mandible issue remainder set <ref> <text>
+mandible issue remainder clear <ref>
 mandible issue revision show <rev-id> [--json]
 mandible issue revision diff <old-rev-id> <new-rev-id> [--force]
 mandible issue refs backfill [--dry-run] [--apply] [--repo R] [--issue I] [--since D] [--until D] [--json]

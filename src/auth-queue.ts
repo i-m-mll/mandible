@@ -39,6 +39,7 @@ import {
   deleteAuthRequestAction,
   insertAuthRequestActions,
   listAuthRequestActions,
+  normalizeAuthActionInput,
   normalizeAuthActionInputs,
   setAuthRequestActionVeto,
   updateAuthRequestAction,
@@ -169,6 +170,7 @@ import type {
   AuthLifecycleActor,
   AuthRequestAction,
   AuthRequestActionInput,
+  AuthRequestActionKind,
   AuthRequestInput,
   AuthRequestLifecycleEvent,
   AuthRequestOutcome,
@@ -2822,6 +2824,7 @@ export class AuthQueue {
 
   addAction(requestId: string, input: unknown, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
     const request = this.requireActionEditableRequest(requestId);
+    this.assertIssueDecisionsFrozen(request, [normalizeAuthActionInput(input).kind]);
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => addAuthRequestAction(this.db, request, input, this.now()));
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request, action } });
@@ -2830,6 +2833,7 @@ export class AuthQueue {
 
   updateAction(requestId: string, actionId: string, input: unknown, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
     const request = this.requireActionEditableRequest(requestId);
+    this.assertIssueDecisionsFrozen(request, [this.stagedActionKind(request, actionId), normalizeAuthActionInput(input).kind]);
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => updateAuthRequestAction(this.db, request, actionId, input, this.now()));
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request, action } });
@@ -2838,10 +2842,32 @@ export class AuthQueue {
 
   deleteAction(requestId: string, actionId: string, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {
     const request = this.requireActionEditableRequest(requestId);
+    this.assertIssueDecisionsFrozen(request, [this.stagedActionKind(request, actionId)]);
     const action = this.withActionCustody(request, actor, expectedRevision, expectedGeneration,
       () => deleteAuthRequestAction(this.db, request.id, actionId));
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request, deleted_action_id: action.id } });
     return action;
+  }
+
+  /**
+   * Issue 9395f25 — a request that accounted for the issues it lands decided
+   * each of them as one whole: removing a decision can leave an issue
+   * undecided, and moving one changes what its parent and children may do,
+   * which only the head scan at submission sees. Its closures and remainders
+   * change by resubmitting with `--supersedes`, which accounts again.
+   */
+  private assertIssueDecisionsFrozen(request: AuthRequest, kinds: Array<AuthRequestActionKind | null>): void {
+    if (!request.issue_accounting) return;
+    if (!kinds.some((kind) => kind === "issue_close" || kind === "issue_keep_open")) return;
+    const ref = shortRef(this.db, "auth_request", request.id);
+    throw new AuthQueueError("invalid_command",
+      `Request ${ref} accounted for every issue it lands when it was submitted; its closures and remainders change only by resubmitting: mandible auth request --supersedes ${ref} with --closes-issue <id> or --keeps-open <id>=<what remains>.`);
+  }
+
+  private stagedActionKind(request: AuthRequest, actionId: string): AuthRequestActionKind | null {
+    const row = this.db.prepare("SELECT kind FROM auth_request_actions WHERE auth_request_id = ? AND id = ?").get(request.id, actionId) as
+      { kind: AuthRequestActionKind } | undefined;
+    return row?.kind ?? null;
   }
 
   setActionVeto(requestId: string, actionId: string, vetoed: boolean, actor?: AuthLifecycleActor, expectedRevision?: number, expectedGeneration?: number): AuthRequestAction {

@@ -221,6 +221,7 @@ export function buildLedgerIssueDetailProjectionWithProfile(
     body: issue.body,
     work_notes: workMetadata.work_notes,
     work_notes_revision: workMetadata.work_notes_revision,
+    remainder: issue.remainder === null ? null : { text: issue.remainder, set_at: issue.remainder_set_at! },
     status: issue.status,
     worker_status: effectiveWorkerStatus(db, issue.id),
     resolution: issue.resolution,

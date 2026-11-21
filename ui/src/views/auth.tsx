@@ -60,7 +60,9 @@ import type { AuthConvergence } from '../../../src/types';
 import {
   AUTH_REQUEST_TYPES,
   type AuthRequestType,
+  describeHolds,
   isAuthDependencyReady,
+  type IssueAccounting,
   type AuthChangeReport,
   type AuthDependencyProjection,
   type AuthExecutionAttempt,
@@ -144,6 +146,7 @@ export type AuthRequest = {
   } | null;
   issue_references?: string[] | null;
   issue_closures?: string[] | null;
+  issue_accounting?: IssueAccounting | null;
   issue_ids?: string[] | null;
   created_at?: string | number;
   updated_at?: string | number;
@@ -669,8 +672,9 @@ function AuthActionBundle({
   const unrecordedClosures = actionRows.length === 0 && Array.isArray(declaredClosures)
     ? uniqueStrings(declaredClosures.filter((ref): ref is string => typeof ref === 'string'))
     : [];
+  const heldIssues = request.issue_accounting?.held ?? [];
 
-  if (actionRows.length === 0 && unrecordedClosures.length === 0) {
+  if (actionRows.length === 0 && unrecordedClosures.length === 0 && heldIssues.length === 0) {
     return null;
   }
 
@@ -763,6 +767,20 @@ function AuthActionBundle({
                     {vetoBusy ? 'Saving' : vetoed ? 'Restore' : 'Veto'}
                   </button>
                 )}
+              </div>
+            </div>
+          );
+        })}
+        {heldIssues.map((issue) => {
+          const holds = describeHolds(issue);
+          return (
+            <div key={issue.issue_id} className="auth-action-row auth-action-row--held">
+              <div className="auth-action-row__main">
+                <div className="auth-action-row__top">
+                  <span className="auth-action-row__kind">Held open</span>
+                  <IssuePill issueRef={issue.issue} context={repoId} layout="compact-row" />
+                  <span className="auth-action-row__summary" title={holds}>{holds}</span>
+                </div>
               </div>
             </div>
           );

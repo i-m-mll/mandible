@@ -3,6 +3,7 @@ import { FINALIZER_STEP_NAMES } from "../auth-queue.js";
 import { extractSuccessfulMergeCommitSha } from "../auth-signature-verification.js";
 import { TEARDOWN_NOT_MERGED } from "../declared-preview-teardown.js";
 import type { Db } from "../db.js";
+import { describeHolds, type IssueAccounting } from "../contracts.js";
 import { shortRef } from "../entity-refs.js";
 import {
   BRANCH_REMOVAL_OUTPUT,
@@ -25,6 +26,7 @@ interface RequestRow {
   superseded_by_request_id: string | null;
   merge_finalizer_state: string | null;
   merge_finalized_at: number | null;
+  issue_accounting_json: string | null;
 }
 
 interface ActionRow {
@@ -146,10 +148,20 @@ function finalizerSteps(request: RequestRow): OutcomeStep[] {
   return steps;
 }
 
+function leftOpen(accountingJson: string | null): OutcomeReport["left_open"] {
+  if (accountingJson === null) return [];
+  const accounting = JSON.parse(accountingJson) as IssueAccounting;
+  return [
+    ...accounting.kept_open.map((issue) => ({ issue: issue.issue, remains: issue.remainder })),
+    ...accounting.held.map((issue) => ({ issue: issue.issue, remains: `held by ${describeHolds(issue)}` })),
+  ];
+}
+
 /** The outcome reporter over `db`: what a settled request did, step by step. */
 export function createOutcomeReporter(db: Db): OutcomeReporter {
   const requestQuery = db.prepare(
-    `SELECT id, type, status, output, error, superseded_by_request_id, merge_finalizer_state, merge_finalized_at
+    `SELECT id, type, status, output, error, superseded_by_request_id, merge_finalizer_state, merge_finalized_at,
+            issue_accounting_json
      FROM auth_requests WHERE id = ?`,
   );
   const rejectionQuery = db.prepare(
@@ -197,6 +209,7 @@ export function createOutcomeReporter(db: Db): OutcomeReporter {
       merge_commit: completedMerge ? extractSuccessfulMergeCommitSha(request.output) : null,
       reason,
       steps,
+      left_open: completedMerge ? leftOpen(request.issue_accounting_json) : [],
     };
   };
 }

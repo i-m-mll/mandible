@@ -177,6 +177,7 @@ export function LedgerIssueDetail({
   const [workNotesOpen, setWorkNotesOpen] = useState(false);
   const [authEvidenceOpen, setAuthEvidenceOpen] = useState(false);
   const [childrenExpanded, setChildrenExpanded] = useState(false);
+  const [remainderExpanded, setRemainderExpanded] = useState(true);
   const [relationshipsExpanded, setRelationshipsExpanded] = useState(false);
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
   // Launch-agent (issue ce83a84) is confirm-first: this flag only opens the
@@ -562,6 +563,18 @@ export function LedgerIssueDetail({
       overlays={overlays}
       ariaBusy={hydrating}
     >
+        {detail.remainder && (
+          <CollapsiblePanel
+            className="ledger-issue-detail__section ledger-issue-detail__collapsible"
+            title="Remainder"
+            expanded={remainderExpanded}
+            onExpandedChange={setRemainderExpanded}
+            bodyClassName="spec-panel"
+          >
+            <LedgerRenderedBody className="ledger-remainder-body" source={detail.remainder.text} empty="" detail={detail} />
+          </CollapsiblePanel>
+        )}
+
         {umbrellaChildren.length > 0 && (
           <CollapsiblePanel
             className="ledger-issue-detail__section ledger-issue-detail__collapsible"

@@ -524,6 +524,16 @@ export interface IssueAccounting {
   held: Array<AccountedIssue & { open_children: string[]; unmerged_units: Array<{ id: string; branch: string | null }> }>;
 }
 
+/** What holds a held issue open, as one phrase. */
+export function describeHolds(issue: IssueAccounting["held"][number]): string {
+  const parts: string[] = [];
+  if (issue.open_children.length > 0) parts.push(`open children ${issue.open_children.join(", ")}`);
+  if (issue.unmerged_units.length > 0) {
+    parts.push(`work the head does not contain (${issue.unmerged_units.map((unit) => `${unit.id.slice(0, 8)} on ${unit.branch ?? "no branch"}`).join(", ")})`);
+  }
+  return parts.join(" and ");
+}
+
 export type AuthRequestActionInput = {
   kind: AuthRequestActionKind;
   target_issue_ref: string;

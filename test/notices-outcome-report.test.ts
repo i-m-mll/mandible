@@ -10,6 +10,8 @@ import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { outcomeReportDigest } from "../src/notices/contract.js";
 import { createOutcomeReporter } from "../src/notices/report.js";
+import { renderNotice } from "../src/notices/render.js";
+import type { IssueAccounting } from "../src/contracts.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
 import { getOperator } from "../src/users/store.js";
@@ -19,12 +21,13 @@ import type { Db } from "../src/db.js";
 
 const MERGE_SHA = "a".repeat(40);
 
-function insertRequest(db: Db, fields: { status: string; output?: string; error?: string; finalizer?: unknown }): string {
+function insertRequest(db: Db, fields: { status: string; output?: string; error?: string; finalizer?: unknown; accounting?: IssueAccounting }): string {
   const id = randomUUID();
-  db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, output, error, merge_finalizer_state, created_at, updated_at, expires_at)
-    VALUES (?, 'merge', 'true', 'Fixture', ?, ?, ?, ?, 1, 1, ?)`)
+  db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, output, error, merge_finalizer_state, issue_accounting_json, created_at, updated_at, expires_at)
+    VALUES (?, 'merge', 'true', 'Fixture', ?, ?, ?, ?, ?, 1, 1, ?)`)
     .run(id, fields.status, fields.output ?? "", fields.error ?? null,
-      fields.finalizer === undefined ? null : JSON.stringify(fields.finalizer), Date.now() + 60_000);
+      fields.finalizer === undefined ? null : JSON.stringify(fields.finalizer),
+      fields.accounting === undefined ? null : JSON.stringify(fields.accounting), Date.now() + 60_000);
   return id;
 }
 
@@ -49,6 +52,11 @@ function seed(db: Db) {
         { branch: "feature/b", result: "kept", reason: "preview_running", worktree_path: "/w/b" },
         { branch: "feature/a", result: "removed", reason: null, worktree_path: null },
       ] } },
+    },
+    accounting: {
+      closing: [{ issue: "1111111", issue_id: "i1", title: "Closed", by: "done" }],
+      kept_open: [{ issue: "4444444", issue_id: "i4", title: "Kept", remainder: "Needs a production measurement" }],
+      held: [{ issue: "5555555", issue_id: "i5", title: "Held", open_children: ["6666666"], unmerged_units: [] }],
     },
   });
   insertAction(db, merge, 0, "2222222", "staged");
@@ -85,7 +93,15 @@ it("reports each consequent action of a settled request with its state, stably",
         { kind: "branch_removal", branch: "feature/a", state: "done", reason: null },
         { kind: "branch_removal", branch: "feature/b", state: "kept", reason: "preview_running" },
       ],
+      left_open: [
+        { issue: "4444444", remains: "Needs a production measurement" },
+        { issue: "5555555", remains: "held by open children 6666666" },
+      ],
     });
+    const notice = renderNotice(report(ids.merge)!, { provider: "claude", agent_id: "s1", session_id: "s1" }, "main");
+    const leftOpenLine = notice.split("\n").find((line) => line.includes("4444444"));
+    expect(leftOpenLine).toContain("Needs a production measurement");
+    expect(leftOpenLine).toContain("5555555");
     expect(report(ids.rejected)).toMatchObject({ status: "rejected", merge_commit: null, reason: "Not this week", steps: [] });
     expect(report(ids.failed)).toMatchObject({ status: "failed", reason: "merge conflict in src/a.ts" });
     expect(report(ids.pending)).toBeNull();
