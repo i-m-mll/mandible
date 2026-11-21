@@ -62,3 +62,30 @@ it("lets the successor withdraw an unbound approval request while preserving aut
   expect(await queue.getRequest(request.id)).toMatchObject({ status: "withdrawn", session_id: "old", requested_by_user_id: user.id, approved_by_user_id: null });
   expect(queue.listLifecycleEvents(request.id).map(event => event.event_type)).toEqual(["submitted", "withdrawn"]);
 });
+
+const claude = (session: string, agent: string) => (method: string, url: string, body: unknown) => router.invoke({ method, url, body,
+  ambient_identity: { provider: "claude", session_id: session, agent_id: agent } });
+const custody = (id: string) => db.prepare("SELECT responsibility_session_id, custody_generation FROM work_units WHERE id = ?").get(id);
+
+it("gives a session's main thread its subagent's authority without moving custody, and refuses siblings and strangers", async () => {
+  const claimed = await claude("S", "worker")("POST", "/api/work-units/claim", { issue_id: issue, repo_id: repo, branch: "feature/subagent" });
+  const id = (claimed.body as { id: string }).id;
+  const held = custody(id);
+  const resolve = (actor: ReturnType<typeof claude>) => actor("PATCH", `/api/work-units/${id}`, { expected_generation: 1, state: "resolved" });
+  expect((await resolve(claude("S", "sibling"))).status).toBe(403);
+  expect((await resolve(claude("U", "U"))).status).toBe(403);
+  const parent = await resolve(claude("S", "S"));
+  expect(parent).toMatchObject({ status: 200, body: { state: "resolved", authority_path: "ancestor" } });
+  expect(custody(id)).toEqual(held);
+});
+
+it("gives a session the authority of a session its conversation lineage reaches", async () => {
+  const insert = db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, started_at, session_id, parent_conversation_id)
+    VALUES (?, 'claude_code', ?, '', 0, '', ?, ?)`);
+  insert.run("top", "top", "T", null); insert.run("mid", "mid", "M", "top"); insert.run("leaf", "leaf", "L", "mid");
+  const claimed = await claude("L", "L")("POST", "/api/work-units/claim", { issue_id: issue, repo_id: repo, branch: "feature/lineage" });
+  const id = (claimed.body as { id: string }).id;
+  const resolve = (actor: ReturnType<typeof claude>) => actor("PATCH", `/api/work-units/${id}`, { expected_generation: 1, state: "resolved" });
+  expect((await resolve(claude("U", "U"))).status).toBe(403);
+  expect(await resolve(claude("T", "T"))).toMatchObject({ status: 200, body: { authority_path: "ancestor" } });
+});
