@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../src/auth-queue.js";
 import { setDb, type Db } from "../src/db.js";
+import { triageLandedOpen } from "../src/landed-issues.js";
 import { LedgerOpenChildrenError, LedgerStore } from "../src/ledger/store.js";
 import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
 import type { AuthRequestInput } from "../src/types.js";
@@ -166,5 +167,68 @@ describe("landed issue accounting", () => {
     expect(store.getIssue(umbrella.id).status).toBe("open");
     store.setIssueStatus(child.id, "closed", "delivered", SYSTEM_ACTOR);
     expect(store.setIssueStatus(umbrella.id, "closed", "delivered", SYSTEM_ACTOR).status).toBe("closed");
+  });
+
+  it("refuses staging a closure or remainder after submission, since only resubmission accounts again", async () => {
+    const undecided = issue("Partly delivered", "blocked");
+    commitOnBranch(repo, "feature/frozen", { "frozen.txt": "frozen\n" });
+    unit("wu-frozen", undecided, "feature/frozen");
+    const request = await submit("feature/frozen", { actions: [keepOpen(undecided, "Needs a measurement")] });
+    const other = issue("Unrelated");
+    expect(() => queue.addAction(request.id, { kind: "issue_close", target_issue_ref: other.short_id, payload: {} }))
+      .toThrow("--supersedes");
+    const keep = queue.listActions(request.id).find((action) => action.kind === "issue_keep_open")!;
+    expect(() => queue.deleteAction(request.id, keep.id)).toThrow("--supersedes");
+  });
+
+  it("clears a remainder when its issue closes", () => {
+    const kept = issue("Kept open", "done");
+    store.setIssueRemainder(kept.id, "Waits on the release", SYSTEM_ACTOR);
+    store.setIssueStatus(kept.id, "closed", "delivered", SYSTEM_ACTOR);
+    expect(store.getIssue(kept.id)).toMatchObject({ remainder: null, remainder_set_at: null });
+  });
+
+  it("triages landed open issues by reach and groups them by remainder and parent", async () => {
+    commitOnBranch(repo, "integration/lanes", { "lanes.txt": "lanes\n" });
+    const onIntegration = git(repo, ["rev-parse", "integration/lanes"]);
+    const onMain = git(repo, ["rev-parse", "main"]);
+    const requestId = "11111111-0000-4000-8000-000000000000";
+    db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, output, created_at, updated_at, expires_at)
+      VALUES (?, 'merge', 'true', 'Fixture', 'completed', '', 1, 1, 1)`).run(requestId);
+    const resolved = (id: string, of: { id: string }, landed: string | null, authRequestId: string | null = null) =>
+      db.prepare(`INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, branch, kind, state, landed_commit, auth_request_id, created_at)
+        VALUES (?, ?, ?, ?, NULL, 'solo', 'resolved', ?, ?, 1)`).run(id, of.id, of.id, path.basename(repo), landed, authRequestId);
+
+    const byRequest = issue("Merged by request", "done");
+    resolved("wu-request", byRequest, null, requestId);
+    const onProtected = issue("Landed on main", "done");
+    resolved("wu-main", onProtected, onMain);
+    const inIntegration = issue("Sitting in integration");
+    resolved("wu-integration", inIntegration, onIntegration);
+    const legacy = issue("Resolved before landed commits", "done");
+    resolved("wu-legacy", legacy, null);
+    const kept = issue("Kept open", "done");
+    resolved("wu-kept", kept, onMain);
+    store.setIssueRemainder(kept.id, "Waits on the release", SYSTEM_ACTOR);
+    const live = issue("Still worked on", "done");
+    resolved("wu-live-old", live, onMain);
+    unit("wu-live", live, "feature/live");
+    const holder = issue("Has an open child", "done");
+    resolved("wu-holder", holder, onMain);
+    const closedParent = issue("Closed parent", "done");
+    store.setIssueStatus(closedParent.id, "closed", "delivered", SYSTEM_ACTOR);
+    const orphan = issue("Open under a closed parent");
+    parent(closedParent, orphan);
+    parent(holder, issue("Open child"));
+
+    const triage = await triageLandedOpen(db, projectId);
+    const reach = Object.fromEntries(triage.without_remainder.map((row) => [row.issue_id, row.reach]));
+    expect(reach).toEqual({
+      [byRequest.id]: "protected", [onProtected.id]: "protected", [inIntegration.id]: "unprotected", [legacy.id]: "unknown",
+    });
+    expect(triage.with_remainder).toEqual([expect.objectContaining({ issue_id: kept.id, remainder: "Waits on the release", reach: "protected" })]);
+    expect(triage.under_closed_parent).toEqual([expect.objectContaining({
+      issue_id: orphan.id, parent: { issue: closedParent.short_id, status: "closed" }, reach: null,
+    })]);
   });
 });

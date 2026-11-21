@@ -229,6 +229,25 @@
         ]
       }
     },
+    "issue.remainder.set": {
+      "route": ["issue", "remainder", "set"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "issue-ref","value": {"type": "string"}},
+          {"kind": "argument","name": "text","value": {"type": "string"}}
+        ]
+      }
+    },
+    "issue.remainder.clear": {
+      "route": ["issue", "remainder", "clear"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "issue-ref","value": {"type": "string"}}
+        ]
+      }
+    },
     "issue.priority.set": {
       "route": ["issue", "priority", "set"],
       "grammar": {
@@ -3061,12 +3080,13 @@
       "grammar": {
         "kind": "sequence",
         "items": [
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--landed-open"],"values": []}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--status"],"values": [{"kind": "argument","name": "open|closed|all","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--resolution"],"values": [{"kind": "argument","name": "delivered|duplicate|wontfix","value": {"type": "enum","values": ["delivered","duplicate","wontfix"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--label"],"values": [{"kind": "argument","name": "label","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--kind"],"values": [{"kind": "argument","name": "kind","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--priority"],"values": [{"kind": "argument","name": "priority","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--repo"],"values": [{"kind": "argument","name": "repo","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--repo","--project"],"values": [{"kind": "argument","name": "repo","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--stale-days"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--notes"],"values": []}]}},

@@ -13,7 +13,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { Db } from "./db.js";
 import { authGitEnv } from "./auth-context.js";
-import type { AccountedIssue, IssueAccounting } from "./contracts.js";
+import { describeHolds, type AccountedIssue, type IssueAccounting } from "./contracts.js";
+import { protectedBranchNames } from "./protected-branches.js";
 
 export type { AccountedIssue, IssueAccounting };
 
@@ -288,15 +289,6 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
   return refusals.length > 0 ? { ok: false, refusals, accounting } : { ok: true, accounting };
 }
 
-function holdsOf(issue: IssueAccounting["held"][number]): string {
-  const parts: string[] = [];
-  if (issue.open_children.length > 0) parts.push(`open children ${issue.open_children.join(", ")}`);
-  if (issue.unmerged_units.length > 0) {
-    parts.push(`work the head does not contain (${issue.unmerged_units.map((unit) => `${unit.id.slice(0, 8)} on ${unit.branch ?? "no branch"}`).join(", ")})`);
-  }
-  return parts.join(" and ");
-}
-
 export function describeAccountingRefusals(refusals: readonly IssueAccountingRefusal[]): string {
   const lines: string[] = [];
   for (const refusal of refusals) {
@@ -309,7 +301,7 @@ export function describeAccountingRefusals(refusals: readonly IssueAccountingRef
         }
         break;
       case "held_closure":
-        lines.push(`${refusal.flag} ${refusal.issue.issue} refused: ${refusal.issue.issue} stays open after this merge, held by ${holdsOf(refusal.issue)}. Drop the flag.`);
+        lines.push(`${refusal.flag} ${refusal.issue.issue} refused: ${refusal.issue.issue} stays open after this merge, held by ${describeHolds(refusal.issue)}. Drop the flag.`);
         break;
       case "conflicting_decision":
         lines.push(`${refusal.issue.issue} is named by both --closes-issue and --keeps-open; pass one.`);
@@ -317,4 +309,129 @@ export function describeAccountingRefusals(refusals: readonly IssueAccountingRef
     }
   }
   return lines.join("\n");
+}
+
+/**
+ * Where an open issue's landed work is: on a protected branch, only on an
+ * unprotected branch, or unknowable because its units resolved before
+ * `landed_commit` existed and not through a request.
+ */
+export type LandedReach = "protected" | "unprotected" | "unknown";
+
+export interface LandedOpenRow extends AccountedIssue {
+  worker_status: string;
+  parent: { issue: string; status: string } | null;
+  /** Null for an issue under a closed parent that has no resolved work unit. */
+  reach: LandedReach | null;
+}
+
+export interface LandedOpenTriage {
+  without_remainder: LandedOpenRow[];
+  with_remainder: Array<LandedOpenRow & { remainder: string; remainder_set_at: number }>;
+  under_closed_parent: LandedOpenRow[];
+}
+
+interface TriageIssueRow {
+  id: string;
+  short_id: string;
+  title: string;
+  worker_status: string;
+  remainder: string | null;
+  remainder_set_at: number | null;
+}
+
+interface TriageUnitRow {
+  ledger_issue_id: string;
+  state: string;
+  landed_commit: string | null;
+  by_completed_request: number;
+}
+
+/**
+ * Issue 9395f25 — open issues of one project whose work has landed and that
+ * nothing holds open, plus open issues under a closed parent. Reads state;
+ * stores nothing. Git failures throw: reach that cannot be read is not guessed.
+ */
+export async function triageLandedOpen(db: Db, projectId: string): Promise<LandedOpenTriage> {
+  const issues = db.prepare(
+    `SELECT id, short_id, title, worker_status, remainder, remainder_set_at FROM ledger_issues
+      WHERE project_id = ? AND status = 'open' AND deleted_at IS NULL AND kind NOT IN ('tracker', 'maintenance')
+      ORDER BY created_at, id`,
+  ).all(projectId) as TriageIssueRow[];
+  const units = db.prepare(
+    `SELECT wu.ledger_issue_id, wu.state, wu.landed_commit,
+            EXISTS (SELECT 1 FROM auth_requests r WHERE r.id = wu.auth_request_id AND r.type = 'merge' AND r.status = 'completed') AS by_completed_request
+       FROM work_units wu JOIN ledger_issues i ON i.id = wu.ledger_issue_id
+      WHERE i.project_id = ? AND i.status = 'open' AND wu.state IN ('open', 'committed', 'resolved')`,
+  ).all(projectId) as TriageUnitRow[];
+  const edges = db.prepare(
+    `SELECT e.source_issue_id AS parent_id, e.target_issue_id AS child_id, parent.short_id AS parent_ref,
+            parent.status AS parent_status, child.status AS child_status
+       FROM ledger_relationship_edges e
+       JOIN ledger_issues parent ON parent.id = e.source_issue_id AND parent.deleted_at IS NULL
+       JOIN ledger_issues child ON child.id = e.target_issue_id AND child.deleted_at IS NULL
+      WHERE +e.link_type = 'parent_child' AND +e.source_entity_type = 'issue' AND +e.target_entity_type = 'issue'
+        AND e.deleted_at IS NULL AND (parent.project_id = ? OR child.project_id = ?)
+      ORDER BY e.created_at, e.id`,
+  ).all(projectId, projectId) as Array<{ parent_id: string; child_id: string; parent_ref: string; parent_status: string; child_status: string }>;
+
+  const unitsByIssue = new Map<string, TriageUnitRow[]>();
+  for (const unit of units) unitsByIssue.set(unit.ledger_issue_id, [...unitsByIssue.get(unit.ledger_issue_id) ?? [], unit]);
+  const hasOpenChild = new Set(edges.filter((edge) => edge.child_status === "open").map((edge) => edge.parent_id));
+  const parentsOf = new Map<string, Array<{ issue: string; status: string }>>();
+  for (const edge of edges) {
+    parentsOf.set(edge.child_id, [...parentsOf.get(edge.child_id) ?? [], { issue: edge.parent_ref, status: edge.parent_status }]);
+  }
+
+  const landed = issues.filter((issue) => {
+    const own = unitsByIssue.get(issue.id) ?? [];
+    return own.some((unit) => unit.state === "resolved") && !own.some((unit) => unit.state !== "resolved") && !hasOpenChild.has(issue.id);
+  });
+  const underClosed = issues.filter((issue) => (parentsOf.get(issue.id) ?? []).some((parent) => parent.status === "closed"));
+  const needsReach = [...new Set([...landed, ...underClosed])].filter((issue) =>
+    (unitsByIssue.get(issue.id) ?? []).some((unit) => unit.state === "resolved" && !unit.by_completed_request && unit.landed_commit));
+  const onProtected = needsReach.length > 0 ? await protectedCommits(db, projectId) : new Set<string>();
+
+  const reachOf = (issueId: string): LandedReach | null => {
+    const resolved = (unitsByIssue.get(issueId) ?? []).filter((unit) => unit.state === "resolved");
+    if (resolved.length === 0) return null;
+    if (resolved.some((unit) => unit.by_completed_request || (unit.landed_commit && onProtected.has(unit.landed_commit.toLowerCase())))) return "protected";
+    return resolved.some((unit) => unit.landed_commit) ? "unprotected" : "unknown";
+  };
+  const row = (issue: TriageIssueRow, parent: { issue: string; status: string } | null): LandedOpenRow => ({
+    issue: issue.short_id || issue.id,
+    issue_id: issue.id,
+    title: issue.title,
+    worker_status: issue.worker_status,
+    parent,
+    reach: reachOf(issue.id),
+  });
+
+  const underClosedIds = new Set(underClosed.map((issue) => issue.id));
+  const triage: LandedOpenTriage = { without_remainder: [], with_remainder: [], under_closed_parent: [] };
+  for (const issue of underClosed) {
+    triage.under_closed_parent.push(row(issue, (parentsOf.get(issue.id) ?? []).find((parent) => parent.status === "closed")!));
+  }
+  for (const issue of landed) {
+    if (underClosedIds.has(issue.id)) continue;
+    const base = row(issue, parentsOf.get(issue.id)?.[0] ?? null);
+    if (issue.remainder === null) triage.without_remainder.push(base);
+    else triage.with_remainder.push({ ...base, remainder: issue.remainder, remainder_set_at: issue.remainder_set_at! });
+  }
+  triage.with_remainder.sort((a, b) => a.remainder_set_at - b.remainder_set_at);
+  return triage;
+}
+
+/** Every commit reachable from a protected branch of the project's checkouts. */
+async function protectedCommits(db: Db, projectId: string): Promise<Set<string>> {
+  const checkouts = db.prepare("SELECT root, default_branch FROM ledger_project_checkouts WHERE project_id = ? ORDER BY root")
+    .all(projectId) as Array<{ root: string; default_branch: string | null }>;
+  const root = checkouts.map((checkout) => checkout.root).find((candidate) => path.isAbsolute(candidate) && fs.existsSync(candidate));
+  if (!root) throw new Error("No checkout of this project exists on disk to read which commits are on a protected branch.");
+  const names = new Set(checkouts.flatMap((checkout) => [...protectedBranchNames(db, checkout.default_branch)]));
+  const existing = (await git(root, ["for-each-ref", "--format=%(refname)", ...[...names].map((name) => `refs/heads/${name}`)]))
+    .split("\n").map((line) => line.trim()).filter(Boolean);
+  if (existing.length === 0) return new Set();
+  const commits = await git(root, ["rev-list", ...existing]);
+  return new Set(commits.split("\n").map((line) => line.trim().toLowerCase()).filter(Boolean));
 }

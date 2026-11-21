@@ -90,6 +90,7 @@ mandible issue list [--status open|closed|all]
 mandible issue show <id>
 mandible issue report <id> [--json]
 mandible issue triage [--repo <repo-ref>] [--status open|closed|all] [--resolution <resolution>] [--kind <kind>] [--priority <priority>] [--label <label>] [--stale-days N] [--limit N] [--notes] [--json]
+mandible issue triage --landed-open [--project <project-ref>] [--json]
 mandible issue search <words>... [--repo <project>] [--status open|closed|all] [--limit N] [--json]
 mandible issue close <id> --resolution delivered|duplicate|wontfix [--commit <sha>]
 mandible issue open <id>
@@ -102,6 +103,8 @@ mandible issue work-notes clear <issue-ref> [--base-revision <rev>]
 mandible issue work-notes history <issue-ref> [--json] [--with-body]
 mandible issue kind set <issue-ref> bug|feature|umbrella|maintenance|experiment|tracker|unknown
 mandible issue priority set <issue-ref> low|normal|high|urgent
+mandible issue remainder set <issue-ref> <text>
+mandible issue remainder clear <issue-ref>
 mandible issue comment add <issue-ref> -m <text>
 mandible issue comment show <comment-ref> [--json]
 mandible issue comment history <comment-ref> [--json] [--with-body]
@@ -134,6 +137,7 @@ mandible issue label rm <id> <label>
 | `work-notes history` | Show read-only working-notes revision history. |
 | `kind set` | Set the canonical issue kind; labels remain independent presentation metadata. |
 | `priority set` | Set the issue priority to `low`, `normal`, `high`, or `urgent`. |
+| `remainder set` / `remainder clear` | Set or clear what remains of an open issue a merge kept open. |
 | `comment add` | Add a comment to an issue. Compatibility alias: `mandible issue comment <issue-ref> -m <text>`. |
 | `comment show` | Show one comment. Accepts a raw comment ID, `<issue-ref>#<ordinal>`, or `<issue-ref>#last`. |
 | `comment history` | Show read-only text revision history for one comment. Accepts a raw comment ID, `<issue-ref>#<ordinal>`, or `<issue-ref>#last`. |

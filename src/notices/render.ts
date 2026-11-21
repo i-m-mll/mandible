@@ -106,6 +106,11 @@ export function renderNotice(report: OutcomeReport, responsibleAgent: AmbientPro
     const more = members.length > MAX_MEMBERS ? ` +${members.length - MAX_MEMBERS} more` : "";
     lines.push(`${label} (${members.length}): ${shown}${more}`);
   }
+  if (report.left_open.length) {
+    const shown = report.left_open.slice(0, MAX_MEMBERS).map((issue) => `${issue.issue} (${brief(issue.remains)})`).join("; ");
+    const more = report.left_open.length > MAX_MEMBERS ? ` +${report.left_open.length - MAX_MEMBERS} more` : "";
+    lines.push(`Left open (${report.left_open.length}): ${shown}${more}`);
+  }
   if (groups.size) lines.push(`More: mandible auth show ${short(report.request_id)}`);
   return lines.join("\n");
 }
