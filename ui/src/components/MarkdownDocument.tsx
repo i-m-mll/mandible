@@ -13,7 +13,7 @@ import {
   exactMarkdownSource, externalSourceUpdate, markdownEditorRange, markdownSelection,
   markdownValue, replaceMarkdownSource, textReplacement, type MarkdownSelection, type MarkdownSourceRange,
 } from './markdown/source';
-import { markdownPreview, markdownDirectives, type MarkdownDirectives } from './markdown/preview';
+import { markdownPreview, markdownDirectives, markdownPreviewPolicy, type MarkdownDirectives, type MarkdownPreviewPolicy } from './markdown/preview';
 import { markdownSyntax } from './markdown/syntax';
 import './MarkdownDocument.css';
 
@@ -29,12 +29,14 @@ type MarkdownDocumentProps = {
   readOnly: boolean;
   ariaLabel: string;
   comparison?: string;
+  comparisonLayout?: 'full-document';
   onChange?: (value: string) => void;
   onSelectionChange?: (selection: MarkdownSelection) => void;
   decorations?: readonly MarkdownRangeDecoration[];
   onDecorationClick?: (id: string) => void;
   documentRef?: Ref<MarkdownDocumentHandle>;
   directives?: MarkdownDirectives;
+  previewPolicy?: MarkdownPreviewPolicy;
 };
 
 const editLimit = 128 * 1024;
@@ -67,10 +69,10 @@ function commentRanges(state: EditorState, decorations: readonly MarkdownRangeDe
   }), true);
 }
 
-function compareWith(original: string | undefined) {
+function compareWith(original: string | undefined, layout: MarkdownDocumentProps['comparisonLayout']) {
   return original === undefined ? [] : unifiedMergeView({
     original: EditorState.create({ doc: original }).doc,
-    collapseUnchanged: { margin: 3, minSize: 4 },
+    ...(layout === 'full-document' ? {} : { collapseUnchanged: { margin: 3, minSize: 4 } }),
     mergeControls: false,
     allowInlineDiffs: true,
     syntaxHighlightDeletions: false,
@@ -104,6 +106,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
     label: new Compartment(),
     comparison: new Compartment(),
     directives: new Compartment(),
+    previewPolicy: new Compartment(),
   }).current;
   const activeComparison = useRef(props.comparison);
   const readOnly = props.readOnly || (props.syntax === 'markdown' && isLargeMarkdownDocument(props.value));
@@ -129,13 +132,14 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
           exactMarkdownSource(initial.value),
           history(), rangeDecorations,
           compartments.directives.of(initial.directives ? markdownDirectives.of(initial.directives) : []),
+          compartments.previewPolicy.of(initial.previewPolicy ? markdownPreviewPolicy.of(initial.previewPolicy) : []),
           initial.syntax === 'markdown' ? [
             markdown({ extensions: markdownSyntax, completeHTMLTags: false }), markdownPreview,
           ] : [],
           editorTheme, EditorView.lineWrapping, keymap.of([...defaultKeymap, ...historyKeymap]),
           compartments.mode.of(documentMode(readOnly)),
           compartments.label.of(EditorView.contentAttributes.of({ 'aria-label': initial.ariaLabel, 'aria-readonly': String(readOnly) })),
-          compartments.comparison.of(compareWith(initial.comparison)),
+          compartments.comparison.of(compareWith(initial.comparison, initial.comparisonLayout)),
           EditorView.updateListener.of((update) => {
             const external = update.transactions.some((transaction) => transaction.annotation(externalSourceUpdate));
             if (update.docChanged && !external) {
@@ -188,9 +192,12 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
 
   useLayoutEffect(() => {
     view.current?.dispatch({
-      effects: compartments.directives.reconfigure(props.directives ? markdownDirectives.of(props.directives) : []),
+      effects: [
+        compartments.directives.reconfigure(props.directives ? markdownDirectives.of(props.directives) : []),
+        compartments.previewPolicy.reconfigure(props.previewPolicy ? markdownPreviewPolicy.of(props.previewPolicy) : []),
+      ],
     });
-  }, [props.directives]);
+  }, [props.directives, props.previewPolicy]);
 
   useLayoutEffect(() => {
     const editor = view.current;
@@ -199,7 +206,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
     if (!editor || original === previous) return;
     activeComparison.current = original;
     if (original === undefined || previous === undefined) {
-      editor.dispatch({ effects: compartments.comparison.reconfigure(compareWith(original)) });
+      editor.dispatch({ effects: compartments.comparison.reconfigure(compareWith(original, props.comparisonLayout)) });
     } else {
       const previousDoc = getOriginalDoc(editor.state);
       const replacement = EditorState.create({ doc: original }).doc.toString();
@@ -208,7 +215,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
           EditorState.create({ doc: previousDoc }).changes(textReplacement(previousDoc, replacement))),
       });
     }
-  }, [props.comparison]);
+  }, [props.comparison, props.comparisonLayout]);
 
   function moveChange(command: typeof goToNextChunk) {
     const editor = view.current;

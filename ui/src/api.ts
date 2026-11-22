@@ -1,3 +1,4 @@
+import type { CarriedReviewRange, ReviewDocumentReference } from "../../src/feedback/review-types";
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, OPERATOR_PROOF_WINDOW_MS, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
@@ -3816,6 +3817,14 @@ export type BriefingDocumentProfile = (typeof BRIEFING_DOCUMENT_PROFILES)[number
 export const BRIEFING_DIRECTIVE_BINDING_STATUSES = ['valid', 'invalid', 'unavailable'] as const;
 export type BriefingDirectiveBindingStatus = (typeof BRIEFING_DIRECTIVE_BINDING_STATUSES)[number];
 
+type BriefingComparisonDocument = {
+  artifact_version_id: string | null;
+  content_hash: string;
+  source: string;
+  utf8_bom?: boolean;
+  target?: ReviewDocumentReference;
+};
+
 export type BriefingRoundProjection = {
   round_id: string;
   state: 'open' | 'submitted';
@@ -3829,20 +3838,15 @@ export type BriefingRoundProjection = {
     previous_round_id: string | null;
     profile: BriefingDocumentProfile;
     source: string;
-    comparison_base?: null | {
-      artifact_version_id: string;
-      content_hash: string;
-      source: string;
-    };
-    original_comparison_base?: null | {
-      artifact_version_id: string;
-      content_hash: string;
-      source: string;
-    };
+    utf8_bom?: boolean;
+    comparison_branches?: Array<{ name: string; commit: string }>;
+    comparison_base?: BriefingComparisonDocument | null;
+    original_comparison_base?: BriefingComparisonDocument | null;
   };
   directive_binding: null | { status: BriefingDirectiveBindingStatus; reason?: string };
-  latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
+  latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[]; comparison_target?: ReviewDocumentReference | null };
   annotations?: BriefingAnnotation[];
+  carried_annotations?: CarriedBriefingAnnotation[];
   submission_overlays?: BriefingSubmissionOverlaySummary[];
   selected_submission_overlay?: BriefingSubmissionOverlaySummary | null;
   items: BriefingDirectiveItem[];
@@ -3910,6 +3914,12 @@ export type BriefingAnnotation = {
     source: 'current_draft' | 'annotation_set';
     actor: { slug: string; display_name: string | null } | null;
   };
+};
+
+export type CarriedBriefingAnnotation = BriefingAnnotation & {
+  source_round_id: string;
+  source_round_ordinal: number;
+  anchor: CarriedReviewRange;
 };
 
 export type BriefingAnnotationOperation =
@@ -3988,6 +3998,40 @@ function briefingResponseValue(
   const selected = new Set(row.option_keys as string[]);
   const canonical = optionKeys.filter((key) => selected.has(key));
   return canonical.length > 0 ? { option_keys: canonical } : null;
+}
+
+const briefingObjectId = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+function briefingReviewTarget(value: unknown): ReviewDocumentReference | null {
+  const target = briefingRecord(value);
+  if (target.kind === 'artifact_version' && typeof target.artifact_version_id === 'string' && target.artifact_version_id
+      && exactBriefingValueKeys(target, ['kind', 'artifact_version_id'])) {
+    return { kind: target.kind, artifact_version_id: target.artifact_version_id };
+  }
+  if (target.kind !== 'git_file' || typeof target.project_id !== 'string' || !target.project_id
+      || typeof target.path !== 'string' || !target.path || typeof target.commit !== 'string'
+      || !briefingObjectId.test(target.commit)
+      || !exactBriefingValueKeys(target, ['kind', 'project_id', 'path', 'commit', 'blob'])) return null;
+  const blob = briefingRecord(target.blob);
+  const pinned = blob.mode === '100644' || blob.mode === '100755'
+    ? typeof blob.oid === 'string' && briefingObjectId.test(blob.oid) && exactBriefingValueKeys(blob, ['oid', 'mode'])
+      ? { oid: blob.oid, mode: blob.mode } as const : null
+    : null;
+  if (target.blob !== null && !pinned) return null;
+  return { kind: target.kind, project_id: target.project_id, path: target.path, commit: target.commit, blob: pinned };
+}
+
+function briefingComparisonDocument(value: unknown): BriefingComparisonDocument | null | undefined {
+  if (value == null) return null;
+  const row = briefingRecord(value);
+  const id = briefingOptionalString(row.artifact_version_id);
+  const target = row.target === undefined && id ? { kind: 'artifact_version' as const, artifact_version_id: id }
+    : briefingReviewTarget(row.target);
+  const hash = briefingString(row.content_hash);
+  if (!target || (target.kind === 'artifact_version' ? target.artifact_version_id !== id : id !== null)
+      || !/^[0-9a-f]{64}$/.test(hash) || typeof row.source !== 'string'
+      || (row.utf8_bom !== undefined && typeof row.utf8_bom !== 'boolean')) return undefined;
+  return { artifact_version_id: id, target, content_hash: hash, source: row.source, utf8_bom: row.utf8_bom === true };
 }
 
 function briefingAnnotation(value: unknown): BriefingAnnotation | null {
@@ -4160,53 +4204,36 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       && (!latestSubmissionForActor.id || latestSubmissionForActor.ordinal < 1)) valid = false;
   const rawDocument = briefingRecord(root.document);
   const profile = briefingDocumentProfile(rawDocument.profile);
-  const documentShapeValid = [
-    ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base', 'original_comparison_base'],
-    ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base'],
-    ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source'],
-  ].some((keys) => exactBriefingValueKeys(rawDocument, keys));
-  const rawComparisonBase = briefingRecord(rawDocument.comparison_base);
-  const comparisonBase = rawDocument.comparison_base == null ? null
-    : exactBriefingValueKeys(rawComparisonBase, ['artifact_version_id', 'content_hash', 'source'])
-      && briefingString(rawComparisonBase.artifact_version_id)
-      && /^[0-9a-f]{64}$/.test(briefingString(rawComparisonBase.content_hash))
-      && typeof rawComparisonBase.source === 'string'
-      ? {
-        artifact_version_id: briefingString(rawComparisonBase.artifact_version_id),
-        content_hash: briefingString(rawComparisonBase.content_hash),
-        source: rawComparisonBase.source,
-      }
-      : undefined;
-  const rawOriginalComparisonBase = briefingRecord(rawDocument.original_comparison_base);
-  const originalComparisonBase = rawDocument.original_comparison_base == null ? null
-    : exactBriefingValueKeys(rawOriginalComparisonBase, ['artifact_version_id', 'content_hash', 'source'])
-      && briefingString(rawOriginalComparisonBase.artifact_version_id)
-      && /^[0-9a-f]{64}$/.test(briefingString(rawOriginalComparisonBase.content_hash))
-      && typeof rawOriginalComparisonBase.source === 'string'
-      ? {
-        artifact_version_id: briefingString(rawOriginalComparisonBase.artifact_version_id),
-        content_hash: briefingString(rawOriginalComparisonBase.content_hash),
-        source: rawOriginalComparisonBase.source,
-      }
-      : undefined;
-  const documentFieldsValid = briefingString(rawDocument.artifact_version_id)
+  const allowedDocumentKeys = new Set([
+    'artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source',
+    'comparison_base', 'original_comparison_base', 'comparison_branches', 'utf8_bom',
+  ]);
+  const comparisonBase = briefingComparisonDocument(rawDocument.comparison_base);
+  const originalComparisonBase = briefingComparisonDocument(rawDocument.original_comparison_base);
+  const rawBranches = Array.isArray(rawDocument.comparison_branches) ? rawDocument.comparison_branches : [];
+  const branches = rawBranches.flatMap((entry) => {
+    const row = briefingRecord(entry);
+    return typeof row.name === 'string' && row.name && typeof row.commit === 'string' && briefingObjectId.test(row.commit)
+      ? [{ name: row.name, commit: row.commit }] : [];
+  });
+  const document = Object.keys(rawDocument).every((key) => allowedDocumentKeys.has(key))
+    && (rawDocument.utf8_bom === undefined || typeof rawDocument.utf8_bom === 'boolean')
+    && (rawDocument.comparison_branches === undefined || (Array.isArray(rawDocument.comparison_branches) && branches.length === rawBranches.length))
+    && profile !== null && typeof rawDocument.source === 'string'
     && /^[0-9a-f]{64}$/.test(briefingString(rawDocument.content_hash))
-    && typeof rawDocument.source === 'string'
-    && Boolean(rawDocument.source.trim())
-    && comparisonBase !== undefined
-    && originalComparisonBase !== undefined
-    && (rawDocument.previous_round_id === null || typeof rawDocument.previous_round_id === 'string');
-  const document = root.document !== null && documentShapeValid && documentFieldsValid && profile !== null ? {
+    && (rawDocument.previous_round_id === null || typeof rawDocument.previous_round_id === 'string')
+    && comparisonBase !== undefined && originalComparisonBase !== undefined ? {
     artifact_version_id: briefingString(rawDocument.artifact_version_id),
     content_hash: briefingString(rawDocument.content_hash),
     previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
     profile,
-    source: typeof rawDocument.source === 'string' ? rawDocument.source : '',
+    source: rawDocument.source,
+    utf8_bom: rawDocument.utf8_bom === true,
+    comparison_branches: branches,
     comparison_base: comparisonBase,
     original_comparison_base: originalComparisonBase,
   } : null;
-  if (!document
-      || !document.artifact_version_id) valid = false;
+  if (!document?.artifact_version_id) valid = false;
   const bindingRow = briefingRecord(root.directive_binding);
   const bindingStatus = briefingDirectiveBindingStatus(bindingRow.status);
   const directiveBinding = root.directive_binding === null ? null : Object.prototype.hasOwnProperty.call(root, 'directive_binding')
@@ -4220,7 +4247,8 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     && Array.isArray(frozenRow.answer_event_ids) && Array.isArray(frozenRow.annotation_event_ids)
     && frozenRow.answer_event_ids.every((id) => briefingString(id))
     && frozenRow.annotation_event_ids.every((id) => briefingString(id))
-    ? { answer_event_ids: briefingStringArray(frozenRow.answer_event_ids), annotation_event_ids: briefingStringArray(frozenRow.annotation_event_ids) }
+    ? { answer_event_ids: briefingStringArray(frozenRow.answer_event_ids), annotation_event_ids: briefingStringArray(frozenRow.annotation_event_ids),
+      ...(frozenRow.comparison_target !== undefined ? { comparison_target: briefingReviewTarget(frozenRow.comparison_target) } : {}) }
     : undefined;
   if (Object.prototype.hasOwnProperty.call(root, 'latest_frozen_membership') && latestFrozenMembership === undefined) valid = false;
   if (document) {
@@ -4253,6 +4281,33 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       return parsed;
     }).filter((entry): entry is BriefingAnnotation => entry !== null);
   }
+  const carriedAnnotations: CarriedBriefingAnnotation[] = [];
+  if (root.carried_annotations !== undefined) {
+    if (!Array.isArray(root.carried_annotations)) valid = false;
+    for (const entry of Array.isArray(root.carried_annotations) ? root.carried_annotations : []) {
+      const row = briefingRecord(entry);
+      const annotation = briefingAnnotation(entry);
+      const anchor = briefingRecord(row.anchor);
+      const actor = briefingRecord(row.actor);
+      const source_round_id = briefingString(row.source_round_id);
+      const source_round_ordinal = briefingOptionalNumber(row.source_round_ordinal);
+      let placement: CarriedReviewRange | null = null;
+      if (anchor.status === 'detached') placement = { status: 'detached' };
+      else if ((anchor.status === 'preserved' || anchor.status === 'moved') && annotation
+        && Number.isSafeInteger(anchor.start_offset) && Number.isSafeInteger(anchor.end_offset)
+        && (anchor.start_offset as number) >= 0 && (anchor.end_offset as number) > (anchor.start_offset as number)
+        && anchor.quote === annotation.quote
+        && document?.source.slice(anchor.start_offset as number, anchor.end_offset as number) === annotation.quote) {
+        placement = { status: anchor.status, start_offset: anchor.start_offset as number,
+          end_offset: anchor.end_offset as number, quote: annotation.quote };
+      }
+      if (!annotation || !placement || !source_round_id || !source_round_ordinal || source_round_ordinal < 1
+          || !briefingString(actor.slug)) { valid = false; continue; }
+      carriedAnnotations.push({ ...annotation, source_round_id, source_round_ordinal, anchor: placement,
+        presentation: { source: 'annotation_set',
+          actor: { slug: briefingString(actor.slug), display_name: briefingOptionalString(actor.display_name) } } });
+    }
+  }
   if ((rawState === 'open' && latestSubmissionForActor !== null)
       || (rawState === 'submitted' && latestSubmissionForActor === null)) valid = false;
   return {
@@ -4266,6 +4321,7 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     directive_binding: directiveBinding ?? null,
     ...(latestFrozenMembership !== undefined ? { latest_frozen_membership: latestFrozenMembership } : {}),
     ...(annotations ? { annotations } : {}),
+    carried_annotations: carriedAnnotations,
     items,
     valid,
   };
@@ -4767,6 +4823,7 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
     document: selected.document ?? null,
     directive_binding: selected.binding ?? null,
     latest_frozen_membership: selected.latest_frozen_membership ?? null,
+    carried_annotations: selected.carried_annotations,
     annotations: rawSelectedOverlay == null
       ? currentAnnotations
       : [
@@ -4858,9 +4915,11 @@ export async function getBriefing(
   submissionId?: string | null,
   signal?: AbortSignal,
   displayContext?: { groupId: string; proposalBundleId: string | null },
+  comparisonCommit?: string | null,
 ): Promise<BriefingProjection> {
   const params = new URLSearchParams();
   if (roundId) params.set('round', roundId);
+  if (comparisonCommit) params.set('comparison_commit', comparisonCommit);
   if (submissionId) params.set('submission', submissionId);
   if (displayContext) {
     params.set('group', displayContext.groupId);
@@ -4965,6 +5024,7 @@ export async function postBriefingSubmission(
     supersedes_submission_id?: string;
     answers: readonly BriefingSubmissionAnswer[];
     annotations?: ReadonlyArray<{ annotation_event_id: string }>;
+    comparison_target?: ReviewDocumentReference | null;
   },
 ): Promise<{
   submission_id: string;
@@ -4980,6 +5040,7 @@ export async function postBriefingSubmission(
       response_event_id: answer.response_event_id,
     })),
     annotation_event_ids: (input.annotations ?? []).map((annotation) => annotation.annotation_event_id),
+    ...(input.comparison_target !== undefined ? { comparison_target: input.comparison_target } : {}),
   });
   markBriefingReadsStale(briefingId);
   const root = briefingRecord(await parseMaybeJson(response));

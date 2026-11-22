@@ -41,6 +41,9 @@ import { MIGRATIONS } from "../src/db-migrations.js";
 import { startDaemon } from "../src/index.js";
 import { checkHealth } from "../src/lifecycle.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
+import { readBriefing } from "../src/feedback/briefings.js";
+import { setSetting } from "../src/client-auth/settings-kv.js";
+import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { appendAuthLifecycleEvent, listAuthExecutionAttempts, listAuthLifecycleEvents } from "../src/auth-lifecycle.js";
 import { AUTH_SNAPSHOT_SHAPE_V220, AUTH_SNAPSHOT_SHAPE_V221, AUTH_SNAPSHOT_SHAPE_V238, authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
@@ -1233,6 +1236,48 @@ describe("v240 delegation removal", () => {
       db.close();
     }
   });
+});
+
+it("v248 preserves frozen UTF-16 quotes and target evidence from populated briefing rounds", () => {
+  const db = migrateFixtureThrough(247);
+  try {
+    setSetting(db, "artifact_root", tempDir);
+    const user = createUser(db, { slug: "review-operator", display_name: "Review operator", kind: "human" });
+    const text = "A 😀 retained quote.\r\n";
+    const { artifact_version: version } = recordArtifactVersion(db, {
+      source_kind: "managed", series_key: "historical-review", logical_name: "review.md", content: "\uFEFF" + text,
+    });
+    db.prepare(`INSERT INTO briefings
+      (id, briefing_key, title, logical_artifact_id, latest_round_id, round_count, created_at, updated_at)
+      VALUES ('briefing', 'historical', 'Historical', ?, 'round', 1, 1, 1)`).run(version.artifact_id);
+    db.prepare("INSERT INTO briefing_members (briefing_id, user_id, created_at) VALUES ('briefing', ?, 1)").run(user.id);
+    db.prepare(`INSERT INTO briefing_rounds (id, briefing_id, ordinal, artifact_version_id, comparison_base_artifact_version_id, profile, binding_digest, created_at)
+      VALUES ('round', 'briefing', 1, ?, ?, 'mandible-briefing.v3', ?, 1)`).run(version.id, version.id, sha256("[]"));
+    db.prepare(`INSERT INTO briefing_annotation_events (id, round_id, briefing_id, operation, annotation_kind,
+      start_offset, end_offset, quote, body, actor_user_id, created_at)
+      VALUES ('annotation', 'round', 'briefing', 'set', 'comment', 2, 4, '😀', 'Keep the original quote.', ?, 2)`).run(user.id);
+    db.prepare(`INSERT INTO briefing_submissions (id, round_id, briefing_id, ordinal, actor_user_id, created_at)
+      VALUES ('submission', 'round', 'briefing', 1, ?, 3)`).run(user.id);
+    db.prepare(`INSERT INTO briefing_submission_annotations (submission_id, round_id, actor_user_id, annotation_event_id, position)
+      VALUES ('submission', 'round', ?, 'annotation', 0)`).run(user.id);
+    db.prepare(`INSERT INTO briefing_annotation_events (id, round_id, briefing_id, operation, retracts_event_id, actor_user_id, created_at)
+      VALUES ('later-retraction', 'round', 'briefing', 'retract', 'annotation', ?, 4)`).run(user.id);
+
+    migrate(db);
+    const review = readBriefing(db, "briefing", { actorUserId: user.id, operator: true, submissionId: "submission" });
+    expect(review?.selected_round).toMatchObject({
+      id: "round",
+      binding: { status: "valid" },
+      document: { source: text, utf8_bom: true, comparison_base: { artifact_version_id: version.id } },
+      annotations: [],
+      selected_submission_overlay: { ordinal: 1, annotations: [
+        { annotation_event_id: "annotation", start_offset: 2, end_offset: 4, quote: "😀", body: "Keep the original quote." },
+      ] },
+    });
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+  } finally {
+    db.close();
+  }
 });
 
 describe("one version behind head", () => {

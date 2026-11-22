@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { createMigratedDb, migratedMemoryDb } from './helpers/ledger-fixtures.js';
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 import SqliteDatabase from "../src/sqlite.ts";
@@ -42,6 +43,7 @@ import {
   setBriefingGroupArchived,
 } from "../src/feedback/briefing-groups.js";
 import { createUser } from "../src/users/store.js";
+import { addProject, addOrUpdateCheckout } from "../src/ledger/project-registry.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import {
@@ -154,6 +156,97 @@ beforeEach(() => {
 afterEach(() => {
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe("review document bindings", () => {
+  it("carries unchanged, moved, and detached comments while freezing only the actor’s current round", () => {
+    const stable = "The long stable paragraph fixes the relative order of the surrounding text.".repeat(4);
+    const before = `Keep this.\n\nMove this.\n\n${stable}\n\nDelete this.\n\nRepeat this.\n`;
+    const after = `Preface.\n\nKeep this.\n\n${stable}\n\nRepeat this.\n\nRepeat this.\n\nMove this.\n`;
+    const firstVersion = recordArtifactVersion(db, { source_kind: "managed", series_key: "review-bindings",
+      logical_name: "review.md", content: before }).artifact_version;
+    const first = publishBriefingFromArtifactVersion(db, { profile: "mandible-briefing.v3", title: "Review",
+      briefing_key: "review-bindings", artifact_version_ref: firstVersion.id, responder_user_ids: [humanId] });
+    const firstRound = first.round_id!;
+    const quotes = ["Keep this.", "Move this.", "Delete this.", "Repeat this."];
+    const { annotation_event_ids } = applyBriefingAnnotations(db, first.briefing_id, firstRound, humanId,
+      quotes.map(quote => ({ operation: "set", kind: "comment", start_offset: before.indexOf(quote),
+        end_offset: before.indexOf(quote) + quote.length, quote, body: `Review ${quote}` })));
+    expect(() => submitBriefingRound(db, first.briefing_id, firstRound, humanId, {
+      answers: [], annotation_event_ids: [...annotation_event_ids, annotation_event_ids[0]],
+    })).toThrowError(expect.objectContaining({ code: "stale_submission_annotations" }));
+    const frozen = submitBriefingRound(db, first.briefing_id, firstRound, humanId, { answers: [], annotation_event_ids });
+
+    const secondVersion = recordArtifactVersion(db, { source_kind: "managed", artifact_id: first.logical_artifact_id,
+      logical_name: "review.md", content: after }).artifact_version;
+    const second = publishBriefingFromArtifactVersion(db, { profile: "mandible-briefing.v3", title: "Review",
+      briefing_key: "review-bindings", artifact_version_ref: secondVersion.id, responder_user_ids: [humanId] });
+    const viewer = { actorUserId: humanId, operator: true };
+    const current = readBriefing(db, first.briefing_id, viewer)!.selected_round!;
+    expect(current.document.comparison_base?.target).toEqual({ kind: "artifact_version", artifact_version_id: firstVersion.id });
+    expect(current.carried_annotations.map(({ quote, start_offset, anchor }) => [quote, start_offset, anchor])).toEqual([
+      ["Keep this.", 0, { status: "preserved", start_offset: 10, end_offset: 20, quote: "Keep this." }],
+      ["Move this.", 12, { status: "moved", start_offset: after.length - 11, end_offset: after.length - 1, quote: "Move this." }],
+      ["Delete this.", before.indexOf("Delete this."), { status: "detached" }],
+      ["Repeat this.", before.indexOf("Repeat this."), { status: "detached" }],
+    ]);
+    expect(current.annotations).toEqual([]);
+    expect(() => submitBriefingRound(db, first.briefing_id, second.round_id!, humanId, { answers: [], annotation_event_ids }))
+      .toThrowError(expect.objectContaining({ code: "stale_submission_annotations" }));
+    expect(readBriefing(db, first.briefing_id, { ...viewer, roundId: firstRound, submissionId: frozen.submission_id })
+      ?.selected_round?.selected_submission_overlay?.annotations)
+      .toEqual(expect.arrayContaining(quotes.map((quote) => expect.objectContaining({ quote, start_offset: before.indexOf(quote) }))));
+  });
+
+  it("pins the protected comparison at publication and records the branch commit the reviewer actually saw", () => {
+    const repo = path.join(root, "tracked");
+    fs.mkdirSync(repo);
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], {
+      encoding: "utf8",
+      env: { ...process.env, GIT_AUTHOR_NAME: "Fixture", GIT_COMMITTER_NAME: "Fixture",
+        GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_EMAIL: "fixture@example.invalid" },
+      timeout: 10_000,
+    }).trim();
+    git("init", "-b", "main");
+    const commit = (source: string) => {
+      fs.writeFileSync(path.join(repo, "review.md"), source);
+      git("add", "review.md");
+      const tree = git("write-tree");
+      const parent = git("rev-list", "--all", "--max-count=1");
+      const commit = git("commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", "review fixture");
+      git("update-ref", "HEAD", commit);
+      return commit;
+    };
+    const base = commit("Published base.\n");
+    git("branch", "draft");
+    git("switch", "-q", "draft");
+    const source = "Text to review.\n";
+    const proposed = commit(source);
+    const project = addProject(db, { project_key: "review-tracked" });
+    addOrUpdateCheckout(db, project.id, { root: repo, name: "tracked", default_branch: "main" });
+    const version = recordArtifactVersion(db, { source_kind: "tracked_repo", project: project.id, commit: proposed, path: "review.md", custody_mode: "git" }).artifact_version;
+    const briefing = publishBriefingFromArtifactVersion(db, { profile: "mandible-briefing.v3", title: "Tracked",
+      artifact_version_ref: version.id, responder_user_ids: [humanId] });
+    const roundId = briefing.round_id!;
+    setSetting(db, "user.operator_id", humanId);
+    git("switch", "-q", "main");
+    commit("Later protected content.\n");
+    const viewer = { actorUserId: humanId, operator: true };
+    const pinned = readBriefing(db, briefing.briefing_id, viewer)!.selected_round!.document;
+    expect(pinned.comparison_base).toMatchObject({ source: "Published base.\n", target: { commit: base, path: "review.md", project_id: project.id } });
+    const display = readBriefing(db, briefing.briefing_id, { ...viewer, comparisonCommit: proposed })!.selected_round!.document;
+    expect(display.comparison_base).toMatchObject({ source, target: { commit: proposed } });
+    const { annotation_event_ids } = applyBriefingAnnotations(db, briefing.briefing_id, roundId, humanId, [
+      { operation: "set", kind: "comment", start_offset: 0, end_offset: 4, quote: "Text", body: "Reviewed." },
+    ]);
+    const submitted = submitBriefingRound(db, briefing.briefing_id, roundId, humanId, {
+      answers: [], annotation_event_ids, comparison_target: display.comparison_base!.target,
+    });
+    const submittedOverlay = readBriefing(db, briefing.briefing_id, { ...viewer, submissionId: submitted.submission_id });
+    expect(submittedOverlay?.selected_round?.document.comparison_base).toMatchObject({ source, target: { commit: proposed } });
+    expect(readBriefing(db, briefing.briefing_id, viewer)?.selected_round?.document.comparison_base?.target)
+      .toEqual(pinned.comparison_base?.target);
+  });
 });
 
 // Issue 2212987: a Briefing without a round (a quiet-only recurring feed, or a

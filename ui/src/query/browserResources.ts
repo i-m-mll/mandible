@@ -6,8 +6,8 @@ export const browserResourceKeys = {
   briefings: ['briefing'] as const,
   briefingSidebar: ['briefing', 'sidebar'] as const,
   briefingProjections: (briefingId: string) => ['briefing', 'projection', briefingId] as const,
-  briefingProjection: (briefingId: string, roundId: string | null, submissionId: string | null, displayContext?: { groupId: string; proposalBundleId: string | null }) =>
-    ['briefing', 'projection', briefingId, roundId, submissionId, displayContext ?? null] as const,
+  briefingProjection: (briefingId: string, roundId: string | null, submissionId: string | null, displayContext?: { groupId: string; proposalBundleId: string | null }, comparisonCommit?: string | null) =>
+    ['briefing', 'projection', briefingId, roundId, submissionId, displayContext ?? null, comparisonCommit ?? null] as const,
   spaceDocument: (spaceId: string | null | undefined) => ['space', spaceId ?? null, 'document'] as const,
 };
 
