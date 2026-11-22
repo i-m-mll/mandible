@@ -1,5 +1,5 @@
 import type { AuthChangeReport, DiffFilePair, GitChangeFile, GitFileObject } from "./contracts.js";
-import { authGitEnv, isUnbornBase } from "./auth-context.js";
+import { authGitEnv, isUnbornBase, readCommitRefs } from "./auth-context.js";
 import { childOutput } from "./child-observation.js";
 
 const OID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -55,9 +55,17 @@ function reviewRefs(requestId: string, comparison: Comparison) {
   ];
 }
 
-export async function retainReviewRevision(cwd: string, requestId: string, comparison: Comparison): Promise<void> {
-  const commands = reviewRefs(requestId, comparison).map(([ref, sha]) => `create ${ref} ${sha}\n`).join("");
-  await runGit(cwd, ["update-ref", "--stdin"], commands);
+export async function retainReviewRevision(cwd: string, requestId: string, comparison: Comparison): Promise<boolean> {
+  const refs = reviewRefs(requestId, comparison);
+  const commands = refs.map(([ref, sha]) => `create ${ref} ${sha}\n`).join("");
+  try {
+    await runGit(cwd, ["update-ref", "--stdin"], commands);
+    return true;
+  } catch (error) {
+    const existing = await readCommitRefs(cwd, refs.map(([ref]) => ref));
+    if (!refs.every(([ref, sha]) => existing.get(ref) === sha)) throw error;
+    return false;
+  }
 }
 
 export async function releaseUnpublishedReviewRevision(cwd: string, requestId: string, comparison: Comparison): Promise<void> {
