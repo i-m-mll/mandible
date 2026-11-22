@@ -49,3 +49,18 @@ export type ReviewAnnotation = ReviewRange & {
   replacement_text: string | null;
   created_at: number;
 };
+
+export type ReviewThreadMutation = { operation: "reply"; body: string }
+  | { operation: "address" | "resolve" | "reopen" };
+
+export type ReviewThreadActor =
+  | { role: "operator"; user_id: string }
+  | { role: "requester"; user_id: string; session_id: string };
+
+export type ReviewThreadEvent = ReviewThreadMutation & {
+  id: string;
+  round_id: string;
+  actor_role: ReviewThreadActor["role"];
+  actor_user_id: string;
+  created_at: number;
+};

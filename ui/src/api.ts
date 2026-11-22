@@ -1051,6 +1051,11 @@ export async function annotateAuthReview(requestId: string, precondition: AuthRe
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/annotations`, { ...precondition, document_binding_id, mutation });
 }
 
+export async function mutateAuthReviewThread(requestId: string, precondition: AuthReviewPrecondition,
+  comment_id: string, mutation: import('../../src/feedback/review-types').ReviewThreadMutation): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/thread-events`, { ...precondition, comment_id, mutation });
+}
+
 export async function returnAuthReview(requestId: string, review: AuthReviewProjection, reason: string): Promise<void> {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/return`, {
     ...review.precondition, reason, round_id: review.round.id,

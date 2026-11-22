@@ -74,7 +74,7 @@ export interface StubResponse {
 }
 
 /** Return `undefined` for a 404. */
-export type StubHandler = (request: StubRequest) => StubResponse | undefined;
+export type StubHandler = (request: StubRequest) => StubResponse | undefined | Promise<StubResponse | undefined>;
 
 export interface StubDaemon {
   /** Environment that points the CLI at this stub over HTTP. */
@@ -97,7 +97,7 @@ export function startStubDaemon(handler: StubHandler): Promise<StubDaemon> {
       return;
     }
     requests.push(request);
-    const response = handler(request) ?? { status: 404, body: { error: "not found" } };
+    const response = await handler(request) ?? { status: 404, body: { error: "not found" } };
     res.statusCode = response.status ?? 200;
     res.end(JSON.stringify(response.body));
   });

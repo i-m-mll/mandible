@@ -7,9 +7,9 @@ import type { AuthRequest, AuthRequestStatus } from "../types.js";
 import { carryReviewLines, carryReviewRanges } from "./review-ranges.js";
 import {
   createReviewRound, effectiveReviewAnnotations, reviewDocumentBindings,
-  reviewSubmissionAnnotations, reviewSubmissionTargets, type ReviewRoundOwner,
+  reviewSubmissionAnnotations, reviewSubmissionTargets, reviewThreadEvents, reviewThreadResolved, type ReviewRoundOwner,
 } from "./review-store.js";
-import type { CarriedReviewRange, RequestReviewFile, ReviewAnnotation, ReviewDocumentBinding } from "./review-types.js";
+import type { CarriedReviewRange, RequestReviewFile, ReviewAnnotation, ReviewDocumentBinding, ReviewThreadEvent } from "./review-types.js";
 
 type Owner = Extract<ReviewRoundOwner, { kind: "request_revision" }>;
 type RequestBinding = ReviewDocumentBinding & {
@@ -54,22 +54,24 @@ export function ensureRequestReviewRound(db: Db, round: RequestReviewRound): voi
   }
 }
 
-export type RequestReviewReturn = {
+type RequestReviewNote = ReviewAnnotation & { source: RequestBinding["source"] };
+
+type FrozenRequestReviewReturn = {
   submission_id: string;
   revision: number;
   reason: string | null;
   delivered: boolean;
   targets: ReturnType<typeof reviewSubmissionTargets>;
-  comments: Array<ReviewAnnotation & { source: RequestBinding["source"] }>;
+  comments: RequestReviewNote[];
 };
 
-export function returnedRequestReview(db: Db, requestId: string): RequestReviewReturn | null {
+function frozenRequestReviewReturn(db: Db, requestId: string): FrozenRequestReviewReturn | null {
   const returned = db.prepare(`SELECT e.review_submission_id AS submission_id, e.revision, e.reason, s.round_id,
     EXISTS(SELECT 1 FROM notifications n WHERE n.subject_kind = 'auth_request' AND n.subject_id = e.auth_request_id
       AND n.review_submission_id = e.review_submission_id AND n.delivered_at IS NOT NULL) AS delivered
     FROM auth_request_lifecycle_events e JOIN briefing_submissions s ON s.id = e.review_submission_id
     WHERE e.auth_request_id = ? AND e.event_type = 'returned' ORDER BY e.revision DESC LIMIT 1`).get(requestId) as
-    (Pick<RequestReviewReturn, "submission_id" | "revision" | "reason"> & { round_id: string; delivered: number }) | undefined;
+    (Pick<FrozenRequestReviewReturn, "submission_id" | "revision" | "reason"> & { round_id: string; delivered: number }) | undefined;
   if (!returned) return null;
   const { round_id, delivered, ...receipt } = returned;
   const bindings = new Map((reviewDocumentBindings(db, round_id) as RequestBinding[]).map(binding => [binding.id, binding]));
@@ -77,6 +79,13 @@ export function returnedRequestReview(db: Db, requestId: string): RequestReviewR
     comments: reviewSubmissionAnnotations(db, receipt.submission_id).map(comment => ({
       ...comment, source: bindings.get(comment.document_binding_id)!.source,
     })) };
+}
+
+export function returnedRequestReview(db: Db, requestId: string) {
+  const receipt = frozenRequestReviewReturn(db, requestId);
+  if (!receipt) return null;
+  const threads = projectRequestThreads(db, receipt.comments);
+  return { ...receipt, comments: receipt.comments.map(comment => ({ ...comment, thread: threads(comment) })) };
 }
 
 export type RequestReviewVersion = {
@@ -99,6 +108,27 @@ export function requestReviewVersions(db: Db, requestId: string): RequestReviewV
   return rows.map(version => ({ ...version, short_id: shortRef(db, "auth_request", version.id) }));
 }
 
+type RequestThreadEvent = ReviewThreadEvent & { request_ref: string };
+type RequestReviewThread = { short_id: string; resolved: boolean; events: RequestThreadEvent[] };
+
+function projectRequestThreads(db: Db, notes: readonly ReviewAnnotation[]) {
+  const threads = reviewThreadEvents(db, notes.map(note => note.annotation_event_id));
+  const requestIds = new Map<string, string>();
+  const requestRef = (roundId: string) => {
+    const known = requestIds.get(roundId);
+    if (known) return known;
+    const row = db.prepare("SELECT auth_request_id FROM review_rounds WHERE id = ?").get(roundId) as { auth_request_id: string };
+    const ref = shortRef(db, "auth_request", row.auth_request_id);
+    requestIds.set(roundId, ref);
+    return ref;
+  };
+  return (note: ReviewAnnotation): RequestReviewThread => {
+    const events = threads.get(note.annotation_event_id) ?? [];
+    return { short_id: note.annotation_event_id.slice(0, 8), resolved: reviewThreadResolved(events),
+      events: events.map(event => ({ ...event, request_ref: requestRef(event.round_id) })) };
+  };
+}
+
 export async function readRequestReviewSource(root: string | null, source: RequestBinding["source"]): Promise<string | null> {
   if (source.kind === "request_description") return source.text;
   if (!root || source.format === "binary" || !source.path || !source.blob) return null;
@@ -107,25 +137,38 @@ export async function readRequestReviewSource(root: string | null, source: Reque
   return result.ok && result.file.kind === "text" ? result.file.after.contents : null;
 }
 
-export type RequestReviewComment = ReviewAnnotation & {
-  source: RequestBinding["source"];
+export type RequestReviewComment = RequestReviewNote & {
   anchor: CarriedReviewRange;
   origin_request_id: string;
+  thread: RequestReviewThread;
 };
 
-export async function readRequestReview(db: Db, request: AuthRequest, actorUserId: string) {
+function requestReviewRoots(db: Db, request: AuthRequest, reviewerId: string | null) {
   const round = requestReviewRound(request);
   const versions = requestReviewVersions(db, request.id);
-  const returned = returnedRequestReview(db, request.id);
+  const returned = frozenRequestReviewReturn(db, request.id);
   const bindings = new Map(round.bindings.map(binding => [binding.id, binding]));
-  const notes = returned?.comments ?? effectiveReviewAnnotations(db, round.id, actorUserId)
-    .map(comment => ({ ...comment, source: bindings.get(comment.document_binding_id)!.source }));
-  const annotations: RequestReviewComment[] = notes.map(comment => ({
-    ...comment, origin_request_id: request.id, anchor: { ...comment, status: "preserved" },
-  }));
+  const notes = returned?.comments ?? (reviewerId ? effectiveReviewAnnotations(db, round.id, reviewerId)
+    .map(comment => ({ ...comment, source: bindings.get(comment.document_binding_id)!.source })) : []);
   const currentIndex = versions.findIndex(version => version.id === request.id);
   const prior = versions.slice(0, currentIndex).flatMap(version =>
-    (returnedRequestReview(db, version.id)?.comments ?? []).map(comment => ({ comment, origin: version.id })));
+    (frozenRequestReviewReturn(db, version.id)?.comments ?? []).map(comment => ({ comment, origin: version.id })));
+  return { round, versions, returned, notes, prior };
+}
+
+export function resolveRequestReviewComment(db: Db, request: AuthRequest, reviewerId: string | null, ref: string) {
+  const { notes, prior } = requestReviewRoots(db, request, reviewerId);
+  const matches = [...notes.map(comment => ({ comment, origin: request.id })), ...prior]
+    .filter(({ comment }) => comment.annotation_kind === "comment" && comment.annotation_event_id.startsWith(ref));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+export async function readRequestReview(db: Db, request: AuthRequest, reviewerId: string | null) {
+  const { round, versions, returned, notes, prior } = requestReviewRoots(db, request, reviewerId);
+  const thread = projectRequestThreads(db, [...notes, ...prior.map(({ comment }) => comment)]);
+  const annotations: RequestReviewComment[] = notes.map(comment => ({
+    ...comment, origin_request_id: request.id, anchor: { ...comment, status: "preserved" }, thread: thread(comment),
+  }));
   const readSources = new Map<string, Promise<string | null>>();
   const read = (source: RequestBinding["source"]) => {
     const key = canonicalJson(source);
@@ -155,11 +198,12 @@ export async function readRequestReview(db: Db, request: AuthRequest, actorUserI
           ? carryReviewLines(before, after, comment) : carryReviewRanges(before, after)(comment);
       }
     }
-    annotations.push({ ...comment, origin_request_id: origin, anchor,
+    annotations.push({ ...comment, origin_request_id: origin, anchor, thread: thread(comment),
       ...(candidate && anchor.status !== "detached"
         ? { document_binding_id: candidate.id, source: candidate.source } : {}) });
   }
-  return { round, versions, annotations, returned };
+  return { round, versions, annotations, returned: returned && { ...returned,
+    comments: returned.comments.map(comment => ({ ...comment, thread: thread(comment) })) } };
 }
 
 export type RequestReview = Awaited<ReturnType<typeof readRequestReview>>;

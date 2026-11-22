@@ -1,5 +1,6 @@
-import { ensureRequestReviewRound, readRequestReviewSource, requestReviewRound } from "./feedback/request-review.js";
-import { appendReviewAnnotation, freezeReviewSubmission, type ReviewAnnotationMutation } from "./feedback/review-store.js";
+import { ensureRequestReviewRound, readRequestReviewSource, requestReviewRound, resolveRequestReviewComment } from "./feedback/request-review.js";
+import { appendReviewAnnotation, appendReviewThreadEvent, freezeReviewSubmission, type ReviewAnnotationMutation } from "./feedback/review-store.js";
+import type { ReviewThreadActor, ReviewThreadMutation } from "./feedback/review-types.js";
 import { withLedgerMutationActor } from "./ledger/mutation-history.js";
 import { withRequestOrigin } from "./request-origin.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
@@ -5477,6 +5478,40 @@ export class AuthQueue {
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(result.request) });
     this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: result.request.id, lifecycle: "returned" } });
     return result;
+  }
+
+  mutateRequestReviewThread(id: string, actor: AuthLifecycleActor, input: {
+    expected_revision: number; expected_custody_generation: number; comment_id: string; mutation: ReviewThreadMutation;
+  }): string {
+    const { eventId, requestId } = this.db.transaction(() => {
+      const request = this.requireRequest(id);
+      const threadActor: ReviewThreadActor = actor.session_id
+        ? { role: "requester", user_id: actor.user_id, session_id: actor.session_id }
+        : { role: "operator", user_id: actor.user_id };
+      const { operation } = input.mutation;
+      if (threadActor.role === "requester" && (operation === "resolve" || operation === "reopen")) {
+        throw new AuthQueueError("operator_required", "Only the operator can resolve or reopen review comments.");
+      }
+      if (operation === "address" && threadActor.role !== "requester") {
+        throw new AuthQueueError("requester_control_required", "Only the requester can mark review comments addressed.");
+      }
+      if (request.status !== "returned" && (request.status !== "pending" || request.expires_at <= this.now())) {
+        throw new AuthQueueError("invalid_status", "Review threads can be updated on a pending or returned request.", request.status);
+      }
+      this.requireRequestCustody(request, actor, input.expected_revision, input.expected_custody_generation);
+      const target = resolveRequestReviewComment(this.db, request, threadActor.role === "operator" ? actor.user_id : null, input.comment_id);
+      if (!target) throw new AuthQueueError("not_found", "Use an unambiguous comment reference from this review.");
+      if (operation === "address" && target.origin === request.id) {
+        throw new AuthQueueError("lifecycle_conflict", "Name a successor revision to mark this comment addressed.");
+      }
+      const round = requestReviewRound(request);
+      ensureRequestReviewRound(this.db, round);
+      const event = appendReviewThreadEvent(this.db, target.comment.annotation_event_id, round.id, threadActor, input.mutation, this.now());
+      if (!event.ok) throw new AuthQueueError("lifecycle_conflict", "The comment state changed. Refresh the review and retry.");
+      return { eventId: event.id, requestId: request.id };
+    })();
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_REVIEW_UPDATED, data: { request_id: requestId } });
+    return eventId;
   }
 
   async reject(id: string, reason = "Rejected by operator.", actor?: AuthLifecycleActor): Promise<AuthRequest> {

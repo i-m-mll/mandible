@@ -338,6 +338,27 @@
         ]
       }
     },
+    "auth.review.reply": {
+      "route": ["auth", "review", "reply"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "request","value": {"type": "string"}},
+          {"kind": "argument","name": "comment","value": {"type": "string"}},
+          {"kind": "option","names": ["--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}
+        ]
+      }
+    },
+    "auth.review.address": {
+      "route": ["auth", "review", "address"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "successor-request","value": {"type": "string"}},
+          {"kind": "argument","name": "comment","value": {"type": "string"}}
+        ]
+      }
+    },
     "auth.withdraw": {
       "route": ["auth", "withdraw"],
       "grammar": {

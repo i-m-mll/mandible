@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import type { RequestReviewComment } from '../../../src/feedback/request-review';
-import type { ReviewRange } from '../../../src/feedback/review-types';
+import type { ReviewRange, ReviewThreadMutation } from '../../../src/feedback/review-types';
 import type { AuthChangeReport, DiffFilePair } from '../../../src/contracts';
+import { DOMAIN_EVENTS } from '../../../src/contracts';
 import {
-  annotateAuthReview, getAuthReview, getAuthReviewComparison, returnAuthReview, type AuthReviewProjection,
+  annotateAuthReview, getAuthReview, getAuthReviewComparison, mutateAuthReviewThread, returnAuthReview, type AuthReviewProjection,
 } from '../api';
 import { MarkdownDocument, type MarkdownDocumentHandle, type MarkdownSelection } from '../components/MarkdownDocument';
 import { ReviewCommentsSidebar } from '../components/shared/ReviewCommentsSidebar';
 import { ContextualAction } from '../components/shared/ContextualAction';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
+import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { Icon } from '../components/icons/Icon';
 import { NativeSelect } from '../components/shared/NativeSelect';
 import type { DiffLineRange } from '../components/PierreFileDiff';
@@ -27,6 +29,7 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
   const [selection, setSelection] = useState<Selection | null>(null);
   const [navigation, setNavigation] = useState<Navigation | null>(null);
   const [editor, setEditor] = useState<Selection | null>(null);
+  const [replyTarget, setReplyTarget] = useState<RequestReviewComment | null>(null);
   const [decision, setDecision] = useState<ReviewDecision | null>(null);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -37,13 +40,25 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
-    const next = await getAuthReview(id, controller.signal);
-    if (!controller.signal.aborted) setData(next);
+    try {
+      const next = await getAuthReview(id, controller.signal);
+      if (!controller.signal.aborted) setData(next);
+    } catch (error) {
+      if (!controller.signal.aborted) throw error;
+    }
   }, [id]);
   useEffect(() => {
     void refresh().catch(() => undefined);
     return () => request.current?.abort();
   }, [refresh, status, updatedAt]);
+  useEffect(() => {
+    const onReviewUpdate = (event: Event) => {
+      const changed = (event as CustomEvent<{ request_id: string }>).detail.request_id;
+      if (changed === id || data?.versions.some(version => version.id === changed)) void refresh().catch(() => undefined);
+    };
+    window.addEventListener(DOMAIN_EVENTS.AUTH_REVIEW_UPDATED, onReviewUpdate);
+    return () => window.removeEventListener(DOMAIN_EVENTS.AUTH_REVIEW_UPDATED, onReviewUpdate);
+  }, [data?.versions, id, refresh]);
 
   const [against, setAgainst] = useState('');
   const [comparison, setComparison] = useState<{ against: string; report: AuthChangeReport }>();
@@ -60,6 +75,8 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
   }, [id, against, data?.versions.find(version => version.id === id)?.head, data?.versions.find(version => version.id === against)?.head]);
   const compare = (id: string) => { setSelection(null); setNavigation(null); setAgainst(id); };
   const available = status === 'pending' && data?.status === 'pending' && data.precondition.expected_revision !== null && canWrite && !against;
+  const threadAvailable = Boolean(canWrite && data?.round.owner.auth_request_id === id && data.status === status
+    && data.precondition.expected_revision !== null && (status === 'pending' || status === 'returned'));
   const openDecision = (next: ReviewDecision) => {
     setDecision(next);
     setText('');
@@ -108,6 +125,13 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
       await refresh();
     }, () => undefined);
   };
+  const changeThread = (comment: RequestReviewComment, mutation: ReviewThreadMutation) => {
+    if (!threadAvailable || !data?.annotations.some(note => note.annotation_event_id === comment.annotation_event_id)) return;
+    void act(async () => {
+      await mutateAuthReviewThread(id, data.precondition, comment.annotation_event_id, mutation);
+      await refresh();
+    }, () => setReplyTarget(null));
+  };
   const select = (binding: Binding | undefined, range: ReviewRange | null) => {
     if (!available || against || !binding) return;
     setSelection(current => range ? { ...range, bindingId: binding.id } : current?.bindingId === binding.id ? null : current);
@@ -123,8 +147,10 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
     comparison: comparison?.against === against ? comparison.report : undefined, comparisonError,
     openDecision, selection, lineSelection, markdownSelection, remove, busy, error,
     comment: () => { setEditor(selection); setText(''); setError(null); },
+    threadAvailable, replyTarget, changeThread,
+    reply: (comment: RequestReviewComment) => { setReplyTarget(comment); setText(''); setError(null); },
     editor, decision, text, setText, saveComment, submitDecision,
-    close: () => { if (!busy) { setEditor(null); setDecision(null); setError(null); } },
+    close: () => { if (!busy) { setEditor(null); setReplyTarget(null); setDecision(null); setError(null); } },
   };
 }
 
@@ -163,11 +189,29 @@ export function AuthReviewSidebar({ review, id, onNavigate, children }: {
           author: comment.source.kind === 'request_description' ? 'Description'
             : `${comment.source.path} · ${comment.source.side === 'before' ? 'Before' : 'After'}`,
           content: <>{comment.body}
-            {review.available && comment.origin_request_id === id && <ContextualAction aria-label="Remove comment"
+            {review.available && comment.origin_request_id === id && !comment.thread.events.length && <ContextualAction aria-label="Remove comment"
               title="Remove comment" disabled={review.busy} onClick={() => review.remove(comment)}>
               <Icon name="dismiss" />
             </ContextualAction>}</>,
+          thread: {
+            resolved: comment.thread.resolved,
+            events: comment.thread.events.map(event => ({
+              id: event.id,
+              author: event.operation === 'reply' ? (event.actor_role === 'operator' ? 'Operator' : 'Requester') : undefined,
+              content: event.operation === 'reply' ? event.body
+                : `${{ address: 'Addressed in', resolve: 'Resolved on', reopen: 'Reopened on' }[event.operation]} ${event.request_ref}`,
+            })),
+            actions: review.threadAvailable && <>
+              <button type="button" className="btn btn--ghost" disabled={review.busy} onClick={() => review.reply(comment)}>Reply</button>
+              <button type="button" className="btn btn--ghost" disabled={review.busy}
+                onClick={() => review.changeThread(comment, { operation: comment.thread.resolved ? 'reopen' : 'resolve' })}>
+                {comment.thread.resolved ? 'Reopen' : 'Resolve'}
+              </button>
+            </>,
+          },
         }))} />
+      {review.error && !review.editor && !review.replyTarget && !review.decision
+        && <DetailPaneNotice severity="error" density="compact">{review.error}</DetailPaneNotice>}
     </div>}
   </div>;
 }
@@ -247,21 +291,23 @@ export function authReviewSelector(review: AuthRequestReviewState, id: string, o
 }
 
 export function AuthReviewDialog({ review }: { review: AuthRequestReviewState }) {
-  const label = review.editor ? 'Comment' : review.decision === 'return' ? 'Return for revision' : 'Reject request';
-  return <DetailPaneModal open={Boolean(review.editor || review.decision)} onClose={review.close}
+  const label = review.replyTarget ? 'Reply' : review.editor ? 'Comment' : review.decision === 'return' ? 'Return for revision' : 'Reject request';
+  const quote = review.replyTarget?.quote ?? review.editor?.quote;
+  return <DetailPaneModal open={Boolean(review.editor || review.replyTarget || review.decision)} onClose={review.close}
     titleId="auth-review-decision" title={label} closeLabel="Close review dialog">
     <form className="auth-review__dialog" onSubmit={event => {
       event.preventDefault();
-      if (review.editor) review.saveComment();
+      if (review.replyTarget) review.changeThread(review.replyTarget, { operation: 'reply', body: review.text });
+      else if (review.editor) review.saveComment();
       else review.submitDecision();
     }}>
-      {review.editor && <blockquote className="review-comments__quote">{review.editor.quote}</blockquote>}
-      <label>{review.editor ? 'Comment' : 'Reason (optional)'}
+      {quote && <blockquote className="review-comments__quote">{quote}</blockquote>}
+      <label>{review.replyTarget ? 'Reply' : review.editor ? 'Comment' : 'Reason (optional)'}
         <textarea value={review.text} rows={4} onInput={event => review.setText(event.currentTarget.value)} />
       </label>
       {review.error && <div role="alert">{review.error}</div>}
-      <button type="submit" className="btn" disabled={review.busy || Boolean(review.editor && !review.text.trim())}>
-        {review.editor ? 'Save comment' : review.decision === 'return' ? 'Return' : 'Reject'}
+      <button type="submit" className="btn" disabled={review.busy || Boolean((review.editor || review.replyTarget) && !review.text.trim())}>
+        {review.replyTarget ? 'Reply' : review.editor ? 'Save comment' : review.decision === 'return' ? 'Return' : 'Reject'}
       </button>
     </form>
   </DetailPaneModal>;

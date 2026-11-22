@@ -13,6 +13,11 @@ export type ReviewSidebarComment = {
   author: string;
   content: ComponentChildren;
   edit?: () => void;
+  thread?: {
+    resolved: boolean;
+    events: readonly { id: string; author?: string; content: ComponentChildren }[];
+    actions?: ComponentChildren;
+  };
 };
 
 export function ReviewCommentsSidebar({ comments, open, setOpen, onNavigate, selectedId }: {
@@ -34,6 +39,7 @@ export function ReviewCommentsSidebar({ comments, open, setOpen, onNavigate, sel
               <div className="review-comments__meta">
                 <strong>{entry.author}</strong>
                 {entry.status && <span>{entry.status[0].toUpperCase() + entry.status.slice(1)}</span>}
+                {entry.thread && <span>{entry.thread.resolved ? 'Resolved' : 'Open'}</span>}
                 {entry.edit && <ContextualAction aria-label={`Edit comment by ${entry.author}`}
                   title="Edit comment" onClick={entry.edit}><Icon name="editAnnotation" /></ContextualAction>}
               </div>
@@ -42,6 +48,15 @@ export function ReviewCommentsSidebar({ comments, open, setOpen, onNavigate, sel
                     aria-current={selectedId === entry.id} onClick={() => onNavigate(entry.range!, entry.id)}>{entry.quote}</button>
                 : <blockquote className="review-comments__quote">{entry.quote}</blockquote>}
               <div className="review-comments__body">{entry.content}</div>
+              {entry.thread && <>
+                {entry.thread.events.length > 0 && <ol className="review-comments__thread">
+                  {entry.thread.events.map(event => <li key={event.id}>
+                    {event.author && <strong>{event.author}</strong>}
+                    <div className="review-comments__body">{event.content}</div>
+                  </li>)}
+                </ol>}
+                {entry.thread.actions && <div className="review-comments__actions">{entry.thread.actions}</div>}
+              </>}
             </li>
           ))}
         </ol>

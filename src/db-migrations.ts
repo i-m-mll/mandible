@@ -1,5 +1,5 @@
 import { backupBeforeSpaceCutover, convertSpaceDocuments } from "./spaces/migrate-document.js";
-import { REQUEST_REVIEW_ROUND_MIGRATION_SQL, REVIEW_ROUND_MIGRATION_SQL } from "./feedback/review-schema.js";
+import { REQUEST_REVIEW_ROUND_MIGRATION_SQL, REVIEW_ROUND_MIGRATION_SQL, REVIEW_THREAD_SCHEMA_SQL } from "./feedback/review-schema.js";
 import { exactAgentRef } from "./ambient-provider-identity.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { INTERFACE_NOTE_EMBED_GRANTS_SQL } from "./interface-notes/schema.js";
@@ -2495,6 +2495,7 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP INDEX idx_auth_requests_history",
     AUTH_REQUEST_HISTORY_INDEX_SQL,
   ] },
+  { version: 251, name: "review_comment_threads", statements: REVIEW_THREAD_SCHEMA_SQL },
 ];
 
 /**

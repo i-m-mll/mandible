@@ -118,7 +118,7 @@ case "${1:-}" in
       show)    shift; exec "$MANDIBLE_CLI_DIR/auth-show.sh" "$@" ;;
       review)
         case "${2:-}" in
-          show) shift 2; exec "$MANDIBLE_CLI_DIR/auth-review-show.sh" "$@" ;;
+          show|reply|address) shift; exec "$MANDIBLE_CLI_DIR/auth-review.sh" "$@" ;;
           ""|-h|--help|help) mandible_command_help auth review ;;
           *) mandible_command_help auth review >&2; exit 2 ;;
         esac ;;

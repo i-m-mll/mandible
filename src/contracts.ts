@@ -53,6 +53,7 @@ export const DOMAIN_EVENTS = Object.freeze({
   AUTH_NEW: "auth:new",
   AUTH_OUTPUT: "auth:output",
   AUTH_RESOLVED: "auth:resolved",
+  AUTH_REVIEW_UPDATED: "auth:review_updated",
   AUTH_UPDATED: "auth:updated",
   CONSOLE_ATTENTION: "console:attention",
   CONSOLE_STATUS: "console:status",
