@@ -73,7 +73,7 @@ export const externalSourceUpdate = Annotation.define<boolean>();
 const sourceField = StateField.define<SourceText>({
   create: (state) => new SourceText(state.doc.toString()),
   update(source, transaction) {
-    const incoming = transaction.effects.find((effect) => effect.is(setSource));
+    const incoming = transaction.effects.filter(effect => effect.is(setSource)).at(-1);
     if (incoming) return incoming.value;
     if (!transaction.docChanged) return source;
     const endings = new Map<number, string>();
@@ -149,6 +149,7 @@ export function editMarkdownSource(state: EditorState, edits: readonly MarkdownS
     ...(selection && { selection: EditorSelection.range(source.editorPosition(selection.start), source.editorPosition(selection.end)),
       scrollIntoView: true }),
     annotations: Transaction.userEvent.of('input'),
+    filter: false,
   });
 }
 

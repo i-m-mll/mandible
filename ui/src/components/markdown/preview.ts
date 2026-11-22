@@ -31,6 +31,7 @@ export const markdownDirectives = Facet.define<MarkdownDirectives, MarkdownDirec
 export type MarkdownPreviewPolicy = {
   images?: 'omit';
   directivePreview?: 'on-changed-text';
+  protectSpaceFrames?: boolean;
 };
 export const markdownPreviewPolicy = Facet.define<MarkdownPreviewPolicy, MarkdownPreviewPolicy | undefined>({
   combine: ([policy]) => policy,
@@ -213,6 +214,19 @@ const specials = StateField.define({
     ? readSpecialSyntax(transaction.state) : previous,
 });
 
+export function spaceFrameRanges(state: EditorState): Array<Span & { body: Span }> {
+  return state.field(specials, false)?.directives.flatMap(directive => directive.body
+    ? [{ from: directive.from, to: directive.to, body: markdownEditorRange(state, directive.body) }] : []) ?? [];
+}
+
+export const spaceFrameNavigation = EditorView.atomicRanges.of(view => {
+  const ranges = spaceFrameRanges(view.state).flatMap(({ from, to, body }) => [
+    Decoration.mark({}).range(from, body.from),
+    Decoration.mark({}).range(body.to, to),
+  ]);
+  return Decoration.set(ranges, true);
+});
+
 function previewDecorations(state: EditorState, focused: boolean): DecorationSet {
   const marks: Range<Decoration>[] = [];
   const { directives, frontmatter } = state.field(specials);
@@ -246,12 +260,15 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
   const policy = state.facet(markdownPreviewPolicy);
   for (const directive of directives) {
     const render = allowlist?.get(directive.name);
-    if (!render || selected(state, focused, directive)
-        || (policy?.directivePreview !== 'on-changed-text' && changed(state, directive))) continue;
-    if (render === 'transparent') {
+    if (!render) continue;
+    const protectedFrame = Boolean(policy?.protectSpaceFrames && directive.body);
+    const showFrameBody = protectedFrame && (render === 'transparent' || selected(state, focused, directive));
+    if (!protectedFrame && (selected(state, focused, directive)
+        || (policy?.directivePreview !== 'on-changed-text' && changed(state, directive)))) continue;
+    if (render === 'transparent' || showFrameBody) {
       if (!directive.body) continue;
       const body = markdownEditorRange(state, directive.body);
-      if (body.from === body.to) {
+      if (body.from === body.to && !protectedFrame) {
         marks.push(Decoration.replace({ block: true }).range(directive.from, directive.to));
       } else {
         marks.push(Decoration.replace({ block: true }).range(directive.from, body.from));
