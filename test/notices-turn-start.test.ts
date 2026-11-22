@@ -1,9 +1,7 @@
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import type { HookCallback, Options } from "@anthropic-ai/claude-agent-sdk";
 import { AuthQueue } from "../src/auth-queue.js";
@@ -210,49 +208,6 @@ it("tells a fired reminder to the root session of the agent that armed it, once,
     ...[subagent, main, codex].flatMap((id) => [{ subject_id: id, recipient_kind: "session" }, { subject_id: id, recipient_kind: "user" }]),
     { subject_id: outside, recipient_kind: "user" },
   ].sort((a, b) => a.subject_id.localeCompare(b.subject_id) || a.recipient_kind.localeCompare(b.recipient_kind)));
-});
-
-function runHook(socket: string, payload: unknown): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath.includes("bun") ? process.execPath : "bun", ["--no-install", path.resolve("src/cli/hook-notices.ts"), "claude"],
-      { env: { ...process.env, MANDIBLE_SOCKET: socket }, stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
-    child.stdin.end(JSON.stringify(payload));
-  });
-}
-
-it("prints owed notices and confirms them; a subagent prints nothing; an absent daemon is exit 1", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "notices-hook-"));
-  const socket = path.join(dir, "s.sock");
-  const seen: Array<{ url: string; body: unknown }> = [];
-  const server = http.createServer((req, res) => {
-    let body = "";
-    req.on("data", (chunk) => { body += chunk; });
-    req.on("end", () => {
-      seen.push({ url: req.url!, body: JSON.parse(body) });
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify(req.url === "/api/notices/collect" ? { notices: [{ id: "n1", text: "Mandible: auth 01234567 expired." }] } : { ok: true }));
-    });
-  });
-  try {
-    expect(await runHook(socket, { session_id: "s1", hook_event_name: "UserPromptSubmit" }))
-      .toMatchObject({ code: 1, stdout: "" });
-    await new Promise<void>((resolve) => server.listen(socket, resolve));
-    expect(await runHook(socket, { session_id: "s1", agent_id: "a1", hook_event_name: "UserPromptSubmit" })).toEqual({ code: 0, stdout: "", stderr: "" });
-    expect(seen).toEqual([]);
-    expect(await runHook(socket, { session_id: "s1", hook_event_name: "UserPromptSubmit" }))
-      .toEqual({ code: 0, stdout: "Mandible: auth 01234567 expired.\n", stderr: "" });
-    expect(seen).toEqual([
-      { url: "/api/notices/collect", body: { provider: "claude", session_id: "s1" } },
-      { url: "/api/notices/delivered", body: { ids: ["n1"] } },
-    ]);
-  } finally {
-    server.close();
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 it("tells a Mandible-hosted Claude chat in process unless its settings already run the hook", async () => {

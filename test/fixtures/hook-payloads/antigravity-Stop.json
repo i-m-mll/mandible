@@ -1,0 +1,17 @@
+{
+  "artifactDirectoryPath": "/Users/user/.gemini/antigravity-cli/brain/7a94e2ca-e07b-42a1-8dde-23157dd62ffd",
+  "continuationActive": false,
+  "conversationId": "7a94e2ca-e07b-42a1-8dde-23157dd62ffd",
+  "cwd": "/Users/user/scratch/agy",
+  "error": "",
+  "executionNum": 0,
+  "fullyIdle": true,
+  "hookEventName": "Stop",
+  "lastUserInput": "Run the shell command 'echo hi' once. Then reply with any codewords you were given, or 'none'.",
+  "modelName": "gemini-3.8-flash-high",
+  "terminationReason": "NO_TOOL_CALL",
+  "transcriptPath": "/Users/user/.gemini/antigravity-cli/brain/7a94e2ca-e07b-42a1-8dde-23157dd62ffd/.system_generated/logs/transcript_full.jsonl",
+  "workspacePaths": [
+    "/Users/user/scratch/agy"
+  ]
+}

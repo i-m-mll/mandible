@@ -1,0 +1,11 @@
+{
+  "session_id": "01a204ea-a755-70a3-bf8a-efbe6bc70bb8",
+  "turn_id": "01a204ea-a916-7451-aae3-fcd63fb63da9",
+  "transcript_path": "/Users/user/.codex/sessions/2026/11/22/rollout-2026-11-22T15-20-16-01a204ea-a755-70a3-bf8a-efbe6bc70bb8.jsonl",
+  "cwd": "/Users/user/scratch/codex",
+  "hook_event_name": "Stop",
+  "model": "gpt-6.2-sol",
+  "permission_mode": "bypassPermissions",
+  "stop_hook_active": false,
+  "last_assistant_message": "PELICAN"
+}
