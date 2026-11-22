@@ -346,7 +346,7 @@ function humanReviewCandidate(
     base_layout_digest: baseLayoutDigest,
     proposal_layout_digest: proposalLayoutDigest,
     destination_changes: destinationChanges,
-    tracked_documents: trackedBundleMembers(db, input.expectedBaseBundleId).map(reader.read),
+    tracked_documents: reader.readAll(trackedBundleMembers(db, input.expectedBaseBundleId)),
     items,
   };
   return {

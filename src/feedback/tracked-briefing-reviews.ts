@@ -94,7 +94,7 @@ export function trackedReviewGroups(db: Db, request: RequestInventory): TrackedB
   const reader = trackedBriefingReader(db);
   return [...groups.values()].flatMap(({ paths, ...group }) => {
     const members = matchMembers(paths, changed);
-    return members.length ? [{ ...group, members, documents: paths.map(reader.read) }] : [];
+    return members.length ? [{ ...group, members, documents: reader.readAll(paths) }] : [];
   });
 }
 

@@ -75,10 +75,10 @@ it("qualifies tracked paths by project and keeps reviewed pins and custody histo
     expect(converted.history[0]).toMatchObject({ id: dismissal.id, prior_base: { id: current.id } });
     expect(converted.current?.id).toBe(conversion.bundle_id);
     expect(converted.current?.layout[1]).toMatchObject({ kind: "subgroup", members: [
-      { kind: "tracked", tracked: { path: "renamed.md" } },
+      { kind: "tracked", tracked: { path: "renamed.md", content: null } },
       { kind: "tracked", tracked: { path: "current.md", content: "Existing custody file.\n" } },
       { kind: "tracked", tracked: { path: "shared.md", commit_sha: firstBase, content: "First project text.\n" } },
-      { kind: "tracked", tracked: { path: "copy.md" } },
+      { kind: "tracked", tracked: { path: "copy.md", content: null } },
       { kind: "tracked", tracked: { path: "source.md" } },
     ] });
     git(firstRepo, ["switch", "-c", "feature/review"]);

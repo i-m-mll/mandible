@@ -868,8 +868,10 @@ describe("artifact-backed Briefing rounds", () => {
       briefing_bundles: afterBundleRename.briefing_bundles
         .map((row: Record<string, unknown>) => ({ ...row, updated_at: 1_500 })),
       briefing_bundle_members: [second.briefing_id, receipt.briefing_id]
-        .map((briefing_id, layout_position) => ({ bundle_id: bundle.id, briefing_id, layout_position,
-          entry_kind: "briefing", subgroup_name: null, subgroup_position: 0, created_at: 1_500 })),
+        .map((briefing_id, layout_position) => ({
+          ...afterBundleRename.briefing_bundle_members.find((row: Record<string, unknown>) => row.briefing_id === briefing_id),
+          layout_position, created_at: 1_500,
+        })),
     });
   });
 

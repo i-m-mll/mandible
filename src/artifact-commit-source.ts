@@ -41,10 +41,20 @@ type CommittedSource = {
   files: CommittedArtifactFile[];
   blobs: Map<string, GitBlob>;
 };
-type CommittedSourceInput = { project?: string; cwd?: string; commit: string; paths: string[]; allowAbsent?: boolean };
+type CommittedSourceInput = {
+  project?: string; cwd?: string; commit: string; paths: string[];
+  unavailable?: "skip-absent" | { maxFileBytes: number };
+};
+
+export function readCommittedReviewFiles(db: Db, input: {
+  project: string; commit: string; paths: string[]; maxFileBytes: number;
+}): CommittedArtifactFile[] {
+  const { maxFileBytes, ...source } = input;
+  return readCommittedSource(db, { ...source, unavailable: { maxFileBytes } }).files;
+}
 
 export function readCommittedReviewPath(db: Db, input: { project: string; commit: string; path: string }) {
-  const source = readCommittedSource(db, { project: input.project, commit: input.commit, paths: [input.path], allowAbsent: true });
+  const source = readCommittedSource(db, { project: input.project, commit: input.commit, paths: [input.path], unavailable: "skip-absent" });
   return { commit: source.commit, blob: source.blobs.get(input.path) ?? null, bytes: source.files[0]?.bytes ?? null,
     retain: () => retainCommit(source.root, source.commit, "review") };
 }
@@ -119,25 +129,28 @@ function* committedSourceReads(db: Db, input: CommittedSourceInput): Generator<G
   if (!root || !commit) throw new Error('Committed source requires an available registered repository object store');
   const resolvedRoot = root;
   const resolvedCommit = commit;
+  const display = typeof input.unavailable === "object" ? input.unavailable : null;
   const paths = input.paths.map(p => {
     const relative = p;
     if (path.isAbsolute(relative)) throw new Error('Committed paths must be repository-relative');
-    if (!relative || relative.includes('\\') || relative.includes('\n') || relative.includes('\0')
+    if (!relative || (!display && (relative.includes('\\') || relative.includes('\n'))) || relative.includes('\0')
       || relative.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Committed paths must be normalized repository-relative paths');
     return relative;
   });
-  const tree = (yield { root: resolvedRoot, args: ['--literal-pathspecs', 'ls-tree', '-rz', resolvedCommit, '--', ...paths] })!.toString();
+  const tree = (yield { root: resolvedRoot, args: ['--literal-pathspecs', 'ls-tree', '-rzl', resolvedCommit, '--', ...paths] })!.toString();
   const entries = new Map(tree.split('\0').filter(Boolean).map(entry => {
-    const match = /^(\d+) (\w+) ([a-f0-9]+)\t([\s\S]+)$/.exec(entry)!;
-    return [match[4], { mode: match[1], type: match[2], oid: match[3] }];
+    const match = /^(\d+) (\w+) ([a-f0-9]+) +(\d+|-)\t([\s\S]+)$/.exec(entry)!;
+    return [match[5], { mode: match[1], type: match[2], oid: match[3], size: Number(match[4]) }];
   }));
   const blobs = new Map<string, GitBlob>();
   for (const p of paths) {
     const entry = entries.get(p);
-    if (input.allowAbsent && !entry) continue;
+    if (!entry && input.unavailable === "skip-absent") continue;
     if (!entry || entry.type !== 'blob' || (entry.mode !== '100644' && entry.mode !== '100755')) {
+      if (display) continue;
       throw new Error(`Not a tracked regular file at ${resolvedCommit}: ${p}`);
     }
+    if (display && entry.size > display.maxFileBytes) continue;
     blobs.set(p, { oid: entry.oid, mode: entry.mode });
   }
   const present = paths.filter((p) => blobs.has(p));

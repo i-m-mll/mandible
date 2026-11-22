@@ -84,10 +84,13 @@ function visibleLayoutRows(db: Db, bundleId: string, viewer: BriefingBundleViewe
 function projectLayout(rows: readonly LayoutRow[], reader: TrackedBriefingReader): Pick<BriefingBundle, "layout" | "members"> {
   const layout: BriefingBundleLayoutEntry[] = [];
   const members: BriefingBundleMember[] = [];
+  const tracked = reader.readAll(rows.flatMap(row => row.briefing === null
+    ? [{ project_id: row.tracked_project_id!, path: row.tracked_path! }] : []));
+  let trackedIndex = 0;
   for (const row of rows) {
     const position = row.entry_kind === "subgroup" ? row.subgroup_position : row.layout_position;
     const leaf: BriefingBundleLeaf = row.briefing === null
-      ? { kind: "tracked", position, tracked: reader.read({ project_id: row.tracked_project_id!, path: row.tracked_path! }) }
+      ? { kind: "tracked", position, tracked: tracked[trackedIndex++]! }
       : { kind: "briefing", position, briefing: row.briefing };
     if (leaf.kind === "briefing") members.push({ position: members.length, briefing: leaf.briefing });
     if (row.entry_kind === "briefing") {
