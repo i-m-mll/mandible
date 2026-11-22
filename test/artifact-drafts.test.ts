@@ -17,11 +17,11 @@ class TestRoutes implements RouteRegistrar {
   put(pathname: string, handler: RouteHandler): void { this.handlers.set(`PUT ${pathname}`, handler); }
   patch(pathname: string, handler: RouteHandler): void { this.handlers.set(`PATCH ${pathname}`, handler); }
   delete(pathname: string, handler: RouteHandler): void { this.handlers.set(`DELETE ${pathname}`, handler); }
-  handle(method: string, pathname: string, req: Partial<RequestLike> = {}): { statusCode: number; payload: any } {
+  async handle(method: string, pathname: string, req: Partial<RequestLike> = {}): Promise<{ statusCode: number; payload: any }> {
     const handler = this.handlers.get(`${method} ${pathname}`);
     if (!handler) throw new Error(`missing handler for ${method} ${pathname}`);
     const res = createResponse();
-    handler({
+    await handler({
       method,
       url: pathname,
       params: {},
@@ -126,31 +126,41 @@ describe("artifact drafts", () => {
     expect(getArtifactDraft(db, v1.series.id)).toBeNull();
   });
 
-  it("exposes draft save, read, publish, and delete through provider routes", () => {
-    const v1 = managedVersion("hello\n", 1000);
+  it("keeps pinned Markdown bytes through route load, draft save, and publish", async () => {
+    const source = "\uFEFF# Draft\r\nEmoji 😀\nLast line";
+    const v1 = managedVersion(source, 1000);
+    const v2 = managedVersion("newer version", 1100);
     const routes = new TestRoutes();
     registerProviderRoutes(routes, inlineLedgerReader());
 
-    const saved = routes.handle("POST", "/api/artifacts/drafts", {
+    const original = await routes.handle("GET", "/api/artifacts/:id/text", { params: { id: v1.version.id } });
+    expect(original.statusCode).toBe(200);
+    expect(Buffer.from(original.payload.text)).toEqual(Buffer.from(source));
+
+    const saved = await routes.handle("POST", "/api/artifacts/drafts", {
       body: {
         ref: v1.series.id,
-        base_version_id: v1.version.id,
-        content: "hello edited\n",
+        base_version_id: v2.version.id,
+        content: original.payload.text,
         media_type: "text/markdown",
       },
     });
     expect(saved.statusCode).toBe(200);
-    expect(saved.payload.draft.content).toBe("hello edited\n");
+    expect(saved.payload.draft.content).toBe(source);
 
-    const read = routes.handle("GET", "/api/artifacts/drafts", {
+    const read = await routes.handle("GET", "/api/artifacts/drafts", {
       query: { ref: v1.series.id },
     });
-    expect(read.payload.draft.base_version_id).toBe(v1.version.id);
+    expect(read.payload.draft.base_version_id).toBe(v2.version.id);
 
-    const published = routes.handle("POST", "/api/artifacts/drafts/publish", {
+    const published = await routes.handle("POST", "/api/artifacts/drafts/publish", {
       body: { ref: v1.series.id, label: "ui" },
     });
-    expect(published.payload.result.version.parent_version_id).toBe(v1.version.id);
+    expect(published.payload.result.version.parent_version_id).toBe(v2.version.id);
+    const publishedText = await routes.handle("GET", "/api/artifacts/:id/text", {
+      params: { id: published.payload.result.version.id },
+    });
+    expect(Buffer.from(publishedText.payload.text)).toEqual(Buffer.from(source));
 
     saveArtifactDraft(db, {
       ref: v1.series.id,
@@ -158,7 +168,7 @@ describe("artifact drafts", () => {
       content: "second draft\n",
       media_type: "text/markdown",
     }, 1500);
-    const deleted = routes.handle("DELETE", "/api/artifacts/drafts", {
+    const deleted = await routes.handle("DELETE", "/api/artifacts/drafts", {
       query: { ref: v1.series.id },
     });
     expect(deleted.payload.deleted).toBe(true);

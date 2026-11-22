@@ -63,8 +63,12 @@
   },
   "devDependencies": {
     "@codemirror/commands": "6.10.4",
+    "@codemirror/lang-markdown": "6.5.2",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/merge": "6.12.3",
     "@codemirror/state": "6.7.0",
     "@codemirror/view": "6.43.4",
+    "@lezer/markdown": "1.8.1",
     "@tauri-apps/cli": "2.10.0",
     "@tauri-apps/plugin-deep-link": "2.4.9",
     "@testing-library/preact": "3.2.4",

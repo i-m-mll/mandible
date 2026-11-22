@@ -1,4 +1,8 @@
 // @vitest-environment jsdom
+import { history, undo } from '@codemirror/commands';
+import { EditorState, Transaction } from '@codemirror/state';
+import { MarkdownDocument } from '../ui/src/components/MarkdownDocument';
+import { exactMarkdownSource, markdownValue } from '../ui/src/components/markdown/source';
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { cleanup, fireEvent, screen, waitFor } from './helpers/dom.js';
 import { render } from './helpers/notice-test-render';
@@ -14,6 +18,38 @@ import {
   ArtifactDetail,
   artifactPreview,
 } from '../ui/src/views/artifacts';
+
+describe('Markdown documents', () => {
+  it('restores distinct line endings when adjacent deletions are undone together', () => {
+    const source = 'a\r\n\rb\r\nc';
+    let state = EditorState.create({ doc: source, extensions: [exactMarkdownSource(source), history()] });
+    for (const from of [2, 1]) {
+      state = state.update({
+        changes: { from, to: from + 1 },
+        annotations: [Transaction.userEvent.of('delete.backward'), Transaction.time.of(1000)],
+      }).state;
+    }
+    expect(markdownValue(state)).toBe('ab\r\nc');
+    undo({ state, dispatch: (transaction) => { state = transaction.state; } });
+    expect(markdownValue(state)).toBe(source);
+  });
+
+  it('renders only the directives the host registered and keeps authored HTML inert', () => {
+    const { container } = render(<MarkdownDocument
+      value={'::approved{label="Allowed widget"}\n\n:::unknown\n**Raw text**\n:::\n\n<img src=x onerror="alert(1)">\n\n[Unsafe](javascript:alert%281%29)'}
+      readOnly
+      ariaLabel="Document"
+      directives={new Map([['approved', (directive, document) => {
+        const widget = document.createElement('aside');
+        widget.textContent = directive.attributes.label ?? '';
+        return widget;
+      }]])}
+    />);
+    expect(screen.getByRole('complementary').textContent).toBe('Allowed widget');
+    expect(screen.getByLabelText('Document').textContent).toContain('**Raw text**');
+    expect(container.querySelector('img[src="x"], a[href^="javascript:"]')).toBeNull();
+  });
+});
 
 beforeEach(establishTestClientAccess);
 
@@ -223,10 +259,14 @@ describe('artifact preview helpers', () => {
     });
   });
 
-  it('opens a server-backed Markdown draft editor for editable artifacts', async () => {
+  it('starts an artifact draft from the exact pinned Markdown source', async () => {
     const baseVersion = version();
+    const source = '\uFEFF# Draft\r\nEmoji 😀\nUnterminated';
     const mockFetch = vi.fn((input: RequestInfo, init?: RequestInit) => {
       const url = String(input);
+      if (url === `/api/artifacts/${encodeURIComponent(baseVersion.id)}/text`) {
+        return Promise.resolve(Response.json({ text: source }));
+      }
       if (url.startsWith('/api/artifacts/drafts') && (!init || init.method === undefined)) {
         return Promise.resolve(new Response(JSON.stringify({ draft: null }), {
           headers: { 'content-type': 'application/json' },
@@ -242,7 +282,7 @@ describe('artifact preview helpers', () => {
             latest_version_id: baseVersion.id,
             latest_version_no: 1,
             stale: false,
-            content: '# Draft\n',
+            content: source,
             media_type: 'text/markdown',
             label: null,
             note: null,
@@ -262,7 +302,7 @@ describe('artifact preview helpers', () => {
       media_type: 'text/markdown',
       preview: {
         encoding: 'utf-8',
-        text: '# Draft\n',
+        text: '# Normalized preview\n',
         truncated: false,
       },
     }), {
@@ -272,11 +312,14 @@ describe('artifact preview helpers', () => {
       selectedVersionNo: 1,
     });
 
+    const reader = await screen.findByLabelText('Artifact Markdown document');
     fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Edit content' }));
 
     expect(await screen.findByLabelText('Artifact editor')).toBeTruthy();
-    expect(mockFetch).toHaveBeenCalledWith('/api/artifacts/drafts', expect.objectContaining({ method: 'POST' }));
+    expect(screen.getByLabelText('Artifact Markdown document')).toBe(reader);
+    const save = mockFetch.mock.calls.find(([url, init]) => url === '/api/artifacts/drafts' && init?.method === 'POST');
+    expect(JSON.parse(String(save?.[1]?.body)).content).toBe(source);
   });
 
   it('resumes the content of a stale draft and offers stale-base actions', async () => {

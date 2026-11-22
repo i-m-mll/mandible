@@ -8,6 +8,7 @@ export const detailKeys = {
   resolution: (ref: string | null) => ['artifact', 'resolution', ref] as const,
   versions: (ref: string | null) => ['artifact', 'versions', ref] as const,
   record: (id: string | null) => ['artifact', 'record', id] as const,
+  text: (id: string | null) => ['artifact', 'text', id] as const,
   content: (id: string | null) => ['artifact', 'content', id] as const,
   backrefs: (id: string | null) => ['artifact', 'backrefs', id] as const,
   list: (params: object) => ['artifact', 'list', params] as const,

@@ -3299,6 +3299,12 @@ export async function getArtifactContent(id: string, options: { signal?: AbortSi
   return payload.content;
 }
 
+export async function getArtifactText(id: string, options: { signal?: AbortSignal } = {}): Promise<string> {
+  const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/text`, options);
+  const payload = (await parseMaybeJson(response)) as { text: string };
+  return payload.text;
+}
+
 export async function openArtifactExternally(id: string): Promise<void> {
   await apiPost(`/api/artifacts/${encodeURIComponent(id)}/open-externally`, {});
 }
