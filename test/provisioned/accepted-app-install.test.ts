@@ -142,6 +142,9 @@ it('replaces retained signed bundles through real native service startup, qualif
     for (const [file, role] of [['mandible-service', 'serviceHelper'], ['mandible-bun', 'bun'], ['mandible-caddy', 'caddy']] as const) {
       expect(candidateExecutables[file]).toEqual(candidateRelease.files[candidateRelease.native[role]]);
     }
+    for (const executable of ['mandible-bun', 'mandible-caddy']) {
+      run('/usr/bin/codesign', ['--verify', '--strict', path.join(candidateMacOS, executable)], `verify candidate ${executable} signature`);
+    }
     // The slow-gateway unit's Caddy answers only after the 5 s the go-live path once allowed it.
     gatewayCaddy = path.join(candidateMacOS, 'mandible-caddy');
     if (gatewayDelayMs) {
@@ -181,10 +184,6 @@ it('replaces retained signed bundles through real native service startup, qualif
       fs.writeFileSync(path.join(contents, 'Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string><key>CFBundleExecutable</key><string>mandible-app</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>${index + 1}</string></dict></plist>`);
       stageBundleServices(contents, index ? helper : predecessorHelper, identifier);
       signer.sign(path.join(contents, 'MacOS/mandible-service'), null, true, nativeSigningIdentifier(identifier, 'serviceHelper'));
-      for (const role of ['bun', 'caddy'] as const) {
-        const entitlements = candidateRelease.signing?.[role];
-        signer.sign(path.join(contents, 'MacOS', `mandible-${role}`), entitlements ? path.join(candidateApp, 'Contents/Resources', entitlements) : null);
-      }
       const candidate = { pin_sha: pin.repeat(40), tree_sha: 'c'.repeat(40), base_sha: 'd'.repeat(40), head_sha: 'e'.repeat(40) };
       fs.writeFileSync(path.join(resources, 'service-fixture.json'), JSON.stringify({ accountHome }));
       fs.writeFileSync(path.join(resources, 'foreground.mjs'), `import fs from 'node:fs'; import path from 'node:path';
@@ -199,6 +198,8 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
 `);
       const native = { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy', serviceHelper: '../MacOS/mandible-service' };
       const files = Object.fromEntries(['foreground.mjs', 'service-fixture.json', ...Object.values(native)].map(relative => [relative, installedFileIdentity(path.resolve(resources, relative))]));
+      expect(files[native.bun]).toEqual(candidateExecutables['mandible-bun']);
+      expect(files[native.caddy]).toEqual(candidateExecutables['mandible-caddy']);
       checkDeadline(`generation ${pin} inventory`);
       fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: String(index + 1), target: `${process.platform}-${process.arch}`,
         layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', agents: '../Library/LaunchAgents' } },

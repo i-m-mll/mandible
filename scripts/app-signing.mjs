@@ -69,7 +69,8 @@ export function resolveAppSigning(root, configArguments = [], environment = proc
 export function appleTool(command, args, { timeout = 60_000, secrets = [], output = 'stdout', env } = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout, maxBuffer: 4 * 1024 * 1024, env });
   if (result.error || result.status !== 0) {
-    let message = result.stderr || result.error?.message || `exit ${result.status}`;
+    let message = [result.error?.message, result.stderr?.trim()].filter(Boolean).join('\n')
+      || (result.signal ? `terminated by ${result.signal}` : `exit ${result.status}`);
     for (const secret of secrets.filter(Boolean)) message = message.replaceAll(secret, '[redacted]');
     throw new Error(`${path.basename(command)} failed: ${message.trim()}`);
   }
