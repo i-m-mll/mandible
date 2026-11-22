@@ -2,7 +2,7 @@ import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
 import type { RefObject } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { AuthReviewDialog, AuthReviewMarkdown, AuthReviewMarkdownChange, AuthReviewSidebar, authReviewSelector,
+import { AuthReviewDialog, AuthReviewMarkdown, AuthReviewTextFile, AuthReviewDetachedDrafts, AuthReviewSidebar, authReviewSelector,
   useAuthRequestReview, type ReviewDecision } from './AuthRequestReview';
 import type { RequestReviewComment } from '../../../src/feedback/request-review';
 import { ChangeList, type DiffTargetReady } from '../components/ChangeList';
@@ -1511,6 +1511,7 @@ function AuthRequestDetail({
           {review.comparisonError && <DetailPaneNotice severity="error" density="compact" title="Revision comparison unavailable">
             {review.comparisonError}
           </DetailPaneNotice>}
+          {!review.against && <AuthReviewDetachedDrafts review={review} />}
           <ChangeList
             files={changeReport?.files}
             patch={authType === 'merge' || review.against ? undefined : diffRaw}
@@ -1521,8 +1522,11 @@ function AuthRequestDetail({
             target={commentTarget ?? (navigation.file && targetToken && !review.against ? { ...navigation.file, navigationToken: targetToken } : undefined)}
             lineTarget={lineTarget}
             onLineSelection={review.available && !review.against ? (_file, index, range, quote) => review.lineSelection(index, range, quote) : undefined}
-            renderTextFile={(file, pair, index, wholeFile) => /\.(?:md|markdown)$/i.test(file.new_path ?? file.old_path ?? '')
-              ? <AuthReviewMarkdownChange review={review} pair={pair} index={index} wholeFile={wholeFile} /> : null}
+            renderFileStatus={!review.against ? file => {
+              const status = review.drafts.fileStatus(file.new_path);
+              return status ? <span className="change-list__badge">{status === 'conflict' ? 'Draft conflict' : 'Review draft'}</span> : null;
+            } : undefined}
+            renderTextFile={(_file, pair, index, view) => <AuthReviewTextFile review={review} pair={pair} index={index} view={view} />}
             contentReady={review.against ? Boolean(review.comparison) || !comparedVersion?.head : authType === 'merge'
               ? request.change_report !== undefined : request.diff_summary !== undefined}
             onTargetReady={(token, result) => {

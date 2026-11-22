@@ -1,3 +1,5 @@
+import { readChangeEditPatch } from "../feedback/change-edit-git.js";
+import { REVIEW_EDIT_MAX_BYTES } from "../feedback/request-draft-types.js";
 import * as z from "zod";
 import { collectAuthMergeReview, type AuthMergeReviewCollectionResult } from "../auth-change-report.js";
 import { requestReviewVersions, readRequestReview, returnedRequestReview } from "../feedback/request-review.js";
@@ -92,9 +94,19 @@ export function registerAuthRoutes(
         end_offset: z.number().int().positive(), quote: z.string().min(1), body: z.string().trim().min(1) }),
     ]),
   });
+  const reviewDraftText = z.string().max(REVIEW_EDIT_MAX_BYTES);
+  const reviewDraft = reviewPrecondition.extend({
+    round_id: z.string().min(1), path: z.string().min(1), expected_generation: z.number().int().nonnegative(),
+    mutation: z.discriminatedUnion("operation", [
+      z.object({ operation: z.literal("save"), text: reviewDraftText }),
+      z.object({ operation: z.literal("resolve"), text: reviewDraftText }),
+      z.object({ operation: z.literal("revert") }),
+    ]),
+  });
   const reviewReturn = reviewPrecondition.extend({
     round_id: z.string().min(1),
     annotation_event_ids: z.array(z.string().min(1)),
+    draft_snapshot: z.array(z.object({ path: z.string().min(1), generation: z.number().int().positive() })).optional(),
     reason: z.string().optional(),
   });
   app.post("/api/auth/check", async (req, res) => {
@@ -423,9 +435,15 @@ export function registerAuthRoutes(
     const submission = returnedRequestReview(db, resolved.id);
     if (!submission) { res.status(404).json({ error: "This request has no returned review." }); return; }
     const request = authQueue.getRequestExact(resolved.id)!;
-    res.json({ ...submission, request_id: resolved.id, status: request.status,
+    let replacements: string | null = null;
+    let replacements_error: string | null = null;
+    if (submission.change_edit) {
+      try { replacements = await readChangeEditPatch(request.target_repo_root!, submission.change_edit); }
+      catch { replacements_error = "The change-edit diff is unavailable in the request checkout."; }
+    }
+    res.json({ ...submission, replacements, replacements_error, request_id: resolved.id, status: request.status,
       lifecycle_revision: authQueue.lifecycleRevision(resolved.id), responsibility: authQueue.requestResponsibility(request) });
-  }, { operation: { id: "get:/api/auth/request/:id/review/returned", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/auth/request/:id/review/returned", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.get("/api/auth/request/:id/review/changes", async (req, res) => {
     const request = await authQueue.getRequest(req.params.id);
@@ -446,11 +464,19 @@ export function registerAuthRoutes(
     } catch (error) { handleQueueError(error, res); }
   }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/annotations", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/return", globalCapabilityRoute("approve_auth", (req, res) => {
+  app.post("/api/auth/request/:id/review/drafts", globalCapabilityRoute("approve_auth", async (req, res) => {
+    try {
+      const input = reviewDraft.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid review draft." }); return; }
+      res.json(await authQueue.mutateRequestReviewDraft(req.params.id, authReviewOperator(db, req), input.data));
+    } catch (error) { handleQueueError(error, res); }
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/drafts", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/return", globalCapabilityRoute("approve_auth", async (req, res) => {
     try {
       const input = reviewReturn.safeParse(readBody(req));
       if (!input.success) { res.status(400).json({ error: "Invalid review return." }); return; }
-      const { request, submission_id } = authQueue.returnRequestReview(req.params.id, authReviewOperator(db, req), input.data);
+      const { request, submission_id } = await authQueue.returnRequestReview(req.params.id, authReviewOperator(db, req), input.data);
       res.json({ request_id: request.id, status: request.status, submission_id });
     } catch (error) { handleQueueError(error, res); }
   }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/return", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });

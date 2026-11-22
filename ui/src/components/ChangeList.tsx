@@ -22,6 +22,13 @@ export type ChangeListFile = Omit<GitChangeFile, 'additions' | 'deletions'> & {
 };
 export type ChangeListTarget = DiffFileIdentity & { navigationToken: string };
 
+export type ChangeTextFileView = {
+  wholeFile: boolean;
+  mode: DiffMode;
+  wrap: boolean;
+  defaultContent: ComponentChild;
+};
+
 export type ChangeListProps = {
   files?: readonly ChangeListFile[];
   patch?: string;
@@ -36,7 +43,8 @@ export type ChangeListProps = {
   onTargetReady?: (token: string, result: DiffTargetReady) => void;
   onLineSelection?: (file: ChangeListFile, index: number, range: DiffLineRange | null, quote?: string) => void;
   lineTarget?: DiffLineRange & { token: string };
-  renderTextFile?: (file: ChangeListFile, pair: Extract<DiffFilePair, { kind: 'text' }>, index: number, wholeFile: boolean) => ComponentChild;
+  renderFileStatus?: (file: ChangeListFile) => ComponentChild;
+  renderTextFile?: (file: ChangeListFile, pair: Extract<DiffFilePair, { kind: 'text' }>, index: number, view: ChangeTextFileView) => ComponentChild;
 };
 
 type ViewState = {
@@ -85,7 +93,7 @@ function ChangeBody({ name, inputKey, load, mode, wrap, wholeFile, onLineSelecti
   wholeFile: boolean;
   onLineSelection?: (range: DiffLineRange | null, quote?: string) => void;
   lineTarget?: DiffLineRange & { token: string };
-  renderTextFile?: (pair: Extract<DiffFilePair, { kind: 'text' }>) => ComponentChild;
+  renderTextFile?: (pair: Extract<DiffFilePair, { kind: 'text' }>, view: ChangeTextFileView) => ComponentChild;
   knownWhitespace?: boolean;
 }) {
   const [result, setResult] = useState<DiffFilePair | PierreDiffInput | null>(null);
@@ -106,11 +114,9 @@ function ChangeBody({ name, inputKey, load, mode, wrap, wholeFile, onLineSelecti
   if (failed) return <div role="alert">File changes unavailable</div>;
   if (!input) return null;
   if (input.kind === 'binary') return <span class="change-list__badge">Binary</span>;
-  const custom = result?.kind === 'text' ? renderTextFile?.(result) : null;
-  if (custom != null) return <>{custom}</>;
   const whitespaceOnly = knownWhitespace === undefined && input.kind === 'contents' && input.before.contents !== input.after.contents
     && input.before.contents.replace(/\s/g, '') === input.after.contents.replace(/\s/g, '');
-  return <>
+  const defaultContent = <>
     {whitespaceOnly && <span class="change-list__badge">Whitespace only</span>}
     <Suspense fallback={null}>
       {input.kind === 'contents' && /\.(?:md|markdown)$/i.test(name) ? (
@@ -126,6 +132,7 @@ function ChangeBody({ name, inputKey, load, mode, wrap, wholeFile, onLineSelecti
       )}
     </Suspense>
   </>;
+  return <>{result?.kind === 'text' ? renderTextFile?.(result, { wholeFile, mode, wrap, defaultContent }) ?? defaultContent : defaultContent}</>;
 }
 
 export function ChangeList(props: ChangeListProps) {
@@ -134,7 +141,7 @@ export function ChangeList(props: ChangeListProps) {
 }
 
 export function ChangeInventoryList({
-  files = emptyFiles, scope, revision, ariaLabel, emptyLabel = 'No changes', loadFile, target, contentReady = true, onTargetReady, onLineSelection, lineTarget, renderTextFile,
+  files = emptyFiles, scope, revision, ariaLabel, emptyLabel = 'No changes', loadFile, target, contentReady = true, onTargetReady, onLineSelection, lineTarget, renderTextFile, renderFileStatus,
 }: ChangeListProps) {
   const [view, setView] = usePersistedViewState(`mandible:changes:${scope}`, viewState, defaultView);
   const headings = useRef(new Map<string, HTMLElement>());
@@ -193,6 +200,7 @@ export function ChangeInventoryList({
             {file.old_path && file.new_path && file.old_path !== file.new_path ? `${file.old_path} → ${file.new_path}` : name}
           </span>}
           actions={<>
+            {renderFileStatus?.(file)}
             {status && <span class="change-list__badge">{status}</span>}
             {file.whitespace_only && <span class="change-list__badge">Whitespace only</span>}
             {binary ? <span class="change-list__badge">Binary</span> : file.additions !== undefined && file.deletions !== undefined && <>
@@ -215,7 +223,7 @@ export function ChangeInventoryList({
           {!binary && <ChangeBody key={fileRevision} inputKey={fileRevision} name={name} mode={view.mode}
             wrap={view.wrap} wholeFile={view.wholeFile}
             knownWhitespace={file.whitespace_only}
-            renderTextFile={renderTextFile ? pair => renderTextFile(file, pair, index, view.wholeFile) : undefined}
+            renderTextFile={renderTextFile ? (pair, presentation) => renderTextFile(file, pair, index, presentation) : undefined}
             load={signal => file.patch
               ? Promise.resolve({ kind: 'patch', file: file.patch })
               : loadFile!(file, index, signal)}

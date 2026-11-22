@@ -1,4 +1,6 @@
 import { computeAuthMergeReviewMetadata } from "../src/auth-context.js";
+import { chmodSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { RequestReview } from "../src/feedback/request-review.js";
 import { createOutcomeReporter } from "../src/notices/report.js";
 import { fileRpc, runCli } from "./helpers/cli-process.js";
@@ -78,7 +80,7 @@ function requesterFixture(root = process.cwd()) {
 
 describe("auth request immutable lifecycle", () => {
 
-  it("freezes a return, keeps its quoted review through replacement, and compares pinned heads", async () => {
+  it("returns exact edits and comments, and carries the review across pinned revisions", async () => {
     const repo = createAuthCheckRepo();
     const { db, queue, operator, credential, submit, operatorSigning } = requesterFixture(repo);
     registerWorkRepo(db, repo);
@@ -91,7 +93,16 @@ describe("auth request immutable lifecycle", () => {
     writeFile(repo, "notes.md", "# Notes\n\nReview the base note.\n");
     git(repo, ["add", "notes.md"]);
     git(repo, ["commit", "-m", "A reviewable original note"]);
-    commitOnBranch(repo, branch, { "notes.md": "# Notes\n\nReview the proposed note.\n", "script.txt": "a\ncheck this line\nz\n" });
+    const notesHead = "# Notes\r\n\nReview the proposed note.\r\n";
+    const scriptHead = "a\r\ncheck this line\nz\r\n";
+    const notesEdit = "# Notes\r\n\nReview the operator note.\r\nLast line";
+    const scriptEdit = "a\r\ncheck this line\noperator check\r\n";
+    commitOnBranch(repo, branch, { "notes.md": notesHead, "script.txt": scriptHead });
+    git(repo, ["checkout", branch]);
+    chmodSync(join(repo, "script.txt"), 0o755);
+    git(repo, ["add", "script.txt"]);
+    git(repo, ["commit", "-m", "Make the script executable"]);
+    git(repo, ["checkout", "main"]);
     const candidate = async () => {
       const metadata = await computeAuthMergeReviewMetadata(repo, "main", branch);
       return { cwd: repo, target_repo_root: repo, merge_head_sha: metadata.changeReport.comparison.head_sha, change_report: metadata.changeReport };
@@ -127,8 +138,22 @@ describe("auth request immutable lifecycle", () => {
       const code = await add(lines.id, 1, 2, "check this line\n", "Keep this check visible.");
       expect(markdown.status, JSON.stringify(markdown.body)).toBe(201);
       expect(code.status, JSON.stringify(code.body)).toBe(201);
-      const annotation_event_ids = (await read(request.id)).annotations.map(annotation => annotation.annotation_event_id);
-      const returnBody = { ...readBefore.precondition, round_id: readBefore.round.id, annotation_event_ids, reason: "Clarify the note." };
+      const save = (path: string, expected_generation: number, mutation: { operation: "save"; text: string } | { operation: "revert" }) =>
+        invoke("POST", `${base}/review/drafts`, {
+          ...readBefore.precondition, round_id: readBefore.round.id, path, expected_generation, mutation,
+        });
+      const notesDraft = await save("notes.md", 0, { operation: "save", text: notesEdit });
+      expect(notesDraft.status, JSON.stringify(notesDraft.body)).toBe(200);
+      expect((await save("notes.md", 0, { operation: "save", text: "Stale writer" })).status).toBe(409);
+      expect((await save("notes.md", 1, { operation: "revert" })).body).toMatchObject({ generation: 2, text: null });
+      expect((await save("notes.md", 0, { operation: "save", text: "Stale writer after revert" })).status).toBe(409);
+      expect((await save("notes.md", 2, { operation: "save", text: notesEdit })).status).toBe(200);
+      expect((await save("script.txt", 0, { operation: "save", text: scriptEdit })).status).toBe(200);
+      const reviewed = await read(request.id);
+      const annotation_event_ids = reviewed.annotations.map(annotation => annotation.annotation_event_id);
+      const draft_snapshot = reviewed.drafts.map(({ path, generation }) => ({ path, generation }));
+      const returnBody = { ...readBefore.precondition, round_id: readBefore.round.id, annotation_event_ids, draft_snapshot, reason: "Clarify the note." };
+      expect((await invoke("POST", `${base}/return`, { ...returnBody, draft_snapshot: [] })).status).toBe(409);
       const staleReturn = await invoke("POST", `${base}/return`, { ...returnBody, expected_custody_generation: readBefore.precondition.expected_custody_generation - 1 });
       expect(staleReturn.status).toBe(409);
       let entered!: () => void;
@@ -161,10 +186,23 @@ describe("auth request immutable lifecycle", () => {
       expect(first.stdout).toContain("Review the base note");
       expect(first.stdout).toContain("script.txt (after) lines 2–2");
       expect(first.stdout).toContain("Keep this check visible.");
+      expect(first.stdout).toContain("+Review the operator note.");
+      expect(first.stdout).toContain("+operator check");
+      const ref = /^Git ref (refs\/mandible\/change-edits\/\S+)$/m.exec(first.stdout)?.[1];
+      expect(ref).toBeDefined();
+      const requester = createAuthCheckRepo();
+      git(requester, ["fetch", repo, ref!]);
+      expect(git(requester, ["rev-parse", "FETCH_HEAD^"])).toBe(request.merge_head_sha);
+      expect(git(requester, ["diff", "--name-only", "FETCH_HEAD^", "FETCH_HEAD"])).toBe("notes.md\nscript.txt");
+      expect(git(requester, ["ls-tree", "FETCH_HEAD", "script.txt"])).toMatch(/^100755 blob /);
+      git(requester, ["checkout", "--detach", "FETCH_HEAD"]);
+      expect(readFileSync(join(requester, "notes.md"))).toEqual(Buffer.from(notesEdit));
+      expect(readFileSync(join(requester, "script.txt"))).toEqual(Buffer.from(scriptEdit));
 
       git(repo, ["checkout", branch]);
-      writeFile(repo, "script.txt", "first line\na\ncheck this line\nz\n");
-      git(repo, ["add", "script.txt"]);
+      writeFile(repo, "notes.md", notesHead.replace("proposed", "successor"));
+      writeFile(repo, "script.txt", `first line\n${scriptHead}`);
+      git(repo, ["add", "notes.md", "script.txt"]);
       git(repo, ["commit", "-m", "Address the review"]);
       git(repo, ["checkout", "main"]);
       const replacement = await submit({ ...await candidate(), supersedes_request_id: request.id,
@@ -173,16 +211,22 @@ describe("auth request immutable lifecycle", () => {
       expect(next.versions.map(version => [version.id, version.status])).toEqual([[request.id, "superseded"], [replacement.id, "pending"]]);
       expect(next.annotations.map(annotation => [annotation.body, annotation.anchor.status, annotation.anchor.start_offset]))
         .toEqual([["Explain the original wording.", "preserved", 9], ["Keep this check visible.", "preserved", 2]]);
+      const conflict = next.drafts.find(draft => draft.path === "notes.md");
+      expect(conflict).toMatchObject({ conflict: "overlap" });
+      expect(conflict?.text).toMatch(/<<<<<<< Requester[\s\S]*Review the successor note\.[\s\S]*Review the operator note\./);
+      expect(next.drafts.find(draft => draft.path === "script.txt")).toMatchObject({ conflict: null, text: `first line\n${scriptEdit}` });
       const compared = await invoke("GET", `/api/auth/request/${replacement.id}/review/changes?against=${request.id}`);
       expect(compared.status, JSON.stringify(compared.body)).toBe(200);
       expect(compared.body).toMatchObject({
         comparison: { merge_base_sha: request.merge_head_sha, head_sha: replacement.merge_head_sha },
-        files: [{ old_path: "script.txt", new_path: "script.txt", additions: 1, deletions: 0 }],
+        files: [{ old_path: "notes.md", new_path: "notes.md", additions: 1, deletions: 1 },
+          { old_path: "script.txt", new_path: "script.txt", additions: 1, deletions: 0 }],
       });
       const second = await command(request.id);
       expect(second.status, second.stderr).toBe(0);
       expect(second.stdout).toContain("superseded");
       expect(second.stdout).toContain("Explain the original wording.");
+      expect(second.stdout).toContain(ref);
 
       const unbound = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo revise", title: "Empty review", session_id: session }, operator.id);
       const unboundUrl = `/api/auth/request/${unbound.id}`;

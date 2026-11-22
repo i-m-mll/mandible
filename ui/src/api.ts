@@ -14,6 +14,7 @@ import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import { INTERFACE_NOTE_CHANGED_EVENT } from "../../src/interface-notes/contract";
 import type { ResolveRefResponse, SessionDescendant, SessionSummary } from '../../src/contracts';
 import type { DiffFilePair, GitChangeFile } from '../../src/contracts';
+import type { RequestReviewDraft, ReviewDraftMutation, ReviewDraftStamp } from "../../src/feedback/request-draft-types";
 import type { WorkCompareResult } from '../../src/work-scanner';
 export type { WorkCompareResult } from '../../src/work-scanner';
 import type { EntityKind } from '../../src/app-routes';
@@ -1051,9 +1052,18 @@ export async function annotateAuthReview(requestId: string, precondition: AuthRe
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/annotations`, { ...precondition, document_binding_id, mutation });
 }
 
-export async function returnAuthReview(requestId: string, review: AuthReviewProjection, reason: string): Promise<void> {
+export async function mutateAuthReviewDraft(requestId: string, review: AuthReviewProjection, path: string,
+  expected_generation: number, mutation: ReviewDraftMutation): Promise<RequestReviewDraft> {
+  const response = await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/drafts`, {
+    ...review.precondition, round_id: review.round.id, path, expected_generation, mutation,
+  });
+  return await response.json();
+}
+
+export async function returnAuthReview(requestId: string, review: AuthReviewProjection, reason: string,
+  draft_snapshot: ReviewDraftStamp[]): Promise<void> {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/return`, {
-    ...review.precondition, reason, round_id: review.round.id,
+    ...review.precondition, reason, round_id: review.round.id, draft_snapshot,
     annotation_event_ids: review.annotations.filter(annotation => annotation.origin_request_id === requestId)
       .map(annotation => annotation.annotation_event_id),
   });

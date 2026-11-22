@@ -1,3 +1,5 @@
+import { canEditRequestFile, canEditRequestFiles, requestDrafts } from "./request-drafts.js";
+import type { ReviewChangeEdit } from "./request-draft-types.js";
 import { canonicalJson } from "../canonical-json.js";
 import { authSnapshotDigest } from "../auth-request-snapshot.js";
 import type { Db } from "../db.js";
@@ -7,7 +9,7 @@ import type { AuthRequest, AuthRequestStatus } from "../types.js";
 import { carryReviewLines, carryReviewRanges } from "./review-ranges.js";
 import {
   createReviewRound, effectiveReviewAnnotations, reviewDocumentBindings,
-  reviewSubmissionAnnotations, reviewSubmissionTargets, type ReviewRoundOwner,
+  reviewSubmissionAnnotations, reviewSubmissionTargets, submittedChangeEdit, type ReviewRoundOwner,
 } from "./review-store.js";
 import type { CarriedReviewRange, RequestReviewFile, ReviewAnnotation, ReviewDocumentBinding } from "./review-types.js";
 
@@ -59,6 +61,7 @@ export type RequestReviewReturn = {
   revision: number;
   reason: string | null;
   delivered: boolean;
+  change_edit: ReviewChangeEdit | null;
   targets: ReturnType<typeof reviewSubmissionTargets>;
   comments: Array<ReviewAnnotation & { source: RequestBinding["source"] }>;
 };
@@ -73,7 +76,7 @@ export function returnedRequestReview(db: Db, requestId: string): RequestReviewR
   if (!returned) return null;
   const { round_id, delivered, ...receipt } = returned;
   const bindings = new Map((reviewDocumentBindings(db, round_id) as RequestBinding[]).map(binding => [binding.id, binding]));
-  return { ...receipt, delivered: Boolean(delivered), targets: reviewSubmissionTargets(db, receipt.submission_id),
+  return { ...receipt, delivered: Boolean(delivered), change_edit: submittedChangeEdit(db, receipt.submission_id), targets: reviewSubmissionTargets(db, receipt.submission_id),
     comments: reviewSubmissionAnnotations(db, receipt.submission_id).map(comment => ({
       ...comment, source: bindings.get(comment.document_binding_id)!.source,
     })) };
@@ -117,6 +120,9 @@ export async function readRequestReview(db: Db, request: AuthRequest, actorUserI
   const round = requestReviewRound(request);
   const versions = requestReviewVersions(db, request.id);
   const returned = returnedRequestReview(db, request.id);
+  const drafts = requestDrafts(db, request.id, actorUserId);
+  const editable_files = canEditRequestFiles(request) ? request.change_report!.files.flatMap((file, index) =>
+    canEditRequestFile(file) ? [{ index, path: file.new_path }] : []) : [];
   const bindings = new Map(round.bindings.map(binding => [binding.id, binding]));
   const notes = returned?.comments ?? effectiveReviewAnnotations(db, round.id, actorUserId)
     .map(comment => ({ ...comment, source: bindings.get(comment.document_binding_id)!.source }));
@@ -159,7 +165,7 @@ export async function readRequestReview(db: Db, request: AuthRequest, actorUserI
       ...(candidate && anchor.status !== "detached"
         ? { document_binding_id: candidate.id, source: candidate.source } : {}) });
   }
-  return { round, versions, annotations, returned };
+  return { round, versions, annotations, returned, drafts, editable_files };
 }
 
 export type RequestReview = Awaited<ReturnType<typeof readRequestReview>>;
