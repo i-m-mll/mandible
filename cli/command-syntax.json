@@ -2152,7 +2152,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|gemini|all","value": {"type": "enum","values": ["codex","claude","gemini","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|all","value": {"type": "enum","values": ["codex","claude","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "Nd|YYYY-MM-DD","value": {"type": "enum","values": ["Nd","YYYY-MM-DD"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "N","value": {"type": "integer","min": 1}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
@@ -2164,7 +2164,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude_code|gemini","value": {"type": "enum","values": ["codex","claude_code","gemini"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude_code","value": {"type": "enum","values": ["codex","claude_code"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
@@ -2174,7 +2174,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|gemini|all","value": {"type": "enum","values": ["codex","claude","gemini","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|all","value": {"type": "enum","values": ["codex","claude","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
@@ -2184,7 +2184,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|gemini|all","value": {"type": "enum","values": ["codex","claude","gemini","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|all","value": {"type": "enum","values": ["codex","claude","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
@@ -2733,7 +2733,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|gemini|all","value": {"type": "enum","values": ["claude","codex","gemini","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|antigravity|all","value": {"type": "enum","values": ["claude","codex","antigravity","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--tag"],"values": [{"kind": "argument","name": "TAG","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "Nd","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "N","value": {"type": "integer","min": 1}}]}]}},
@@ -2834,7 +2834,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "time|Nd","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|gemini|all","value": {"type": "enum","values": ["claude","codex","gemini","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|antigravity|all","value": {"type": "enum","values": ["claude","codex","antigravity","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
@@ -3194,7 +3194,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "target","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|gemini|all","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|all","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--head"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--parse"],"values": []}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "role","value": {"type": "string"}}]}]}},
@@ -3231,7 +3231,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "query","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|gemini|codex|all","value": {"type": "enum","values": ["claude","gemini","codex","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|antigravity|all","value": {"type": "enum","values": ["claude","codex","antigravity","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "user|assistant","value": {"type": "enum","values": ["user","assistant"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "time","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},

@@ -34,9 +34,6 @@ Each provider adapter captures only root-relative, regular-file dependencies:
   a filtered title entry, and a versioned thread-state record. Provider-private
   UI state has no guaranteed thread-scoped export and is explicitly reported
   as unsupported.
-- Gemini: the chat plus session-addressable activity, tool, plan, task,
-  artifact, and subagent files, together with a filtered project-root mapping.
-  Provider-global databases are never copied.
 
 Capture rejects traversal, symlinks, non-regular files, files that change while
 being read, duplicate archive destinations, and missing required history-base
@@ -65,7 +62,7 @@ first verifies custody, refuses if any corresponding provider target already
 exists, and writes a collision-free staging tree plus `restore-plan.json`. It
 does not modify the provider root. Every manifest reports `supported`,
 `partial`, or `unsupported` capability and concrete limitations; current
-Claude, Codex, and Gemini adapters are deliberately `partial` because their
+Claude and Codex adapters are deliberately `partial` because their
 providers do not guarantee native resume after external reinjection.
 
 ## CLI

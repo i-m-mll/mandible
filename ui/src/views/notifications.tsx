@@ -29,7 +29,7 @@ const LOAD_OLDER_THRESHOLD_PX = 160;
 const PROVIDER_MARKS: Record<string, OfficialProviderMarkKind | null> = {
   claude: 'anthropic',
   codex: 'openai',
-  gemini: null,
+  antigravity: null,
 };
 
 export async function warmInitialData(): Promise<void> {

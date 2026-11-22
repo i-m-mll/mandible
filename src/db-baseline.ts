@@ -27,6 +27,7 @@ import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.j
 import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotfiles-instruction-hook.js";
+import { ANTIGRAVITY_PROVIDER_SCHEMA_SQL } from "./antigravity-provider-schema.js";
 
 /**
  * The Mandible schema. This file is the single representation of the head shape
@@ -38,7 +39,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 256;
+export const BASELINE_SCHEMA_VERSION = 257;
 
 export const FROZEN_REQUEST_REVIEW_COLUMNS_SQL = [
   "ALTER TABLE auth_requests ADD COLUMN merge_effective_head_sha TEXT",
@@ -1187,6 +1188,8 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     for (const sql of REQUEST_NARRATIVE_CUSTODY_SQL) db.exec(sql);
     for (const statement of FROZEN_REQUEST_REVIEW_COLUMNS_SQL) db.exec(statement);
     for (const statement of TRACKED_BRIEFING_REVIEW_SCHEMA_SQL) db.exec(statement);
+    // The provider rebuild owns the head shape of the tables whose CHECKs name a provider.
+    for (const statement of ANTIGRAVITY_PROVIDER_SCHEMA_SQL) db.exec(statement);
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
       .run("schema_version", String(schemaVersion));
 

@@ -5,7 +5,7 @@ import { readSessionAliasSources } from "./session-liveness.js";
 
 export function assignmentProvider(provider: unknown): ConversationSource | null {
   if (provider === "claude" || provider === "claude_code") return "claude_code";
-  return provider === "codex" || provider === "gemini" ? provider : null;
+  return provider === "codex" || provider === "antigravity" ? provider : null;
 }
 
 export function assignmentTargetId(target: WorkUnitAssignmentTarget | null): string | null {

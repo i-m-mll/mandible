@@ -42,7 +42,7 @@ Create a new console session. SDK, ACP, and spawn sessions start immediately. PT
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `label` | string | yes | Display name |
-| `command` | string | yes | Command to run (`claude`, `codex`, `gemini`, or any shell command) |
+| `command` | string | yes | Command to run (`claude`, `codex`, or any shell command) |
 | `args` | string[] | no | Command arguments |
 | `cwd` | string | no | Working directory (default: daemon cwd) |
 | `env` | object | no | Extra environment variables |
@@ -51,7 +51,7 @@ Create a new console session. SDK, ACP, and spawn sessions start immediately. PT
 | `auto_restart` | boolean | no | Restart on crash (default: false) |
 | `is_operator` | boolean | no | Whether this is the operator session |
 | `interaction_mode` | string | no | `inbox_only`, `direct`, or `both` (default: `both`) |
-| `backend_type` | string | no | `sdk`, `acp`, `pty`, or `spawn` (default: `sdk` for `claude`, `acp` for `codex`/`gemini`, `spawn` otherwise) |
+| `backend_type` | string | no | `sdk`, `acp`, `pty`, or `spawn` (default: `sdk` for `claude`, `acp` for `codex`, `spawn` otherwise) |
 
 **Response:** `201 Created`
 

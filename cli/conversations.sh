@@ -66,9 +66,9 @@ conversation_custody_command() {
 conversation_source() {
   case "$1" in
     claude) echo "claude_code" ;;
-    codex|gemini) echo "$1" ;;
+    codex|antigravity) echo "$1" ;;
     all|"") echo "" ;;
-    *) echo "Error: unknown provider '$1'. Use: claude, codex, gemini, all" >&2; exit 1 ;;
+    *) echo "Error: unknown provider '$1'. Use: claude, codex, antigravity, all" >&2; exit 1 ;;
   esac
 }
 

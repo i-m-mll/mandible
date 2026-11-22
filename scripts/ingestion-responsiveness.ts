@@ -14,7 +14,7 @@ if (!process.argv.includes("--isolated-child")) {
     const env = { ...runtime.env, MANDIBLE_HOME: path.join(root, "state"), MANDIBLE_DB: path.join(root, "ledger.db"),
       MANDIBLE_CONVERSATION_STRUCTURE_DB: path.join(root, "structure.db"), MANDIBLE_SOCKET: path.join(root, "api.sock") };
     for (const key of Object.keys(env)) {
-      if (/^(CLAUDE|GEMINI_|CODEX_(?!HOME$)|MANDIBLE_(?:MANAGED_|SESSION_|TOKEN$|BASE$|TRANSPORT$|CLI_DIR$))/.test(key)) delete env[key];
+      if (/^(CLAUDE|ANTIGRAVITY_|CODEX_(?!HOME$)|MANDIBLE_(?:MANAGED_|SESSION_|TOKEN$|BASE$|TRANSPORT$|CLI_DIR$))/.test(key)) delete env[key];
     }
     const result = spawnSync(runtime.env.MANDIBLE_RUNTIME!, [fileURLToPath(import.meta.url), "--isolated-child"], {
       env, stdio: "inherit", timeout: 55_000,

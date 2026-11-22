@@ -88,19 +88,19 @@ mandible issue-file write [--cwd P] I...
 mandible session link-issue SESSION --issue I --repo R [--repo-name N] [--graceful]
 
 ## LOGS  (raw provider files, not DB)
-mandible logs inventory [--provider codex|claude|gemini|all] [--since Nd|YYYY-MM-DD] [--limit N] [--json]
+mandible logs inventory [--provider codex|claude|all] [--since Nd|YYYY-MM-DD] [--limit N] [--json]
 mandible logs inspect <path|session-id> [--provider ...] [--parse] [--head N] [--json]
   [--role R] [--type T] [--tool N] [--tool-kind K] [--since T] [--until T] [--content T] [--limit N]
 mandible logs missing  [--provider ...] [--json]
 mandible logs orphans  [--provider ...] [--json]
-mandible logs capabilities [--provider codex|claude_code|gemini] [--json]
+mandible logs capabilities [--provider codex|claude_code] [--json]
 
 ## CONVERSATIONS  (ledger metadata and provider-native content)
-mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
+mandible conversations list [--provider claude|codex|antigravity|all] [--since Nd] [--limit N] [--json]
 mandible conversations show <id|session-id> [--json] [--blocks]
 mandible conversations blocks <id|session-id> [--role R] [--type T] [--content TEXT] [--limit N] [--offset N] [--json]
 mandible conversations export <id|session-id> [--format json|markdown]           # NO --json flag here
-mandible conversations search "<query>" [--provider claude|gemini|codex|all] [--role user|assistant]
+mandible conversations search "<query>" [--provider claude|codex|antigravity|all] [--role user|assistant]
   [--since Nd|ISO] [--limit N] [--title] [--json]   # daemon caps hits at 100; a larger --limit warns
 
 ## ARTIFACT

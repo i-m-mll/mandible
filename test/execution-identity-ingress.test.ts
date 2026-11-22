@@ -19,12 +19,24 @@ describe("exact execution ingress", () => {
     expect(resolveAmbientProviderIdentity({ CLAUDE_CODE_SESSION_ID: "root" })).toEqual({ provider: "claude", session_id: "root", agent_id: null });
     expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "child", CODEX_SESSION_ID: "enclosing" })).toEqual({ provider: "codex", agent_id: "child", session_id: "enclosing" });
     expect(exactAgentRef(resolveAmbientProviderIdentity({ CODEX_SESSION_ID: "enclosing" }))).toBeNull();
-    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "child", CODEX_SESSION_ID: "", CLAUDE_CODE_SESSION_ID: "", GEMINI_SESSION_ID: "" }))
+    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "child", CODEX_SESSION_ID: "", CLAUDE_CODE_SESSION_ID: "", ANTIGRAVITY_CONVERSATION_ID: "" }))
       .toEqual({ provider: "codex", agent_id: "child", session_id: null });
     expect(resolveAmbientProviderIdentity({ CLAUDE_CODE_SESSION_ID: "root", CLAUDE_AGENT_ID: "" }))
       .toEqual({ provider: "claude", agent_id: null, session_id: "root" });
     expect(normalizeAmbientProviderIdentity({ provider: "codex", agent_id: "child", session_id: "" })).toBeNull();
     expect(normalizeAmbientProviderIdentity({ provider: "claude", provider_session_id: "old" })).toEqual({ provider: "claude", agent_id: null, session_id: "old" });
+  });
+
+  it("resolves one Antigravity ref from the environment in the daemon and the shell CLI, and refuses gemini refs", async () => {
+    const conversation = "conv:a/%'";
+    const ref = exactAgentRef(resolveAmbientProviderIdentity({ ANTIGRAVITY_CONVERSATION_ID: conversation }))!;
+    expect(ref).toBe("agent:antigravity:conv%3Aa%2F%25%27");
+    expect(parseExactAgentRef(ref)).toEqual({ provider: "antigravity", agent_id: conversation, session_id: conversation });
+    expect(parseExactAgentRef("agent:gemini:conv")).toBeNull();
+    const env = { ...process.env };
+    for (const key of ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CLAUDE_AGENT_ID", "MANDIBLE_EXECUTION_CONTEXT", "MANDIBLE_SESSION_ID"]) delete env[key];
+    const shell = `source '${path.resolve("cli/api.sh")}' --mandible-api-definitions-only; api_current_agent_ref`;
+    expect((await run("/bin/bash", ["-c", shell], { timeout: 10_000, env: { ...env, ANTIGRAVITY_CONVERSATION_ID: conversation } })).stdout).toBe(`${ref}\n`);
   });
 
   it("executes installed hook projections concurrently and resets root identity without changing tool fields or permissions", async () => {
@@ -45,7 +57,7 @@ describe("exact execution ingress", () => {
 
   it("does not mark an ordinary local shell as an agent and retains malformed managed evidence", async () => {
     const env = { ...process.env };
-    for (const key of ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CLAUDE_AGENT_ID", "GEMINI_SESSION_ID", "MANDIBLE_SESSION_ID", "MANDIBLE_MANAGED_CLIENT", "MANDIBLE_EXECUTION_CONTEXT", "MANDIBLE_MANAGED_APP", "MANDIBLE_REQUEST_ORIGIN"]) delete env[key];
+    for (const key of ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CLAUDE_AGENT_ID", "ANTIGRAVITY_CONVERSATION_ID", "MANDIBLE_SESSION_ID", "MANDIBLE_MANAGED_CLIENT", "MANDIBLE_EXECUTION_CONTEXT", "MANDIBLE_MANAGED_APP", "MANDIBLE_REQUEST_ORIGIN"]) delete env[key];
     const shell = `source '${path.resolve("cli/api.sh")}' --mandible-api-definitions-only; api_curl_ambient_headers`;
     expect((await run("/bin/bash", ["-c", shell], { timeout: 10_000, env })).stdout).toBe("");
     const invalid = await run("/bin/bash", ["-c", shell], { timeout: 10_000, env: { ...env, MANDIBLE_EXECUTION_CONTEXT: "malformed" } });
@@ -69,7 +81,7 @@ describe("exact execution ingress", () => {
         const agent_id = hook.startsWith('subagent') ? 'new-child' : 'new-session';
         const result = await runCli(['hook', hook], { input: JSON.stringify({ session_id: 'new-session', ...(hook.startsWith('subagent') ? { agent_id } : {}), cwd: root }),
           env: { ...daemon.env, MANDIBLE_TOKEN: 'fixture', MANDIBLE_NO_KEYCHAIN_TOKEN: '1', MANDIBLE_SESSION_ID: undefined,
-            CODEX_THREAD_ID: undefined, CODEX_SESSION_ID: undefined, GEMINI_SESSION_ID: undefined, CLAUDE_SESSION_ID: undefined,
+            CODEX_THREAD_ID: undefined, CODEX_SESSION_ID: undefined, ANTIGRAVITY_CONVERSATION_ID: undefined, CLAUDE_SESSION_ID: undefined,
             CLAUDE_CODE_SESSION_ID: 'old-session', CLAUDE_AGENT_ID: 'old-child', CLAUDE_PID: String(process.pid),
             CLAUDE_ENV_FILE: path.join(root, 'env'), MANDIBLE_EXECUTION_CONTEXT: JSON.stringify({ provider: 'claude', session_id: 'old-session', agent_id: 'old-child' }) } });
         expect(result.status, result.stderr).toBe(0);
@@ -83,7 +95,7 @@ describe("exact execution ingress", () => {
 
   it("scopes actual CLI projection when enclosing sessions or the nearest provider change", async () => {
     const root = scratchDir('nested-provider');
-    const env = { CODEX_THREAD_ID: undefined, CODEX_SESSION_ID: undefined, GEMINI_SESSION_ID: undefined,
+    const env = { CODEX_THREAD_ID: undefined, CODEX_SESSION_ID: undefined, ANTIGRAVITY_CONVERSATION_ID: undefined,
       CLAUDE_SESSION_ID: undefined, MANDIBLE_SESSION_ID: undefined, CLAUDE_CODE_SESSION_ID: 'same-session', CLAUDE_AGENT_ID: 'child',
       MANDIBLE_EXECUTION_CONTEXT: JSON.stringify({ provider: 'claude', session_id: 'same-session', agent_id: 'child' }) };
     const output = 'printf "%s|%s" "$MANDIBLE_EXECUTION_CONTEXT" "${CLAUDE_AGENT_ID:-}"';

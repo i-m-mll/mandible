@@ -24,7 +24,7 @@ export type { BugRef };
 type ConsoleSession = {
   id: string;
   label: string;           // display name — use this, NOT 'name'
-  agent_type: 'operator' | 'claude' | 'codex' | 'gemini' | 'shell' | string;
+  agent_type: 'operator' | 'claude' | 'codex' | 'shell' | string;
   interaction_mode: 'inbox_only' | 'direct' | 'both';
   pinned: boolean;
   status: 'running' | 'stopped' | 'crashed';

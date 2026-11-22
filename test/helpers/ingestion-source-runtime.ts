@@ -12,11 +12,10 @@ assert.ok(process.versions.bun);
 assert.ok(canUseDefaultIngestionWorker(), "Bun source entry point must support its default ingestion worker");
 const root = process.argv[2];
 const dbPath = path.join(root, "ledger.db");
-const file = path.join(root, "home", ".gemini", "tmp", "fixture", "chats", "session-source-runtime.json");
+const file = path.join(root, "home", ".claude", "projects", "fixture", "source-runtime.jsonl");
 fs.mkdirSync(path.dirname(file), { recursive: true });
-fs.writeFileSync(file, JSON.stringify({ sessionId: "source-runtime", startTime: "2026-10-01T00:00:00Z",
-  lastUpdated: "2026-10-01T00:00:01Z", messages: [{ id: "u1", type: "user", timestamp: "2026-10-01T00:00:00Z",
-    content: "Source-runtime repair fixture" }] }));
+fs.writeFileSync(file, `${JSON.stringify({ uuid: "u1", type: "user", timestamp: "2026-10-01T00:00:00Z", sessionId: "source-runtime",
+  cwd: "/tmp/project", message: { role: "user", content: "Source-runtime repair fixture" } })}\n`);
 const db = openDb(dbPath);
 setDb(db);
 let workerReady = false;
@@ -35,7 +34,7 @@ try {
   const read = await new ConversationSourceReader(db).readAll(id);
   assert.equal(read.status, "source");
   if (read.status === "source") assert.equal(read.value[0]?.content, "Source-runtime repair fixture");
-  process.stdout.write("source-runtime actor repaired unchanged Gemini epochs\n");
+  process.stdout.write("source-runtime actor repaired unchanged epochs\n");
 } finally {
   await stopIngestionGracefully();
   getConversationStructureCache(db).close();

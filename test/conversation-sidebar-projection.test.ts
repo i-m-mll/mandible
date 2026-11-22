@@ -17,7 +17,7 @@ let db: Db;
 
 interface ConversationFixture {
   id: string;
-  source?: "codex" | "claude_code" | "gemini";
+  source?: "codex" | "claude_code" | "antigravity";
   title?: string;
   startedAt?: string;
   blocks?: number;

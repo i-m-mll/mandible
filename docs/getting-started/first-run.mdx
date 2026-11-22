@@ -31,7 +31,7 @@ The daemon performs several initialization steps:
 
 1. **Database creation** --- If `~/.mandible/mandible.db` doesn't exist, it creates the database and runs all schema migrations for sessions, auth requests, conversations, work units, console sessions, and more.
 
-2. **Conversation ingestion** --- Sets up file watchers on `~/.claude/projects/`, `~/.codex/sessions/`, and `~/.gemini/tmp/` to detect new and changed conversation transcripts. Existing transcripts are indexed on first run.
+2. **Conversation ingestion** --- Sets up file watchers on `~/.claude/projects/` and `~/.codex/sessions/` to detect new and changed conversation transcripts. Existing transcripts are indexed on first run.
 
 3. **Issue ledger setup** --- After startup, Mandible prepares the local issue ledger and compatibility scanner for registered repositories.
 
@@ -46,7 +46,7 @@ The dashboard is a Preact single-page app with tab-based navigation. The primary
 The default view. Shows all tracked agent sessions in a tree structure (parent sessions with their children). Each session card shows:
 
 - **Status indicator** --- green (active), gray (ended), red (dead)
-- **App type** --- Claude, Codex, Gemini, or a custom label
+- **App type** --- Claude, Codex, Antigravity, or a custom label
 - **Branch and working directory** --- what the agent is working on
 - **Task** --- a user-set description of what the session is doing
 - **Terminal navigation** --- "Go to" button to jump to the session's Zellij/tmux pane
@@ -68,7 +68,7 @@ Completed and rejected requests stay in the history below the queue.
 
 The conversation browser. Lists all ingested transcripts with:
 
-- **Filtering** --- by source (Claude/Codex/Gemini), model, branch, starred status
+- **Filtering** --- by source (Claude/Codex), model, branch, starred status
 - **Search** --- title search across all conversations
 - **Conversation detail** --- renders all blocks (user messages, assistant responses, thinking, tool calls, tool results) with syntax highlighting
 - **Export** --- Markdown, MDX, or JSON with block-type filtering

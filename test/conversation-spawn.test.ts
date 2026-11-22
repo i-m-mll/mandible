@@ -69,7 +69,7 @@ describe("provider-first conversation spawn authority", () => {
     const service = new ConversationSpawnService(db);
     expect(service.reserve({ ...request(), schema: "mandible-conversation-spawn-request@1" } as never))
       .toMatchObject({ ok: false, error: { kind: "invalid-request", field: "schema" } });
-    expect(service.reserve({ ...request(), provider: "gemini" } as never))
+    expect(service.reserve({ ...request(), provider: "antigravity" } as never))
       .toMatchObject({ ok: false, error: { kind: "invalid-request", field: "provider" } });
     expect(service.reserve({ ...request(), command: { name: "codex" } } as never))
       .toMatchObject({ ok: false, error: { kind: "invalid-request", field: "command" } });
@@ -104,17 +104,17 @@ describe("provider-first conversation spawn authority", () => {
     const historical = {
       schema: "mandible-conversation-spawn-request@1",
       idempotency_key: "historical",
-      provider: "gemini",
+      provider: "codex",
       label: "Old",
       initial_message: "Old prompt",
       placement: { project_id: null, checkout_id: null },
       topology: { kind: "top-level" },
-      command: { name: "gemini", backend_type: "acp", transport_lane: "acp", run_options: {} },
+      command: { name: "codex", backend_type: "pty", transport_lane: "pty", run_options: {} },
     };
     db.prepare(`INSERT INTO conversation_spawn_requests
       (id, schema_version, idempotency_key, request_digest, request_json, provider, project_id, checkout_id,
        topology_kind, state, initial_message_state, created_at, updated_at)
-      VALUES ('historical', ?, 'historical', ?, ?, 'gemini', NULL, NULL, 'top-level', 'delivered', 'delivered', 1, 1)`)
+      VALUES ('historical', ?, 'historical', ?, ?, 'codex', NULL, NULL, 'top-level', 'delivered', 'delivered', 1, 1)`)
       .run(historical.schema, "0".repeat(64), JSON.stringify(historical));
     expect(new ConversationSpawnService(db).get("historical")).toMatchObject({
       ok: true,

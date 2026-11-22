@@ -8,7 +8,7 @@ The `mandible` command is a dispatcher that routes to subcommands. HTTP subcomma
 |---|---|
 | `MANDIBLE_PORT` | Daemon backend port (default: `29420`) |
 | `MANDIBLE_BASE` | Daemon base URL (default: `https://app.mandible.localhost:19420`) |
-| `MANDIBLE_SESSION_ID` | Session ID of the process `mandible wrap` launched. Descendants inherit it, but it is a caller's own only when the nearest agent process above the caller (Claude, Codex or Gemini) is the one that session's row records. A nested `claude -p` or `codex exec` treats it as unset and acts under its own provider session; with several providers' session variables present, the nearest agent's are kept |
+| `MANDIBLE_SESSION_ID` | Session ID of the process `mandible wrap` launched. Descendants inherit it, but it is a caller's own only when the nearest agent process above the caller (Claude, Codex or Antigravity) is the one that session's row records. A nested `claude -p` or `codex exec` treats it as unset and acts under its own provider session; with several providers' session variables present, the nearest agent's are kept |
 | `MANDIBLE_DB` | Database path (default: `~/.cache/mandible/mandible.db`) |
 
 ## Restart availability temporary failures
@@ -407,14 +407,14 @@ predicate.
 Inspect provider-native source logs without importing, reconciling, or mutating the Mandible database.
 
 ```
-mandible logs inventory [--provider codex|claude|gemini|all] [--since Nd|YYYY-MM-DD] [--limit N] [--json]
-mandible logs capabilities [--provider codex|claude_code|gemini] [--json]
-mandible logs missing [--provider codex|claude|gemini|all] [--json]
-mandible logs orphans [--provider codex|claude|gemini|all] [--json]
-mandible logs inspect <path|session-id> [--provider codex|claude|gemini|all] [--parse] [filters] [--json] [--head N]
+mandible logs inventory [--provider codex|claude|all] [--since Nd|YYYY-MM-DD] [--limit N] [--json]
+mandible logs capabilities [--provider codex|claude_code] [--json]
+mandible logs missing [--provider codex|claude|all] [--json]
+mandible logs orphans [--provider codex|claude|all] [--json]
+mandible logs inspect <path|session-id> [--provider codex|claude|all] [--parse] [filters] [--json] [--head N]
 ```
 
-Use `logs` commands when the provider files are the object of inspection. They treat Codex/Claude/Gemini source logs as the veridical transcript record and only compare against the DB index when needed.
+Use `logs` commands when the provider files are the object of inspection. They treat Codex/Claude source logs as the veridical transcript record and only compare against the DB index when needed.
 
 | Command | Description |
 |---|---|
@@ -441,11 +441,11 @@ Parsed inspection filters:
 Inspect DB-backed normalized conversation rows and blocks.
 
 ```
-mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
+mandible conversations list [--provider claude|codex|antigravity|all] [--since Nd] [--limit N] [--json]
 mandible conversations show <id|session-id> [--json] [--blocks]
 mandible conversations blocks <id|session-id> [--role R] [--type T] [--content TEXT] [--limit N] [--offset N] [--json]
 mandible conversations export <id|session-id> [--format json|markdown]
-mandible conversations search "<query>" [--provider claude|gemini|codex|all] [--role user|assistant] [--since Nd|ISO] [--limit N] [--title] [--json]
+mandible conversations search "<query>" [--provider claude|codex|antigravity|all] [--role user|assistant] [--since Nd|ISO] [--limit N] [--title] [--json]
 ```
 
 Use `conversations` commands for Mandible's normalized SQLite index, UI/export/search surface, and conversation metadata. Tool and time filters over parsed blocks live on `mandible logs inspect --parse`.

@@ -98,12 +98,6 @@ function sourceRoot(provider: ConversationSource, filePath: string): AliasRoot {
       const rootPath = separators.slice(0, claude + 2).join(path.sep) || path.sep;
       return { rootPath, relativePath: path.relative(rootPath, normalized), aliasKind: "provider" };
     }
-  } else if (provider === "gemini") {
-    const gemini = separators.lastIndexOf(".gemini");
-    if (gemini >= 0 && separators[gemini + 1] === "tmp") {
-      const rootPath = separators.slice(0, gemini + 2).join(path.sep) || path.sep;
-      return { rootPath, relativePath: path.relative(rootPath, normalized), aliasKind: "provider" };
-    }
   }
   throw new Error(`unsupported ${provider} source path outside its allowlisted provider root`);
 }
@@ -519,11 +513,8 @@ export class ConversationSourceStore {
     }
     const structuralBlocks = blocks.flatMap((block) => {
       const metadata = parseJsonObjectStrict(block.metadata_json, "conversation block metadata_json");
-      const wholeGeminiSource = input.provider === "gemini" && input.blocks !== undefined;
-      const recordOrdinal = wholeGeminiSource ? 0 : numericMetadata(metadata, "source_record_ordinal");
-      const range = wholeGeminiSource
-        ? { ordinal: 0, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
-        : recordOrdinal === null
+      const recordOrdinal = numericMetadata(metadata, "source_record_ordinal");
+      const range = recordOrdinal === null
           ? { ordinal: -1, offset: 0, length: snapshot.size, hash: snapshot.contentHash }
           : snapshot.records[recordOrdinal];
       if (!range) return [];

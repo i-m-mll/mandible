@@ -216,7 +216,7 @@ describe("ClaudeParser", () => {
     const display=displayChatItem(block.metadata.chat_item!,block.metadata);
     expect(display.type).toBe('tool-call');
     if(display.type!=='tool-call') throw new Error('Missing native tool result');
-    const result=projectNativeToolResult(display.output,block.content,display.tool_kind,display.tool_name,display.tool_id);
+    const result=projectNativeToolResult(display.output,block.content,display.tool_kind);
     expect(display.execution_outcome).toBe('failed');
     expect(result.content).toEqual([{type:'text',text:'README.md'},{type:'image',source:{type:'base64',media_type:'image/png',data:'aW1hZ2U='}}]);
     const lean=projectDisplayBlock({...block,id:'cblk:chat:4',conversation_id:'chat',timestamp:block.timestamp ?? null,parent_id:block.parent_id ?? null,dag_uuid:null,dag_parent_uuid:null,locator:null,metadata_json:JSON.stringify(block.metadata)});

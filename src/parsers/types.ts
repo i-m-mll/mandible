@@ -16,7 +16,7 @@ export type BlockType =
 
 export type Role = "user" | "assistant" | "system" | "tool";
 
-export type ConversationSource = "claude_code" | "codex" | "gemini";
+export type ConversationSource = "claude_code" | "codex" | "antigravity";
 
 export type ActivityKind =
   | "reasoning-summary"

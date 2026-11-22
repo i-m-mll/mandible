@@ -1,4 +1,4 @@
-export type CustodyProvider = "claude_code" | "codex" | "gemini";
+export type CustodyProvider = "claude_code" | "codex";
 
 export type CustodyState =
   | "requested"

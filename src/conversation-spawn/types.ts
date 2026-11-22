@@ -16,7 +16,7 @@ export interface ConversationSpawnRequest {
 export interface HistoricalConversationSpawnRequest {
   schema: "mandible-conversation-spawn-request@1" | "mandible-conversation-spawn-request@2";
   idempotency_key: string;
-  provider: ConversationSpawnProvider | "gemini";
+  provider: ConversationSpawnProvider;
   label: string;
   initial_message: string;
   placement: ConversationSpawnPlacement | { project_id: null; checkout_id: null };
@@ -27,7 +27,7 @@ export interface HistoricalConversationSpawnRequest {
     | { kind: "sibling"; sibling_conversation_id: string }
     | { kind: "successor"; predecessor_conversation_id: string };
   command: {
-    name: "claude" | "codex" | "gemini";
+    name: "claude" | "codex";
     backend_type: "pty" | "sdk" | "spawn" | "acp";
     transport_lane: "sdk" | "pty" | "acp" | "spawn";
     run_options: Record<string, import("../session-run-options.js").SessionRunOptionValue>;

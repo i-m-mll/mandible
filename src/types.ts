@@ -848,7 +848,7 @@ export interface ConsoleSession {
   /** Bug: 40f0298 — DAG branching: message UUID to resume conversation from. */
   resume_at_message: string | null;
   /** Derived from command and is_operator. Not stored in DB. */
-  agent_type: 'claude' | 'codex' | 'gemini' | 'operator' | 'shell';
+  agent_type: 'claude' | 'codex' | 'operator' | 'shell';
   /**
    * Issue 8aadf70 — which Anthropic billing path a Claude session lands on
    * (API key present in the spawn environment vs. the local Claude Code

@@ -1,6 +1,6 @@
 # Mandible
 
-Mandible is a local-first control plane for AI coding agents. It runs as a daemon on your workstation, tracking agent sessions across Claude Code, Codex, and Gemini, gating protected-branch merges behind a Touch ID signature, and providing a web dashboard for managing it all from one place.
+Mandible is a local-first control plane for AI coding agents. It runs as a daemon on your workstation, tracking agent sessions across Claude Code, Codex, and Antigravity, gating protected-branch merges behind a Touch ID signature, and providing a web dashboard for managing it all from one place.
 
 Everything stays on your machine. No cloud services, no external databases, no telemetry. Mandible uses a local SQLite database and communicates with agents through their indexed conversations, lifecycle hooks, a CLI wrapper, and an embedded console with the Claude Agent SDK.
 
@@ -10,7 +10,7 @@ Everything stays on your machine. No cloud services, no external databases, no t
 
 **[Session tracking](/docs/features/sessions)** --- Every running agent session is tracked with PID-level liveness monitoring, terminal multiplexer integration, and automatic dead-session reaping. The dashboard shows what's running, where, and on what branch.
 
-**[Conversation browser](/docs/features/conversations)** --- Transcripts from Claude Code, Codex, and Gemini are ingested and indexed as they're written. Search, star, annotate, and export conversations. View tool usage, thinking blocks, and structured events inline.
+**[Conversation browser](/docs/features/conversations)** --- Transcripts from Claude Code and Codex are ingested and indexed as they're written. Search, star, annotate, and export conversations. View tool usage, thinking blocks, and structured events inline.
 
 **[Console](/docs/features/console)** --- Spawn and manage agent sessions directly from the dashboard. PTY-backed terminals with xterm.js rendering, SDK-backed sessions with structured event streams, or both. Permission gating, cost tracking, and conversation branching included.
 

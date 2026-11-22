@@ -28,7 +28,6 @@ import {
 } from "./parsers/codex.js";
 import { lineageGapSeverity, linkIngestedConversation } from "./conversation-lineage.js";
 import { reconcileWorkerLineageEvidence } from "./work-unit-evidence.js";
-import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
 import {
   maskActiveCredentialsInText,
@@ -66,8 +65,6 @@ const WATCH_CONFIGS = [
   // rollout files here. Watching the archive root keeps those conversations
   // ingestable instead of looking like deleted sources.
   { base: path.join(getUserHome(), ".codex", "archived_sessions"), glob: "**/*.jsonl" },
-  { base: path.join(getUserHome(), ".gemini", "tmp"), glob: "**/chats/*.json" },
-  { base: path.join(getUserHome(), ".gemini", "tmp"), glob: "**/chats/*.jsonl" },
 ];
 
 const DEBOUNCE_MS = 200;
@@ -2431,57 +2428,6 @@ async function syncCodexIndexedTitlesForKnownRows(db: ReturnType<typeof getDb>, 
   }
 }
 
-async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb>, cooperate?: () => Promise<void>): Promise<void> {
-  const rows = db.prepare(`
-    SELECT id, source_path, project_path, cwd, title, block_count
-    FROM conversations
-    WHERE source = 'gemini'
-  `).all() as Array<{
-    id: string;
-    source_path: string;
-    project_path: string | null;
-    cwd: string | null;
-    title: string;
-    block_count: number;
-  }>;
-
-  const identityCache = new Map<string, Awaited<ReturnType<typeof inferGeminiProjectIdentity>>>();
-  for (const row of rows) {
-    await cooperate?.();
-    const projectHash = row.project_path && /^[a-f0-9]{64}$/i.test(row.project_path)
-      ? row.project_path
-      : null;
-    const projectDir = path.dirname(path.dirname(row.source_path));
-    const cacheKey = `${projectDir}\0${projectHash ?? ""}`;
-    let identity = identityCache.get(cacheKey);
-    if (!identity) {
-      identity = await inferGeminiProjectIdentity(row.source_path, projectHash);
-      identityCache.set(cacheKey, identity);
-    }
-    if (identity.projectPath === row.project_path && identity.cwd === row.cwd) {
-      continue;
-    }
-    db.prepare(`
-      UPDATE conversations SET
-        project_path = ?,
-        cwd = ?,
-        updated_at = datetime('now')
-      WHERE id = ?
-    `).run(identity.projectPath, identity.cwd, row.id);
-    eventPublisher(DOMAIN_EVENTS.CONVERSATION_UPDATED, {
-      id: row.id,
-      source: "gemini",
-      title: row.title,
-      block_count: row.block_count,
-    });
-    logger("info", "ingestion_gemini_project_synced", {
-      file: row.source_path,
-      id: row.id,
-      project_path: identity.projectPath,
-    });
-  }
-}
-
 type IngestFileOptions = {
   forceFull?: boolean;
   fallbackReason?: string;
@@ -2736,7 +2682,6 @@ async function ingestFilePass(
       && alreadyIngestedCount > 0
       && parser.parseIncremental
       && !(parser.source === "codex" && !fs.existsSync(filePath))
-      && (parser.source !== "gemini" || filePath.endsWith(".jsonl"))
     ) {
       const append = await readAppend(filePath, stat, appendState);
       if (append.kind === "append") {
@@ -3373,7 +3318,6 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   }
 
   await syncCodexIndexedTitlesForKnownRows(db, options.cooperate);
-  await syncGeminiProjectIdentityForKnownRows(db, options.cooperate);
 
   const knownPaths = new Set<string>();
   const scannedBases: string[] = [];

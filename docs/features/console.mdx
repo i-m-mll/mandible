@@ -1,6 +1,6 @@
 # Console
 
-The Console is Mandible's built-in agent management surface. It spawns, controls, and monitors AI agent sessions — Claude, Codex, Gemini, or arbitrary shell processes — from the dashboard. Each console session has a backend that handles process lifecycle, I/O, and event streaming.
+The Console is Mandible's built-in agent management surface. It spawns, controls, and monitors AI agent sessions — Claude, Codex, or arbitrary shell processes — from the dashboard. Each console session has a backend that handles process lifecycle, I/O, and event streaming.
 
 ## Backends
 
@@ -31,7 +31,7 @@ The PTY backend spawns the agent as a pseudo-terminal process via `node-pty`. Th
 **Key capabilities:**
 - Full terminal emulation (colors, cursor movement, screen clearing).
 - A ring buffer stores recent terminal output for clients that connect mid-session.
-- Output normalizers extract structured events from Codex and Gemini's terminal output where possible.
+- Output normalizers extract structured events from Codex's terminal output where possible.
 - Process management: auto-restart on crash (up to 5 attempts with exponential backoff), SIGHUP for clean restarts.
 
 **Trade-offs vs. SDK:** The PTY backend has no visibility into individual tool calls, token usage, or permission requests. It's process-level control — start, stop, signal, read output. Use it when the SDK backend isn't available for the agent type.
@@ -40,7 +40,7 @@ The PTY backend spawns the agent as a pseudo-terminal process via `node-pty`. Th
 
 The ACP backend communicates with agents over stdio using the Agent Client Protocol.
 
-**When it's used:** New Codex and Gemini console sessions default to `backend_type: "acp"`.
+**When it's used:** New Codex console sessions default to `backend_type: "acp"`.
 
 **Key capabilities:**
 - Structured message, plan, tool-call, terminal-output, permission, and usage updates.
@@ -79,7 +79,7 @@ POST /api/console/sessions
 
 Required fields:
 - `label` — A display name for the session.
-- `command` — The executable to run (`claude`, `codex`, `gemini`, or a shell command).
+- `command` — The executable to run (`claude`, `codex`, or a shell command).
 
 Key optional fields:
 - `args` — Command-line arguments (array of strings).
@@ -97,7 +97,6 @@ Key optional fields:
 The session's `agent_type` is derived from the command:
 - `claude` command -> `claude` type
 - `codex` command -> `codex` type
-- `gemini` command -> `gemini` type
 - `is_operator: true` -> `operator` type (regardless of command)
 - Anything else -> `shell` type
 

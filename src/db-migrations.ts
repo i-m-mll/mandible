@@ -1,4 +1,5 @@
 import { TRACKED_BRIEFING_MEMBER_MIGRATION_SQL, TRACKED_BRIEFING_REVIEW_SCHEMA_SQL } from "./feedback/schema.js";
+import { ANTIGRAVITY_PROVIDER_MIGRATION_SQL } from "./antigravity-provider-schema.js";
 import { backupBeforeSpaceCutover, convertSpaceDocuments } from "./spaces/migrate-document.js";
 import { REQUEST_REVIEW_DRAFT_SCHEMA_SQL } from "./feedback/request-draft-schema.js";
 import { STANDING_REVIEW_ROUND_MIGRATION_SQL, REQUEST_REVIEW_ROUND_MIGRATION_SQL, REVIEW_ROUND_MIGRATION_SQL, REVIEW_THREAD_SCHEMA_SQL } from "./feedback/review-schema.js";
@@ -2517,6 +2518,7 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 256, name: "tracked_briefing_members",
     statements: [...TRACKED_BRIEFING_MEMBER_MIGRATION_SQL, ...TRACKED_BRIEFING_REVIEW_SCHEMA_SQL] },
+  { version: 257, name: "antigravity_provider", requires_foreign_keys_off: true, statements: [...ANTIGRAVITY_PROVIDER_MIGRATION_SQL] },
 ];
 
 /**

@@ -1287,7 +1287,7 @@ cmd_parent_role_assume() {
     die "Usage: $(mandible_command_syntax issue.parent-role.assume)" 2
   fi
   if [[ -z "$session_id" ]]; then
-    die "Missing parent-role session id. Pass --session <id>, or run inside a Claude, Codex or Gemini session (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, GEMINI_SESSION_ID) or a Mandible-launched one (MANDIBLE_SESSION_ID)." 2
+    die "Missing parent-role session id. Pass --session <id>, or run inside a Claude, Codex or Antigravity session (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, ANTIGRAVITY_CONVERSATION_ID) or a Mandible-launched one (MANDIBLE_SESSION_ID)." 2
   fi
   [[ -n "${reason//[[:space:]]/}" && -n "$expected_checkpoint" ]] || die "reason and expected-checkpoint (ID or none) required" 2
   [[ "$expected_checkpoint" == none ]] && expected_checkpoint=""

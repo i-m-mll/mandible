@@ -141,7 +141,7 @@ describe("watchConversationRoots", () => {
       configs: [
         { base: present, glob: "**/*.jsonl" },
         { base: present, glob: "**/workflows/wf_*.json" },
-        { base: path.join(tempDir, ".gemini", "tmp"), glob: "**/chats/*.json" },
+        { base: path.join(tempDir, ".codex", "sessions"), glob: "**/chats/*.json" },
       ],
       onFile: () => undefined,
       log: (_level, message, details) => {
@@ -152,7 +152,7 @@ describe("watchConversationRoots", () => {
     });
 
     expect(handle.rootCount).toBe(1);
-    expect(skipped).toEqual([path.join(tempDir, ".gemini", "tmp")]);
+    expect(skipped).toEqual([path.join(tempDir, ".codex", "sessions")]);
   });
 });
 

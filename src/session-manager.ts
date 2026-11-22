@@ -108,7 +108,7 @@ class DormantBackend extends EventEmitter implements TerminalBackend {
 
 function computeAgentType(command: string, operator: boolean): ConsoleSession["agent_type"] {
   if (operator) return "operator";
-  return command === "claude" || command === "codex" || command === "gemini" ? command : "shell";
+  return command === "claude" || command === "codex" ? command : "shell";
 }
 function isTransportLane(value: unknown): value is ConsoleTransportLane {
   return ["pty", "sdk", "acp", "spawn"].includes(String(value));

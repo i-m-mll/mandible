@@ -89,7 +89,7 @@ export const BRANCH_REMOVAL_OUTPUT = z.object({
 });
 export type BranchRemovalOutput = z.infer<typeof BRANCH_REMOVAL_OUTPUT>;
 
-export const NOTICE_PROVIDERS = ["claude", "codex", "gemini"] as const;
+export const NOTICE_PROVIDERS = ["claude", "codex", "antigravity"] as const;
 export type NoticeProvider = (typeof NOTICE_PROVIDERS)[number];
 
 /**
