@@ -1,3 +1,5 @@
+import { ledgerOriginColumnSql } from "../ledger-origin-schema.js";
+
 export const BRIEFING_BUNDLE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS briefing_bundles (
     id TEXT PRIMARY KEY,
@@ -550,7 +552,88 @@ const LEGACY_BRIEFING_EVIDENCE_SQL = [
     END`,
 ];
 
-export const BRIEFING_OWNER_SCHEMA_SQL: readonly string[] = [
+function briefingResponseSchema(reviewBinding: boolean): readonly string[] {
+  return [
+  `CREATE TABLE IF NOT EXISTS briefing_response_events (
+    id TEXT PRIMARY KEY,
+    round_id TEXT NOT NULL,
+    briefing_id TEXT${reviewBinding ? ",\n    document_binding_id TEXT" : " NOT NULL"},
+    directive_instance_id TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK(operation IN ('set','retract')),
+    value_json TEXT,
+    retracts_event_id TEXT REFERENCES briefing_response_events(id) ON DELETE RESTRICT,
+    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL,${reviewBinding ? `\n    ${ledgerOriginColumnSql},` : ""}
+    UNIQUE(id, round_id, directive_instance_id, actor_user_id),${reviewBinding ? `
+    FOREIGN KEY(round_id) REFERENCES review_rounds(id) ON DELETE RESTRICT,
+    FOREIGN KEY(document_binding_id, round_id) REFERENCES review_document_bindings(id, round_id) ON DELETE RESTRICT,` : ""}
+    FOREIGN KEY(round_id, briefing_id) REFERENCES briefing_rounds(id, briefing_id) ON DELETE RESTRICT,
+    FOREIGN KEY(directive_instance_id, round_id, briefing_id)
+      REFERENCES briefing_directive_instances(id, round_id, briefing_id) ON DELETE RESTRICT,
+    FOREIGN KEY(briefing_id, actor_user_id) REFERENCES briefing_members(briefing_id, user_id) ON DELETE RESTRICT,
+    FOREIGN KEY(retracts_event_id, round_id, directive_instance_id, actor_user_id)
+      REFERENCES briefing_response_events(id, round_id, directive_instance_id, actor_user_id) ON DELETE RESTRICT,${reviewBinding ? `
+    CHECK((briefing_id IS NULL) != (document_binding_id IS NULL)),` : ""}
+    CHECK((operation = 'set' AND value_json IS NOT NULL AND json_valid(value_json)
+      AND json_type(value_json) = 'object' AND retracts_event_id IS NULL)
+      OR (operation = 'retract' AND value_json IS NULL AND retracts_event_id IS NOT NULL))
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_briefing_response_retraction
+    ON briefing_response_events(retracts_event_id) WHERE operation = 'retract'`,
+  `CREATE TRIGGER IF NOT EXISTS trg_briefing_response_retraction_identity
+    BEFORE INSERT ON briefing_response_events WHEN NEW.operation = 'retract'
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM briefing_response_events target
+         WHERE target.id = NEW.retracts_event_id AND target.operation = 'set'
+           AND target.round_id = NEW.round_id
+           AND target.directive_instance_id = NEW.directive_instance_id
+           AND target.actor_user_id = NEW.actor_user_id
+      ) THEN RAISE(ABORT, 'briefing response retraction target mismatch') END;
+    END`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_response_events_round_actor
+    ON briefing_response_events(round_id, actor_user_id, created_at DESC)`,
+  ];
+}
+
+const BRIEFING_RESPONSE_SCHEMA_SQL = briefingResponseSchema(false);
+const REVIEW_RESPONSE_SCHEMA_SQL = [
+  ...briefingResponseSchema(true),
+  `CREATE TRIGGER review_response_binding_owner
+    BEFORE INSERT ON briefing_response_events
+    WHEN NEW.briefing_id IS NULL AND NOT EXISTS (
+      SELECT 1 FROM review_document_bindings b JOIN review_rounds r ON r.id = b.round_id
+        WHERE b.id = NEW.document_binding_id AND r.id = NEW.round_id AND r.owner_kind = 'request_revision'
+          AND json_extract(b.source_json, '$.kind') = 'request_narrative'
+          AND substr(NEW.directive_instance_id, 1, length(b.id) + 1) = b.id || ':'
+    ) BEGIN
+      SELECT RAISE(ABORT, 'Response requires a request narrative binding');
+    END`,
+];
+
+export const REQUEST_NARRATIVE_CUSTODY_SQL = [
+  "ALTER TABLE auth_requests ADD COLUMN narrative TEXT",
+  `CREATE TRIGGER auth_request_narrative_immutable BEFORE UPDATE OF narrative ON auth_requests
+    WHEN OLD.narrative IS NOT NEW.narrative BEGIN
+      SELECT RAISE(ABORT, 'Request narratives are immutable');
+    END`,
+];
+
+export const REQUEST_NARRATIVE_MIGRATION_SQL = [
+  ...REQUEST_NARRATIVE_CUSTODY_SQL,
+  `CREATE TEMP TABLE prior_review_response_events AS
+    SELECT rowid AS prior_rowid, * FROM briefing_response_events`,
+  "DROP TABLE briefing_response_events",
+  ...REVIEW_RESPONSE_SCHEMA_SQL,
+  `INSERT INTO briefing_response_events (rowid, id, round_id, briefing_id, directive_instance_id,
+    operation, value_json, retracts_event_id, actor_user_id, created_at, request_origin_json)
+    SELECT prior_rowid, id, round_id, briefing_id, directive_instance_id,
+      operation, value_json, retracts_event_id, actor_user_id, created_at, request_origin_json
+    FROM prior_review_response_events ORDER BY prior_rowid`,
+  "DROP TABLE prior_review_response_events",
+];
+
+function briefingOwnerSchema(responseSchema: readonly string[]): readonly string[] { return [
   `CREATE TABLE IF NOT EXISTS briefings (
     id TEXT PRIMARY KEY,
     briefing_key TEXT NOT NULL UNIQUE CHECK(trim(briefing_key) != ''),
@@ -693,42 +776,7 @@ export const BRIEFING_OWNER_SCHEMA_SQL: readonly string[] = [
     FOREIGN KEY(directive_instance_id, round_id, briefing_id)
       REFERENCES briefing_directive_instances(id, round_id, briefing_id) ON DELETE RESTRICT
   )`,
-  `CREATE TABLE IF NOT EXISTS briefing_response_events (
-    id TEXT PRIMARY KEY,
-    round_id TEXT NOT NULL,
-    briefing_id TEXT NOT NULL,
-    directive_instance_id TEXT NOT NULL,
-    operation TEXT NOT NULL CHECK(operation IN ('set','retract')),
-    value_json TEXT,
-    retracts_event_id TEXT REFERENCES briefing_response_events(id) ON DELETE RESTRICT,
-    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    created_at INTEGER NOT NULL,
-    UNIQUE(id, round_id, directive_instance_id, actor_user_id),
-    FOREIGN KEY(round_id, briefing_id) REFERENCES briefing_rounds(id, briefing_id) ON DELETE RESTRICT,
-    FOREIGN KEY(directive_instance_id, round_id, briefing_id)
-      REFERENCES briefing_directive_instances(id, round_id, briefing_id) ON DELETE RESTRICT,
-    FOREIGN KEY(briefing_id, actor_user_id) REFERENCES briefing_members(briefing_id, user_id) ON DELETE RESTRICT,
-    FOREIGN KEY(retracts_event_id, round_id, directive_instance_id, actor_user_id)
-      REFERENCES briefing_response_events(id, round_id, directive_instance_id, actor_user_id) ON DELETE RESTRICT,
-    CHECK((operation = 'set' AND value_json IS NOT NULL AND json_valid(value_json)
-      AND json_type(value_json) = 'object' AND retracts_event_id IS NULL)
-      OR (operation = 'retract' AND value_json IS NULL AND retracts_event_id IS NOT NULL))
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS uq_briefing_response_retraction
-    ON briefing_response_events(retracts_event_id) WHERE operation = 'retract'`,
-  `CREATE TRIGGER IF NOT EXISTS trg_briefing_response_retraction_identity
-    BEFORE INSERT ON briefing_response_events WHEN NEW.operation = 'retract'
-    BEGIN
-      SELECT CASE WHEN NOT EXISTS (
-        SELECT 1 FROM briefing_response_events target
-         WHERE target.id = NEW.retracts_event_id AND target.operation = 'set'
-           AND target.round_id = NEW.round_id
-           AND target.directive_instance_id = NEW.directive_instance_id
-           AND target.actor_user_id = NEW.actor_user_id
-      ) THEN RAISE(ABORT, 'briefing response retraction target mismatch') END;
-    END`,
-  `CREATE INDEX IF NOT EXISTS idx_briefing_response_events_round_actor
-    ON briefing_response_events(round_id, actor_user_id, created_at DESC)`,
+  ...responseSchema,
   `CREATE TABLE IF NOT EXISTS briefing_submission_answers (
     submission_id TEXT NOT NULL,
     round_id TEXT NOT NULL,
@@ -777,7 +825,10 @@ export const BRIEFING_OWNER_SCHEMA_SQL: readonly string[] = [
   ...BRIEFING_GROUP_SCHEMA_SQL,
   ...BRIEFING_COMPOSER_SCHEMA_SQL,
   ...BRIEFING_DESTINATION_MUTATION_SCHEMA_SQL,
-];
+]; }
+
+export const BRIEFING_OWNER_SCHEMA_SQL = briefingOwnerSchema(BRIEFING_RESPONSE_SCHEMA_SQL);
+export const CURRENT_BRIEFING_OWNER_SCHEMA_SQL = briefingOwnerSchema(REVIEW_RESPONSE_SCHEMA_SQL);
 
 export const CANONICAL_AGENT_DISPATCH_SQL = `CREATE TABLE agent_dispatch_events (
   id TEXT PRIMARY KEY,

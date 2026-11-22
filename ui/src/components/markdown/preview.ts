@@ -18,7 +18,10 @@ export type MarkdownDirective = MarkdownSelection & {
 };
 
 type MarkdownDirectiveMount = HTMLElement | { element: HTMLElement; destroy: () => void };
-export type MarkdownDirectiveRenderer = (directive: MarkdownDirective, document: Document) => MarkdownDirectiveMount;
+export type MarkdownDirectiveRenderer = {
+  (directive: MarkdownDirective, document: Document): MarkdownDirectiveMount;
+  accepts?: (directive: MarkdownDirective) => boolean;
+};
 export type MarkdownDirectives = ReadonlyMap<string, MarkdownDirectiveRenderer | 'transparent'>;
 export const markdownDirectives = Facet.define<MarkdownDirectives, MarkdownDirectives | undefined>({
   combine: ([directives]) => directives,
@@ -256,10 +259,10 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
       continue;
     }
     const block = directive.kind !== 'inline';
-    const widget = new DirectiveWidget({
-      ...markdownSourceRange(state, directive),
-      name: directive.name, kind: directive.kind, attributes: directive.attributes, body: directive.body,
-    }, render);
+    const source = { ...markdownSourceRange(state, directive),
+      name: directive.name, kind: directive.kind, attributes: directive.attributes, body: directive.body };
+    if (render.accepts && !render.accepts(source)) continue;
+    const widget = new DirectiveWidget(source, render);
     marks.push(Decoration.replace({ widget, block }).range(directive.from, directive.to));
   }
 

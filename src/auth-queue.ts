@@ -1,5 +1,5 @@
 import { canonicalJson } from "./canonical-json.js";
-import { ensureRequestReviewRound, readRequestReviewSource, requestReviewRound, resolveRequestReviewComment } from "./feedback/request-review.js";
+import { appendRequestNarrativeAnswer, requestNarrativeAnswerMembers, type NarrativeAnswerMutation, ensureRequestReviewRound, readRequestReviewSource, requestReviewRound, resolveRequestReviewComment } from "./feedback/request-review.js";
 import { appendReviewAnnotation, appendReviewThreadEvent, freezeReviewSubmission, type ReviewAnnotationMutation } from "./feedback/review-store.js";
 import type { ReviewThreadActor, ReviewThreadMutation } from "./feedback/review-types.js";
 import {
@@ -1925,6 +1925,11 @@ export class AuthQueue {
     const finishObservation = this.beginObservation();
     try {
       if ("depends_on_id" in payload) throw { status: 400, message: "depends_on_id is retired; use depends_on_ids." };
+      if (payload.narrative !== undefined && (
+          typeof payload.narrative !== "string" || !payload.narrative.trim()
+          || Buffer.byteLength(payload.narrative) > 128 * 1024 || /[\u0000\uD800-\uDFFF]/u.test(payload.narrative))) {
+        throw new AuthQueueError("invalid_command", "A review narrative must be nonblank UTF-8 Markdown of at most 128 KiB.");
+      }
       const descriptionError = authDescriptionRequirement(payload);
       if (descriptionError) throw { status: 400, message: descriptionError };
       const canonical = this.resolveCanonicalChangeMessage(
@@ -2080,6 +2085,7 @@ export class AuthQueue {
         commit_message_digest: canonical.digest,
         // Issue 8ae6b5f — new requests carry no spec; the column holds history.
         spec_content: null,
+        narrative: payload.narrative ?? null,
         protected_root_dirty_action: payload.protected_root_dirty_action ?? null,
         repo: payload.repo,
         base_branch: payload.base_branch,
@@ -2137,6 +2143,7 @@ export class AuthQueue {
         commit_message,
         commit_message_digest,
         spec_content,
+        narrative,
         repo,
         base_branch,
         head_branch,
@@ -2193,6 +2200,7 @@ export class AuthQueue {
         @commit_message,
         @commit_message_digest,
         @spec_content,
+        @narrative,
         @repo,
         @base_branch,
         @head_branch,
@@ -5444,7 +5452,7 @@ export class AuthQueue {
     const round = requestReviewRound(request);
     const binding = round.bindings.find(candidate => candidate.id === input.document_binding_id);
     if (!binding) throw new AuthQueueError("lifecycle_conflict", "The reviewed document changed. Refresh and select the text again.");
-    const source = input.mutation.operation === "set" ? await readRequestReviewSource(request.target_repo_root, binding.source) : "";
+    const source = input.mutation.operation === "set" ? await readRequestReviewSource(this.db, request.target_repo_root, binding.source) : "";
     if (source === null) throw new AuthQueueError("not_found", "The reviewed text is unavailable.");
     return this.db.transaction(() => {
       const current = this.requirePendingReview(request.id);
@@ -5458,6 +5466,23 @@ export class AuthQueue {
       if (!event.ok) throw new AuthQueueError("lifecycle_conflict", `The annotation could not be saved (${event.reason}).`);
       return event.id;
     })();
+  }
+
+  answerRequestNarrative(id: string, actor: AuthLifecycleActor, input: {
+    expected_revision: number; expected_custody_generation: number; round_id: string;
+    directive_key: string; mutation: NarrativeAnswerMutation;
+  }): string {
+    const { eventId, requestId } = this.db.transaction(() => {
+      const request = this.requirePendingReview(id);
+      this.requireRequestCustody(request, actor, input.expected_revision, input.expected_custody_generation);
+      const round = requestReviewRound(request);
+      if (round.id !== input.round_id) throw new AuthQueueError("lifecycle_conflict", "The reviewed document changed.");
+      ensureRequestReviewRound(this.db, round);
+      return { requestId: request.id,
+        eventId: appendRequestNarrativeAnswer(this.db, request, round, actor.user_id, input.directive_key, input.mutation, this.now()) };
+    })();
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_REVIEW_UPDATED, data: { request_id: requestId } });
+    return eventId;
   }
 
   async mutateRequestReviewDraft(id: string, actor: AuthLifecycleActor, input: {
@@ -5481,7 +5506,7 @@ export class AuthQueue {
 
   async returnRequestReview(id: string, actor: AuthLifecycleActor, input: {
     expected_revision: number; expected_custody_generation: number; round_id: string;
-    annotation_event_ids: string[]; draft_snapshot?: ReviewDraftStamp[]; reason?: string;
+    annotation_event_ids: string[]; answer_event_ids?: string[]; draft_snapshot?: ReviewDraftStamp[]; reason?: string;
   }): Promise<{ request: AuthRequest; submission_id: string }> {
     const readSnapshot = () => {
       const request = this.requirePendingReview(id);
@@ -5504,7 +5529,7 @@ export class AuthQueue {
       const now = this.now();
       const frozen = freezeReviewSubmission(this.db, { roundId: round.id, owner: round.owner, actorUserId: actor.user_id }, {
         annotationEventIds: input.annotation_event_ids,
-        answers: [],
+        answers: requestNarrativeAnswerMembers(this.db, request, round, actor.user_id, input.answer_event_ids ?? []),
         comparisonTargets: round.bindings.map(binding => ({ document_binding_id: binding.id, target: binding.comparison_target })),
         supersedesSubmissionId: null,
         changeEdit: prepared.changeEdit,

@@ -1031,9 +1031,11 @@ export async function getAuthRequestDetail(requestId: string): Promise<Record<st
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
 }
 
-export async function getAuthDiffFile(requestId: string, index: number, signal?: AbortSignal, against?: string): Promise<DiffFilePair> {
-  const query = against ? `?against=${encodeURIComponent(against)}` : '';
-  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/files/${index}${query}`, { signal });
+export async function getAuthDiffFile(requestId: string, index: number, signal?: AbortSignal, against?: string, round?: string): Promise<DiffFilePair> {
+  const query = new URLSearchParams();
+  if (against) query.set('against', against);
+  if (round) query.set('round', round);
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/files/${index}${query.size ? `?${query}` : ''}`, { signal });
   return await response.json() as DiffFilePair;
 }
 
@@ -1054,6 +1056,13 @@ export async function annotateAuthReview(requestId: string, precondition: AuthRe
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/annotations`, { ...precondition, document_binding_id, mutation });
 }
 
+export async function answerAuthReview(requestId: string, review: AuthReviewProjection, directive_key: string,
+  mutation: import('../../src/feedback/request-review').NarrativeAnswerMutation): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/answers`, {
+    ...review.precondition, round_id: review.round.id, directive_key, mutation,
+  });
+}
+
 export async function mutateAuthReviewThread(requestId: string, precondition: AuthReviewPrecondition,
   comment_id: string, mutation: import('../../src/feedback/review-types').ReviewThreadMutation): Promise<void> {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/thread-events`, { ...precondition, comment_id, mutation });
@@ -1071,6 +1080,7 @@ export async function returnAuthReview(requestId: string, review: AuthReviewProj
   draft_snapshot: ReviewDraftStamp[]): Promise<void> {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/return`, {
     ...review.precondition, reason, round_id: review.round.id, draft_snapshot,
+    answer_event_ids: review.narrative_questions.flatMap(question => question.effective_response ? [question.effective_response.response_event_id] : []),
     annotation_event_ids: review.annotations.filter(annotation => annotation.origin_request_id === requestId)
       .map(annotation => annotation.annotation_event_id),
   });

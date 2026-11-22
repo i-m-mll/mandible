@@ -285,10 +285,10 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
           </div>
           {Array.from(directiveHosts.current, ([element, itemId]) => {
             const item = directives.find((directive) => directive.id === itemId);
-            if (!item) return null;
+            if (!item?.directive) return null;
             const current = Object.hasOwn(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
             return createPortal(
-              <BriefingDirectiveControls key={`${itemId}:${draftIdentity ?? ''}`} item={item} source={document.source}
+              <BriefingDirectiveControls key={`${itemId}:${draftIdentity ?? ''}`} item={{ ...item, directive: item.directive }} source={document.source}
                 current={current} canInteract={canInteract} validationError={validationErrors[item.id]} decorations={decorations}
                 onDirectiveValue={onDirectiveValue} onSelect={setSelection} onComment={openEditor} onDecorationClick={openComment} />,
               element,

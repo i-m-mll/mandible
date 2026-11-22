@@ -6,17 +6,21 @@ import {
 } from '../../components/MarkdownDocument';
 import type { BriefingDirectiveItem, BriefingResponseValue } from '../../api';
 
+type DirectiveControlsItem = { id: string; directive: NonNullable<BriefingDirectiveItem['directive']>;
+  revision: Pick<BriefingDirectiveItem['revision'], 'response_type' | 'required' | 'options' | 'variants'> };
+
 export const BRIEFING_MARKDOWN_PREVIEW = { images: 'omit', directivePreview: 'on-changed-text' } as const;
 
 export function BriefingDirectiveControls({ item, source, current, canInteract, validationError, decorations,
-  onDirectiveValue, onSelect, onComment, onDecorationClick }: {
-  item: BriefingDirectiveItem;
+  onDirectiveValue, onTextBlur, onSelect, onComment, onDecorationClick }: {
+  item: DirectiveControlsItem;
   source: string;
   current: BriefingResponseValue | null;
   canInteract: boolean;
   validationError?: string;
   decorations: readonly MarkdownRangeDecoration[];
   onDirectiveValue?(itemId: string, value: BriefingResponseValue | null): void;
+  onTextBlur?(itemId: string, value: BriefingResponseValue | null): void;
   onSelect(selection: MarkdownSelection): void;
   onComment(selection: MarkdownSelection): void;
   onDecorationClick(id: string): void;
@@ -24,7 +28,7 @@ export function BriefingDirectiveControls({ item, source, current, canInteract, 
   const radioGroupScope = useId();
   const promptId = `${radioGroupScope}-prompt`;
   const [textEdit, setTextEdit] = useState<string | null>(null);
-  const responseControls = (item: BriefingDirectiveItem, current: BriefingResponseValue | null, promptId: string) => {
+  const responseControls = (item: DirectiveControlsItem, current: BriefingResponseValue | null, promptId: string) => {
     const type = item.revision.response_type;
     const controlId = `briefing-directive-${item.id}`.replace(/[^A-Za-z0-9_-]/g, '-');
     const errorId = `${controlId}-error`;
@@ -85,7 +89,13 @@ export function BriefingDirectiveControls({ item, source, current, canInteract, 
         onInput: (event: Event & { currentTarget: HTMLInputElement | HTMLTextAreaElement }) => {
           const value = event.currentTarget.value;
           setTextEdit(value);
-          onDirectiveValue?.(item.id, value.trim() ? { text: value } : null);
+          if (!onTextBlur) onDirectiveValue?.(item.id, value.trim() ? { text: value } : null);
+        },
+        onBlur: () => {
+          const saved = current && 'text' in current ? current.text : '';
+          if (onTextBlur && textEdit !== null && textEdit !== saved) {
+            onTextBlur(item.id, textEdit.trim() ? { text: textEdit } : null);
+          }
         },
       };
       control = type === 'short_text' ? <input className="briefing-directive__text" type="text" {...shared} /> : <textarea className="briefing-directive__text" rows={4} {...shared} />;
@@ -122,7 +132,7 @@ export function BriefingDirectiveControls({ item, source, current, canInteract, 
     );
   };
 
-  const clearResponseAction = (item: BriefingDirectiveItem, current: BriefingResponseValue | null, promptId: string) => (
+  const clearResponseAction = (item: DirectiveControlsItem, current: BriefingResponseValue | null, promptId: string) => (
     <span className="briefing-directive__clear-slot">
       {current ? (
         <ContextualAction className="briefing-directive__clear" aria-label="Clear response" title="Clear response"
@@ -135,7 +145,7 @@ export function BriefingDirectiveControls({ item, source, current, canInteract, 
   );
 
 
-  const directive = item.directive!;
+  const directive = item.directive;
   const variants = item.revision.variants ?? [];
   const value = current && 'option_key' in current ? current.option_key : null;
   const span = variants.find((variant) => variant.key === value) ?? variants[0] ?? directive;

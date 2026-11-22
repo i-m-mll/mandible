@@ -58,6 +58,7 @@ export function mapRow(row: Record<string, unknown>): AuthRequest {
     // agent-authored change message bound to these exact bytes.
     commit_message_digest:
       row.commit_message_digest == null ? null : String(row.commit_message_digest),
+    narrative: row.narrative == null ? null : String(row.narrative),
     spec_content: row.spec_content == null ? null : String(row.spec_content),
     repo: row.repo == null ? undefined : String(row.repo),
     base_branch: row.base_branch == null ? undefined : String(row.base_branch),

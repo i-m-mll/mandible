@@ -61,6 +61,7 @@ import {
   BRIEFING_DESTINATION_MUTATION_SCHEMA_SQL,
   BRIEFING_GROUP_REVIEW_SCHEMA_V167_SQL,
   BRIEFING_GROUP_SCHEMA_SQL,
+  REQUEST_NARRATIVE_MIGRATION_SQL,
 } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.js";
@@ -2499,6 +2500,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 251, name: "review_comment_threads", statements: REVIEW_THREAD_SCHEMA_SQL },
   { version: 252, name: "request_review_drafts", statements: REQUEST_REVIEW_DRAFT_SCHEMA_SQL },
   { version: 253, name: "standing_document_notes", requires_foreign_keys_off: true, statements: STANDING_REVIEW_ROUND_MIGRATION_SQL },
+  { version: 254, name: "request_narrative", requires_foreign_keys_off: true, statements: REQUEST_NARRATIVE_MIGRATION_SQL },
 ];
 
 /**

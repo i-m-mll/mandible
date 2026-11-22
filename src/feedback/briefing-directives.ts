@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
-import { unified } from "unified";
-import remarkDirective from "remark-directive";
-import remarkParse from "remark-parse";
+import { remarkDirectives } from "../presentation/remark-directives.js";
 import { parseAuthoredReferences } from "../ledger/authored-references.js";
 import { leadingMarkdownFrontmatter } from "../markdown-frontmatter.js";
 
@@ -173,15 +171,16 @@ function directiveBody(
 export function parseBriefingDirectives(
   source: string,
   profile: BriefingProfile = BRIEFING_PROFILE,
-  options: { allowEmpty?: boolean } = {},
+  options: { allowEmpty?: boolean; ignoreUnsupported?: boolean } = {},
 ): BriefingDirective[] {
   const directiveSource = maskAuthoredReferenceColons(blankLeadingFrontmatter(source));
-  const tree = unified().use(remarkParse).use(remarkDirective).parse(directiveSource) as unknown as Node;
+  const tree = remarkDirectives.parse(directiveSource) as unknown as Node;
   const directives: BriefingDirective[] = [];
   const seen = new Set<string>();
   const walk = (node: Node, topLevel: boolean): void => {
     const isDirective = typeof node.type === "string" && node.type.endsWith("Directive");
     if (isDirective) {
+      if (options.ignoreUnsupported && node.name !== "spec-item") return;
       if (!topLevel || node.type !== "containerDirective" || node.name !== "spec-item") {
         throw new BriefingDirectiveError("only top-level spec-item container directives are supported");
       }
@@ -246,4 +245,13 @@ function maskAuthoredReferenceColons(source: string): string {
   const masked = source.split("");
   for (const reference of references) masked[reference.start + reference.kind.length + 1] = "：";
   return masked.join("");
+}
+
+export function requestNarrativeQuestions(source: string): BriefingDirective[] {
+  try {
+    return parseBriefingDirectives(source, BRIEFING_PROFILE_V3, { allowEmpty: true, ignoreUnsupported: true });
+  } catch (error) {
+    if (!(error instanceof BriefingDirectiveError)) throw error;
+    return [];
+  }
 }

@@ -4,20 +4,22 @@ import { useAuthReviewDrafts, type AuthReviewFileDraft } from './useAuthReviewDr
 import type { ChangeTextFileView } from '../components/ChangeList';
 import { lazy, Suspense } from 'preact/compat';
 import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
+import { narrativeDraftSpan, narrativeHunkPair, type NarrativeHunk, type TextSpan } from '../../../src/feedback/request-narrative';
 import type { RequestReviewComment } from '../../../src/feedback/request-review';
 import type { ReviewRange, ReviewThreadMutation } from '../../../src/feedback/review-types';
 import type { AuthChangeReport, DiffFilePair } from '../../../src/contracts';
 import { DOMAIN_EVENTS } from '../../../src/contracts';
 import {
-  annotateAuthReview, getAuthReview, getAuthReviewComparison, mutateAuthReviewThread, returnAuthReview, type AuthReviewProjection,
+  annotateAuthReview, answerAuthReview, getAuthReview, getAuthReviewComparison, mutateAuthReviewThread, returnAuthReview, type AuthReviewProjection, type BriefingResponseValue,
 } from '../api';
-import { MarkdownDocument, type MarkdownDocumentHandle, type MarkdownSelection } from '../components/MarkdownDocument';
+import { MarkdownDocument, type MarkdownDocumentHandle, type MarkdownSelection, type MarkdownDirectives, type MarkdownRangeDecoration } from '../components/MarkdownDocument';
 import { ReviewCommentsSidebar } from '../components/shared/ReviewCommentsSidebar';
 import { ContextualAction } from '../components/shared/ContextualAction';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { Icon } from '../components/icons/Icon';
 import { NativeSelect } from '../components/shared/NativeSelect';
+import { quoteReviewLines } from '../../../src/feedback/review-ranges';
 import type { DiffLineRange } from '../components/PierreFileDiff';
 
 type Binding = AuthReviewProjection['round']['bindings'][number];
@@ -137,6 +139,19 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
       await refresh();
     }, () => setReplyTarget(null));
   };
+  const answerQuestion = (key: string, value: BriefingResponseValue | null) => {
+    if (!available || !data || busy) return;
+    const question = data.narrative_questions.find(item => item.directive.key === key);
+    if (!question || JSON.stringify(question.effective_response?.value ?? null) === JSON.stringify(value)) return;
+    const expected = question.effective_response?.response_event_id ?? null;
+    if (value === null && expected === null) return;
+    void act(async () => {
+      await answerAuthReview(id, data, key, value === null
+        ? { operation: 'retract', expected_response_event_id: expected! }
+        : { operation: 'set', expected_response_event_id: expected, value });
+      await refresh();
+    }, () => undefined);
+  };
   const select = (binding: Binding | undefined, range: ReviewRange | null) => {
     if (!available || against || !binding) return;
     setSelection(current => range ? { ...range, bindingId: binding.id } : current?.bindingId === binding.id ? null : current);
@@ -150,9 +165,14 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
   };
   return { data, navigation, setNavigation, commentsOpen, setCommentsOpen, available, against, compare, drafts,
     comparison: comparison?.against === against ? comparison.report : undefined, comparisonError,
-    openDecision, selection, lineSelection, markdownSelection, remove, busy, error,
+    openDecision, selection, lineSelection, markdownSelection, remove, busy, error, answerQuestion,
     clearSelection: () => setSelection(null),
     comment: () => { setEditor(selection); setText(''); setError(null); },
+    commentOnMarkdown: (binding: Binding, selection: MarkdownSelection) => {
+      if (!available || !selection.quote) return;
+      setEditor({ bindingId: binding.id, start_offset: selection.start, end_offset: selection.end, quote: selection.quote });
+      setText(''); setError(null);
+    },
     threadAvailable, replyTarget, changeThread,
     reply: (comment: RequestReviewComment) => { setReplyTarget(comment); setText(''); setError(null); },
     editor, decision, text, setText, saveComment, submitDecision,
@@ -193,6 +213,7 @@ export function AuthReviewSidebar({ review, id, onNavigate, children }: {
           range: range(comment),
           status: comment.origin_request_id === id ? undefined : comment.anchor.status,
           author: comment.source.kind === 'request_description' ? 'Description'
+            : comment.source.kind === 'request_narrative' ? 'Narrative'
             : `${comment.source.path} · ${comment.source.side === 'before' ? 'Before' : 'After'}`,
           content: <>{comment.body}
             {review.available && comment.origin_request_id === id && !comment.thread.events.length && <ContextualAction aria-label="Remove comment"
@@ -222,13 +243,26 @@ export function AuthReviewSidebar({ review, id, onNavigate, children }: {
   </div>;
 }
 
-export function AuthReviewMarkdown({ review, binding, value, comparison, label, wholeFile }: {
+export function authReviewMarkdownMarks(review: AuthRequestReviewState, binding?: Binding, span?: TextSpan): MarkdownRangeDecoration[] {
+  return (review.data?.annotations ?? []).flatMap(comment => {
+    const anchor = binding && comment.document_binding_id === binding.id && range(comment);
+    if (!anchor) return [];
+    const start = span ? Math.max(anchor.start, span.start) - span.start : anchor.start;
+    const end = span ? Math.min(anchor.end, span.end) - span.start : anchor.end;
+    return end > start ? [{ start, end, id: comment.annotation_event_id, className: 'review-range' }] : [];
+  });
+}
+
+export function AuthReviewMarkdown({ review, binding, value, comparison, label, wholeFile, directives, previewPolicy, span }: {
   review: AuthRequestReviewState;
   binding?: Binding;
   value: string;
   comparison?: string;
   label: string;
   wholeFile?: boolean;
+  directives?: MarkdownDirectives;
+  previewPolicy?: Parameters<typeof MarkdownDocument>[0]['previewPolicy'];
+  span?: TextSpan;
 }) {
   const document = useRef<MarkdownDocumentHandle>(null);
   const container = useRef<HTMLDivElement>(null);
@@ -236,16 +270,15 @@ export function AuthReviewMarkdown({ review, binding, value, comparison, label, 
   useLayoutEffect(() => {
     if (!target || !binding || target.comment.document_binding_id !== binding.id) return;
     const anchor = range(target.comment);
-    if (!anchor) return;
+    if (!anchor || span && (anchor.start < span.start || anchor.end > span.end)) return;
     container.current?.scrollIntoView({ block: 'nearest' });
-    document.current?.select(anchor);
-  }, [target?.token, binding?.id]);
-  const marks = (review.data?.annotations ?? []).flatMap(comment => {
-    const anchor = binding && comment.document_binding_id === binding.id && range(comment);
-    return anchor ? [{ ...anchor, id: comment.annotation_event_id, className: 'review-range' }] : [];
-  });
-  return <div ref={container}><MarkdownDocument value={value} comparison={comparison} comparisonLayout={wholeFile ? 'full-document' : undefined} readOnly ariaLabel={label}
-    documentRef={document} decorations={marks} onSelectionChange={selection => review.markdownSelection(binding, selection)} /></div>;
+    document.current?.select({ start: anchor.start - (span?.start ?? 0), end: anchor.end - (span?.start ?? 0) });
+  }, [target?.token, binding?.id, span?.start, span?.end]);
+  return <div ref={container}><MarkdownDocument value={value} comparison={comparison}
+    comparisonLayout={wholeFile ? 'full-document' : undefined} readOnly ariaLabel={label}
+    directives={directives} previewPolicy={previewPolicy} documentRef={document} decorations={authReviewMarkdownMarks(review, binding, span)}
+    onSelectionChange={selection => review.markdownSelection(binding,
+      { ...selection, start: selection.start + (span?.start ?? 0), end: selection.end + (span?.start ?? 0) })} /></div>;
 }
 
 export function AuthReviewMarkdownChange({ review, pair, index, wholeFile }: {
@@ -369,13 +402,34 @@ export function AuthReviewDraftControls({ draft, available }: { draft: AuthRevie
   </>;
 }
 
-export function AuthReviewTextFile({ review, pair, index, view }: {
-  review: AuthRequestReviewState; pair: TextPair; index: number; view: ChangeTextFileView;
+export function AuthReviewTextFile({ review, pair, index, view, section }: {
+  review: AuthRequestReviewState; pair: TextPair; index: number;
+  view: Omit<ChangeTextFileView, 'defaultContent'> & { defaultContent?: ComponentChildren };
+  section?: NarrativeHunk;
 }) {
   const markdown = /\.(?:md|markdown)$/i.test(pair.after.name);
-  const pinned = markdown ? <AuthReviewMarkdownChange review={review} pair={pair} index={index} wholeFile={view.wholeFile} /> : view.defaultContent;
-  const draft = !review.against ? review.drafts.forFile(index, pair) : null;
-  if (!draft) return <>{pinned}</>;
+  const shown = section ? narrativeHunkPair(pair, section) : pair;
+  const bindings = review.data?.round.bindings ?? [];
+  const binding = bindings.find(({ source }) => source.kind === 'request_file' && source.file_index === index && source.side === 'after');
+  const pinned = !section
+    ? (markdown ? <AuthReviewMarkdownChange review={review} pair={pair} index={index} wholeFile={view.wholeFile} /> : view.defaultContent)
+    : markdown
+      ? <AuthReviewMarkdown review={review} binding={binding} value={shown.after.contents} comparison={shown.before.contents}
+          label={pair.after.name} span={section.after} wholeFile />
+      : <Suspense fallback={null}><PierreDraftDiff input={{ ...shown, kind: 'contents' }} mode={view.mode} wrap={view.wrap} wholeFile
+          ariaLabel={shown.after.name} onLineSelection={range => {
+            if (!range) { review.lineSelection(index, null); return; }
+            const side = range.side;
+            const preceding = pair[side].contents.slice(0, section[side].start).split('\n').length - 1;
+            const original = { side, startLine: range.startLine + preceding, endLine: range.endLine + preceding };
+            review.lineSelection(index, original, quoteReviewLines(pair[side].contents, original.startLine - 1, original.endLine));
+          }} /></Suspense>;
+  const fileDraft = !review.against ? review.drafts.forFile(index, pair) : null;
+  if (!fileDraft) return <>{pinned}</>;
+  const span = section && narrativeDraftSpan(pair.after.contents, fileDraft.source, section.after);
+  if (section && !span) return <>{pinned}</>;
+  const draft = span ? { ...fileDraft, source: fileDraft.source.slice(span.start, span.end),
+    change: (source: string) => fileDraft.change(fileDraft.source.slice(0, span.start) + source + fileDraft.source.slice(span.end)) } : fileDraft;
   const label = `Review draft for ${draft.path}`;
   const target = review.navigation?.comment.source;
   const jump = target?.kind === 'request_file' && target.file_index === index;
@@ -386,10 +440,13 @@ export function AuthReviewTextFile({ review, pair, index, view }: {
       draft.toggle();
     } }} available={Boolean(review.available)} />
     {draft.editing && !jump ? (markdown
-      ? <MarkdownDocument value={draft.source} readOnly={!draft.writable} comparison={pair.after.contents}
+      ? <MarkdownDocument value={draft.source} readOnly={!draft.writable} comparison={section ? shown.before.contents : pair.after.contents}
         comparisonLayout={view.wholeFile ? 'full-document' : undefined} ariaLabel={label} onChange={draft.change} />
-      : <PierreReviewDraft key={`${draft.externalVersion}:${Boolean(review.available)}`}
-        editable={Boolean(review.available)} draft={draft} pair={pair} view={view} />) : pinned}
+      : <>
+        {section && pinned}
+        <PierreReviewDraft key={`${draft.externalVersion}:${Boolean(review.available)}`}
+          editable={Boolean(review.available)} draft={draft} pair={shown} view={{ ...view, defaultContent: null }} />
+      </>) : pinned}
   </>;
 }
 
