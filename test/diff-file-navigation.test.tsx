@@ -58,3 +58,22 @@ it('opens a collapsed exact pair once, preserves sibling choices, and waits for 
   view.rerender(<ChangeList {...props} files={rename} target={mismatched} />);
   expect(ready.mock.calls[3]).toEqual(['visit-3', { kind: 'file', element: screen.getByRole('button', { name: 'one/file.ts → two/file.ts' }) }]);
 });
+
+it('opens a Markdown file pair as one read-only document with its captured comparison', async () => {
+  const path = 'agents/policy.md';
+  render(<ChangeList
+    scope="auth:markdown"
+    ariaLabel="Changes"
+    files={[{ old_path: path, new_path: path, change_kind: 'modified', additions: 1, deletions: 1 }]}
+    loadFile={async () => ({
+      kind: 'text',
+      before: { name: path, contents: '😀 Use the previous wording.' },
+      after: { name: path, contents: '😀 Use the proposed wording.' },
+    })}
+  />);
+
+  const document = await screen.findByRole('textbox', { name: path });
+  expect(document.getAttribute('aria-readonly')).toBe('true');
+  expect(document.querySelector('del')?.textContent).toBe('previous');
+  expect(document.querySelector('.cm-changedText')?.textContent).toBe('proposed');
+});

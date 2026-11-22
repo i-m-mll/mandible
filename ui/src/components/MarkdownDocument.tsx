@@ -14,6 +14,7 @@ import {
   markdownValue, replaceMarkdownSource, textReplacement, type MarkdownSelection, type MarkdownSourceRange,
 } from './markdown/source';
 import { markdownPreview, markdownDirectives, type MarkdownDirectives } from './markdown/preview';
+import { compareMarkdownWords } from './markdown/comparison';
 import { markdownSyntax } from './markdown/syntax';
 import './MarkdownDocument.css';
 
@@ -74,6 +75,7 @@ function compareWith(original: string | undefined) {
     mergeControls: false,
     allowInlineDiffs: true,
     syntaxHighlightDeletions: false,
+    diffConfig: { override: compareMarkdownWords },
   });
 }
 
