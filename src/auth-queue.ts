@@ -120,6 +120,7 @@ import {
 import { canonicalRepoKeyForPath, observeRepoIdentities, RepoIdentityReadSetChanged, requestRepoMatcher, type RepoIdentityObservation } from "./repo-identity.js";
 import { REMOVE_MERGED_BRANCHES_STEP } from "./notices/contract.js";
 import { checkoutTopLevel, isRetriedKeptBranch, listLandedBranches, removeLandedBranch, type BranchRemoval, type MergeLanding } from "./merged-branch-removal.js";
+import { branchHasOwnCommits } from "./trash-service.js";
 import {
   auditProtectedBase,
   describeBaseAuditFindings,
@@ -9065,7 +9066,7 @@ export class AuthQueue {
           ? await batch.isAncestor(repoRoot, candidate, target)
           : (await this.gitIsAncestor(repoRoot, candidate, target));
         if (merged) {
-          return true;
+          return branchHasOwnCommits(repoRoot, branch);
         }
       }
     }

@@ -722,14 +722,38 @@ async function isAncestor(repoRoot: string, ancestor: string, descendant: string
   );
 }
 
+const BRANCH_CREATION_SUBJECT = "branch: Created from ";
+
 /**
- * Prove the branch contributes no bytes to `target`: either it is an ancestor,
- * or a synthetic merge reproduces the target's exact tree. `git cherry` is not
- * enough because it ignores merge-resolution tree changes.
+ * Whether `branch`, at `tip`, has commits of its own: commits its tip reaches
+ * that the commit it was created from does not. Git records that commit in the
+ * oldest entry of the branch's reflog. A branch with no creation entry (made by
+ * a fetch, or older than the reflog's expiry) is taken to have commits of its
+ * own, so that ancestry alone judges it.
  */
-export async function proveMergedInto(repoRoot: string, branchTip: string, target: string): Promise<MergeEvidence> {
+export async function branchHasOwnCommits(repoRoot: string, branch: string, tip = `refs/heads/${branch}`): Promise<boolean> {
+  const ref = `refs/heads/${branch}`;
+  const logged = await runGit(repoRoot, ["reflog", "exists", ref]);
+  if (logged.status === 1) return true;
+  if (logged.status !== 0) throw new TrashServiceError((logged.stderr || logged.error?.message || "git reflog failed").trim(), "git_failed", 409);
+  const oldest = (await git(repoRoot, ["reflog", "show", "--format=%H %gs", ref, "--"])).split("\n").filter(Boolean).at(-1);
+  if (!oldest?.slice(oldest.indexOf(" ") + 1).startsWith(BRANCH_CREATION_SUBJECT)) return true;
+  return !await isAncestor(repoRoot, tip, oldest.slice(0, oldest.indexOf(" ")));
+}
+
+/**
+ * Prove the branch's own commits contribute no bytes to `target`: it has
+ * commits of its own, and either its tip is an ancestor of the target or a
+ * synthetic merge reproduces the target's exact tree. A branch with no commits
+ * of its own merged nothing, wherever its tip is. `git cherry` is not enough
+ * because it ignores merge-resolution tree changes.
+ */
+export async function proveMergedInto(repoRoot: string, branch: string, branchTip: string, target: string): Promise<MergeEvidence> {
   const targetOid = await branchOid(repoRoot, target);
   if (!targetOid) throw new TrashServiceError(`merge target not found: ${target}`, "target_not_found", 404);
+  if (!await branchHasOwnCommits(repoRoot, branch, branchTip)) {
+    throw new TrashServiceError(`${branch} has no commits of its own to merge into ${target}`, "branch_not_merged", 409, { target });
+  }
   if (await isAncestor(repoRoot, branchTip, targetOid)) return "merged";
   const targetTree = await git(repoRoot, ["rev-parse", "--verify", `${targetOid}^{tree}`]);
   const mergeTree = (await git(repoRoot, ["merge-tree", "--write-tree", targetOid, branchTip], { allowFailure: true }))
@@ -797,7 +821,7 @@ async function trashBranchNow(db: Db, input: TrashCreateInput, now: number): Pro
   if (mergedInto === branch) {
     throw new TrashServiceError("merged_into must name a different branch", "invalid_merge_target");
   }
-  const evidence = mergedInto ? await proveMergedInto(checkout.root, originalOid, mergedInto) : null;
+  const evidence = mergedInto ? await proveMergedInto(checkout.root, branch, originalOid, mergedInto) : null;
   const worktree = (await parseWorktrees(checkout.root)).find((entry) => entry.branch === branch) ?? null;
   if (worktree && path.resolve(worktree.path) === path.resolve(checkout.root)) {
     throw new TrashServiceError("refusing to remove the registered root worktree", "current_worktree", 409);

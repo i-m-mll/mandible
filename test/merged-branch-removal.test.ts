@@ -166,6 +166,50 @@ describe("merged-branch removal", () => {
     }
   });
 
+  it("keeps a branch with no commits of its own and its work unit, dirty or clean, while removing one whose commits landed", async () => {
+    const merged = lane("merged");
+    const fresh = (branch: string, base: string, draft: boolean) => {
+      const worktree = path.join(repo, "worktrees", branch.replaceAll("/", "__"));
+      git(repo, ["worktree", "add", "-b", branch, worktree, base]);
+      if (draft) writeFile(worktree, "draft.txt", "uncommitted\n");
+      return worktree;
+    };
+    const child = fresh(`${HEAD}__fresh`, HEAD, true);
+    const dirty = fresh("feature/fresh-dirty", "main", true);
+    const clean = fresh("feature/fresh-clean", "main", false);
+    const unit = db.prepare(
+      `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+       VALUES (?, ?, ?, ?, 'solo', ?, 1)`,
+    );
+    unit.run("wu-merged", "merged1", path.basename(repo), merged.branch, "committed");
+    unit.run("wu-child", "child1", path.basename(repo), `${HEAD}__fresh`, "open");
+    unit.run("wu-dirty", "dirty1", path.basename(repo), "feature/fresh-dirty", "open");
+    unit.run("wu-clean", "clean1", path.basename(repo), "feature/fresh-clean", "open");
+
+    const queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
+    try {
+      const id = await merge(queue);
+      await queue.drainFinalizers();
+      expect(results(id)).toEqual({
+        [HEAD]: "removed",
+        [merged.branch]: "removed",
+        [`${HEAD}__fresh`]: "kept not_merged",
+      });
+      expect(fs.existsSync(merged.worktree) || branchExists(merged.branch)).toBe(false);
+      expect([child, dirty, clean].every(fs.existsSync)).toBe(true);
+      expect([`${HEAD}__fresh`, "feature/fresh-dirty", "feature/fresh-clean"].every(branchExists)).toBe(true);
+      expect(fs.readFileSync(path.join(dirty, "draft.txt"), "utf8")).toBe("uncommitted\n");
+      expect(db.prepare("SELECT id, state FROM work_units ORDER BY id").all()).toEqual([
+        { id: "wu-child", state: "open" },
+        { id: "wu-clean", state: "open" },
+        { id: "wu-dirty", state: "open" },
+        { id: "wu-merged", state: "resolved" },
+      ]);
+    } finally {
+      await queue.dispose();
+    }
+  });
+
   it("resumes pending removals after a restart without losing branches removed before it", async () => {
     const first = lane("first");
     const second = lane("second");
