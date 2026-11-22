@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { writeBuildRevision } from './build-revision.mjs';
 import { typeScriptCompiler } from './run-tsc.js';
 import { daemonBuildOutput } from './desktop-build-layout.mjs';
+import { ensureDevDependencies } from './dev-dependencies.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -42,5 +43,6 @@ export async function sourceBuild(directory, mode = 'build', { timeout = 60_000 
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  ensureDevDependencies(root);
   await sourceBuild(root, process.argv[2] ?? 'build');
 }

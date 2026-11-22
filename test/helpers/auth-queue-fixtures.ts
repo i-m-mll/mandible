@@ -53,6 +53,7 @@ import {
   listCredentials,
 } from "../../src/users/store.js";
 import { waitUntil } from "./wait-until.js";
+import { configureFixtureGit } from "./fixture-git-config.js";
 import { approveAsFixtureOperator, fixtureOperatorSigning, installFixtureApprovalKey } from "./operator-signing-fixtures.js";
 
 // --- temp-path custody -----------------------------------------------------
@@ -179,9 +180,7 @@ export function writeFile(repo: string, relativePath: string, content: string): 
  */
 function buildPristineRepo(destination: string): void {
   git(destination, ["init", "-b", "main", `--template=${gitTemplateDir()}`]);
-  git(destination, ["config", "user.name", "Mandible Test"]);
-  git(destination, ["config", "user.email", "mandible-test@localhost"]);
-  git(destination, ["config", "commit.gpgsign", "false"]);
+  configureFixtureGit(destination, "Mandible Test", "mandible-test@localhost");
   writeFile(destination, "shared.txt", "base\n");
   git(destination, ["add", "."]);
   git(destination, ["commit", "-m", "init"]);

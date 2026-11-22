@@ -9,6 +9,8 @@ The owner file uses `mandible-owned-run@1`. Lifecycle operations serialize on on
 sibling lock; an interrupted lock requires inspection of its recorded process.
 Missing or old ownership metadata never grants cleanup permission.
 
+On the protected checkout, the launcher selects the only linked `integration/*` branch with one active work unit. When several are available, pass `--branch` to choose. Starting a new integration preview without an existing owning branch requires the owning project and work unit.
+
 Seed output is generated and disposable until the daemon is made writable.
 Ordinary writable previews may contain unique ledger, document, preferences and
 managed artifact bytes. Process exit, age, a newer snapshot and a code merge do
