@@ -9,7 +9,7 @@ export const AUTH_REQUEST_ACTIONS_TABLE_SQL = `CREATE TABLE auth_request_actions
         kind TEXT NOT NULL CHECK(kind IN (${AUTH_REQUEST_ACTION_KINDS.map((kind) => `'${kind}'`).join(",")})),
         target_issue_ref TEXT NOT NULL,
         payload TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'staged' CHECK(state IN ('staged','applied','failed','vetoed','skipped_stale')),
+        state TEXT NOT NULL DEFAULT 'staged' CHECK(state IN ('staged','applied','failed','vetoed','skipped_stale','skipped_held')),
         target_digest TEXT,
         staged_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,

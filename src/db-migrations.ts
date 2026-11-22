@@ -2473,6 +2473,8 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP TABLE ledger_issue_relationship_sources_v245",
     PROJECT_ISSUE_READ_INDEX_SQL.find((sql) => sql.includes("idx_ledger_relationship_sources_source_issue"))!,
   ] },
+  // Issue 2927dd8 — a conditional closure that finds its issue still held ends skipped_held.
+  { version: 247, name: "skipped_held_action_state", statements: [...AUTH_REQUEST_ACTIONS_REBUILD_SQL], requires_foreign_keys_off: true },
 ];
 
 /**

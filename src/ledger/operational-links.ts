@@ -967,6 +967,10 @@ function sourceFieldsForAuthRef(
   return fields;
 }
 
+/**
+ * The issues a request's closures resolve. A conditional closure (issue
+ * 2927dd8) resolves its issue only once it applies, which links it then.
+ */
 function authRequestActionIssueCloseRefs(db: Db, authRequestId: string, issueRef?: string): string[] {
   if (!tableExists(db, "auth_request_actions")) return [];
   const rows = db.prepare(
@@ -974,7 +978,7 @@ function authRequestActionIssueCloseRefs(db: Db, authRequestId: string, issueRef
      FROM auth_request_actions
      WHERE auth_request_id = ?
        AND kind = 'issue_close'
-       AND state IN ('staged', 'applied')${issueRef == null ? "" : " AND target_issue_ref = ?"}`,
+       AND (state = 'applied' OR (state = 'staged' AND json_extract(payload, '$.when_released') IS NOT 1))${issueRef == null ? "" : " AND target_issue_ref = ?"}`,
   ).all(authRequestId, ...(issueRef == null ? [] : [issueRef])) as Array<{ target_issue_ref: string }>;
   return rows.map((row) => row.target_issue_ref).filter((ref) => ref.trim());
 }
