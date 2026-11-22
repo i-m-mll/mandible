@@ -12,10 +12,11 @@ import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefus
 import { RuntimeObservationError, observationPending, runtimeObservationAcceptance, runRuntimeCommand, runtimeNow, runtimeObservationTimeout, withRuntimeBudget } from './runtime-observation.mjs';
 import { authHookTimeoutMs } from '../src/auth-hook-timeout.ts';
 import { withLifecycleLock, withInstallationGatewayLock, inspectLifecycleLock, assertLifecycleLockHeld, processIdentity as lockProcessIdentity } from './lifecycle-lock.mjs';
-import { acceptedInstallPaths, preparedApplicationContext, applicationRootIdentity, prepareAcceptedApplication, installAcceptedApplication, validatePreparedDaemon } from './accepted-app-install.mjs';
+import { prepareAcceptedApplication, installAcceptedApplication } from './accepted-app-install.mjs';
+import { activationDatabase, installStagedApplication, preparedApplicationContext, stagedInstallPaths, validatePreparedDaemon } from './staged-app-install.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions, parseLoadedService } from './service-definitions.mjs';
 import { admitBundleOwner } from './bundle-services.mjs';
-import { installedResourceRoot, installedRuntimeEnvironment, installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
+import { applicationRootIdentity, installedResourceRoot, installedRuntimeEnvironment, installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
 import { assertApprovedRuntimePackage, readAcceptedReleaseReceipt, readAcceptedInstalledRelease, readImmutableAcceptedRelease, disposeAcceptedRelease } from './accepted-release.mjs';
 import { inspectRunConsumers } from './owned-run.mjs';
 import SqliteDatabase from '../src/sqlite.ts';
@@ -47,7 +48,7 @@ export const workerRunsAgain = journal => Boolean(journal.attempt && !journal.at
 const committedWindow = (attempt, base) => Math.min(base * 2 ** (attempt.committedPendingRuns ?? 0), Math.max(base, COMMITTED_OBSERVATION_CAP_MS));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const fileHash = file => hash(fs.readFileSync(file));
-const acceptedOperations = new AsyncLocalStorage();
+const activationOperations = new AsyncLocalStorage();
 const installationOperations = new AsyncLocalStorage();
 const observationOperations = new AsyncLocalStorage();
 export function verifyUpdaterClosure(reference) {
@@ -63,9 +64,9 @@ export function verifyUpdaterClosure(reference) {
   }
   return { receipt, app, resources, release };
 }
-function withAcceptedClosure(journal, operation) {
-  if (acceptedOperations.getStore()?.bindingDigest === journal.bindingDigest) return operation();
-  return acceptedOperations.run({ bindingDigest: journal.bindingDigest, accepted: null }, operation);
+function withActivationScope(journal, operation) {
+  if (activationOperations.getStore()?.bindingDigest === journal.bindingDigest) return operation();
+  return activationOperations.run({ bindingDigest: journal.bindingDigest }, operation);
 }
 function preparedLease(journal) {
   const observation = observationOperations.getStore();
@@ -80,11 +81,8 @@ function preparedLease(journal) {
   };
 }
 function installedApplication(journal) {
-  const scope = acceptedOperations.getStore();
+  const scope = activationOperations.getStore();
   if (!scope || scope.bindingDigest !== journal.bindingDigest) throw new Error('Application verification requires its owned operation.');
-  scope.prepared ??= prepareAcceptedApplication(journal.binding, { until: (journal.attempt?.deadline ?? journal.deadline),
-    attemptId: journal.attempt.id, assertHeld: preparedLease(journal), phase: 'installed',
-    stageIdentity: journal.attempt.effects.prepare?.stageIdentity ?? journal.attempt.receipt?.installed?.identity });
   const application = preparedApplicationContext(scope.prepared, journal.binding);
   if (!application.installed) throw new Error('Operation requires the installed prepared application.');
   return application;
@@ -116,7 +114,7 @@ function inUse(subject, pids) {
 }
 function removePreviousApplication(journal) {
   const b = journal.binding;
-  const previous = acceptedInstallPaths(b).previous;
+  const previous = stagedInstallPaths(b).previous;
   if (!fs.existsSync(previous)) return;
   const prior = applicationRootIdentity(previous);
   if (!b.priorAppIdentity || prior.dev !== b.priorAppIdentity.dev || prior.ino !== b.priorAppIdentity.ino) throw new Error('Previous app custody changed.');
@@ -296,16 +294,16 @@ function observationFailure(code, message, evidence) {
 }
 async function ownedNativeContext(journal) {
   const api = await import('./local-runtime.mjs');
-  const scope = acceptedOperations.getStore();
+  const scope = activationOperations.getStore();
   const b = journal.binding;
-  scope.context ??= api.createHandoffContext({ home: b.home, root: b.root, accountHome: b.accountHome,
+  scope.context ??= api.createHandoffContext({ home: b.home, accountHome: b.accountHome,
     domain: b.domain, bundleRoot: b.nativeApp, bundleIdentifier: scope.prepared?.bundleIdentifier });
   return scope.context;
 }
 async function controller(journal, command, currentVerifier = false, { until = (journal.attempt?.deadline ?? journal.deadline), awaitReady = false, signal } = {}) {
   assertObservationLease(journal);
   const api = await import('./local-runtime.mjs');
-  const scope = acceptedOperations.getStore();
+  const scope = activationOperations.getStore();
   const b = journal.binding;
   const context = await ownedNativeContext(journal);
   const options = { context, journal, assertHeld: preparedLease(journal), prepared: scope.prepared,
@@ -327,7 +325,6 @@ async function controller(journal, command, currentVerifier = false, { until = (
   else if (command === 'handoff-probe') result = await api.probeHandoffRuntime(b, { ...options,
     generation: preparedApplicationContext(scope.prepared, b).release.provenance.commit });
   else throw new Error(`Unsupported direct handoff operation: ${command}`);
-  if (command === 'handoff-verify' && result.process?.startupEpoch) scope.startupEpoch ??= result.process.startupEpoch;
   assertObservationLease(journal);
   return JSON.stringify(result);
 }
@@ -336,8 +333,8 @@ async function validatePreparedGateway(binding, prepared, options) {
   return (await import('./local-runtime.mjs')).validatePreparedGateway(binding, prepared, options);
 }
 
-async function confirmPreparedRuntime(journal, { control = controller, until } = {}) {
-  const scope = acceptedOperations.getStore();
+async function observeActivatedRuntime(journal, { control = controller, until } = {}) {
+  const scope = activationOperations.getStore();
   const application = installedApplication(journal);
   const evidence = await readControllerEvidence(journal, 'handoff-evidence', false, {
     until, prepared: scope.prepared, assertHeld: preparedLease(journal), context: scope.context,
@@ -345,8 +342,7 @@ async function confirmPreparedRuntime(journal, { control = controller, until } =
   if (!scope.startupEpoch) throw new Error('Serving startup epoch was not captured.');
   const serving = await readControllerEvidence(journal, 'handoff-probe', false, { until }, control);
   requireDesktopForObservation(journal);
-  return { schema: 'mandible-runtime-receipt@2', approved: { reference: application.reference,
-    packageSha256: application.digest, publicationEvidence: journal.binding.publicationEvidence },
+  return { packageSha256: application.digest,
     installed: { root: application.app, identity: application.identity },
     services: evidence.processes,
     startup: { epoch: serving.process.startupEpoch, generation: serving.health.instance.backend_generation,
@@ -388,11 +384,15 @@ async function armRuntimeHandoffOwned(root) {
   const existing = readRuntimeHandoff(home, requestId, executionId);
   if (existing) {
     if (existing.binding.commandDigest !== process.env.MANDIBLE_HOOK_COMMAND_DIGEST || existing.binding.root !== root) throw new Error('Repeated hook differs from the armed handoff.');
-    return withAcceptedClosure(existing, () => prepareHandoffAdmission(existing));
+    return withActivationScope(existing, () => prepareHandoffAdmission(existing));
   }
   const lock = readRuntimeHandoffLock(home);
   if (lock) throw new Error(`Another handoff owns this installation; preserving it. ${runtimeHandoffLockRefusal(lock)}`);
-  const database = process.env.MANDIBLE_DB || path.join(home, 'mandible.db');
+  const native = await import('./local-runtime.mjs');
+  const context = native.createHandoffContext({ home, root, accountHome: os.userInfo().homedir });
+  const captured = await native.captureRuntimeHandoff(root, { context });
+  const database = activationDatabase(captured);
+  if (process.env.MANDIBLE_DB && path.resolve(process.env.MANDIBLE_DB) !== database) throw new Error('The hook and native service target different ledger databases.');
   const preliminary = { delivery: 'accepted-release', root, requestId, executionId,
     hookId: process.env.MANDIBLE_HOOK_ID, commandDigest: process.env.MANDIBLE_HOOK_COMMAND_DIGEST };
   const { freezeRuntimeHandoffPublication } = await import(pathToFileURL(path.join(root, 'src/runtime-handoff-proof.ts')).href);
@@ -416,9 +416,7 @@ async function armRuntimeHandoffOwned(root) {
   } else atomic(preparationFile, preparation);
   const environment = installedRuntimeEnvironment(accepted.resources, runtimeEnvironment({ runtime, root }));
   for (const key of Object.keys(environment)) if (/TOKEN|SECRET|KEYCHAIN|API_KEY/.test(key)) delete environment[key];
-  const native = await import('./local-runtime.mjs');
-  const context = native.createHandoffContext({ home, root, accountHome: os.userInfo().homedir });
-  const binding = { ...await native.captureRuntimeHandoff(root, { context }), accountHome: context.accountHome, handoffProtocol: 2,
+  const binding = { ...captured, accountHome: context.accountHome, handoffProtocol: 2,
     delivery: 'accepted-release', requestId, executionId, hookId: process.env.MANDIBLE_HOOK_ID, commandDigest: process.env.MANDIBLE_HOOK_COMMAND_DIGEST,
     mergeBase: process.env.MANDIBLE_AUTH_MERGE_BASE_SHA || undefined, mergeHead: process.env.MANDIBLE_AUTH_MERGE_HEAD_SHA || undefined,
     mergeCommit: process.env.MANDIBLE_AUTH_MERGE_COMMIT_SHA || undefined,
@@ -444,7 +442,7 @@ async function armRuntimeHandoffOwned(root) {
   const helper = binding.updater.helper;
   const service = path.join(homeDirectory(home), 'launch-agents', `${journal.helperLabel}.plist`);
   journal.helperPlist = service;
-  return withAcceptedClosure(journal, () => prepareHandoffAdmission(journal));
+  return withActivationScope(journal, () => prepareHandoffAdmission(journal));
 }
 function assertNativePredecessor(binding) {
   if (!binding.bundleOwner || binding.priorBackend?.definition?.BundleProgram !== 'Contents/MacOS/mandible-service') {
@@ -633,14 +631,14 @@ export async function withRuntimeObservation(journal, operation, token) {
   if (token) {
     assertObservationLease(journal);
     if (current?.token !== token) throw new Error('Runtime observation lease changed.');
-    return withAcceptedClosure(journal, () => operation(token));
+    return withActivationScope(journal, () => operation(token));
   }
   const installation = installationOperations.getStore();
   installation.assertHeld();
   fs.mkdirSync(path.dirname(observationLockRoot(journal)), { recursive: true, mode: 0o700 });
   return observationOperations.run({ home: journal.binding.home, file: journalFile(journal.binding), token: installation.token, assertHeld: installation.assertHeld,
       baseline: fs.existsSync(journalFile(journal.binding)) ? journalState(JSON.parse(fs.readFileSync(journalFile(journal.binding), 'utf8'))) : null },
-      () => withAcceptedClosure(journal, () => operation(installation.token)));
+      () => withActivationScope(journal, () => operation(installation.token)));
 }
 
 async function withPredecessorAdmission(journal, operation) {
@@ -777,7 +775,13 @@ export async function verifyRuntimeHandoffReceipt(journal, { probe = true } = {}
     return verified;
   }
   assertRuntimeHandoffOwner(journal);
-  if (journal.binding.acceptedRelease) installedApplication(journal);
+  if (journal.binding.acceptedRelease) {
+    const scope = activationOperations.getStore();
+    scope.prepared ??= prepareAcceptedApplication(journal.binding, { until: (journal.attempt?.deadline ?? journal.deadline),
+      attemptId: journal.attempt.id, assertHeld: preparedLease(journal), phase: 'installed',
+      stageIdentity: journal.attempt.effects.prepare?.stageIdentity ?? journal.attempt.receipt?.installed?.identity });
+    installedApplication(journal);
+  }
   for (const [file, expected] of Object.entries(receipt.files)) if (fileHash(file) !== expected) throw new Error('Converged installation file changed: ' + file);
   const evidence = probe ? await readControllerEvidence(journal, 'handoff-verify') : receipt.evidence;
   if (receipt.evidence?.process && JSON.stringify(evidence.process) !== JSON.stringify(receipt.evidence.process)) throw new Error('Converged daemon process changed after observation.');
@@ -1208,6 +1212,89 @@ function archiveAttempt(journal) {
   } else atomic(file, record);
 }
 
+function stagedActivationBudget(journal, now, waitMs) {
+  let committed = attemptCommitted(journal.attempt);
+  let until = committed ? now() + committedWindow(journal.attempt, waitMs) : journal.attempt.deadline;
+  return { get committed() { return committed; }, get until() { return until; }, commit() {
+    if (!committed) { committed = true; until = now() + committedWindow(journal.attempt, waitMs); }
+  } };
+}
+
+/** Reconcile one already admitted native stage under the current journal and installation leases. */
+export async function activateStagedRuntime(journal, { prepare, install = installStagedApplication,
+  control = controller, desktop = restoreDesktop, observe = observeActivatedRuntime,
+  validateGateway = validatePreparedGateway, validateDaemon = validatePreparedDaemon, context,
+  now = runtimeNow, wait = sleep, waitMs = COMMITTED_OBSERVATION_WINDOW_MS, budget = stagedActivationBudget(journal, now, waitMs),
+} = {}) {
+  exactActiveOwner(journal);
+  const { binding: b, attempt, admission } = journal;
+  if (!b.nativeApp || attempt?.state !== 'running' || attempt.fence || !journal.bridgeInstalled
+      || admission?.attemptId !== attempt.id || admission.publication !== 'published') {
+    throw new Error('A staged activation requires an admitted native attempt.');
+  }
+  const scope = activationOperations.getStore();
+  scope.context = context;
+  const invokeControl = (journal, operation, currentVerifier, options) => control(journal, operation, currentVerifier, {
+    ...options, prepared: scope.prepared, assertHeld: preparedLease(journal), context: scope.context,
+  });
+  save(journal, { phase: 'preparing', acknowledgedAt: null, drainReady: null });
+  return withRuntimeBudget(() => budget.until, async () => {
+    let prepared;
+    let drained;
+    await withPredecessorAdmission(journal, async () => {
+      saveEffect(journal, 'prepare', { issuedAt: journal.attempt.effects.prepare?.issuedAt ?? now() });
+      const paths = stagedInstallPaths(b);
+      const phase = journal.attempt.effects.replace?.completedAt || journal.attempt.effects.replace?.issuedAt
+        && !fs.existsSync(paths.staging) && fs.existsSync(paths.previous) ? 'installed' : 'staged';
+      prepared = await prepare(b, { until: budget.until, attemptId: journal.attempt.id, assertHeld: preparedLease(journal), phase,
+        stageIdentity: journal.attempt.effects.prepare?.stageIdentity,
+        onStageCreated: stage => saveEffect(journal, 'prepare', { stageIdentity: stage.identity, stagePath: stage.path }) });
+      scope.prepared = prepared;
+      if (!prepared.installed && !budget.committed) {
+        const gatewayConfig = await validateGateway(b, prepared, { until: budget.until });
+        const daemonStartedAt = now();
+        const daemon = await validateDaemon(b, prepared, activationDatabase(b), { until: budget.until });
+        saveEffect(journal, 'prepare', { gatewayConfig, daemon, daemonStartedAt, daemonValidatedAt: now() });
+      }
+      saveEffect(journal, 'prepare', { completedAt: now(), packageSha256: prepared.packageSha256 });
+      const priorDrain = journal.attempt.effects.drain;
+      drained = priorDrain?.completedAt && priorDrain.processes
+        && Object.values(priorDrain.processes).every(identity => !identity || startedAt(identity.pid) !== identity.startedAt);
+      if (!budget.committed && now() >= budget.until) throw new RuntimeObservationError('admission_expired', 'The update did not reach its drain within its admission; the old version keeps serving.', null, 'pending');
+      saveEffect(journal, 'drain', { issuedAt: journal.attempt.effects.drain?.issuedAt ?? now() });
+      save(journal, { phase: 'armed', acknowledgedAt: now(),
+        drainReady: startedAt(b.oldProcess.pid) === b.oldProcess.startedAt ? drainOwnership(journal) : null });
+      if (!prepared.installed && !drained) {
+        while (startedAt(b.oldProcess.pid) === b.oldProcess.startedAt) {
+          assertObservationLease(journal);
+          if (now() >= budget.until) throw new RuntimeObservationError('drain_pending', 'Old daemon has not completed its bounded drain.', null, 'pending');
+          await wait(Math.min(25, budget.until - now()));
+          unchangedJournal(journal);
+        }
+      }
+      if (!journal.attempt.effects.drain.exitedAt) saveEffect(journal, 'drain', { exitedAt: now() });
+      budget.commit();
+    });
+    if (!prepared.installed && !drained) {
+      const stopped = JSON.parse(await invokeControl(journal, 'handoff-remove', false, { until: budget.until }));
+      saveEffect(journal, 'drain', { completedAt: now(), ...stopped });
+    }
+    saveEffect(journal, 'replace', { issuedAt: journal.attempt.effects.replace?.issuedAt ?? now() });
+    const installContext = await ownedNativeContext(journal);
+    const replaced = await install(b, installContext, { until: budget.until, prepared });
+    saveEffect(journal, 'replace', { completedAt: now(), ...replaced });
+    saveEffect(journal, 'services', { issuedAt: journal.attempt.effects.services?.issuedAt ?? now() });
+    const started = await readControllerEvidence(journal, 'handoff-start', false, { until: budget.until }, invokeControl);
+    saveEffect(journal, 'services', { completedAt: now(), processes: started.processes });
+    const ready = await readControllerEvidence(journal, 'handoff-verify', false, { until: budget.until, awaitReady: true }, invokeControl);
+    scope.startupEpoch ??= ready.process?.startupEpoch;
+    saveEffect(journal, 'services', { readyAt: journal.attempt.effects.services.readyAt ?? now() });
+    await desktop(journal);
+    return observe(journal, { until: budget.until, control: invokeControl, prepared,
+      context: scope.context, assertHeld: preparedLease(journal) });
+  });
+}
+
 /**
  * Initial delivery and interrupted delivery reconcile the same observed effects.
  * Before the old daemon has drained, the budget is the attempt deadline and its
@@ -1218,14 +1305,14 @@ function archiveAttempt(journal) {
 export async function runRuntimeHandoffWorker(file, {
   now = runtimeNow, wait = sleep, control = controller, verifyPublication = publication,
   prepare = prepareAcceptedApplication, install = installAcceptedApplication,
-  observe = confirmPreparedRuntime, desktop = restoreDesktop, validateGateway = validatePreparedGateway, validateDaemon = validatePreparedDaemon,
+  observe = observeActivatedRuntime, desktop = restoreDesktop, validateGateway = validatePreparedGateway, validateDaemon = validatePreparedDaemon,
   waitMs = COMMITTED_OBSERVATION_WINDOW_MS, actor, context,
 } = {}) {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   let journal = readJournalFile(raw.binding.home, raw.binding.requestId, raw.binding.executionId);
   if (journal?.attempt?.fence || journal?.mutationFence || journal?.phase === 'retired') return journal;
   journal = validateJournal(journal);
-  const execute = () => withRuntimeObservation(journal, async token => {
+  const execute = () => withRuntimeObservation(journal, async () => {
     const fresh = readRuntimeHandoff(raw.binding.home, raw.binding.requestId, raw.binding.executionId);
     if (!fresh || fresh.bindingDigest !== raw.bindingDigest) throw new Error('Worker binding changed before acquisition.');
     journal = fresh;
@@ -1255,88 +1342,35 @@ export async function runRuntimeHandoffWorker(file, {
         lastObservation: { code: 'admission_missing', reason: 'This attempt has no completed native admission.' } } });
       return journal;
     }
-    const b = journal.binding;
-    let committed = attemptCommitted(journal.attempt);
-    let until = committed ? now() + committedWindow(journal.attempt, waitMs) : journal.attempt.deadline;
-    const commit = () => { if (!committed) { committed = true; until = now() + committedWindow(journal.attempt, waitMs); } };
-    acceptedOperations.getStore().context = context;
-    const invokeControl = (journal, operation, currentVerifier, options) => control(journal, operation, currentVerifier, {
-      ...options, prepared: acceptedOperations.getStore().prepared,
-      assertHeld: preparedLease(journal), context: acceptedOperations.getStore().context,
-    });
-    save(journal, { phase: 'preparing', acknowledgedAt: null, drainReady: null,
-      admission: { ...journal.admission, attemptId: journal.attempt.id, publication: 'published' } });
-    try { await withRuntimeBudget(() => until, async () => {
+    const budget = stagedActivationBudget(journal, now, waitMs);
+    try { await withRuntimeBudget(() => budget.until, async () => {
+      if (journal.binding.delivery === 'accepted-release' && (typeof journal.database !== 'string'
+        || path.resolve(journal.database) !== activationDatabase(journal.binding))) {
+        throw new Error('The signed publication and native service target different ledger databases.');
+      }
       await verifyPublication(journal);
-      let prepared;
-      let drained;
-      await withPredecessorAdmission(journal, async () => {
-      saveEffect(journal, 'prepare', { issuedAt: journal.attempt.effects.prepare?.issuedAt ?? now() });
-      const paths = acceptedInstallPaths(b);
-      const phase = journal.attempt.effects.replace?.completedAt || journal.attempt.effects.replace?.issuedAt
-        && !fs.existsSync(paths.staging) && fs.existsSync(paths.previous) ? 'installed' : 'staged';
-      prepared = await prepare(b, { until, attemptId: journal.attempt.id, assertHeld: preparedLease(journal), phase,
-        stageIdentity: journal.attempt.effects.prepare?.stageIdentity,
-        onStageCreated: stage => saveEffect(journal, 'prepare', { stageIdentity: stage.identity, stagePath: stage.path }) });
-      acceptedOperations.getStore().prepared = prepared;
-      if (!prepared.installed && !committed) {
-        const gatewayConfig = await validateGateway(b, prepared, { until });
-        const daemonStartedAt = now();
-        const daemon = await validateDaemon(b, prepared, journal.database, { until });
-        saveEffect(journal, 'prepare', { gatewayConfig, daemon, daemonStartedAt, daemonValidatedAt: now() });
-      }
-      saveEffect(journal, 'prepare', { completedAt: now(), packageSha256: prepared.packageSha256 });
-      const priorDrain = journal.attempt.effects.drain;
-      drained = priorDrain?.completedAt && priorDrain.processes
-        && Object.values(priorDrain.processes).every(identity => !identity || startedAt(identity.pid) !== identity.startedAt);
-      if (!committed && now() >= until) throw new RuntimeObservationError('admission_expired', 'The update did not reach its drain within its admission; the old version keeps serving.', null, 'pending');
-      saveEffect(journal, 'drain', { issuedAt: journal.attempt.effects.drain?.issuedAt ?? now() });
-      save(journal, { phase: 'armed', acknowledgedAt: now(),
-        drainReady: startedAt(b.oldProcess.pid) === b.oldProcess.startedAt ? drainOwnership(journal) : null });
-      if (!prepared.installed && !drained) {
-        while (startedAt(b.oldProcess.pid) === b.oldProcess.startedAt) {
-          assertObservationLease(journal);
-          if (now() >= until) throw new RuntimeObservationError('drain_pending', 'Old daemon has not completed its bounded drain.', null, 'pending');
-          await wait(Math.min(25, until - now()));
-          unchangedJournal(journal);
-        }
-      }
-      if (!journal.attempt.effects.drain.exitedAt) saveEffect(journal, 'drain', { exitedAt: now() });
-      commit();
+      const { packageSha256, ...observation } = await activateStagedRuntime(journal, {
+        prepare, install, control, desktop, observe, validateGateway, validateDaemon,
+        context: context ?? (install === installAcceptedApplication ? undefined : {}), now, wait, budget,
       });
-      if (!prepared.installed && !drained) {
-        const stopped = JSON.parse(await invokeControl(journal, 'handoff-remove', false, { until }));
-        saveEffect(journal, 'drain', { completedAt: now(), ...stopped });
-      }
-      saveEffect(journal, 'replace', { issuedAt: journal.attempt.effects.replace?.issuedAt ?? now() });
-      const installContext = acceptedOperations.getStore().context ?? (install === installAcceptedApplication ? await ownedNativeContext(journal) : {});
-      const replaced = await install(b, installContext, { until, prepared });
-      saveEffect(journal, 'replace', { completedAt: now(), ...replaced });
-      saveEffect(journal, 'services', { issuedAt: journal.attempt.effects.services?.issuedAt ?? now() });
-      const started = await readControllerEvidence(journal, 'handoff-start', false, { until }, invokeControl);
-      saveEffect(journal, 'services', { completedAt: now(), processes: started.processes });
-      await readControllerEvidence(journal, 'handoff-verify', false, { until, awaitReady: true }, invokeControl);
-      saveEffect(journal, 'services', { readyAt: journal.attempt.effects.services.readyAt ?? now() });
-      await desktop(journal);
-      const receipt = await observe(journal, { observerToken: token, until, control: invokeControl, prepared,
-        context: acceptedOperations.getStore().context, assertHeld: preparedLease(journal) });
-      if (receipt.schema !== 'mandible-runtime-receipt@2') throw new Error('Runtime completion requires its compact terminal receipt.');
       unchangedJournal(journal);
-      const currentReceipt = { ...receipt, bindingDigest: journal.bindingDigest,
+      const currentReceipt = { ...observation, schema: 'mandible-runtime-receipt@2',
+        approved: { reference: journal.binding.acceptedRelease.reference, packageSha256,
+          publicationEvidence: journal.binding.publicationEvidence }, bindingDigest: journal.bindingDigest,
         attemptId: journal.attempt.id, desktop: journal.attempt.effects.desktop ?? { required: false }, completedAt: now() };
       save(journal, { phase: 'complete', drainReady: null, attempt: { ...journal.attempt, state: 'complete', completedAt: now(), receipt: currentReceipt,
         receiptDigest: hash(JSON.stringify(currentReceipt)), fence: { fencedAt: now(), reason: 'terminal-completion' } } });
     }); } catch (error) {
       assertObservationLease(journal);
       unchangedJournal(journal);
-      if (!committed && journal.attempt.effects.drain?.issuedAt && oldProcessGone(b)) {
+      if (!budget.committed && journal.attempt.effects.drain?.issuedAt && oldProcessGone(journal.binding)) {
         saveEffect(journal, 'drain', { exitedAt: now() });
-        committed = true;
+        budget.commit();
       }
-      const pending = observationPending(error) && (committed || now() < until);
+      const pending = observationPending(error) && (budget.committed || now() < budget.until);
       save(journal, { phase: pending ? 'verification-pending' : 'failed', acknowledgedAt: null, drainReady: null, attempt: { ...journal.attempt, state: pending ? 'running' : 'failed',
         lastObservation: pendingMetadata(error), ...(!pending ? { failedAt: now() } : {}),
-        ...(pending && committed ? { committedPendingRuns: (journal.attempt.committedPendingRuns ?? 0) + 1 } : {}) } });
+        ...(pending && budget.committed ? { committedPendingRuns: (journal.attempt.committedPendingRuns ?? 0) + 1 } : {}) } });
     }
     return journal;
   });

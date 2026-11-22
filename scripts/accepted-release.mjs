@@ -180,18 +180,17 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
 }
 
 export function readAcceptedInstalledRelease(receipt, resources) {
-  return readAcceptedInstalledReleaseIdentity(receipt, resources).release;
+  return assertAcceptedInstalledReleaseIdentity(receipt, readInstalledReleaseIdentity(resources));
 }
 
-export function readAcceptedInstalledReleaseIdentity(receipt, resources) {
-  const { release, sha256 } = readInstalledReleaseIdentity(resources);
+export function assertAcceptedInstalledReleaseIdentity(receipt, { release, sha256 }) {
   const agrees = receipt.schema === ACCEPTANCE_CERTIFICATE_SCHEMA
     ? sha256 === receipt.manifest_sha256
     : JSON.stringify(release) === JSON.stringify(receipt.shipped);
   if (!agrees || release.target !== receipt.target || release.provenance.commit !== receipt.candidate.pin_sha) {
     throw new Error('Installed manifest differs from the exact accepted release.');
   }
-  return { release, sha256 };
+  return release;
 }
 
 /** A runtime receipt names the package it started; both receipt schemas bind it by digest and candidate commit. */

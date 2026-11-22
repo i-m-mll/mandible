@@ -292,8 +292,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         observe: async (journal, { prepared }) => {
           const application = preparedApplicationContext(prepared, binding);
           const access = await readAccess();
-          return { schema: 'mandible-runtime-receipt@2', bindingDigest: journal.bindingDigest,
-            approved: { reference, packageSha256: application.digest }, installed: { root: app, identity: application.identity },
+          return { packageSha256: application.digest, installed: { root: app, identity: application.identity },
             services: access.processes, desktop: { required: false },
             startup: { epoch: 'private-native-fixture', generation: candidate.pin_sha, database: path.join(home, 'mandible.db') }, completedAt: Date.now() };
         } };
