@@ -174,11 +174,18 @@ export function bindOperationCatalog(instance: InstanceInfo, value: unknown): bo
   return true;
 }
 
-export async function loadOperationCatalog(instance: InstanceInfo): Promise<void> {
-  if (operationHints.has(hintKey(instance))) return;
-  const response = await apiGet('/api/instance');
+/** Returns whether a new exact-instance catalog was bound. */
+export async function loadOperationCatalog(instance: InstanceInfo, {
+  refresh = false, signal,
+}: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<boolean> {
+  const key = hintKey(instance);
+  if (refresh) operationHints.delete(key);
+  else if (operationHints.has(key)) return false;
+  const response = await apiGet('/api/instance', { cache: 'no-store', signal });
   const payload = await response.json() as { operations?: unknown };
+  if (signal?.aborted) return false;
   if (!bindOperationCatalog(instance, payload.operations)) throw new Error('Daemon operation catalog is incompatible with this instance');
+  return true;
 }
 
 /** An affordance hint only; the daemon decides body, custody, and credential permissions. */

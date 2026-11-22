@@ -20,6 +20,7 @@ type WarmedTab = 'overview' | 'timeline' | 'console' | 'artifacts' | 'graph';
 /** Requests every page load makes, whichever view is active. */
 const STARTUP_GLOBALS = new Set([
   'GET /api/health',
+  'GET /api/instance',
   'GET /api/settings',
   'GET /api/dashboard/badges',
   'GET /api/host-preferences/app-theme',
