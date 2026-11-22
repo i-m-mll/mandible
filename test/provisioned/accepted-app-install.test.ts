@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import { expect, it } from 'vitest';
 import { applicationIdentity, readAcceptedReleaseReceipt } from '../../scripts/accepted-release.mjs';
 import { acceptedInstallPaths, applicationRootIdentity, preparedApplicationContext } from '../../scripts/accepted-app-install.mjs';
-import { assertInstalledApplicationVerification, installedFileIdentity, readInstalledRelease } from '../../scripts/installed-release.mjs';
+import { assertInstalledApplicationVerification, installedFileIdentity, readInstalledRelease, releaseFile } from '../../scripts/installed-release.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions } from '../../scripts/service-definitions.mjs';
 import { readBundleOwner, nativeServiceControls, bundleRuntimeCommand } from '../../scripts/bundle-services.mjs';
 import { bindingDigest, handoffDirectory, readRuntimeHandoffReceipt, runRuntimeHandoffWorker, withRuntimeObservation } from '../../scripts/runtime-handoff.mjs';
@@ -74,7 +74,6 @@ it('replaces retained signed bundles through real native service startup, qualif
   let sourceRevision: string | null = null;
   let candidateExecutables: Record<string, ReturnType<typeof installedFileIdentity>> | null = null;
   let predecessorExecutable: ReturnType<typeof installedFileIdentity> | null = null;
-  let gatewayCaddy = '';
   let predecessorProtocol: number | undefined;
   let gatewayValidationMs: number | null = null;
   let failureDiagnostic: { json_excerpt: string; truncated: boolean; service_stderr: Record<string, string> } | null = null;
@@ -144,12 +143,6 @@ it('replaces retained signed bundles through real native service startup, qualif
     }
     for (const executable of ['mandible-bun', 'mandible-caddy']) {
       run('/usr/bin/codesign', ['--verify', '--strict', path.join(candidateMacOS, executable)], `verify candidate ${executable} signature`);
-    }
-    // The slow-gateway unit's Caddy answers only after the 5 s the go-live path once allowed it.
-    gatewayCaddy = path.join(candidateMacOS, 'mandible-caddy');
-    if (gatewayDelayMs) {
-      gatewayCaddy = path.join(root, 'slow-caddy');
-      fs.writeFileSync(gatewayCaddy, `#!/bin/sh\n/bin/sleep ${gatewayDelayMs / 1000}\nexec ${JSON.stringify(path.join(candidateMacOS, 'mandible-caddy'))} "$@"\n`, { mode: 0o755 });
     }
     fs.mkdirSync(path.join(home, 'config/client-auth'), { recursive: true });
     const authority = path.join(home, 'config/client-auth/authority-id');
@@ -283,9 +276,16 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
           } }));
         return JSON.stringify(await readAccess(options.awaitReady));
       };
-      const validateGateway = index ? async (_binding: unknown, _prepared: unknown, { until }: { until: number }) => {
+      const validateGateway = index ? async (_binding: unknown, prepared: Parameters<typeof preparedApplicationContext>[0], { until }: { until: number }) => {
+        const stage = preparedApplicationContext(prepared, binding);
+        const caddy = releaseFile(stage.resources, stage.release.native.caddy, stage.release.layout);
+        let executable = caddy;
+        if (gatewayDelayMs) {
+          executable = path.join(root, 'slow-caddy');
+          fs.writeFileSync(executable, `#!/bin/sh\n/bin/sleep ${gatewayDelayMs / 1000}\nexec ${JSON.stringify(caddy)} "$@"\n`, { mode: 0o755 });
+        }
         const before = Date.now();
-        const digest = validateGatewayConfiguration(gatewayCaddy, `{\n  admin unix/${gatewaySocket}\n}\n`, { until });
+        const digest = validateGatewayConfiguration(executable, `{\n  admin unix/${gatewaySocket}\n}\n`, { until });
         gatewayValidationMs = Date.now() - before;
         return digest;
       } : async () => null;
@@ -389,6 +389,9 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         }
       }
       cleaned = true;
+    } catch (error) {
+      if (!failureDiagnostic) throw error;
+      console.error('native_bundle_replacement_cleanup_failed', String(error));
     } finally {
       // An unconfirmed service stop retains its exact app and evidence.
       if (cleaned) fs.rmSync(root, { recursive: true, force: true });
@@ -405,7 +408,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         termination_margin_ms: deadline - cleanupUntil,
         cleanup: cleaned ? 'complete' : 'unconfirmed', retained_root: cleaned ? null : root }));
     }
-    checkDeadline('final cleanup', cleanupUntil);
+    if (!failureDiagnostic) checkDeadline('final cleanup', cleanupUntil);
   }
   } finally { signer.close(); }
 });
