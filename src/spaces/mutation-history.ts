@@ -1,7 +1,7 @@
 import type { Db } from "../db.js";
 import { mutateLedgerRecord } from "../ledger/mutation-history.js";
 
-type AuthoredTable = "spaces" | "space_items" | "space_occurrences" | "space_edges" | "space_blocks" | "space_publications";
+type AuthoredTable = "spaces" | "space_items" | "space_occurrences" | "space_edges" | "space_publications";
 
 /** Compare authored fields in memory; history contains identifiers and field names only. */
 export function mutateSpaceRecord<T>(db: Db, table: AuthoredTable, id: string, spaceId: string, action: () => T, projectId?: string | null): T {

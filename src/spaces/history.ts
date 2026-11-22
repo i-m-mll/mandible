@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { Db } from '../db.js';
-import { serializeSpaceDocument } from './export.js';
+import { spaceDocTree } from './export.js';
+import { getSpace } from '../ledger/spaces.js';
+import { readLegacySpaceBlocks } from './legacy-blocks.js';
+import { exportDocument } from './serialize.js';
 
 export function preserveLegacyDocuments(db: Db): void {
   const rows = db.prepare(`SELECT e.*, c.root FROM space_exports e
@@ -13,7 +16,7 @@ export function preserveLegacyDocuments(db: Db): void {
     const id = String(row.id), space = String(row.space_id);
     if (db.prepare('SELECT 1 FROM space_document_history WHERE id=?').get(`${id}:managed`)) continue;
     const blocks = db.prepare('SELECT * FROM space_blocks WHERE space_id=? ORDER BY sort_key,id').all(space);
-    insert.run(`${id}:managed`, space, 'managed-before-migration', serializeSpaceDocument(db, space), JSON.stringify(blocks), null, JSON.stringify(row), Date.now());
+    insert.run(`${id}:managed`, space, 'managed-before-migration', exportDocument(spaceDocTree(getSpace(db, space)!, readLegacySpaceBlocks(db, space))), JSON.stringify(blocks), null, JSON.stringify(row), Date.now());
     for (const kind of ['pre_export', 'last_export'] as const) {
       const ref = row[`${kind === 'pre_export' ? 'pre_export_snapshot' : 'last_export'}_blob_id`];
       if (ref) insert.run(`${id}:${kind}`, space, kind, null, null, String(ref), JSON.stringify(row), Date.now());

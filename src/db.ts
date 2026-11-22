@@ -356,12 +356,17 @@ export function openDb(dbPath: string = getDbPath(), options: OpenDbOptions = {}
 
   ensureDir(path.dirname(effectivePath));
   const db = new SqliteDatabase(effectivePath);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  db.pragma(`busy_timeout = ${options.busyTimeoutMs ?? 5000}`);
-  applyColdStartTuning(db);
-  migrate(db);
-  return db;
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    db.pragma(`busy_timeout = ${options.busyTimeoutMs ?? 5000}`);
+    applyColdStartTuning(db);
+    migrate(db);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
 /** Apply optional connection-local performance settings without weakening startup safety. */

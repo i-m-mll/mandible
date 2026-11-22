@@ -1395,20 +1395,8 @@ export type SpaceEdge = {
   updated_at: number;
 };
 
-/**
- * Document block (C11 `space_blocks`). Mirrors the planned schema at
- * docs/spaces/UMBRELLA-PLAN.md §3.5. An `item_id` embed ALWAYS carries an
- * `item_snapshot_json` placeholder (DB-level invariant) so it degrades to a
- * resolvable node when the embedded item is deleted.
- */
-export type SpaceBlockType =
-  | 'heading'
-  | 'paragraph'
-  | 'reference'
-  | 'artifact_embed'
-  | 'issue_embed'
-  | 'comment_embed'
-  | 'todo';
+/** A compatibility block projected from the saved Space Markdown. */
+export type SpaceBlockType = import("./spaces/serialize.js").BlockType;
 
 export type SpaceBlock = {
   id: string;

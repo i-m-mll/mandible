@@ -49,11 +49,17 @@ import { AUTH_SNAPSHOT_SHAPE_V220, AUTH_SNAPSHOT_SHAPE_V221, AUTH_SNAPSHOT_SHAPE
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { readLedgerChangeFeed } from "../src/ledger/change-feed.js";
 import { addProject } from "../src/ledger/project-registry.js";
-import { createSpaceBlock } from "../src/ledger/space-blocks.js";
-import { createSpace } from "../src/ledger/spaces.js";
+import { listSpaceBlocks } from "../src/ledger/space-blocks.js";
+import { resolveId } from "../src/entity-refs.js";
+import { getSpace, createSpace } from "../src/ledger/spaces.js";
+import { getSpaceDocument } from "../src/spaces/document-store.js";
+import { convertSpaceDocuments } from "../src/spaces/migrate-document.js";
+import { readLegacySpaceBlocks } from "../src/spaces/legacy-blocks.js";
+import { exportDocument } from "../src/spaces/serialize.js";
 import { LedgerStore } from "../src/ledger/store.js";
-import { serializeSpaceDocument } from "../src/spaces/export.js";
+import { serializeSpaceDocument, spaceDocTree } from "../src/spaces/export.js";
 import { listDocumentHistory } from "../src/spaces/history.js";
+import { executePublication, getPublication } from "../src/spaces/publication.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { insertRawLedgerIssue, insertRawLedgerProject, SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
@@ -926,8 +932,62 @@ describe("v188 reminder attribution", () => {
   });
 });
 
+describe("Spaces source cutover", () => {
+  it("reopens a lossless native document and keeps the pre-cutover online backup", () => {
+    const fixture = migrateFixtureThrough(248);
+    const database = path.join(tempDir, "spaces.db");
+    const legacySpace = createSpace(fixture, { title: "Legacy canvas", default_renderer: "canvas" });
+    createSpace(fixture, { title: "Empty board", default_renderer: "board" });
+    fixture.prepare(`INSERT INTO space_items
+      (id,space_id,ref_type,ref_id,created_at,updated_at)
+      VALUES ('live-item',?,'issue','retained-issue',1,2)`).run(legacySpace.id);
+    const insert = fixture.prepare(`INSERT INTO space_blocks
+      (id,space_id,parent_id,block_type,item_id,item_snapshot_json,sort_key,markdown,metadata_json,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,3,9)`);
+    const markdown = "  original\r\n::::issue{}\r\n```\r\n::::\n\n\r";
+    insert.run("legacy-parent", legacySpace.id, null, "heading", null, null, "aaaa", markdown, '{"view":{"zoom":2}}');
+    insert.run("legacy-child", legacySpace.id, "legacy-parent", "reference", "live-item", "{}", "000z", "", "{}");
+    insert.run("legacy-detached", legacySpace.id, "legacy-child", "issue_embed", null, '{"ref_id":"gone"}', "zz", markdown, "{}");
+    fixture.prepare("UPDATE space_blocks SET parent_id='legacy-detached' WHERE id='legacy-parent'").run();
+    expect(() => convertSpaceDocuments(fixture, "apply")).toThrow("cyclic parent");
+    expect(fixture.prepare("SELECT parent_id FROM space_blocks WHERE id='legacy-parent'").get()).toEqual({ parent_id: "legacy-detached" });
+    fixture.prepare("UPDATE space_blocks SET parent_id=NULL WHERE id='legacy-parent'").run();
+    const legacy = readLegacySpaceBlocks(fixture, legacySpace.id);
+    const frozen = exportDocument(spaceDocTree(getSpace(fixture, legacySpace.id)!, legacy));
+    expect(convertSpaceDocuments(fixture, "dry-run")).toMatchObject({ spaces: 2, blocks: 3, liveEmbeds: 1 });
+    expect(readLegacySpaceBlocks(fixture, legacySpace.id)).toEqual(legacy);
+    expect(fixture.prepare("SELECT name FROM sqlite_schema WHERE name='space_documents'").get()).toBeUndefined();
+    fs.writeFileSync(database, fixture.serialize());
+    fixture.close();
+
+    const upgraded = openDb(database);
+    const backup = path.join(tempDir, "backups", fs.readdirSync(path.join(tempDir, "backups"))[0]);
+    const before = new SqliteDatabase(backup, { readonly: true });
+    try {
+      expect(schemaVersion(before)).toBe("248");
+      expect(readLegacySpaceBlocks(before, legacySpace.id)).toEqual(legacy);
+      expect(serializeSpaceDocument(upgraded, legacySpace.id)).toBe(frozen);
+      expect(listSpaceBlocks(upgraded, legacySpace.id)).toEqual(legacy);
+      expect(resolveId(upgraded, "space_block", "legacy-ch", { scope: legacySpace.id })).toEqual({ ok: true, id: "legacy-child" });
+      expect(() => upgraded.exec("DELETE FROM space_items WHERE id='live-item'")).toThrow("FOREIGN KEY");
+      expect(listDocumentHistory(upgraded, legacySpace.id).find(entry => entry.kind === "pre-text-storage")?.content).toBe(frozen);
+    } finally {
+      before.close();
+      upgraded.close();
+    }
+
+    const reopened = openDb(database);
+    try {
+      expect(getSpaceDocument(reopened, legacySpace.id).generation).toBe(0);
+      expect(fs.readdirSync(path.join(tempDir, "backups"))).toHaveLength(1);
+    } finally {
+      reopened.close();
+    }
+  });
+});
+
 describe("v190 managed document publications", () => {
-  it("separates clean, managed-only, Git-only, divergent and unreachable legacy documents", () => {
+  it("separates clean, managed-only, Git-only, divergent and unreachable legacy documents", async () => {
     const db = migrateFixtureThrough(189);
     try {
       const repo = path.join(tempDir, "repo");
@@ -935,12 +995,15 @@ describe("v190 managed document publications", () => {
       db.prepare("INSERT INTO ledger_projects (id,project_key,display_name,remote_identity,created_at,updated_at) VALUES ('p','fixture','Fixture','local:fixture',1,1)").run();
       db.prepare("INSERT INTO ledger_project_checkouts (id,project_id,root,name,default_branch,created_at,updated_at) VALUES ('c','p',?,'fixture','main',1,1)").run(repo);
       const unexported = createSpace(db, { project_id: "p", title: "Unexported", default_renderer: "document" });
-      createSpaceBlock(db, unexported.id, { block_type: "paragraph", markdown: "original" });
+      const addLegacy = db.prepare(`INSERT INTO space_blocks
+        (id,space_id,block_type,sort_key,markdown,metadata_json,created_at,updated_at)
+        VALUES (?,?,'paragraph','a',?,?,1,2)`);
+      addLegacy.run("unexported-block", unexported.id, "original", "{}");
       const snapshots = new Map<string, string>();
       for (const kind of ["clean", "managed-only", "git-only", "both", "unreachable"]) {
         const document = createSpace(db, { project_id: "p", title: kind, default_renderer: "document" });
         const managedChanged = kind === "managed-only" || kind === "both";
-        createSpaceBlock(db, document.id, { block_type: "paragraph", markdown: managedChanged ? "managed change" : "published", metadata: { fixture: kind } });
+        addLegacy.run(`${kind}-block`, document.id, managedChanged ? "managed change" : "published", JSON.stringify({ fixture: kind }));
         const worktree = path.join(repo, ".git", "mandible-docs-worktrees", `docs_${kind}`);
         if (kind !== "unreachable") {
           fs.mkdirSync(worktree, { recursive: true });
@@ -949,10 +1012,30 @@ describe("v190 managed document publications", () => {
         }
         db.prepare(`INSERT INTO space_exports (id,space_id,repo_id,branch,path,authority,status,last_export_commit,created_at,updated_at)
           VALUES (?,?,'c',?,'doc.md','repo','conflict',?,1,1)`).run(kind, document.id, `docs/${kind}`, commit);
-        snapshots.set(document.id, serializeSpaceDocument(db, document.id));
+        snapshots.set(document.id, exportDocument(spaceDocTree(document, readLegacySpaceBlocks(db, document.id))));
       }
 
+      migrate(db, 248);
+      const preparedContent = exportDocument(spaceDocTree(unexported, readLegacySpaceBlocks(db, unexported.id)));
+      const issue = insertRawLedgerIssue(db, { id: "legacy-proposal-issue", projectId: "p" });
+      db.prepare(`INSERT INTO space_publications
+        (id,space_id,source_revision,snapshot_ref,content,repo_id,path,issue_id,message,state,created_at)
+        VALUES ('prior-prepared',?,?,?,?,'c','new.md',?,'Prepared under v1','prepared',3)`)
+        .run(unexported.id, sha256(preparedContent), "legacy-snapshot", preparedContent, issue);
       migrate(db);
+
+      const proposal = path.join(tempDir, "retained-proposal");
+      fs.mkdirSync(proposal);
+      const retry = await executePublication(db, unexported.id, "prior-prepared", {
+        createWorktree: () => proposal,
+        commit: () => { throw new Error("fixture signing stopped"); },
+        submit: () => { throw new Error("must not submit"); },
+      });
+      expect(retry).toMatchObject({ ok: false, error: { message: "fixture signing stopped" } });
+      expect(fs.readFileSync(path.join(proposal, "new.md"), "utf8")).toBe(preparedContent);
+      expect(getPublication(db, unexported.id, "prior-prepared")).toMatchObject({
+        snapshot_ref: "legacy-snapshot", source_revision: sha256(preparedContent), source_history_id: null, state: "prepared",
+      });
 
       for (const [id, content] of snapshots) {
         const history = listDocumentHistory(db, id);
@@ -966,7 +1049,7 @@ describe("v190 managed document publications", () => {
           expect(fs.readFileSync(path.join(repo, ".git", "mandible-docs-worktrees", `docs_${kind}`, "unique-ignored"), "utf8")).toBe("retained");
         }
       }
-      expect(listDocumentHistory(db, unexported.id)).toEqual([]);
+      expect(listDocumentHistory(db, unexported.id).map(entry => entry.kind)).toEqual(["pre-text-storage"]);
       const before = db.prepare("SELECT * FROM space_document_history ORDER BY id").all();
       migrate(db);
       expect(db.prepare("SELECT * FROM space_document_history ORDER BY id").all()).toEqual(before);

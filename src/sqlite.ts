@@ -4,7 +4,7 @@ import { assertNotProductionDbUnderTest } from "../cli/production-db-guard.cjs";
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 interface NativeStatement {
   sourceSQL: string;
@@ -211,17 +211,49 @@ export default class SqliteDatabase {
     const exclusive = (...args: Args) => execute("EXCLUSIVE", args);
     return Object.assign(this.readonly ? deferred : immediate, { deferred, immediate, exclusive });
   }
+  #backupCommand(staging: string): string[] {
+    const runtimeUrl = new URL(import.meta.url.endsWith(".ts") ? "./sqlite-runtime.ts" : "./sqlite-runtime.js", import.meta.url).href;
+    const source = `import {configureSqliteRuntime} from ${JSON.stringify(runtimeUrl)}; import {DatabaseSync,backup} from "node:sqlite"; configureSqliteRuntime(DatabaseSync); const db=new DatabaseSync(process.argv[1],{readOnly:true}); try {await backup(db,process.argv[2]);} finally {db.close();} const snapshot=new DatabaseSync(process.argv[2]); try {snapshot.exec("PRAGMA journal_mode=DELETE");} finally {snapshot.close();}`;
+    return ["--no-install", "--eval", source, this.name, staging];
+  }
+
+  #backupDirectory(destination: string): string {
+    if (this.name === ":memory:") throw new Error("Online backup requires a file-backed database");
+    if (destination.startsWith("file:") || destination.includes("?")) throw new Error("SQLite backup requires a plain destination path");
+    return fs.mkdtempSync(path.join(path.dirname(path.resolve(destination)), ".mandible-snapshot-"));
+  }
+
+  /** Reserve the migration writer while a read-only process snapshots the committed database. */
+  backupBeforeMigration(destination: string): void {
+    const directory = this.#backupDirectory(destination);
+    const staging = path.join(directory, "snapshot.db");
+    try {
+      const child = spawnSync(process.execPath, this.#backupCommand(staging), {
+        encoding: "utf8", timeout: 120_000, stdio: ["ignore", "ignore", "pipe"],
+      });
+      if (child.error) throw child.error;
+      if (child.status !== 0) throw new Error(`SQLite backup failed (${child.status}): ${child.stderr}`);
+      fs.chmodSync(staging, 0o600);
+      const sync = (file: string) => {
+        const fd = fs.openSync(file, "r");
+        try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      };
+      sync(staging);
+      fs.linkSync(staging, destination);
+      sync(path.dirname(destination));
+      sync(path.dirname(path.dirname(destination)));
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
   backup(destination: string, options: { signal?: AbortSignal } = {}): Promise<void> {
-    if (this.name === ":memory:") return Promise.reject(new Error("Online backup requires a file-backed database"));
-    if (destination.startsWith("file:") || destination.includes("?")) return Promise.reject(new Error("SQLite backup requires a plain destination path"));
     return new Promise((resolve, reject) => {
-      const directory = fs.mkdtempSync(path.join(path.dirname(path.resolve(destination)), ".mandible-snapshot-"));
+      const directory = this.#backupDirectory(destination);
       const staging = path.join(directory, "snapshot.db");
-      const runtimeUrl = new URL(import.meta.url.endsWith(".ts") ? "./sqlite-runtime.ts" : "./sqlite-runtime.js", import.meta.url).href;
-      const source = `import {configureSqliteRuntime} from ${JSON.stringify(runtimeUrl)}; import {DatabaseSync,backup} from "node:sqlite"; configureSqliteRuntime(DatabaseSync); const db=new DatabaseSync(process.argv[1],{readOnly:true}); try {await backup(db,process.argv[2]);} finally {db.close();} const snapshot=new DatabaseSync(process.argv[2]); try {snapshot.exec("PRAGMA journal_mode=DELETE");} finally {snapshot.close();}`;
       let child: ReturnType<typeof spawn>;
       try {
-        child = spawn(process.execPath, ["--no-install", "--eval", source, this.name, staging], { stdio: ["ignore", "ignore", "pipe"], signal: options.signal });
+        child = spawn(process.execPath, this.#backupCommand(staging), { stdio: ["ignore", "ignore", "pipe"], signal: options.signal });
       } catch (error) {
         fs.rmSync(directory, { recursive: true, force: true });
         reject(error);

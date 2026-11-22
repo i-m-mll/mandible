@@ -5,14 +5,16 @@ import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemir
 import katex from 'katex';
 import { leadingMarkdownFrontmatter, type MarkdownFrontmatter } from '../../../../src/markdown-frontmatter';
 import { mathToken } from '../../lib/markdownMath';
-import { remarkDirectives } from '../../lib/remarkDirectives';
+import { markdownParts, type MarkdownNode } from '../../../../src/presentation/remark-directives.js';
 import { isResourceRef, resourceRefHref } from '../../resource-refs';
-import { markdownSourceRange, type MarkdownSelection } from './source';
+import { markdownEditorRange, markdownSourceRange, markdownValue, type MarkdownSelection } from './source';
+import { SPACE_FRAME_NAMES } from '../../../../src/spaces/directives.js';
 
 export type MarkdownDirective = MarkdownSelection & {
   name: string;
   kind: 'container' | 'leaf' | 'inline';
   attributes: Readonly<Record<string, string | null | undefined>>;
+  body?: MarkdownSelection;
 };
 
 type MarkdownDirectiveMount = HTMLElement | { element: HTMLElement; destroy: () => void };
@@ -160,43 +162,51 @@ class DirectiveWidget extends WidgetType {
   }
 }
 
-type DirectiveSpan = Span & Pick<MarkdownDirective, 'kind' | 'attributes' | 'name'>;
+type DirectiveSpan = Span & Pick<MarkdownDirective, 'kind' | 'attributes' | 'name' | 'body'>;
 
-type DirectiveNode = ReturnType<typeof remarkDirectives.parse>['children'][number];
+type DirectiveNode = MarkdownNode;
 
-function readDirectives(node: DirectiveNode, output: DirectiveSpan[]) {
+function readDirectives(node: DirectiveNode, offset: number, output: DirectiveSpan[]) {
   const from = node.position?.start.offset;
   const to = node.position?.end.offset;
   if ((node.type === 'containerDirective' || node.type === 'leafDirective' || node.type === 'textDirective')
     && from !== undefined && to !== undefined) {
     output.push({
-      name: node.name, attributes: node.attributes ?? {}, from, to,
+      name: node.name, attributes: node.attributes ?? {}, from: from + offset, to: to + offset,
       kind: node.type === 'containerDirective' ? 'container' : node.type === 'leafDirective' ? 'leaf' : 'inline',
     });
     return;
   }
-  if ('children' in node) for (const child of node.children) readDirectives(child, output);
+  if ('children' in node) for (const child of node.children) readDirectives(child, offset, output);
 }
 
 function readSpecialSyntax(state: EditorState) {
-  const source = state.doc.toString();
-  const frontmatter = leadingMarkdownFrontmatter(source);
+  const source = markdownValue(state);
+  const frontmatter = leadingMarkdownFrontmatter(state.doc.toString());
   const directives: DirectiveSpan[] = [];
-  const start = frontmatter?.end ?? 0;
+  const start = frontmatter ? markdownSourceRange(state, { from: 0, to: frontmatter.end }).end : 0;
   const body = source.slice(start);
   if (/:+[a-z]/i.test(body)) {
-    for (const node of remarkDirectives.parse(body).children) readDirectives(node, directives);
-    for (const directive of directives) {
-      directive.from += start;
-      directive.to += start;
+    for (const part of markdownParts(body, SPACE_FRAME_NAMES)) {
+      if (part.kind === 'frame') {
+        const bodyStart = part.node.body.from + start, bodyEnd = part.node.body.to + start;
+        directives.push({ name: part.node.name, kind: 'container', attributes: part.node.attributes ?? {},
+          from: part.from + start, to: part.to + start,
+          body: { start: bodyStart, end: bodyEnd, quote: source.slice(bodyStart, bodyEnd) } });
+      } else {
+        for (const node of part.nodes) readDirectives(node, start + part.offset, directives);
+      }
     }
   }
-  return { frontmatter, directives };
+  return { frontmatter, directives: directives.map(({ from, to, ...directive }) => ({
+    ...directive, ...markdownEditorRange(state, { start: from, end: to }),
+  })) };
 }
 
 const specials = StateField.define({
   create: readSpecialSyntax,
-  update: (previous, transaction) => transaction.docChanged ? readSpecialSyntax(transaction.state) : previous,
+  update: (previous, transaction) => markdownValue(transaction.state) !== markdownValue(transaction.startState)
+    ? readSpecialSyntax(transaction.state) : previous,
 });
 
 function previewDecorations(state: EditorState, focused: boolean): DecorationSet {
@@ -237,7 +247,7 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
     const block = directive.kind !== 'inline';
     const widget = new DirectiveWidget({
       ...markdownSourceRange(state, directive),
-      name: directive.name, kind: directive.kind, attributes: directive.attributes,
+      name: directive.name, kind: directive.kind, attributes: directive.attributes, body: directive.body,
     }, render);
     marks.push(Decoration.replace({ widget, block }).range(directive.from, directive.to));
   }
@@ -368,7 +378,7 @@ const liveMarkdown = StateField.define<{ focused: boolean; decorations: Decorati
   update(previous, transaction) {
     const { startState, state } = transaction;
     const focused = transaction.effects.find((effect) => effect.is(setFocus))?.value ?? previous.focused;
-    return transaction.docChanged || !state.selection.eq(startState.selection)
+    return transaction.docChanged || state.field(specials) !== startState.field(specials) || !state.selection.eq(startState.selection)
       || syntaxTree(state) !== syntaxTree(startState) || focused !== previous.focused
       || getChunks(state)?.chunks !== getChunks(startState)?.chunks
       || state.facet(markdownDirectives) !== startState.facet(markdownDirectives)

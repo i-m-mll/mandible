@@ -29,7 +29,7 @@
 // C6 shared resource-ref parser. It is the foundation for the C14b renderer
 // view, which it intentionally does NOT implement.
 
-import { remarkDirectives } from '../lib/remarkDirectives';
+import { remarkDirectives } from '../../../src/presentation/remark-directives.js';
 import { renderMarkdown } from '../lib/markdown';
 import {
   SPACES_DOC_VERSION,
