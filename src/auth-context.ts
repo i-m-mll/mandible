@@ -343,9 +343,11 @@ export async function resolveAuthMergeExecutionContext(
     if (!oid) throw new AuthExecutionContextError(`Invalid '${field}' for auth merge execution context: local branch '${branch}' does not exist in ${repo.root}.`);
     return oid;
   };
-  const baseSha = branchCommit("base_branch", baseBranch);
   const headSha = branchCommit("head_branch", headBranch);
-  (await verifyHeadAheadOfBase(repo.root, baseBranch, headBranch, baseSha, headSha));
+  const baseSha = refs.has(`refs/heads/${baseBranch}`) || !(await branchIsUnborn(repo.root, baseBranch))
+    ? branchCommit("base_branch", baseBranch)
+    : (await resolveTargetBranchSha(repo.root, baseBranch));
+  if (!isUnbornBase(baseSha)) (await verifyHeadAheadOfBase(repo.root, baseBranch, headBranch, baseSha, headSha));
 
   const executionCwd = (await resolveBaseBranchWorktree(repo.root, baseBranch));
   return {
@@ -361,6 +363,64 @@ export async function resolveAuthMergeExecutionContext(
 
 export async function resolveBranchHeadSha(repoRoot: string, branch: string): Promise<string> {
   return (await resolveRefCommit(repoRoot, `refs/heads/${branch}`, branch));
+}
+
+/**
+ * Issue c8817ff — Git's null object id stands for a merge target that has no
+ * commits yet: it is the old value `git update-ref` takes to require that the
+ * ref does not exist.
+ */
+export function isUnbornBase(sha: string): boolean {
+  return /^0+$/.test(sha);
+}
+
+/** The parents of the reviewed merge: the base and head, or the head alone when the base is unborn. */
+export function mergeParents(base: string, head: string): [string] | [string, string] {
+  return isUnbornBase(base) ? [head] : [base, head];
+}
+
+async function gitRead(repoRoot: string, args: string[]): Promise<string> {
+  return (await childOutput("git", args, {
+    cwd: repoRoot,
+    encoding: "utf-8",
+    timeout: GIT_REF_TIMEOUT_MS,
+    env: authGitEnv(),
+    stdio: ["ignore", "pipe", "pipe"],
+  })).trim();
+}
+
+/** The tree of `rev`, or the empty tree when `rev` is an unborn base. */
+export async function baseTree(repoRoot: string, rev: string): Promise<string> {
+  return isUnbornBase(rev)
+    ? gitRead(repoRoot, ["hash-object", "-t", "tree", "/dev/null"])
+    : gitRead(repoRoot, ["rev-parse", "--verify", `${rev}^{tree}`]);
+}
+
+/**
+ * The commit a merge target branch is at, or the null object id when the
+ * branch is unborn: some worktree has it checked out, but it has no commits.
+ */
+export async function resolveTargetBranchSha(repoRoot: string, branch: string): Promise<string> {
+  try {
+    return (await resolveBranchHeadSha(repoRoot, branch));
+  } catch (error) {
+    if (!(await branchIsUnborn(repoRoot, branch))) throw error;
+    const format = await gitRead(repoRoot, ["rev-parse", "--show-object-format"]);
+    return "0".repeat(format === "sha256" ? 64 : 40);
+  }
+}
+
+async function branchIsUnborn(repoRoot: string, branch: string): Promise<boolean> {
+  const ref = `refs/heads/${branch}`;
+  try {
+    await gitRead(repoRoot, ["show-ref", "--verify", "--quiet", ref]);
+    return false;
+  } catch (error) {
+    const failure = classifyGitFailure(error, GIT_REF_TIMEOUT_MS);
+    if (failure.kind !== "exit" || failure.status !== 1) throw error;
+  }
+  const entries = parseWorktreePorcelain(await gitRead(repoRoot, ["worktree", "list", "--porcelain"]));
+  return entries.some((entry) => entry.branch === ref);
 }
 
 /** A ref's commit id, or null when the ref does not name a commit. */
@@ -463,9 +523,9 @@ export async function computeAuthMergeReviewMetadata(
     diffSummary: true,
   }
 ): Promise<AuthMergeReviewMetadata> {
-  const baseSha = (await resolveCommitSha(repoRoot, baseRef));
+  const baseSha = isUnbornBase(baseRef) ? baseRef : (await resolveCommitSha(repoRoot, baseRef));
   const headSha = (await resolveCommitSha(repoRoot, headRef));
-  const mergeBaseSha = (await resolveMergeBaseSha(repoRoot, baseSha, headSha));
+  const mergeBaseSha = isUnbornBase(baseSha) ? (await baseTree(repoRoot, baseSha)) : (await resolveMergeBaseSha(repoRoot, baseSha, headSha));
   const metadata: AuthMergeReviewMetadata = {};
   const collected = await collectAuthMergeReview(
     repoRoot,

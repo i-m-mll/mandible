@@ -67,7 +67,8 @@ async function checkCandidateSync(root, indexPath, candidate, options) {
   try {
     privateDirectory = await mkdtemp(join(tmpdir(), 'mandible-readiness-index-'));
     const privateIndex = join(privateDirectory, 'index');
-    await copyFile(indexPath, privateIndex);
+    try { await copyFile(indexPath, privateIndex); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
     const privateOptions = { ...options, env: { ...options.env, GIT_INDEX_FILE: privateIndex } };
     const check = await observe('bash', [fileURLToPath(new URL('./checkout-sync-check.sh', import.meta.url)), root, candidate.base, candidate.target], privateOptions);
     if (check.status === 0) result = { status: 'clean' };
@@ -110,7 +111,9 @@ export async function checkCheckoutReadiness(checkout, candidate, env = process.
   if (lockedBeforeSync) return lockedBeforeSync;
   const branch = records.find(record => record.startsWith('# branch.head '))?.slice(14);
   const oid = records.find(record => record.startsWith('# branch.oid '))?.slice(13);
-  if (candidate && branch === candidate.baseBranch && oid === candidate.base) {
+  // `(initial)` is a branch with no commits: an unborn base (issue c8817ff).
+  const head = oid === '(initial)' ? '0'.repeat(candidate?.base.length ?? 40) : oid;
+  if (candidate && branch === candidate.baseBranch && head === candidate.base) {
     const sync = await checkCandidateSync(root, indexPath, candidate, options);
     if (sync.status === 'error') return sync;
   }
