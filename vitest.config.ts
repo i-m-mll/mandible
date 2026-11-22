@@ -1,6 +1,10 @@
 import { defineConfig } from 'vitest/config';
 import { measuredForks } from './scripts/measured-test-pool.js';
 
+if (!process.env.MANDIBLE_TEST_WORKER_TIMING) {
+  throw new Error('Run tests through bun run test or bun run test:provisioned.');
+}
+
 /**
  * The one Vitest configuration. A suite is a directory; `MANDIBLE_TEST_SUITE`
  * selects which, and the gate is the default. Single stars on purpose: a file

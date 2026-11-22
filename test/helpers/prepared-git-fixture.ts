@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterAll, expect } from "vitest";
 import { testRuntimeRoot } from "./runtime-isolation.js";
+import { configureFixtureGit } from "./fixture-git-config.js";
 
 function treeDigest(root: string): string {
   const hash = createHash("sha256");
@@ -51,9 +52,7 @@ export function preparedGitFixture<T>(prefix: string, build: (root: string) => T
 export const authCliRepo = preparedGitFixture("auth-cli", (repo) => {
   const git = (args: string[]) => execFileSync("git", args, { cwd: repo, timeout: 5_000 });
   git(["init", "-b", "main"]);
-  git(["config", "user.name", "Mandible Test"]);
-  git(["config", "user.email", "mandible-test@example.invalid"]);
-  git(["config", "commit.gpgsign", "false"]);
+  configureFixtureGit(repo, "Mandible Test", "mandible-test@example.invalid");
   fs.writeFileSync(path.join(repo, "tracked.txt"), "base\n", "utf8");
   git(["add", "tracked.txt"]);
   git(["commit", "-m", "base"]);

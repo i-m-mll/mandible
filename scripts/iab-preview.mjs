@@ -158,6 +158,16 @@ function selectPreviewBranch(repoRoot, options) {
   if (!currentBranch && !options.forceNew && !options.branch) {
     throw new Error(`HEAD is detached; check out the branch to preview, run from ${protectedBranch}, or pass --force-new.`);
   }
+  if (currentBranch === protectedBranch && !options.branch && !options.forceNew
+    && !options.ownerProject && !options.ownerWorkUnit) {
+    const branches = git(["worktree", "list", "--porcelain"], { cwd: repoRoot }).stdout.split(/\r?\n/)
+      .filter(line => line.startsWith("branch refs/heads/integration/"))
+      .map(line => line.slice("branch refs/heads/".length));
+    const owned = branches.filter(branch => previewWorkUnits(repoRoot, branch).length === 1);
+    if (owned.length === 1) return { branch: owned[0], mode: "protected-branch", protectedBranch };
+    if (owned.length > 1) throw new Error(`Select the integration preview with --branch: ${owned.join(", ")}`);
+    if (!options.dryRun) throw new Error(`No issue-owned integration worktree is available for ${protectedBranch}. Use --branch on an owned integration worktree, or provide --owner-project and --owner-work-unit.`);
+  }
   const protectedHead = git(["rev-parse", "--short=7", protectedBranch], { cwd: repoRoot }).stdout.trim();
   const defaultBranch = `integration/mandible-iab-preview-${formatDateStamp(new Date())}-${protectedHead}`;
   return {
@@ -274,8 +284,9 @@ async function createOrReusePreview(options) {
     : null;
 
 
+  const launchingBranch = git(['branch', '--show-current'], { cwd: repoRoot }).stdout.trim();
   const owner = resolvePreviewOwner(fs.existsSync(worktree) ? worktree : repoRoot,
-    fs.existsSync(worktree) ? branch : git(['branch', '--show-current'], { cwd: repoRoot }).stdout.trim(), options);
+    fs.existsSync(worktree) || launchingBranch === protectedBranch ? branch : launchingBranch, options);
   if (!fs.existsSync(sourceDb)) throw new Error(`Source database does not exist: ${sourceDb}`);
   readInstallationId();
   for (const prerequisite of [path.join(localSessionAuthorityDir(), 'sessions.db'), path.join(localSessionAuthorityDir(), 'Caddyfile'), path.join(mandibleHome(), 'runtime', 'caddy', '2.11.3', 'caddy')]) {
@@ -867,12 +878,16 @@ export async function stopPreview(options) {
   });
 }
 
+function previewWorkUnits(worktree, branch) {
+  const found = JSON.parse(run("mandible", ["work-unit", "find", "--repo", worktree, "--branch", branch], { cwd: worktree }).stdout);
+  const units = Array.isArray(found) ? found : found.work_units ?? (found.id ? [found] : []);
+  return units.filter(unit => unit.state === "open" || unit.state === "committed");
+}
+
 function resolvePreviewOwner(worktree, branch, options) {
   if (options.ownerProject && options.ownerWorkUnit) return { project: options.ownerProject, workUnit: options.ownerWorkUnit };
   const project = JSON.parse(run("mandible", ["project", "show", worktree, "--json"], { cwd: worktree }).stdout);
-  const found = JSON.parse(run("mandible", ["work-unit", "find", "--repo", worktree, "--branch", branch], { cwd: worktree }).stdout);
-  const units = Array.isArray(found) ? found : found.work_units ?? (found.id ? [found] : []);
-  const active = units.filter(unit => !["resolved", "abandoned"].includes(unit.state));
+  const active = previewWorkUnits(worktree, branch);
   if (active.length !== 1) {
     throw new Error(`Preview requires one owning delivery work unit, but ${branch} has ${active.length}. `
       + "Run the preview from the worktree of the issue-linked branch it serves (wt new <branch> --issue <id>), "
