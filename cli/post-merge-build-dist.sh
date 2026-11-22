@@ -28,7 +28,7 @@ build_needed=false
 desktop_build_needed=false
 instruction_install_needed=false
 merge_base_sha="${MANDIBLE_AUTH_MERGE_BASE_SHA:-}"
-merge_head_sha="${MANDIBLE_AUTH_MERGE_HEAD_SHA:-}"
+merge_head_sha="${MANDIBLE_AUTH_MERGE_COMMIT_SHA:-${MANDIBLE_AUTH_MERGE_HEAD_SHA:-}}"
 if [[ -n "$merge_base_sha" || -n "$merge_head_sha" ]]; then
   if [[ -z "$merge_base_sha" || -z "$merge_head_sha" ]]; then
     err "[post-merge-build] original merge range requires both base and head revisions"

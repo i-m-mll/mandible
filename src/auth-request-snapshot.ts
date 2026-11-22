@@ -97,12 +97,15 @@ export const AUTH_SNAPSHOT_SHAPE_V246: AuthSnapshotShape = Object.freeze({
   actions: AUTH_SNAPSHOT_SHAPE_V240.actions,
 });
 
-export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE_V246;
+export const AUTH_SNAPSHOT_SHAPE: AuthSnapshotShape = Object.freeze({
+  request: Object.freeze([...AUTH_SNAPSHOT_SHAPE_V246.request, "merge_effective_head_sha", "frozen_change_report_json"]),
+  actions: AUTH_SNAPSHOT_SHAPE_V246.actions,
+});
 
 // Columns added after receipts existed appear only when set, so receipts
 // recorded before them keep verifying.
-const OMITTED_WHEN_NULL = ["depends_on_ids", "space_publication_id", "protected_root_dirty_action_json", "issue_accounting_json"];
-const JSON_REQUEST_COLUMNS = ["depends_on_ids", "issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json", "protected_root_dirty_action_json", "issue_accounting_json"];
+const OMITTED_WHEN_NULL = ["depends_on_ids", "space_publication_id", "protected_root_dirty_action_json", "issue_accounting_json", "merge_effective_head_sha", "frozen_change_report_json"];
+const JSON_REQUEST_COLUMNS = ["depends_on_ids", "issue_ids", "issues", "issue_references", "issue_closures", "merge_finalizer_state", "change_report_json", "protected_root_dirty_action_json", "issue_accounting_json", "frozen_change_report_json"];
 
 export function authRequestSnapshot(db: Db, requestId: string, shape: AuthSnapshotShape = AUTH_SNAPSHOT_SHAPE): string {
   // A column omitted when null serializes the same whether it is null or not

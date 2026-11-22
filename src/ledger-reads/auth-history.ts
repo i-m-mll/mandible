@@ -25,7 +25,7 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   "last_executed_at", "post_merge_handoff", "issue_ids",
   "depends_on_id", "depends_on_ids", "issues", "type", "target_repo_root",
   "issue_references", "issue_closures", "merge_preflight_base_sha",
-  "merge_preflight_queue_fingerprint", "merge_head_sha", "merge_candidate_tree_sha",
+  "merge_preflight_queue_fingerprint", "merge_head_sha", "merge_effective_head_sha", "merge_candidate_tree_sha",
   "merge_candidate_pin_sha", "merge_atomic_enabled", "merge_finalized_at",
   // Issue 98d25f3 — omitting this made summaries report every request's
   // finalizer state as null, because `mapRow` maps an absent column to null and
@@ -95,12 +95,15 @@ export function authHistory(db: Db, params: { limit: number; type?: string }) {
   const selfUpdatingRepos = hooks.selfUpdatingRepos([...new Set(requests.filter(isAuthMergeCommand).flatMap(row => row.repo ? [row.repo] : []))]);
   const selfUpdates = requests.filter(row => isAuthMergeCommand(row) && selfUpdatingRepos.has(row.repo ?? ""));
   const reports = selfUpdates.length === 0 ? [] : db.prepare(
-    `SELECT id, change_report_json FROM auth_requests WHERE id IN (${selfUpdates.map(() => "?").join(", ")})`,
-  ).all(...selfUpdates.map(row => row.id)) as Array<{ id: string; change_report_json: unknown }>;
-  const changeReports = new Map(reports.map(row => [row.id, parseChangeReport(row.change_report_json)]));
-  const acceptanceIds = new Set(selfUpdates.filter(row => authRequestChangesBuildInputs({
-    ...row, change_report: changeReports.get(row.id) ?? null,
-  })).map(row => row.id));
+    `SELECT id, change_report_json, frozen_change_report_json FROM auth_requests WHERE id IN (${selfUpdates.map(() => "?").join(", ")})`,
+  ).all(...selfUpdates.map(row => row.id)) as Array<{ id: string; change_report_json: unknown; frozen_change_report_json: unknown }>;
+  const changeReports = new Map(reports.map(row => [row.id, row]));
+  const acceptanceIds = new Set(selfUpdates.filter(row => {
+    const stored = changeReports.get(row.id);
+    return authRequestChangesBuildInputs({
+      ...row, change_report: parseChangeReport(stored?.frozen_change_report_json ?? stored?.change_report_json),
+    }, row.merge_effective_head_sha ? parseChangeReport(stored?.change_report_json) : undefined);
+  }).map(row => row.id));
   const acceptances = latestCandidateAcceptances(db, [...acceptanceIds]);
   const dependencies = authDependencies(db, [...new Set(requests.flatMap(row => row.depends_on_ids ?? []))]);
   let convergence: Map<string, AuthConvergence>;

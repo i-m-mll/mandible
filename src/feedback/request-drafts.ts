@@ -11,7 +11,7 @@ type TextPair = Extract<DiffFilePair, { kind: "text" }>;
 type EditFile = AuthChangeFile & { new_path: string; new_object: { mode: string; oid: string } };
 
 export function canEditRequestFiles(request: AuthRequest): boolean {
-  return request.type === "merge" && !request.space_publication_id && Boolean(request.target_repo_root &&
+  return request.type === "merge" && !request.merge_effective_head_sha && !request.space_publication_id && Boolean(request.target_repo_root &&
     request.merge_head_sha && request.change_report?.comparison.head_sha === request.merge_head_sha);
 }
 

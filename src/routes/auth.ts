@@ -103,11 +103,14 @@ export function registerAuthRoutes(
       z.object({ operation: z.literal("revert") }),
     ]),
   });
-  const reviewReturn = reviewPrecondition.extend({
+  const reviewFreeze = reviewPrecondition.extend({
     round_id: z.string().min(1),
     annotation_event_ids: z.array(z.string().min(1)),
     draft_snapshot: z.array(z.object({ path: z.string().min(1), generation: z.number().int().positive() })).optional(),
-    reason: z.string().optional(),
+  });
+  const reviewReturn = reviewFreeze.extend({ reason: z.string().optional() });
+  const approvalReview = reviewFreeze.pick({ round_id: true, annotation_event_ids: true }).extend({
+    proof_digest: z.string().regex(/^[a-f0-9]{64}$/),
   });
   const reviewThread = reviewPrecondition.extend({
     comment_id: z.string().regex(/^[0-9a-f]{8}[0-9a-f-]*$/),
@@ -433,8 +436,9 @@ export function registerAuthRoutes(
       const precondition = { expected_revision: authQueue.lifecycleRevision(request.id),
         expected_custody_generation: authQueue.requestResponsibility(request).custody_generation };
       const viewer = requireAttribution(db, req);
+      const proof_digest = authQueue.reviewApprovalProof(request);
       res.json({ ...await readRequestReview(db, request, isUserRequest(db, req) ? viewer.user_id : null),
-        precondition, status: request.status });
+        precondition, status: request.status, proof_digest });
     } catch (error) { handleQueueError(error, res); }
   }, { operation: { id: "get:/api/auth/request/:id/review", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
@@ -491,6 +495,15 @@ export function registerAuthRoutes(
       res.json(await authQueue.mutateRequestReviewDraft(req.params.id, authReviewOperator(db, req), input.data));
     } catch (error) { handleQueueError(error, res); }
   }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/drafts", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/review/freeze", globalCapabilityRoute("approve_auth", async (req, res) => {
+    try {
+      const input = reviewFreeze.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid review freeze." }); return; }
+      const request = await authQueue.freezeRequestReview(req.params.id, authReviewOperator(db, req), input.data);
+      res.json({ request_id: request.id, lifecycle_revision: authQueue.lifecycleRevision(request.id) });
+    } catch (error) { handleQueueError(error, res); }
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/freeze", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/return", globalCapabilityRoute("approve_auth", async (req, res) => {
     try {
@@ -884,18 +897,21 @@ export function registerAuthRoutes(
   app.post("/api/auth/request/:id/approve", globalCapabilityRoute("approve_auth", async (req, res) => {
     try {
       const identity = req.client_identity!;
-      const reviewedRevision = readBody<Record<string, unknown>>(req).lifecycle_revision;
+      const body = readBody<Record<string, unknown>>(req);
+      const reviewedRevision = body.lifecycle_revision;
       if (!Number.isInteger(reviewedRevision)) {
         res.status(400).json({ error: "lifecycle_revision, the revision of the request that was reviewed, is required.", code: "lifecycle_precondition_required" });
         return;
       }
+      const review = approvalReview.optional().safeParse(body.review);
+      if (!review.success) { res.status(400).json({ error: "Invalid reviewed candidate proof." }); return; }
       const request = await authQueue.approveAsOperator(req.params.id, {
         user_id: identity.user_id,
         evidence_method: requireAttribution(db, req).evidence_method,
         identity_method: identity.method,
         source: identity.source,
         credential_id: identity.credential_id,
-      }, reviewedRevision as number);
+      }, reviewedRevision as number, review.data);
       res.status(202).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);

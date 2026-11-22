@@ -3,7 +3,7 @@ import { Icon } from '../components/icons/Icon';
 import type { RefObject } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { AuthReviewDialog, AuthReviewMarkdown, AuthReviewTextFile, AuthReviewDetachedDrafts, AuthReviewSidebar, authReviewSelector,
-  useAuthRequestReview, type ReviewDecision } from './AuthRequestReview';
+  useAuthRequestReview, type AuthRequestReviewState } from './AuthRequestReview';
 import type { RequestReviewComment } from '../../../src/feedback/request-review';
 import { ChangeList, type DiffTargetReady } from '../components/ChangeList';
 import { ViewSidebar } from '../components/ViewSidebar';
@@ -53,6 +53,7 @@ import {
   ApiError,
   type InstanceInfo,
   type ReadUserIdentity,
+  authApprovalReview, type ShownAuthApproval,
 } from '../api';
 import { exhausted } from '../../../src/exhaustive';
 import type { AuthConvergence } from '../../../src/types';
@@ -79,7 +80,7 @@ import { navigateAuthFile, navigateAuthReviewView, useAuthReviewNavigation, type
 const RETAINED_FINALIZED_AUTH_KEY = 'mandible.auth.retained-finalized-selection';
 
 type AuthActionRetry =
-  | { kind: 'approve' }
+  | { kind: 'approve'; proof?: ShownAuthApproval }
   | { kind: 'retry' }
   | { kind: 'veto'; action: AuthRequestAction; vetoed: boolean };
 
@@ -104,6 +105,8 @@ export type AuthRequest = {
   base_branch?: string;
   head_branch?: string;
   merge_preflight_base_sha?: string | null;
+  merge_effective_head_sha?: string | null;
+  merge_head_sha?: string | null;
   merge_preflight_queue_fingerprint?: string | null;
   change_report?: AuthChangeReport | null;
   status?: string;
@@ -253,7 +256,7 @@ export type AuthQueueViewProps = {
   onSelectAuth?: (id: string | null) => void;
   /** Explicit row/filter navigation; passive selection updates only notify onSelectAuth. */
   onNavigateRequest?: (id: string | null) => void;
-  onApprove: (requestId: string) => void | Promise<void>;
+  onApprove: (requestId: string, proof?: ShownAuthApproval) => void | Promise<void>;
   onReject: (requestId: string, reason?: string) => void | Promise<void>;
   onRetry: (requestId: string) => void | Promise<void>;
   onRefreshAuthProjection?: (signal: AbortSignal) => Promise<void>;
@@ -904,7 +907,7 @@ function AuthRequestDetail({
   history?: boolean;
   branchMerged?: boolean;
   actionBundle?: JSX.Element | null;
-  renderActions: (openDecision: (decision: ReviewDecision) => void, canReturn: boolean, comparing: boolean) => JSX.Element | null;
+  renderActions: (review: AuthRequestReviewState, openCandidate: () => void) => JSX.Element | null;
   onReject: (id: string, reason: string) => void | Promise<void>;
   onReturned?: (signal: AbortSignal) => Promise<void>;
   canWriteReview: boolean;
@@ -1174,7 +1177,7 @@ function AuthRequestDetail({
         />
       </div>
       <div className="auth-detail__action-strip">
-        {renderActions(review.openDecision, review.available, Boolean(review.against))}
+        {renderActions(review, () => setViewMode('diff'))}
       </div>
     </>
   );
@@ -1217,6 +1220,10 @@ function AuthRequestDetail({
         <MetadataRow label="Requester evidence" value={request.requester_evidence_method ?? null} />
         <MetadataRow label="Requester credential" value={request.requester_credential_id ?? null} />
         <MetadataRow label="Requester" value={requester?.display_name ?? request.requested_by_user_id ?? null} />
+        {request.merge_effective_head_sha && <>
+          <MetadataRow label="Requester verification commit" value={request.merge_head_sha ?? null} />
+          <MetadataRow label="Frozen change edit" value={request.merge_effective_head_sha} />
+        </>}
         <MetadataRow label="Approver" value={approver?.display_name ?? request.approved_by_user_id ?? null} />
         <MetadataRow label="Execution evidence" value={request.execution_evidence?.evidence_method ?? null} />
         <MetadataRow label="Lifecycle revision" value={latestLifecycle ? String(latestLifecycle.revision) : null} />
@@ -1322,6 +1329,8 @@ function AuthRequestDetail({
       subheader={subheader}
       notice={<>
         {notice}
+        {review.error && !review.decision && !review.replyTarget && !review.editor &&
+          <DetailPaneNotice density="compact" severity="error">{review.error}</DetailPaneNotice>}
         {review.data?.returned && <DetailPaneNotice severity={review.data.returned.delivered ? 'info' : 'warning'}
           density="compact" title={review.data.returned.delivered ? 'Review delivered' : 'Review notice undelivered'}>
           {review.data.returned.reason}
@@ -1524,7 +1533,8 @@ function AuthRequestDetail({
             onLineSelection={review.available && !review.against ? (_file, index, range, quote) => review.lineSelection(index, range, quote) : undefined}
             renderFileStatus={!review.against ? file => {
               const status = review.drafts.fileStatus(file.new_path);
-              return status ? <span className="change-list__badge">{status === 'conflict' ? 'Draft conflict' : 'Review draft'}</span> : null;
+              const label = status === 'conflict' ? 'Draft conflict' : status === 'draft' ? 'Review draft' : file.operator_edited ? 'Operator edit' : null;
+              return label && <span className="change-list__badge">{label}</span>;
             } : undefined}
             renderTextFile={(_file, pair, index, view) => <AuthReviewTextFile review={review} pair={pair} index={index} view={view} />}
             contentReady={review.against ? Boolean(review.comparison) || !comparedVersion?.head : authType === 'merge'
@@ -1547,7 +1557,8 @@ function AuthRequestDetail({
           <div className="auth-detail__panels collapsible-panel-region--persistent-disclosures">
             <div className="auth-detail__left-col">
               <CollapsiblePanel
-                title="Description"
+                title={request.merge_effective_head_sha && request.merge_head_sha
+                  ? `Description · verification at ${request.merge_head_sha.slice(0, 12)}` : "Description"}
                 availability={request.commit_message === undefined ? 'unknown' : commitMsg ? 'available' : 'unavailable'}
                 expanded={descriptionView.descriptionExpanded}
                 onExpandedChange={descriptionExpanded => setDescriptionView(current => ({ ...current, descriptionExpanded }))}
@@ -2583,11 +2594,11 @@ export function AuthQueueView({
   );
 
   const handleApprove = useCallback(
-    (id: string) => runAction(
+    (id: string, proof?: ShownAuthApproval) => runAction(
       id,
-      onApprove,
+      requestId => proof ? onApprove(requestId, proof) : onApprove(requestId),
       'Approval failed. Try again.',
-      { kind: 'approve' },
+      { kind: 'approve', proof },
       (requestId) => `/api/auth/request/${encodeURIComponent(requestId)}/approve`,
     ),
     [runAction, onApprove],
@@ -2685,7 +2696,7 @@ export function AuthQueueView({
   const retryActionError = useCallback((requestId: string, retry: AuthActionRetry) => {
     switch (retry.kind) {
       case 'approve':
-        handleApprove(requestId);
+        handleApprove(requestId, retry.proof);
         return;
       case 'retry':
         handleRetry(requestId);
@@ -3026,8 +3037,7 @@ export function AuthQueueView({
   }, [branchFilter, filterMode, repoFilter, sortMode, typeFilter]);
 
   // Render the action buttons for the selected request in the detail panel
-  const renderDetailActions = (request: AuthRequest, openDecision: (decision: ReviewDecision) => void,
-    canReturn: boolean, comparing: boolean): JSX.Element | null => {
+  const renderDetailActions = (request: AuthRequest, review: AuthRequestReviewState, openCandidate: () => void): JSX.Element | null => {
     const id = getAuthId(request);
     const status = getAuthStatus(request);
     const isFailed = isFailedLikeStatus(status);
@@ -3106,26 +3116,36 @@ export function AuthQueueView({
     const blockers = requestPrerequisites(request).filter(prerequisite => !prerequisite.ready);
     const dependencyBlocked = blockers.length > 0;
     const dependencyState = [...new Set(blockers.map(prerequisite => prerequisite.state))].join(', ');
+    const shown = review.data;
+    const shownCandidate = shown?.comparison_head === (request.change_report?.comparison.head_sha ?? null)
+      && shown?.frozen_head === (request.merge_effective_head_sha ?? null);
+    const proof = shown?.proof_digest && shownCandidate
+      ? { revision: shown.precondition.expected_revision, review: authApprovalReview(shown) } : undefined;
+    const mustFreeze = review.drafts.hasEdits || review.drafts.hasConflicts;
+    const unavailable = actionDisabled || review.busy || Boolean(review.against);
     return (
       <div className="auth-actions">
-        <button
+        {mustFreeze ? <button type="button" className="btn btn--success"
+          onClick={() => { void review.freeze(openCandidate); }}
+          disabled={unavailable || !review.available || review.drafts.hasConflicts
+            || !canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/review/freeze`)}>
+          Freeze edits
+        </button> : <button
           type="button"
           className="btn btn--success"
-          onClick={() => {
-            if (!dependencyBlocked) handleApprove(id);
-          }}
-          disabled={actionDisabled || !approvalAllowed || dependencyBlocked || comparing}
+          onClick={() => handleApprove(id, proof)}
+          disabled={unavailable || !approvalAllowed || dependencyBlocked || Boolean(request.merge_effective_head_sha && !proof)}
           title={dependencyBlocked
             ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
             : request.publication_blocker?.message ?? (!approvalAllowed ? 'Approval is unavailable in this instance.' : approveTitle(getApprovalTier(request)))}
         >
           {actionDisabled ? 'Checking the request…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
-        </button>
+        </button>}
         {status === 'pending' && <>
-          <button type="button" className="btn btn--ghost" disabled={actionDisabled || !canReturn}
-            onClick={() => openDecision('return')}>Return</button>
+          <button type="button" className="btn btn--ghost" disabled={unavailable || !review.available}
+            onClick={() => review.openDecision('return')}>Return</button>
           <button type="button" className="btn btn--danger" disabled={actionDisabled || !rejectAllowed}
-            onClick={() => openDecision('reject')}>Reject</button>
+            onClick={() => review.openDecision('reject')}>Reject</button>
         </>}
       </div>
     );
@@ -3410,7 +3430,7 @@ export function AuthQueueView({
                   initialViewState={restoredInfo?.actions}
                 />
               )}
-              renderActions={(openDecision, canReturn, comparing) => renderDetailActions(request, openDecision, canReturn, comparing)}
+              renderActions={(review, openCandidate) => renderDetailActions(request, review, openCandidate)}
               onReject={onReject}
               onReturned={onRefreshAuthProjection}
               canWriteReview={daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/return`)}

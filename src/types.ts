@@ -269,6 +269,7 @@ export interface AuthRequest {
   base_branch?: string;
   head_branch?: string;
   merge_head_sha?: string | null;
+  merge_effective_head_sha?: string | null;
   merge_candidate_tree_sha?: string | null;
   merge_candidate_pin_sha?: string | null;
   merge_atomic_enabled?: boolean;

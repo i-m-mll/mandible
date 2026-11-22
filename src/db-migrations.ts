@@ -28,6 +28,7 @@ import {
   authRequestLifecycleEventsSchemaSql,
   WORKER_THREAD_ARCHIVES_SCHEMA_SQL,
   BASELINE_SCHEMA_VERSION,
+  FROZEN_REQUEST_REVIEW_COLUMNS_SQL,
   AUTH_PREREQUISITE_SCHEMA_SQL,
   SESSION_EXECUTION_SCHEMA_SQL,
   LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
@@ -2488,7 +2489,7 @@ export const MIGRATIONS: readonly Migration[] = [
     "DROP TRIGGER auth_request_lifecycle_events_immutable_delete",
     "DROP INDEX idx_auth_request_lifecycle_events_request",
     "ALTER TABLE auth_request_lifecycle_events RENAME TO auth_request_lifecycle_events_v248",
-    ...authRequestLifecycleEventsSchemaSql(AUTH_LIFECYCLE_AUTHORITY_PATHS, true),
+    ...authRequestLifecycleEventsSchemaSql(AUTH_LIFECYCLE_AUTHORITY_PATHS, "returns"),
     `ALTER TABLE auth_request_lifecycle_events ADD COLUMN ${ledgerOriginColumnSql}`,
     `INSERT INTO auth_request_lifecycle_events (${AUTH_LIFECYCLE_EVENT_COLUMNS})
        SELECT ${AUTH_LIFECYCLE_EVENT_COLUMNS} FROM auth_request_lifecycle_events_v248`,
@@ -2498,6 +2499,18 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   { version: 251, name: "review_comment_threads", statements: REVIEW_THREAD_SCHEMA_SQL },
   { version: 252, name: "request_review_drafts", statements: REQUEST_REVIEW_DRAFT_SCHEMA_SQL },
+  { version: 253, name: "frozen_request_review", requires_foreign_keys_off: true, statements: [
+    ...FROZEN_REQUEST_REVIEW_COLUMNS_SQL,
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_update",
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_delete",
+    "DROP INDEX idx_auth_request_lifecycle_events_request",
+    "ALTER TABLE auth_request_lifecycle_events RENAME TO auth_request_lifecycle_events_v252",
+    ...authRequestLifecycleEventsSchemaSql(AUTH_LIFECYCLE_AUTHORITY_PATHS, "decisions"),
+    `ALTER TABLE auth_request_lifecycle_events ADD COLUMN ${ledgerOriginColumnSql}`,
+    `INSERT INTO auth_request_lifecycle_events (${AUTH_LIFECYCLE_EVENT_COLUMNS}, review_submission_id)
+       SELECT ${AUTH_LIFECYCLE_EVENT_COLUMNS}, review_submission_id FROM auth_request_lifecycle_events_v252`,
+    "DROP TABLE auth_request_lifecycle_events_v252",
+  ] },
 ];
 
 /**

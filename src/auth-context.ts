@@ -70,6 +70,7 @@ export function authGitEnv(): NodeJS.ProcessEnv {
     GIT_CONFIG_SYSTEM: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_ATTR_NOSYSTEM: "1",
+    GIT_NO_REPLACE_OBJECTS: "1",
     GIT_OPTIONAL_LOCKS: "0",
   };
 }

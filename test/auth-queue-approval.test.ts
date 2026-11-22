@@ -12,6 +12,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { waitUntil } from "./helpers/wait-until.js";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
+import { reviewSubmissionAnnotations } from "../src/feedback/review-store.js";
 import type { SseEvent } from "../src/types.js";
 import { setDb } from "../src/db.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -100,6 +101,9 @@ describe("auth queue", () => {
       await queue.approveAsOperator(request.id, operatorCaller(signing.operatorId), queue.lifecycleRevision(request.id)!);
       await waitForStatus(queue, request.id, "completed");
       expect(signer.touches).toHaveLength(4);
+      const approval = queue.listLifecycleEvents(request.id).find(event => event.event_type === "approved");
+      expect(approval?.review_submission_id).toBeTruthy();
+      expect(reviewSubmissionAnnotations(db, approval!.review_submission_id!)).toEqual([]);
       const touch = signer.touches.at(-1)!;
       expect(touch).toMatchObject({ namespace: "git" });
       const tip = git(repo, ["rev-parse", "main"]);
