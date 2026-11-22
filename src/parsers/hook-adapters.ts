@@ -30,7 +30,7 @@ export const HOOK_ADAPTERS = {
   },
   codex: {
     session_field: "session_id", event_field: "hook_event_name", agent_field: "agent_id",
-    events: { UserPromptSubmit: "plain", PostToolUse: "additional_context", Stop: "block" },
+    events: { UserPromptSubmit: "plain", PostToolUse: "additional_context", Stop: "block", SubagentStop: "block" },
     continuing: stopHookActive,
   },
   antigravity: {

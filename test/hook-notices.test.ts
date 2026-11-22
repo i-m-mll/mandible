@@ -22,6 +22,7 @@ const CASES: Array<{ provider: string; payload: string; read: (stdout: string) =
   { provider: "codex", payload: "codex-UserPromptSubmit", read: plain },
   { provider: "codex", payload: "codex-PostToolUse", read: context },
   { provider: "codex", payload: "codex-Stop", read: block },
+  { provider: "codex", payload: "codex-SubagentStop", read: block, agent: "01a2050f-4635-7243-8df4-f0885045c92a" },
   { provider: "antigravity", payload: "antigravity-PreInvocation", read: (stdout) => json(stdout).injectSteps[0].systemMessage.systemMessage },
   { provider: "antigravity", payload: "antigravity-Stop", read: (stdout) => { const out = json(stdout); return out.decision === "continue" ? out.reason : null; } },
 ];
