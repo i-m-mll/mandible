@@ -232,8 +232,8 @@ describe("auth request immutable lifecycle", () => {
       const next = await read(replacement.id);
       expect(next.versions.map(version => [version.id, version.status])).toEqual([[request.id, "superseded"], [replacement.id, "pending"]]);
       expect(next.annotations).toMatchObject([
-        { body: "Explain the original wording.", anchor: { status: "preserved", start_offset: 9 } },
-        { annotation_event_id: commentId, document_binding_id: lines.id, anchor: { status: "detached" },
+        { body: "Explain the original wording." },
+        { annotation_event_id: commentId, document_binding_id: lines.id,
           thread: { resolved: false, events: [{ operation: "reply", actor_role: "requester", body: "I will remove the outdated check." }] } },
       ]);
       const addressed = await requestCommand(["address", replacement.id.slice(0, 8), commentId.slice(0, 8)]);

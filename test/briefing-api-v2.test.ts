@@ -55,6 +55,25 @@ describe('Briefing v2 UI projection', () => {
     expect(projection.items.map((item) => item.effective_response?.value)).toEqual(definitions.map((entry) => entry[3]));
   });
 
+  it('validates translated placements against current text while retaining both original quotes', () => {
+    const anchor = { status: 'preserved', start_offset: 6, end_offset: 14, quote: 'verified' };
+    const original = { start_offset: 6, end_offset: 11, quote: 'draft', body: 'Comment', anchor };
+    const review = {
+      ...payload(),
+      carried_annotations: [{ ...original, annotation_event_id: 'comment', annotation_kind: 'comment',
+        replacement_text: null, created_at: 1, source_round_id: 'older', source_round_ordinal: 1, actor: { slug: 'reviewer' } }],
+      standing_notes: [{ ...original, id: 'note', author: 'Reviewer' }],
+    };
+    const parsed = normalizeBriefingRoundProjection(review);
+    expect(parsed.valid).toBe(true);
+    expect(parsed.carried_annotations).toMatchObject([{ quote: 'draft', anchor }]);
+    expect(parsed.standing_notes).toMatchObject([{ quote: 'draft', anchor }]);
+    anchor.end_offset++;
+    const invalid = normalizeBriefingRoundProjection(review);
+    expect(invalid.valid).toBe(false);
+    expect(invalid.standing_notes).toEqual([]);
+  });
+
   it('fails closed on aliases, invalid values, malformed options, and choice counts outside 2-12', () => {
     const legacy = payload() as any;
     legacy.document.profile = 'mandible-briefing.v1';

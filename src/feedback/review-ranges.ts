@@ -1,4 +1,4 @@
-import { diffChars, diffLines } from "diff";
+import { diffLines, diffWordsWithSpace } from "diff";
 import type { ArtifactDraftStandingNote, CarriedReviewRange, ReviewRange, ReviewRangeKind } from "./review-types.js";
 
 type MatchingSpan = { before: number; after: number; length: number };
@@ -24,7 +24,7 @@ function matchingSpans(before: string, after: string): MatchingSpan[] {
     changed = null;
     const timeout = deadline - performance.now();
     if (a === oldOffset || b === newOffset || timeout <= 0) return;
-    const parts = diffChars(before.slice(a, oldOffset), after.slice(b, newOffset), { timeout });
+    const parts = diffWordsWithSpace(before.slice(a, oldOffset), after.slice(b, newOffset), { timeout });
     for (const part of parts ?? []) {
       const length = part.value.length;
       if (!part.added && !part.removed) match(a, b, length);
@@ -45,17 +45,50 @@ function matchingSpans(before: string, after: string): MatchingSpan[] {
   return spans;
 }
 
-/** Build one map per pair of texts. Only a unique, exact quote can reattach an anchor. */
+function mappedRange(before: string, after: string, spans: readonly MatchingSpan[], start: number, end: number) {
+  let first = -1;
+  let last = -1;
+  let retainedText = false;
+  for (let index = 0; index < spans.length; index++) {
+    const span = spans[index];
+    if (span.before >= end) break;
+    if (span.before + span.length <= start) continue;
+    if (first === -1) first = index;
+    last = index;
+    retainedText ||= /[\p{L}\p{N}\p{S}]/u.test(before.slice(Math.max(start, span.before), Math.min(end, span.before + span.length)));
+  }
+  if (first === -1) return null;
+  const leading = spans[first];
+  const trailing = spans[last];
+  const leadingEdge = leading.before;
+  const trailingEdge = trailing.before + trailing.length;
+  if (start >= leadingEdge && end <= trailingEdge && first === last) {
+    return { start: leading.after + start - leadingEdge, end: leading.after + end - leadingEdge };
+  }
+  // Whitespace and punctuation alone do not establish continuity across an edit.
+  if (!retainedText) return null;
+  const previous = spans[first - 1];
+  const next = spans[last + 1];
+  const previousEnd = previous ? previous.before + previous.length : 0;
+  const mappedStart = start < leadingEdge && start === previousEnd
+    ? (previous ? previous.after + previous.length : 0)
+    : leading.after + Math.max(0, start - leadingEdge);
+  const mappedEnd = end > trailingEdge && end === (next?.before ?? before.length)
+    ? (next?.after ?? after.length)
+    : trailing.after + trailing.length + Math.min(0, end - trailingEdge);
+  return { start: mappedStart, end: mappedEnd };
+}
+
+function findUniqueReviewQuote(source: string, quote: string, kind: ReviewRangeKind): ReviewRange | null {
+  if (!quote) return null;
+  const start = source.indexOf(quote);
+  if (start < 0 || source.indexOf(quote, start + 1) !== -1) return null;
+  const range = reviewRangeFromSelection(source, start, start + quote.length, kind);
+  return range?.quote === quote ? range : null;
+}
+
 export function carryReviewRanges(before: string, after: string): (anchor: ReviewRange) => CarriedReviewRange {
-  const spans = matchingSpans(before, after);
-  return ({ start_offset, end_offset, quote }) => {
-    if (before.slice(start_offset, end_offset) !== quote) return { status: "detached" };
-    const start = after.indexOf(quote);
-    if (start === -1 || after.indexOf(quote, start + 1) !== -1) return { status: "detached" };
-    const preserved = spans.some((span) => start_offset >= span.before && end_offset <= span.before + span.length
-      && start_offset - span.before === start - span.after);
-    return { status: preserved ? "preserved" : "moved", start_offset: start, end_offset: start + quote.length, quote };
-  };
+  return carryReviewRangeKind(before, after, "text");
 }
 
 /** A line anchor stores a half-open span of zero-based logical lines. */
@@ -78,30 +111,24 @@ export function carryReviewLines(before: string, after: string, anchor: ReviewRa
 }
 
 export function carryReviewLineRanges(before: string, after: string): (range: ReviewRange) => CarriedReviewRange {
-  const carry = carryReviewRanges(before, after);
-  return (anchor) => carryReviewLineRange(before, after, carry, anchor);
-}
-
-function carryReviewLineRange(before: string, after: string, carry: ReturnType<typeof carryReviewRanges>,
-  anchor: ReviewRange): CarriedReviewRange {
-  if (quoteReviewLines(before, anchor.start_offset, anchor.end_offset) !== anchor.quote) return { status: "detached" };
-  const start = anchor.start_offset === 0 ? 0 : quoteReviewLines(before, 0, anchor.start_offset)!.length;
-  const carried = carry({
-    start_offset: start, end_offset: start + anchor.quote.length, quote: anchor.quote,
-  });
-  if (carried.status === "detached") return carried;
-  const startLine = after.slice(0, carried.start_offset).split("\n").length - 1;
-  const endLine = startLine + anchor.end_offset - anchor.start_offset;
-  if (quoteReviewLines(after, startLine, endLine) !== anchor.quote) return { status: "detached" };
-  return { ...carried, start_offset: startLine, end_offset: endLine };
+  return carryReviewRangeKind(before, after, "lines");
 }
 
 /** Artifacts and briefings share offsets in decoded text with the UTF-8 BOM omitted. */
 export const artifactReviewSource = (source: string): string => source.replace(/^\uFEFF/, "");
 
 export function carryReviewRangeKind(before: string, after: string, kind: ReviewRangeKind) {
-  if (before === after) return (range: ReviewRange): CarriedReviewRange => ({ ...range, status: "preserved" });
-  return (kind === "lines" ? carryReviewLineRanges : carryReviewRanges)(before, after);
+  const spans = before === after ? [] : matchingSpans(before, after);
+  return (range: ReviewRange): CarriedReviewRange => {
+    const original = reviewSelectionFromRange(before, range, kind);
+    if (!original) return { status: "detached" };
+    if (before === after) return { ...range, status: "preserved" };
+    const mapped = mappedRange(before, after, spans, original.start, original.end);
+    const current = mapped && reviewRangeFromSelection(after, mapped.start, mapped.end, kind);
+    if (current) return { ...current, status: current.start_offset === range.start_offset ? "preserved" : "moved" };
+    const relocated = findUniqueReviewQuote(after, range.quote, kind);
+    return relocated ? { ...relocated, status: "moved" } : { status: "detached" };
+  };
 }
 
 export function reviewRangeFromSelection(source: string, start: number, end: number, kind: ReviewRangeKind): ReviewRange | null {
@@ -127,10 +154,8 @@ export function carryArtifactDraftNotes(before: string, after: string, notes: Ar
   const maps = new Map<ReviewRangeKind, ReturnType<typeof carryReviewRangeKind>>();
   return notes.map(note => {
     if (note.anchor.status === "detached") {
-      const end = note.range_kind === "lines" ? note.end_offset - note.start_offset : note.quote.length;
-      return { ...note, anchor: carryReviewRangeKind(note.quote, next, note.range_kind)({
-        start_offset: 0, end_offset: end, quote: note.quote,
-      }) };
+      const range = findUniqueReviewQuote(next, note.quote, note.range_kind);
+      return { ...note, anchor: range ? { ...range, status: "moved" as const } : note.anchor };
     }
     let carry = maps.get(note.range_kind);
     if (!carry) {
