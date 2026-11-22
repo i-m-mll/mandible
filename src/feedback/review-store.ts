@@ -1,3 +1,4 @@
+import type { ReviewChangeEdit } from "./request-draft-types.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
 import { canonicalJson } from "../canonical-json.js";
@@ -181,6 +182,13 @@ export type FrozenReviewSubmission = {
   created_at: number;
 };
 
+export function submittedChangeEdit(db: Db, submissionId: string): ReviewChangeEdit | null {
+  const edit = db.prepare(`SELECT e.* FROM review_submission_change_edits s JOIN request_review_change_edits e
+      ON e.request_id = s.request_id AND e.commit_sha = s.commit_sha WHERE s.submission_id = ?`)
+    .get(submissionId) as ReviewChangeEdit | undefined;
+  return edit ?? null;
+}
+
 /** Freeze the actor's exact effective membership and the comparison shown for every document.
  * The owner authenticates the actor, validates answers and targets, and calls this inside its write transaction. */
 export function freezeReviewSubmission(
@@ -191,6 +199,7 @@ export function freezeReviewSubmission(
     answers: readonly { directive_instance_id: string; response_event_id: string }[];
     comparisonTargets: readonly ReviewSubmissionTarget[];
     supersedesSubmissionId: string | null;
+    changeEdit?: ReviewChangeEdit | null;
   },
   now: number,
 ): { ok: true; submission: FrozenReviewSubmission } | {
@@ -208,6 +217,9 @@ export function freezeReviewSubmission(
   if (!sameMembers(bindingIds, input.comparisonTargets.map((target) => target.document_binding_id))) {
     return { ok: false, reason: "invalid_submission_targets" };
   }
+  if (input.changeEdit && (owner.kind !== "request_revision" || owner.auth_request_id !== input.changeEdit.request_id)) {
+    throw new Error("Change edit belongs to a different review.");
+  }
   const latest = db.prepare(
     "SELECT id FROM briefing_submissions WHERE round_id = ? AND actor_user_id = ? ORDER BY ordinal DESC LIMIT 1",
   ).get(roundId, actorUserId) as { id: string } | undefined;
@@ -222,7 +234,8 @@ export function freezeReviewSubmission(
     const targetKeys = (targets: readonly ReviewSubmissionTarget[]) => targets.map((target) => canonicalJson(target));
     if (sameMembers(priorAnswers.map((row) => row.response_event_id), input.answers.map((answer) => answer.response_event_id))
         && sameMembers(priorAnnotations.map((row) => row.annotation_event_id), currentIds)
-        && sameMembers(targetKeys(reviewSubmissionTargets(db, latest.id)), targetKeys(input.comparisonTargets))) {
+        && sameMembers(targetKeys(reviewSubmissionTargets(db, latest.id)), targetKeys(input.comparisonTargets))
+        && (submittedChangeEdit(db, latest.id)?.commit_sha ?? null) === (input.changeEdit?.commit_sha ?? null)) {
       return { ok: false, reason: "submission_noop" };
     }
   }
@@ -233,6 +246,8 @@ export function freezeReviewSubmission(
     (request_origin_json, id, round_id, briefing_id, ordinal, supersedes_submission_id, actor_user_id, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(requestOriginJson(), submissionId, roundId, owner.kind === "briefing" ? owner.briefing_id : null,
     ordinal, input.supersedesSubmissionId, actorUserId, now);
+  if (input.changeEdit) db.prepare(`INSERT INTO review_submission_change_edits (submission_id, request_id, commit_sha)
+    VALUES (?, ?, ?)`).run(submissionId, input.changeEdit.request_id, input.changeEdit.commit_sha);
   const addAnswer = db.prepare(`INSERT INTO briefing_submission_answers
     (submission_id, round_id, actor_user_id, directive_instance_id, response_event_id, position)
     VALUES (?, ?, ?, ?, ?, ?)`);

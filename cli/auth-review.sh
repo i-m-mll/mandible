@@ -48,6 +48,8 @@ printf '%s\n' "$response" | jq -r '
   "Current status \(.status) at revision \(.lifecycle_revision), custody generation \(.responsibility.custody_generation)",
   (if .delivered then empty else "Review notice undelivered" end),
   (.reason // empty | safe),
+  (if .change_edit then "Change edit \(.change_edit.commit_sha)", "Git ref \(.change_edit.ref)",
+    ((.replacements // .replacements_error // empty) | safe) else empty end),
   (if (.comments | length) == 0 then "No comments" else .comments[] |
     (if .source.kind == "request_description" then "Description"
      else (.source.path | safe) + " (" + .source.side + ")" end) +

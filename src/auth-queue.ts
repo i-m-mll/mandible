@@ -1,6 +1,12 @@
+import { canonicalJson } from "./canonical-json.js";
 import { ensureRequestReviewRound, readRequestReviewSource, requestReviewRound, resolveRequestReviewComment } from "./feedback/request-review.js";
 import { appendReviewAnnotation, appendReviewThreadEvent, freezeReviewSubmission, type ReviewAnnotationMutation } from "./feedback/review-store.js";
 import type { ReviewThreadActor, ReviewThreadMutation } from "./feedback/review-types.js";
+import {
+  carryRequestDrafts, insertCarriedDrafts, matchesDraftSnapshot, mutateRequestDraft,
+  prepareRequestReviewChangeEdit, readEditFile, requestDrafts, requestOwnedDrafts, requestOwnedDraftStamps,
+} from "./feedback/request-drafts.js";
+import type { RequestReviewDraft, ReviewDraftMutation, ReviewDraftStamp } from "./feedback/request-draft-types.js";
 import { withLedgerMutationActor } from "./ledger/mutation-history.js";
 import { withRequestOrigin } from "./request-origin.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
@@ -2236,12 +2242,19 @@ export class AuthQueue {
       const dispositions = predecessor
         ? this.validateSupersession(predecessor, request, actions, payload.superseded_action_dispositions ?? [], supersessionIdentity!)
         : new Map<number, string>();
+      const priorDrafts = predecessor ? requestOwnedDrafts(this.db, predecessor.id) : [];
+      const priorDraftStamps = canonicalJson(priorDrafts.map(({ actor_user_id, path, generation }) => ({ actor_user_id, path, generation })));
+      const carriedDrafts = predecessor && priorDrafts.some(draft => draft.text !== null)
+        ? await carryRequestDrafts(predecessor, request, priorDrafts) : [];
       let insertionQueue: { requests: AuthRequest[]; assertCurrent(): void } | undefined;
       const insertRequest = this.db.transaction(() => {
         assertSubmission();
         canonicalAuthDependencies(this.db, request.depends_on_ids ?? [], request.id);
         supersessionIdentity?.assertCurrent();
         if (predecessor) this.assertObservation(predecessor.id, predecessorObservation!);
+        if (predecessor && canonicalJson(requestOwnedDraftStamps(this.db, predecessor.id)) !== priorDraftStamps) {
+          throw new AuthQueueError("lifecycle_conflict", "The operator's review drafts changed during submission. Retry the revision.");
+        }
         if (mergeCheck.status === "clean" && payload.base_branch) {
           insertionQueue!.assertCurrent();
           const pending = insertionQueue!.requests;
@@ -2286,6 +2299,7 @@ export class AuthQueue {
         });
         this.db.prepare("INSERT INTO auth_request_responsibility (auth_request_id, owner_user_id, responsibility_session_id) VALUES (?, ?, ?)").run(request.id, actor.user_id, actor.session_id ?? null);
         insertAuthRequestActions(this.db, request, actions, now);
+        if (carriedDrafts.length) insertCarriedDrafts(this.db, request.id, carriedDrafts);
         if (payload.space_publication_id) withLedgerMutationActor({ actor_type: "mandible_user",
           attribution: { user_id: actor.user_id, evidence_method: actor.evidence_method, evidence_id: actor.evidence_id } },
           () => bindAuthPublication(this.db, request, payload.space_publication_id!));
@@ -5446,15 +5460,46 @@ export class AuthQueue {
     })();
   }
 
-  returnRequestReview(id: string, actor: AuthLifecycleActor, input: {
+  async mutateRequestReviewDraft(id: string, actor: AuthLifecycleActor, input: {
     expected_revision: number; expected_custody_generation: number; round_id: string;
-    annotation_event_ids: string[]; reason?: string;
-  }): { request: AuthRequest; submission_id: string } {
-    const result = this.db.transaction(() => {
+    path: string; expected_generation: number; mutation: ReviewDraftMutation;
+  }): Promise<RequestReviewDraft> {
+    const request = this.requirePendingReview(id);
+    this.requireRequestCustody(request, actor, input.expected_revision, input.expected_custody_generation);
+    const source = await readEditFile(request, input.path);
+    return this.db.transaction(() => {
+      const current = this.requirePendingReview(request.id);
+      this.requireRequestCustody(current, actor, input.expected_revision, input.expected_custody_generation);
+      const round = requestReviewRound(current);
+      if (round.id !== input.round_id) throw new AuthQueueError("lifecycle_conflict", "The reviewed documents changed.");
+      const saved = mutateRequestDraft(this.db, request.id, actor.user_id, input.path, input.expected_generation,
+        source?.pair.after.contents ?? null, input.mutation);
+      if (!saved.ok) throw new AuthQueueError("lifecycle_conflict", saved.reason);
+      return saved.draft;
+    })();
+  }
+
+  async returnRequestReview(id: string, actor: AuthLifecycleActor, input: {
+    expected_revision: number; expected_custody_generation: number; round_id: string;
+    annotation_event_ids: string[]; draft_snapshot?: ReviewDraftStamp[]; reason?: string;
+  }): Promise<{ request: AuthRequest; submission_id: string }> {
+    const readSnapshot = () => {
       const request = this.requirePendingReview(id);
       this.requireRequestCustody(request, actor, input.expected_revision, input.expected_custody_generation);
       const round = requestReviewRound(request);
       if (round.id !== input.round_id) throw new AuthQueueError("lifecycle_conflict", "The reviewed documents changed. Review them again.");
+      const drafts = requestDrafts(this.db, request.id, actor.user_id);
+      if (!matchesDraftSnapshot(drafts, input.draft_snapshot ?? [])) {
+        throw new AuthQueueError("lifecycle_conflict", "The review drafts changed. Review them again.");
+      }
+      return { request, round, drafts };
+    };
+    const initial = readSnapshot();
+    if (initial.drafts.some(draft => draft.text !== null)) this.requireExternalEffects("Review change-edit preparation");
+    const prepared = await prepareRequestReviewChangeEdit(this.db, initial.request, initial.drafts);
+    if (!prepared.ok) throw new AuthQueueError("lifecycle_conflict", prepared.reason);
+    const result = this.db.transaction(() => {
+      const { request, round } = readSnapshot();
       ensureRequestReviewRound(this.db, round);
       const now = this.now();
       const frozen = freezeReviewSubmission(this.db, { roundId: round.id, owner: round.owner, actorUserId: actor.user_id }, {
@@ -5462,6 +5507,7 @@ export class AuthQueue {
         answers: [],
         comparisonTargets: round.bindings.map(binding => ({ document_binding_id: binding.id, target: binding.comparison_target })),
         supersedesSubmissionId: null,
+        changeEdit: prepared.changeEdit,
       }, now);
       if (!frozen.ok) throw new AuthQueueError("lifecycle_conflict", `The return could not be frozen (${frozen.reason}).`);
       const priorSnapshot = this.currentLifecycleSnapshot(request.id);

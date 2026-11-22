@@ -1,4 +1,6 @@
 import { computeAuthMergeReviewMetadata } from "../src/auth-context.js";
+import { chmodSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { RequestReview } from "../src/feedback/request-review.js";
 import { createOutcomeReporter } from "../src/notices/report.js";
 import { normalizeAmbientProviderIdentity } from "../src/ambient-provider-identity.js";
@@ -85,7 +87,7 @@ function requesterFixture(root = process.cwd(), exactReviewRequester?: string) {
 
 describe("auth request immutable lifecycle", () => {
 
-  it("carries returned comment threads through replacement and compares pinned heads", async () => {
+  it("returns exact edits and carries drafts and comment threads across pinned revisions", async () => {
     const repo = createAuthCheckRepo();
     const session = "agent:claude:review-requester:review-requester";
     const { db, queue, operator, credential, submit, operatorSigning, reviewRequester, reviewCredential } = requesterFixture(repo, session);
@@ -100,7 +102,16 @@ describe("auth request immutable lifecycle", () => {
     writeFile(repo, "notes.md", "# Notes\n\nReview the base note.\n");
     git(repo, ["add", "notes.md"]);
     git(repo, ["commit", "-m", "A reviewable original note"]);
-    commitOnBranch(repo, branch, { "notes.md": "# Notes\n\nReview the proposed note.\n", "script.txt": "a\ncheck this line\nz\n" });
+    const notesHead = "# Notes\r\n\nReview the proposed note.\r\n";
+    const scriptHead = "a\r\ncheck this line\nseparator\r\nanother separator\nz\r\n";
+    const notesEdit = "# Notes\r\n\nReview the operator note.\r\nLast line";
+    const scriptEdit = scriptHead.replace("z\r\n", "operator check\r\n");
+    commitOnBranch(repo, branch, { "notes.md": notesHead, "script.txt": scriptHead });
+    git(repo, ["checkout", branch]);
+    chmodSync(join(repo, "script.txt"), 0o755);
+    git(repo, ["add", "script.txt"]);
+    git(repo, ["commit", "-m", "Make the script executable"]);
+    git(repo, ["checkout", "main"]);
     const candidate = async () => {
       const metadata = await computeAuthMergeReviewMetadata(repo, "main", branch);
       return { cwd: repo, target_repo_root: repo, merge_head_sha: metadata.changeReport.comparison.head_sha, change_report: metadata.changeReport };
@@ -145,8 +156,22 @@ describe("auth request immutable lifecycle", () => {
       const code = await add(lines.id, 1, 2, "check this line\n", "Keep this check visible.");
       expect(markdown.status, JSON.stringify(markdown.body)).toBe(201);
       expect(code.status, JSON.stringify(code.body)).toBe(201);
-      const annotation_event_ids = (await read(request.id)).annotations.map(annotation => annotation.annotation_event_id);
-      const returnBody = { ...readBefore.precondition, round_id: readBefore.round.id, annotation_event_ids, reason: "Clarify the note." };
+      const save = (path: string, expected_generation: number, mutation: { operation: "save"; text: string } | { operation: "revert" }) =>
+        invoke("POST", `${base}/review/drafts`, {
+          ...readBefore.precondition, round_id: readBefore.round.id, path, expected_generation, mutation,
+        });
+      const notesDraft = await save("notes.md", 0, { operation: "save", text: notesEdit });
+      expect(notesDraft.status, JSON.stringify(notesDraft.body)).toBe(200);
+      expect((await save("notes.md", 0, { operation: "save", text: "Stale writer" })).status).toBe(409);
+      expect((await save("notes.md", 1, { operation: "revert" })).body).toMatchObject({ generation: 2, text: null });
+      expect((await save("notes.md", 0, { operation: "save", text: "Stale writer after revert" })).status).toBe(409);
+      expect((await save("notes.md", 2, { operation: "save", text: notesEdit })).status).toBe(200);
+      expect((await save("script.txt", 0, { operation: "save", text: scriptEdit })).status).toBe(200);
+      const reviewed = await read(request.id);
+      const annotation_event_ids = reviewed.annotations.map(annotation => annotation.annotation_event_id);
+      const draft_snapshot = reviewed.drafts.map(({ path, generation }) => ({ path, generation }));
+      const returnBody = { ...readBefore.precondition, round_id: readBefore.round.id, annotation_event_ids, draft_snapshot, reason: "Clarify the note." };
+      expect((await invoke("POST", `${base}/return`, { ...returnBody, draft_snapshot: [] })).status).toBe(409);
       const staleReturn = await invoke("POST", `${base}/return`, { ...returnBody, expected_custody_generation: readBefore.precondition.expected_custody_generation - 1 });
       expect(staleReturn.status).toBe(409);
       let entered!: () => void;
@@ -183,10 +208,23 @@ describe("auth request immutable lifecycle", () => {
       expect(first.stdout).toContain(`Comment ${commentId.slice(0, 8)} [open]`);
       const reply = await requestCommand(["reply", request.id.slice(0, 8), commentId.slice(0, 8), "--message", "I will remove the outdated check."]);
       expect(reply.status, reply.stderr).toBe(0);
+      expect(first.stdout).toContain("+Review the operator note.");
+      expect(first.stdout).toContain("+operator check");
+      const ref = /^Git ref (refs\/mandible\/change-edits\/\S+)$/m.exec(first.stdout)?.[1];
+      expect(ref).toBeDefined();
+      const requester = createAuthCheckRepo();
+      git(requester, ["fetch", repo, ref!]);
+      expect(git(requester, ["rev-parse", "FETCH_HEAD^"])).toBe(request.merge_head_sha);
+      expect(git(requester, ["diff", "--name-only", "FETCH_HEAD^", "FETCH_HEAD"])).toBe("notes.md\nscript.txt");
+      expect(git(requester, ["ls-tree", "FETCH_HEAD", "script.txt"])).toMatch(/^100755 blob /);
+      git(requester, ["checkout", "--detach", "FETCH_HEAD"]);
+      expect(readFileSync(join(requester, "notes.md"))).toEqual(Buffer.from(notesEdit));
+      expect(readFileSync(join(requester, "script.txt"))).toEqual(Buffer.from(scriptEdit));
 
       git(repo, ["checkout", branch]);
-      writeFile(repo, "script.txt", "first line\na\nz\n");
-      git(repo, ["add", "script.txt"]);
+      writeFile(repo, "notes.md", notesHead.replace("proposed", "successor"));
+      writeFile(repo, "script.txt", `first line\n${scriptHead.replace("check this line\n", "")}`);
+      git(repo, ["add", "notes.md", "script.txt"]);
       git(repo, ["commit", "-m", "Address the review"]);
       git(repo, ["checkout", "main"]);
       const replacement = await submit({ ...await candidate(), supersedes_request_id: request.id,
@@ -211,11 +249,18 @@ describe("auth request immutable lifecycle", () => {
         { operation: "address", actor_role: "requester", request_ref: next.versions.at(-1)?.short_id },
         { operation: "resolve", actor_role: "operator" },
       ] });
+      const conflict = next.drafts.find(draft => draft.path === "notes.md");
+      expect(conflict).toMatchObject({ conflict: "overlap" });
+      expect(conflict?.text).toMatch(/<<<<<<< Requester[\s\S]*Review the successor note\.[\s\S]*Review the operator note\./);
+      expect(next.drafts.find(draft => draft.path === "script.txt")).toMatchObject({
+        conflict: null, text: `first line\n${scriptEdit.replace("check this line\n", "")}`,
+      });
       const compared = await invoke("GET", `/api/auth/request/${replacement.id}/review/changes?against=${request.id}`);
       expect(compared.status, JSON.stringify(compared.body)).toBe(200);
       expect(compared.body).toMatchObject({
         comparison: { merge_base_sha: request.merge_head_sha, head_sha: replacement.merge_head_sha },
-        files: [{ old_path: "script.txt", new_path: "script.txt", additions: 1, deletions: 1 }],
+        files: [{ old_path: "notes.md", new_path: "notes.md", additions: 1, deletions: 1 },
+          { old_path: "script.txt", new_path: "script.txt", additions: 1, deletions: 1 }],
       });
       const second = await command(request.id);
       expect(second.status, second.stderr).toBe(0);
@@ -231,6 +276,7 @@ describe("auth request immutable lifecycle", () => {
       expect(historicalThread?.resolved).toBe(false);
       expect(historicalThread?.events.at(-1)).toMatchObject({ operation: "reply", actor_role: "operator",
         body: "Please explain the replacement check." });
+      expect(second.stdout).toContain(ref);
 
       const unbound = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo revise", title: "Empty review", session_id: session }, operator.id);
       const unboundUrl = `/api/auth/request/${unbound.id}`;

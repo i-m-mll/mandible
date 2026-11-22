@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import {
+  VirtualizedFile,
   VirtualizedFileDiff,
   Virtualizer,
   type FileContents,
@@ -7,6 +8,7 @@ import {
   type FileDiffOptions,
   type SelectedLineRange,
 } from "@pierre/diffs";
+import { Editor } from "@pierre/diffs/edit";
 import { getOrCreateWorkerPoolSingleton, terminateWorkerPoolSingleton } from "@pierre/diffs/worker";
 import workerAsset from "@pierre/diffs/worker/worker-portable.js?url";
 
@@ -23,14 +25,19 @@ export type PierreDiffInput =
   | { kind: "patch"; file: FileDiffMetadata };
 
 type PierreFileDiffProps = {
-  input: PierreDiffInput;
+  input: PierreDiffInput | { kind: "file"; file: FileContents };
   mode: DiffMode;
   wrap?: boolean;
   wholeFile: boolean;
   ariaLabel: string;
   lineTarget?: DiffLineRange & { token: string };
   onLineSelection?: (range: DiffLineRange | null) => void;
+  onEditChange?: (text: string) => void;
 };
+
+type SurfaceOptions = Pick<FileDiffOptions<undefined, undefined>,
+  "overflow" | "lineDiffType" | "diffStyle" | "themeType" | "expandUnchanged" |
+  "disableFileHeader" | "enableLineSelection" | "onLineSelected">;
 
 let activeDiffs = 0;
 
@@ -61,15 +68,17 @@ function toFileRange(range: SelectedLineRange | null): DiffLineRange | null {
   };
 }
 
-export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel, onLineSelection, lineTarget }: PierreFileDiffProps) {
+export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel, onLineSelection, lineTarget, onEditChange }: PierreFileDiffProps) {
   const scroll = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const [workerError, setWorkerError] = useState(false);
-  const [rendered, setRendered] = useState<PierreDiffInput>();
-  const instance = useRef<VirtualizedFileDiff>();
-  const options = useRef<FileDiffOptions<undefined, undefined>>({});
+  const [rendered, setRendered] = useState<PierreFileDiffProps["input"]>();
+  const instance = useRef<VirtualizedFile | VirtualizedFileDiff>();
+  const options = useRef<SurfaceOptions>({});
   const selection = useRef(onLineSelection);
   selection.current = onLineSelection;
+  const onEdit = useRef(onEditChange);
+  onEdit.current = onEditChange;
 
   options.current = {
     overflow: wrap ? "wrap" : "scroll",
@@ -78,7 +87,7 @@ export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel,
     themeType: document.documentElement.dataset.theme === "light" ? "light" : "dark",
     expandUnchanged: wholeFile || Boolean(lineTarget),
     disableFileHeader: true,
-    enableLineSelection: true,
+    enableLineSelection: input.kind !== "file",
     onLineSelected: (range) => selection.current?.(toFileRange(range)),
   };
 
@@ -90,9 +99,14 @@ export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel,
     const worker = acquireWorker();
     const virtualizer = new Virtualizer();
     virtualizer.setup(root, target);
-    const renderer = new VirtualizedFileDiff(options.current, virtualizer, undefined, worker.pool);
+    const surface = input.kind === "file"
+      ? { kind: "file" as const, renderer: new VirtualizedFile(options.current, virtualizer, undefined, worker.pool), props: { file: input.file } }
+      : { kind: "diff" as const, renderer: new VirtualizedFileDiff(options.current, virtualizer, undefined, worker.pool),
+        props: input.kind === "contents" ? { oldFile: input.before, newFile: input.after } : { fileDiff: input.file } };
+    const { renderer } = surface;
     instance.current = renderer;
     let disposed = false;
+    let stopEditing: (() => void) | undefined;
     const theme = () => {
       const themeType = document.documentElement.dataset.theme === "light" ? "light" : "dark";
       options.current.themeType = themeType;
@@ -102,12 +116,13 @@ export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel,
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     void worker.pool.initialize().then(() => {
       if (disposed) return;
-      renderer.render({
-        containerWrapper: target,
-        ...(input.kind === "contents"
-          ? { oldFile: input.before, newFile: input.after }
-          : { fileDiff: input.file }),
-      });
+      if (surface.kind === "file") {
+        surface.renderer.render({ containerWrapper: target, ...surface.props });
+        const editor = new Editor("file", { onChange: event => onEdit.current?.(event.file.contents) });
+        stopEditing = editor.edit(surface.renderer);
+      } else {
+        surface.renderer.render({ containerWrapper: target, ...surface.props });
+      }
       theme();
       setRendered(input);
     }).catch(() => { if (!disposed) setWorkerError(true); });
@@ -116,6 +131,7 @@ export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel,
       disposed = true;
       observer.disconnect();
       instance.current = undefined;
+      stopEditing?.();
       renderer.cleanUp();
       virtualizer.cleanUp();
       worker.release();
@@ -127,7 +143,7 @@ export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel,
   }, [mode, wrap, wholeFile, Boolean(lineTarget)]);
 
   useLayoutEffect(() => {
-    if (!lineTarget || rendered !== input || !instance.current || !scroll.current) return;
+    if (!lineTarget || rendered !== input || !(instance.current instanceof VirtualizedFileDiff) || !scroll.current) return;
     const renderer = instance.current;
     const side = lineTarget.side === "before" ? "deletions" : "additions";
     renderer.setSelectedLines({ side, start: lineTarget.startLine, end: lineTarget.endLine }, { notify: false });
@@ -138,7 +154,7 @@ export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel,
   return (
     <div class="pierre-file-diff" ref={scroll} role="region" aria-label={ariaLabel} tabIndex={0} style={{ overflow: "auto", maxHeight: "65vh" }}>
       <div ref={content} />
-      {workerError && <div role="alert">Diff highlighting unavailable</div>}
+      {workerError && <div role="alert">{input.kind === "file" ? "File editor unavailable" : "Diff highlighting unavailable"}</div>}
     </div>
   );
 }

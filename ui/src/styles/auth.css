@@ -2066,3 +2066,8 @@
 .auth-review__dialog button {
   justify-self: end;
 }
+
+.auth-review__detached-draft {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

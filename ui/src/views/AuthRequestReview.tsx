@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
+import { useAuthReviewDrafts, type AuthReviewFileDraft } from './useAuthReviewDrafts';
+import type { ChangeTextFileView } from '../components/ChangeList';
+import { lazy, Suspense } from 'preact/compat';
+import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import type { RequestReviewComment } from '../../../src/feedback/request-review';
 import type { ReviewRange, ReviewThreadMutation } from '../../../src/feedback/review-types';
 import type { AuthChangeReport, DiffFilePair } from '../../../src/contracts';
@@ -77,6 +81,7 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
   const available = status === 'pending' && data?.status === 'pending' && data.precondition.expected_revision !== null && canWrite && !against;
   const threadAvailable = Boolean(canWrite && data?.round.owner.auth_request_id === id && data.status === status
     && data.precondition.expected_revision !== null && (status === 'pending' || status === 'returned'));
+  const drafts = useAuthReviewDrafts(id, data, Boolean(available));
   const openDecision = (next: ReviewDecision) => {
     setDecision(next);
     setText('');
@@ -107,7 +112,7 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
   const submitDecision = () => {
     if (decision === 'return' && available && data) {
       void act(async () => {
-        await returnAuthReview(id, data, text);
+        await returnAuthReview(id, data, text, await drafts.flush());
         setData(old => old && { ...old, status: 'returned' });
         await refresh().catch(() => undefined);
         if (onReturned) void onReturned(new AbortController().signal).catch(() => undefined);
@@ -143,9 +148,10 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
       && (range ? item.source.side === range.side : item.id === selection?.bindingId));
     select(binding, range && quote ? { start_offset: range.startLine - 1, end_offset: range.endLine, quote } : null);
   };
-  return { data, navigation, setNavigation, commentsOpen, setCommentsOpen, available, against, compare,
+  return { data, navigation, setNavigation, commentsOpen, setCommentsOpen, available, against, compare, drafts,
     comparison: comparison?.against === against ? comparison.report : undefined, comparisonError,
     openDecision, selection, lineSelection, markdownSelection, remove, busy, error,
+    clearSelection: () => setSelection(null),
     comment: () => { setEditor(selection); setText(''); setError(null); },
     threadAvailable, replyTarget, changeThread,
     reply: (comment: RequestReviewComment) => { setReplyTarget(comment); setText(''); setError(null); },
@@ -306,9 +312,95 @@ export function AuthReviewDialog({ review }: { review: AuthRequestReviewState })
         <textarea value={review.text} rows={4} onInput={event => review.setText(event.currentTarget.value)} />
       </label>
       {review.error && <div role="alert">{review.error}</div>}
-      <button type="submit" className="btn" disabled={review.busy || Boolean((review.editor || review.replyTarget) && !review.text.trim())}>
-        {review.replyTarget ? 'Reply' : review.editor ? 'Save comment' : review.decision === 'return' ? 'Return' : 'Reject'}
+      <button type="submit" className="btn" disabled={review.busy
+        || (review.decision === 'return' && review.drafts.hasConflicts)
+        || Boolean((review.editor || review.replyTarget) && !review.text.trim())}>
+        {review.replyTarget ? 'Reply' : review.editor ? 'Save comment'
+          : review.decision === 'return' ? (review.drafts.hasEdits ? 'Return with edits' : 'Return') : 'Reject'}
       </button>
     </form>
   </DetailPaneModal>;
+}
+
+const PierreDraftDiff = lazy(() => import('../components/PierreFileDiff').then(module => ({ default: module.PierreFileDiff })));
+type TextPair = Extract<DiffFilePair, { kind: 'text' }>;
+
+function PierreReviewDraft({ draft, pair, view, editable }: {
+  draft: AuthReviewFileDraft; pair: TextPair; view: ChangeTextFileView; editable: boolean;
+}) {
+  const [working] = useState(() => ({ ...pair.after, contents: draft.source }));
+  const [input] = useState(() => editable ? { kind: 'file' as const, file: working }
+    : { kind: 'contents' as const, before: pair.after, after: working });
+  return <div inert={editable && !draft.writable}>
+    <Suspense fallback={null}>
+      <PierreDraftDiff input={input} mode={view.mode} wrap={view.wrap} wholeFile
+        ariaLabel={`Review draft for ${draft.path}`} onEditChange={editable ? draft.change : undefined} />
+    </Suspense>
+  </div>;
+}
+
+export function AuthReviewDraftControls({ draft, available }: { draft: AuthReviewFileDraft; available: boolean }) {
+  return <>
+    <div className="auth-review__side" role="group" aria-label={`Draft actions for ${draft.path}`}>
+      {available && draft.mergeConflict !== 'detached' && <ContextualAction
+        aria-label={draft.editing ? 'Close review editor' : 'Edit proposed text'}
+        title={draft.editing ? 'Close review editor' : 'Edit proposed text'}
+        aria-pressed={draft.editing} disabled={draft.busy} onClick={draft.toggle}>
+        <Icon name={draft.editing ? 'markRead' : 'toolEdit'} />
+      </ContextualAction>}
+      {available && draft.edited && <ContextualAction aria-label={draft.mergeConflict === 'detached' ? 'Discard draft' : 'Revert to proposed text'}
+        title={draft.mergeConflict === 'detached' ? 'Discard draft' : 'Revert to proposed text'}
+        disabled={draft.busy || draft.writeConflict} onClick={draft.revert}>
+        <Icon name="history" />
+      </ContextualAction>}
+      {draft.mergeConflict === 'overlap' && available && <button type="button" className="btn"
+        disabled={draft.busy || draft.writeConflict} onClick={draft.resolve}>Resolve conflict</button>}
+    </div>
+    {draft.mergeConflict && <DetailPaneNotice density="compact" severity="info">
+      <Icon name="warning" /> {draft.mergeConflict === 'detached' ? 'Detached review draft' : 'Review draft conflict'}
+    </DetailPaneNotice>}
+    {draft.error && <DetailPaneNotice density="compact" severity="error" title={draft.path}
+      actions={draft.writeConflict && available ? <div className="auth-review__side">
+        <button type="button" className="btn" onClick={draft.acceptRemote}>Use saved draft</button>
+        <button type="button" className="btn" onClick={draft.keepLocal}>Keep local draft</button>
+      </div> : null}>
+      {draft.error}
+    </DetailPaneNotice>}
+  </>;
+}
+
+export function AuthReviewTextFile({ review, pair, index, view }: {
+  review: AuthRequestReviewState; pair: TextPair; index: number; view: ChangeTextFileView;
+}) {
+  const markdown = /\.(?:md|markdown)$/i.test(pair.after.name);
+  const pinned = markdown ? <AuthReviewMarkdownChange review={review} pair={pair} index={index} wholeFile={view.wholeFile} /> : view.defaultContent;
+  const draft = !review.against ? review.drafts.forFile(index, pair) : null;
+  if (!draft) return <>{pinned}</>;
+  const label = `Review draft for ${draft.path}`;
+  const target = review.navigation?.comment.source;
+  const jump = target?.kind === 'request_file' && target.file_index === index;
+  return <>
+    <AuthReviewDraftControls draft={{ ...draft, toggle: () => {
+      review.setNavigation(null);
+      review.clearSelection();
+      draft.toggle();
+    } }} available={Boolean(review.available)} />
+    {draft.editing && !jump ? (markdown
+      ? <MarkdownDocument value={draft.source} readOnly={!draft.writable} comparison={pair.after.contents}
+        comparisonLayout={view.wholeFile ? 'full-document' : undefined} ariaLabel={label} onChange={draft.change} />
+      : <PierreReviewDraft key={`${draft.externalVersion}:${Boolean(review.available)}`}
+        editable={Boolean(review.available)} draft={draft} pair={pair} view={view} />) : pinned}
+  </>;
+}
+
+function DetachedDraft({ draft, available }: { draft: AuthReviewFileDraft; available: boolean }) {
+  const [expanded, setExpanded] = useState(true);
+  return <CollapsiblePanel title={draft.path} expanded={expanded} onExpandedChange={setExpanded}>
+    <AuthReviewDraftControls draft={draft} available={available} />
+    <pre className="auth-review__detached-draft">{draft.source}</pre>
+  </CollapsiblePanel>;
+}
+
+export function AuthReviewDetachedDrafts({ review }: { review: AuthRequestReviewState }) {
+  return <>{review.drafts.detached.map(draft => <DetachedDraft key={draft.path} draft={draft} available={Boolean(review.available)} />)}</>;
 }
