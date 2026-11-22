@@ -237,7 +237,16 @@ describe.sequential("trash custody", () => {
     expect((await listTrashEntries(db))).toEqual([]);
   });
 
+  /** Give `feature/trash` a commit of its own and land it on main, so that the branch is merged. */
+  function landFeatureCommit(): void {
+    fs.writeFileSync(path.join(featureWorktree, "feature.txt"), "feature\n");
+    git(featureWorktree, ["add", "feature.txt"]);
+    git(featureWorktree, ["commit", "-m", "feature"]);
+    git(repoRoot, ["merge", "--ff-only", "feature/trash"]);
+  }
+
   it("removes a proven-merged worktree holding only rebuildable ignored files without custody", async () => {
+    landFeatureCommit();
     fs.appendFileSync(path.join(repoRoot, ".git", "info", "exclude"), "node_modules/\nshared\n");
     fs.mkdirSync(path.join(featureWorktree, "node_modules", "pkg"), { recursive: true });
     fs.writeFileSync(path.join(featureWorktree, "node_modules", "pkg", "index.js"), "x");
@@ -493,6 +502,7 @@ describe.sequential("trash custody", () => {
   });
 
   it("preserves an ancestry-merged preview until its owned lifecycle is finalized", async () => {
+    landFeatureCommit();
     const { root, metadata } = previewPaths("feature/trash");
     fs.mkdirSync(root, { recursive: true });
     const ownership = createOwnedRun({ root, instanceId: "preview-fixture", project: projectId, workUnit: "resolved-unit",
@@ -562,6 +572,7 @@ describe.sequential("trash custody", () => {
   });
 
   it("trashes and restores a dirty worktree with ignored custody without blocking the event loop on Git", async () => {
+    landFeatureCommit();
     fs.writeFileSync(path.join(featureWorktree, ".gitignore"), ".env\n");
     fs.writeFileSync(path.join(featureWorktree, ".env"), "SECRET=1\n");
     fs.writeFileSync(path.join(featureWorktree, "tracked.txt"), "dirty tracked\n");

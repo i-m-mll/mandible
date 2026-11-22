@@ -42,7 +42,7 @@ export async function tearDownDeclaredPreview(
   if (!recordedPreview(branch)) return { state: "applied", detail: `No preview on ${branch}` };
   if (await branchExists(landing.checkoutRoot, branch)) {
     try {
-      await proveMergedInto(landing.checkoutRoot, `refs/heads/${branch}`, landing.target);
+      await proveMergedInto(landing.checkoutRoot, branch, `refs/heads/${branch}`, landing.target);
     } catch (error) {
       if (error instanceof TrashServiceError && error.code === "branch_not_merged") return { state: "failed", detail: TEARDOWN_NOT_MERGED };
       throw error;
