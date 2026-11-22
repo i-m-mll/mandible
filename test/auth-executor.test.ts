@@ -203,9 +203,9 @@ describe("executeAuthCommand", () => {
       res.end(JSON.stringify({ issue_closures: ["e523950"] }));
     });
     try {
-      for (const name of ["src", "scripts", "bin", "stale", "old-checkout"]) fs.mkdirSync(path.join(root, name));
+      for (const name of ["src", "bin", "stale", "old-checkout"]) fs.mkdirSync(path.join(root, name));
       fs.copyFileSync(path.resolve("src/auth-executor.ts"), path.join(root, "src/auth-executor.ts"));
-      fs.copyFileSync(path.resolve("scripts/process-group-supervisor.mjs"), path.join(root, "scripts/process-group-supervisor.mjs"));
+      fs.symlinkSync(path.resolve("scripts"), path.join(root, "scripts"), "dir");
       fs.writeFileSync(path.join(root, "stale/mandible"), '#!/bin/bash\necho stale-shim-selected >&2\nexit 91\n', { mode: 0o700 });
       fs.writeFileSync(path.join(root, "bin/mandible"), [
         "#!/usr/bin/env bash", "set -euo pipefail",
