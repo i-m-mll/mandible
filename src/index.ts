@@ -853,6 +853,7 @@ function isMain(): boolean {
 function daemonBootTrace(startupEpoch: string): (phase: string) => void {
   if (!isMain()) return () => {};
   const observedAt = Date.now();
+  const observedTick = performance.now();
   const timestamp = (value: string | undefined) => {
     const number = Number(value);
     return Number.isFinite(number) && number > 0 && number <= observedAt ? number : null;
@@ -864,15 +865,16 @@ function daemonBootTrace(startupEpoch: string): (phase: string) => void {
   ] as const;
   const startedAt = timestamp(process.env.MANDIBLE_SERVICE_PROCESS_STARTED_MS)
     ?? launcherPhases[0][1] ?? performance.timeOrigin;
-  const emit = (phase: string, time: number) => process.stderr.write(`${JSON.stringify({
+  const elapsedAtObservation = Math.max(0, observedAt - startedAt);
+  const emit = (phase: string, time: number, elapsedMs = time - startedAt) => process.stderr.write(`${JSON.stringify({
     level: "info", event: "daemon_boot_phase", phase, time: new Date(time).toISOString(),
-    elapsed_ms: time - startedAt, pid: process.pid, startup_epoch: startupEpoch,
+    elapsed_ms: elapsedMs, pid: process.pid, startup_epoch: startupEpoch,
   })}\n`);
   emit("process_started", startedAt);
   for (const [phase, time] of launcherPhases) {
-    if (time !== null) emit(phase, time);
+    if (time !== null && time >= startedAt) emit(phase, time);
   }
-  return (phase) => { emit(phase, Date.now()); };
+  return (phase) => { emit(phase, Date.now(), elapsedAtObservation + performance.now() - observedTick); };
 }
 
 function preflightDaemon(database: string): void {
