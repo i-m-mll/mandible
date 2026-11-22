@@ -98,7 +98,7 @@ export interface RuntimeHandoffClient {
   runtimeHandoffDrainIdentity?(journal: RuntimeHandoffJournal): string | null;
   acknowledgeRuntimeHandoff(binding: RuntimePublicationBinding, options?: { verifiedReceipt?: unknown; acceptedReceiptDigest?: string }): Promise<unknown>;
   runtimeHandoffNeedsAcknowledgment?(journal: RuntimeHandoffJournal): boolean | Promise<boolean>;
-  scheduleRuntimeHandoffCleanup?(journal: RuntimeHandoffJournal): Promise<{ cleanup: 'complete' } | { cleanup: 'pending'; reason: string; wake: string }>;
+  scheduleRuntimeHandoffCleanup?(journal: RuntimeHandoffJournal): Promise<{ cleanup: 'complete' } | { cleanup: 'pending'; reason: string; wake: string; expected?: boolean }>;
   runtimeHandoffCleanupWake?(journal: RuntimeHandoffJournal): string;
   closeQuiescentRuntimeHandoff?(home: string, options: { actor: unknown }): Promise<{
     outcome: 'released' | 'blocked' | 'none'; requestId?: string; executionId?: string; reason?: string }>;
@@ -308,7 +308,7 @@ export class AuthHookManager {
    * and the cleanup epoch it saw. A cleanup runs again only when its wake key
    * changes, another cleanup changes state (a new epoch), or a caller asks.
    */
-  private readonly cleanupWaits = new Map<string, { wake: string; epoch: number; error: Error }>();
+  private readonly cleanupWaits = new Map<string, { wake: string; epoch: number; error?: Error }>();
   private readonly cleanupQueued = new Set<string>();
   private cleanupEpoch = 0;
   private cleanupQueue: Promise<void> = Promise.resolve();
@@ -453,6 +453,13 @@ export class AuthHookManager {
     return this.hasDurableTables() && this.listRuns(requestId).some(run => this.hasRuntimeHandoff(run));
   }
 
+  async runtimeReceiptAccepted(requestId: string): Promise<boolean> {
+    const run = this.getRun(requestId, MANDIBLE_REBUILD_HOOK_ID);
+    if (!run?.runtime_delivery || run.state !== "complete") return false;
+    const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(new URL('../scripts/runtime-handoff.mjs', import.meta.url).href);
+    return runtimeObservationAcceptance(run, await this.readDeliveryJournal(runtime, run)) === "accepted";
+  }
+
   async admittedDrainIdentity(requestId: string): Promise<string | null> {
     for (const run of this.listRuns(requestId)) {
       if (!this.hasRuntimeHandoff(run)) continue;
@@ -503,7 +510,7 @@ export class AuthHookManager {
           return;
         }
         if (result.wake !== before) this.cleanupEpoch += 1;
-        this.cleanupWaits.set(digest, { wake: result.wake, epoch: this.cleanupEpoch, error: new Error(result.reason) });
+        this.cleanupWaits.set(digest, { wake: result.wake, epoch: this.cleanupEpoch, error: result.expected ? undefined : new Error(result.reason) });
       } catch (thrown) {
         const error = thrown instanceof Error ? thrown : new Error(String(thrown));
         const busy = (error as { exitCode?: unknown }).exitCode === 75;
@@ -664,6 +671,10 @@ export class AuthHookManager {
   private matchingHooksForRequest(request: AuthRequest): AuthHook[] {
     return this.findMatchingHooks(request.repo, request.type)
       .filter(hook => hook.id !== MANDIBLE_REBUILD_HOOK_ID || authRequestChangesBuildInputs(request));
+  }
+
+  configuredApprovalHooks(request: AuthRequest) {
+    return this.matchingHooksForRequest(request).map(({ id, command, required, position }) => ({ id, command, required, position }));
   }
 
   // --- Durable execution state ------------------------------------------------

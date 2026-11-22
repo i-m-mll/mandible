@@ -1790,6 +1790,8 @@ dependencies = [
  "objc2-foundation",
  "objc2-web-kit",
  "reqwest",
+ "rustls-pki-types",
+ "security-framework",
  "serde",
  "serde_json",
  "sha2",

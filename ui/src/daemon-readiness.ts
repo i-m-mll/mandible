@@ -1,196 +1,129 @@
-// Bug: 645f8a8 — daemon readiness / rebuild-splash decision logic.
-//
-// During a Mandible self-merge the daemon exits and is respawned with new
-// code. The UI shows a full-page splash and must NOT drop it (and must NOT let
-// the user fire auth/dashboard mutations) until the *restarted* daemon reports
-// that it is ready for normal mutations — not merely that an HTTP listener is
-// alive.
-//
-// A page can enter this state two ways:
-//  1. It was open when the merge happened and received the `mandible:rebuilding`
-//     SSE event.
-//  2. It was (re)loaded mid-rebuild or mid-startup and missed the event — the
-//     mount probe below detects the not-ready daemon from `/api/health`.
-//
-// This module is intentionally free of UI/runtime dependencies so the decision
-// rules can be unit-tested directly.
+import type { HealthResponse } from '../../src/types';
 
-/** The subset of `/api/health` the splash decision depends on. */
-export interface DaemonHealthSnapshot {
-  status?: string;
-  /** Old daemon is shutting down for a self-merge rebuild. */
-  rebuilding?: boolean;
-  /** Issue a09b4d2 — a merged self-update whose rebuild or runtime handoff failed. */
-  rebuild_failure?: { message: string };
-  /**
-   * Lifecycle-owned readiness. true only once critical startup work is done and
-   * normal dashboard mutations are safe. An older daemon may omit this; a
-   * missing value is treated as "not ready" so the splash errs on the safe side.
-   */
-  ready?: boolean;
-  /** false while the first deferred startup reconciliation is still running. */
-  warm?: boolean;
-  startup_epoch?: string;
-  startup_commit?: {
-    hash?: string;
+export type DaemonHealthSnapshot = Partial<HealthResponse>;
+
+export type DaemonOutage = {
+  startedAtMs: number;
+  startupEpoch?: string;
+  requestId?: string;
+};
+
+export type DaemonConnection =
+  | { phase: 'starting' }
+  | { phase: 'ready'; health: DaemonHealthSnapshot }
+  | { phase: 'outage'; outage: DaemonOutage };
+
+type MonitorOptions = {
+  instanceId: string | undefined;
+  assetRevision: string | undefined;
+  readHealth(signal: AbortSignal): Promise<DaemonHealthSnapshot | null>;
+  onConnection(connection: DaemonConnection): void;
+  reload(outage: DaemonOutage | undefined): void;
+  initialOutage?: DaemonOutage;
+};
+
+const HEALTHY_POLL_MS = 5_000;
+const FIRST_RETRY_MS = 100;
+const MAX_RETRY_MS = 750;
+const PROBE_TIMEOUT_MS = 1_000;
+export const OUTAGE_INDICATOR_DELAY_MS = 700;
+
+/** One probe at a time. SSE supplies the exit edge and wakes the health probe on loss or reconnection. */
+export function monitorDaemonConnection({
+  instanceId, assetRevision, readHealth, onConnection, reload, initialOutage,
+}: MonitorOptions) {
+  let expectedInstance = instanceId;
+  let outage = initialOutage;
+  let readyEpoch: string | undefined;
+  let hasServed = false;
+  let transportDown = false;
+  let exitingEpoch: string | undefined;
+  let retryMs = FIRST_RETRY_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let active: AbortController | undefined;
+  let wakePending = false;
+  let stopped = false;
+
+  function enterOutage(requestId?: string) {
+    if (!hasServed || outage) return;
+    outage = { startedAtMs: Date.now(), startupEpoch: readyEpoch, requestId };
+    onConnection({ phase: 'outage', outage });
+  }
+
+  function schedule(delay: number) {
+    clearTimeout(timer);
+    timer = setTimeout(() => void probe(), delay);
+  }
+
+  async function probe() {
+    if (stopped || active) return;
+    wakePending = false;
+    const request = new AbortController();
+    active = request;
+    const timeout = setTimeout(() => request.abort(), PROBE_TIMEOUT_MS);
+    let health: DaemonHealthSnapshot | null;
+    try {
+      health = await readHealth(request.signal);
+    } catch {
+      health = null;
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (stopped || active !== request) return;
+    active = undefined;
+
+    const matched = health?.status === 'ok' && (!expectedInstance || expectedInstance === health.instance?.instance_id)
+      ? health : null;
+    if (matched?.ready === true && (!exitingEpoch || matched.startup_epoch !== exitingEpoch)) {
+      if (assetRevision && matched.ui_asset_revision && matched.ui_asset_revision !== assetRevision) {
+        stop();
+        reload(outage);
+        return;
+      }
+      expectedInstance ??= matched.instance?.instance_id;
+      readyEpoch = matched.startup_epoch;
+      exitingEpoch = undefined;
+      hasServed = true;
+      outage = undefined;
+      retryMs = FIRST_RETRY_MS;
+      onConnection({ phase: 'ready', health: matched });
+      schedule(wakePending ? 0 : HEALTHY_POLL_MS);
+      return;
+    }
+
+    if (matched?.ready === false || (!matched && transportDown)) enterOutage();
+    schedule(wakePending ? 0 : retryMs);
+    retryMs = Math.min(MAX_RETRY_MS, retryMs * 2);
+  }
+
+  function wake() {
+    if (stopped) return;
+    if (active) wakePending = true;
+    else schedule(0);
+  }
+
+  function stop() {
+    stopped = true;
+    clearTimeout(timer);
+    active?.abort();
+  }
+
+  void probe();
+  return {
+    wake,
+    stop,
+    transport(state: 'open' | 'down') {
+      transportDown = state === 'down';
+      wake();
+    },
+    shuttingDown(requestId: string, startupEpoch?: string) {
+      if (stopped || (startupEpoch && readyEpoch && startupEpoch !== readyEpoch)) return;
+      exitingEpoch = startupEpoch ?? readyEpoch;
+      enterOutage(requestId);
+      active?.abort();
+      active = undefined;
+      retryMs = FIRST_RETRY_MS;
+      wake();
+    },
   };
-  instance?: {
-    role: 'main' | 'preview' | 'dev' | 'test';
-    instance_id: string;
-    allowed_effects: string[];
-    db_path: string | null;
-    db_path_source: string | null;
-    source_db_path?: string | null;
-    source_db_path_source?: string | null;
-  };
-}
-
-/**
- * Whether the rebuild/start splash should remain (equivalently: the daemon is
- * NOT ready for normal use). A `null` snapshot means the health fetch failed —
- * keep the splash up and keep polling.
- *
- * Splash persists while: health is unavailable or not ok, OR `rebuilding === true`, OR
- * `ready !== true`.
- */
-export function daemonNeedsSplash(health: DaemonHealthSnapshot | null | undefined): boolean {
-  if (!health) {
-    return true;
-  }
-  if (health.status !== 'ok' || health.rebuilding === true) {
-    return true;
-  }
-  return health.ready !== true;
-}
-
-/**
- * Inverse of {@link daemonNeedsSplash}: the daemon is ready for normal dashboard
- * mutations. Used to decide when the splash poll may reload the page.
- */
-export function daemonIsReady(health: DaemonHealthSnapshot | null | undefined): boolean {
-  return !daemonNeedsSplash(health);
-}
-
-/** Return the per-process startup epoch exposed by newer daemons. */
-export function daemonStartupEpoch(
-  health: DaemonHealthSnapshot | null | undefined,
-): string | null {
-  return health?.startup_epoch?.trim() || null;
-}
-
-/** Return a usable build-version proof, excluding compatibility placeholders. */
-export function daemonStartupCommit(
-  health: DaemonHealthSnapshot | null | undefined,
-): string | null {
-  const hash = health?.startup_commit?.hash?.trim();
-  return hash && hash !== 'unknown' ? hash : null;
-}
-
-/** Whether a health snapshot belongs to a different startup commit. */
-export function daemonEpochChanged(
-  health: DaemonHealthSnapshot | null | undefined,
-  previousEpoch: string | null,
-): boolean {
-  const currentEpoch = daemonStartupEpoch(health);
-  return previousEpoch !== null && currentEpoch !== null && currentEpoch !== previousEpoch;
-}
-
-export function daemonCommitChanged(
-  health: DaemonHealthSnapshot | null | undefined,
-  previousCommit: string | null,
-): boolean {
-  const currentCommit = daemonStartupCommit(health);
-  return previousCommit !== null && currentCommit !== null && currentCommit !== previousCommit;
-}
-
-/** A splash may release only after readiness and, when required, a new epoch. */
-export function daemonIsReadyAfterEpoch(
-  health: DaemonHealthSnapshot | null | undefined,
-  previousEpoch: string | null,
-  requireNewEpoch: boolean,
-): boolean {
-  return daemonIsReady(health) && (!requireNewEpoch || daemonEpochChanged(health, previousEpoch));
-}
-
-/** Warmup requires affirmative readiness and warmup completion from health. */
-export function daemonIsWarm(health: DaemonHealthSnapshot | null | undefined): boolean {
-  return health?.ready === true && health.warm === true && health.rebuilding !== true;
-}
-
-/**
- * Whether a cold-mount `/api/health` probe should ENTER the splash. This is
- * deliberately stricter than {@link daemonNeedsSplash}: it requires an EXPLICIT
- * POSITIVE not-ready signal from a well-formed health response — `rebuilding ===
- * true` OR `ready === false`.
- *
- * It intentionally does NOT enter on absence of information:
- *  - a failed / indeterminate cold-mount fetch (`null`) — a daemon that cannot
- *    serve health did not serve this page either;
- *  - a 200 response that simply omits `ready` (an older daemon predating this
- *    feature, or any non-health body) — `ready === false` is required, not
- *    merely "not exactly true".
- *
- * This avoids hijacking the UI / flashing the splash on normal cold loads. It
- * still satisfies the "page loaded mid-startup" case because a reachable
- * still-starting daemon answers health 200 with an explicit `ready: false`.
- *
- * Contrast {@link daemonNeedsSplash} (the STAY predicate), which treats `null`
- * and missing readiness as "keep the splash up" once it is ALREADY active, so
- * the splash survives the daemon exit/restart gap during a self-merge. Entering
- * vs. staying are different questions; this predicate answers "enter".
- */
-export function shouldEnterSplashOnProbe(health: DaemonHealthSnapshot | null | undefined): boolean {
-  if (!health) {
-    return false;
-  }
-  return health.rebuilding === true || health.ready === false;
-}
-
-/** Catch a missed rebuild event while the normal application shell is visible. */
-export function shouldEnterSplashOnBackgroundProbe(
-  health: DaemonHealthSnapshot | null | undefined,
-  previousEpoch: string | null,
-): boolean {
-  return shouldEnterSplashOnProbe(health) || daemonEpochChanged(health, previousEpoch);
-}
-
-/**
- * Whether releasing the rebuild/start splash should require the daemon's startup
- * *commit* to advance (not merely its per-process epoch).
- *
- * Bug: afaea18 — a *manual* daemon restart (launchctl kickstart/bootout, ops
- * recovery, config reload) changes the per-process epoch but keeps the same
- * commit. Only an *announced rebuild* — the `mandible:rebuilding` SSE event, or
- * a health response that still reports `rebuilding` — legitimately advances the
- * commit. Requiring a new commit for a bare epoch change (as the earlier logic
- * did) strands the page on the epoch-stalled splash forever, because the commit
- * will never change. So the commit requirement is tied to the announced-rebuild
- * signal, never to epoch drift on its own.
- */
-export function splashRequiresNewCommit(announcedRebuild: boolean): boolean {
-  return announcedRebuild === true;
-}
-
-/**
- * Whether a bounded rebuild-splash stall should surface its escape affordance.
- *
- * Bug: afaea18 — a stall must never be permanent (dataful-UX policy: a healthy
- * daemon behind a full-page splash the user cannot exit is a bug). Once the
- * (restarted) daemon is ready and is NOT rebuilding — i.e. it is
- * healthy on the current commit — and has stayed that way for at least
- * `minStallMs`, the splash must offer a "continue anyway" escape that records
- * the current epoch/commit as last-seen and reloads. This covers an announced
- * rebuild that completed without advancing the commit; ordinary ops restarts no
- * longer reach the stall at all (see {@link splashRequiresNewCommit}).
- */
-export function stallEscapeReady(
-  health: DaemonHealthSnapshot | null | undefined,
-  stalledForMs: number,
-  minStallMs: number,
-): boolean {
-  return (
-    daemonIsReady(health)
-    && health?.rebuilding !== true
-    && stalledForMs >= minStallMs
-  );
 }

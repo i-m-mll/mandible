@@ -65,8 +65,3 @@
 .preview-copy-banner__info:is(:hover, :focus-visible) .preview-copy-banner__tooltip {
   visibility: visible;
 }
-
-.app-shell__workspace > .rebuilding-splash {
-  position: absolute;
-  inset: 0;
-}

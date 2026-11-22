@@ -63,7 +63,6 @@ import {
 import type { SSEPayload, SseConnectionState } from './sse-client';
 import { acquireSharedSse, shouldSkipFallbackPoll } from './sse-shared';
 import {
-  browserSessionFetch,
   ensureClientAccess,
   getClientAccessState,
   retryClientAccess,
@@ -72,18 +71,7 @@ import {
 import { keepSubmittedBriefingAnnotations } from './views/feedback/briefing-preferences';
 import { DetailPaneNotice } from './components/shared/DetailPaneNotice';
 import { PreviewAppearanceTools } from './components/preview/PreviewAppearanceTools';
-import {
-  daemonEpochChanged,
-  daemonCommitChanged,
-  daemonIsReadyAfterEpoch,
-  daemonIsWarm,
-  daemonStartupEpoch,
-  daemonStartupCommit,
-  shouldEnterSplashOnBackgroundProbe,
-  splashRequiresNewCommit,
-  stallEscapeReady,
-  type DaemonHealthSnapshot,
-} from './daemon-readiness';
+import { useDashboardConnection, useDashboardStartupFrame } from './hooks/useDashboardConnection';
 import { installTauriDeepLinkHandler } from './deep-links';
 import {
   currentRoute,
@@ -203,7 +191,6 @@ import './views/tasks.css';
 import './style.css';
 
 const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
-const LAST_SEEN_STARTUP_EPOCH_KEY = 'mandible-last-seen-startup-epoch';
 const THEME_COLOR_BY_RESOLVED_THEME = {
   dark: '#181818',
   light: '#FFFFFF',
@@ -374,24 +361,6 @@ function setLastSeenCommit(hash: string): void {
   }
 }
 
-function getLastSeenStartupEpoch(): string | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    return window.localStorage.getItem(LAST_SEEN_STARTUP_EPOCH_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function setLastSeenStartupEpoch(epoch: string): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(LAST_SEEN_STARTUP_EPOCH_KEY, epoch);
-  } catch {
-    return;
-  }
-}
-
 function updateRootAppTheme(settings: Record<string, string>, previewTheme?: ChromeAppearanceTheme, onResolved?: (theme: ChromeAppearanceTheme) => void): () => void {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return () => undefined;
@@ -482,60 +451,16 @@ function routeForTab(
     : snapshots[tab] ?? { path: { kind: 'view', tab }, tab, entity: null, params: {} };
 }
 
-// Bug: 326a3e2 — rebuilding/restarting splash on self-merge
-// Bug: 645f8a8 — also used as a generic "daemon starting" splash for pages
-// loaded mid-startup (the daemon is alive but not yet ready for mutations).
-function RebuildingSplash({
-  reason = 'rebuilding',
-  epochStalled = false,
-  stallEscape = false,
-  onContinue,
-}: {
-  reason?: 'rebuilding' | 'starting';
-  epochStalled?: boolean;
-  // Bug: afaea18 — once a stall is judged non-transient (daemon healthy on the
-  // same commit past the bounded window) the splash must offer an explicit exit
-  // so a healthy daemon can never be permanently stranded behind it.
-  stallEscape?: boolean;
-  onContinue?: () => void;
-}): JSX.Element {
-  const isRebuilding = reason === 'rebuilding';
-  return (
-    <div className="rebuilding-splash">
-      <NativeTopBarBand />
-      <div className="rebuilding-splash__content">
-        <div className="rebuilding-splash__spinner" aria-hidden="true" />
-        <div className="rebuilding-splash__title">
-          {isRebuilding ? 'Rebuilding & restarting…' : 'Starting Mandible…'}
-        </div>
-        <div className="rebuilding-splash__subtitle">
-          {stallEscape
-            ? 'The daemon is healthy, but still on its previous commit: the rebuild did not restart it. You can continue.'
-            : epochStalled
-            ? 'The daemon is ready, but its startup commit has not changed. The rebuild may not have completed.'
-            : isRebuilding
-            ? 'Mandible is restarting after a self-merge. This page will reload automatically.'
-            : 'Mandible is finishing startup. This page will reload automatically when it is ready.'}
-        </div>
-        {stallEscape && onContinue ? (
-          <button
-            type="button"
-            className="rebuilding-splash__continue"
-            onClick={onContinue}
-          >
-            Continue anyway
-          </button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 function App(): JSX.Element {
   const agentationVisible = useToolbarVisible();
   const [clientAccess, setClientAccess] = useState(getClientAccessState);
   const [accessEverReady, setAccessEverReady] = useState(clientAccess.phase === 'ready');
   const accessReady = clientAccess.phase === 'ready';
+  const { connection, monitor: daemonMonitor, observedOutage, outageIndicator } = useDashboardConnection();
+  const daemonReady = connection.phase === 'ready';
+  const daemonUnavailable = connection.phase === 'outage';
+  const daemonHealth = daemonReady ? connection.health : null;
+  useDashboardStartupFrame(daemonReady && (accessReady || clientAccess.phase === 'failed'), daemonHealth?.startup_epoch, observedOutage);
   useEffect(() => (accessReady ? startInterfaceNotes() : undefined), [accessReady]);
   useEffect(() => {
     const unsubscribe = subscribeClientAccessState((next) => {
@@ -630,37 +555,32 @@ function App(): JSX.Element {
     return initial && isRenderableTab(initial.tab) ? { [initial.tab]: initial } : {};
   });
   const settingsReturnPathRef = useRef<string | null>(null);
-  // Bug: 326a3e2 — rebuilding splash triggered by mandible:rebuilding SSE event
-  const [rebuilding, setRebuilding] = useState(false);
-  // Bug: 645f8a8 — splash for a page loaded mid-startup (or while the daemon is
-  // down/restarting) that detects a not-ready daemon via the mount probe / poll,
-  // even though it never saw the mandible:rebuilding SSE event.
-  const [daemonStarting, setDaemonStarting] = useState(false);
-  // Unknown until the first health probe answers.
-  const [daemonWarm, setDaemonWarm] = useState<boolean | null>(null);
-  const [epochStalled, setEpochStalled] = useState(false);
-  // Bug: afaea18 — bounded-stall escape: once the splash has been stalled on a
-  // healthy same-commit daemon past STALL_ESCAPE_MS, offer an explicit exit.
-  const [stallEscape, setStallEscape] = useState(false);
   const [rebuildFailure, setRebuildFailure] = useState<string | null>(null);
-  const splashEpochRef = useRef<string | null>(null);
-  const splashCommitRef = useRef<string | null>(null);
-  const requireNewEpochRef = useRef(false);
-  const requireNewCommitRef = useRef(false);
-  // Bug: afaea18 — when the stall was first observed and the epoch/commit to
-  // record if the user (or the bounded auto-escape) continues past it.
-  const stallSinceRef = useRef<number | null>(null);
-  const stalledEpochRef = useRef<string | null>(null);
-  const stalledCommitRef = useRef<string | null>(null);
-  const continuePastStall = useCallback(() => {
-    if (stalledEpochRef.current) setLastSeenStartupEpoch(stalledEpochRef.current);
-    if (stalledCommitRef.current) setLastSeenCommit(stalledCommitRef.current);
-    window.location.reload();
-  }, []);
   const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(() => readBootInstanceInfo());
-  // The self-asserted binding gates explicit page controls. It lives only for
-  // this page lifetime (never localStorage), so concurrent tabs cannot share
-  // either identity or optional chrome state.
+  const healthFailure = daemonHealth?.rebuild_failure?.message;
+  useEffect(() => {
+    if (healthFailure) setRebuildFailure(healthFailure);
+  }, [healthFailure]);
+  const catalogEpoch = useRef<string | undefined>(undefined);
+  const daemonEpoch = daemonHealth?.startup_epoch;
+  useLayoutEffect(() => {
+    const normalized = normalizeInstanceInfo(daemonHealth?.instance);
+    if (!accessReady || !normalized) return;
+    const refresh = daemonEpoch !== undefined && catalogEpoch.current !== undefined && catalogEpoch.current !== daemonEpoch;
+    catalogEpoch.current = daemonEpoch;
+    const controller = new AbortController();
+    const loading = loadOperationCatalog(normalized, { refresh, signal: controller.signal });
+    if (refresh) setInstanceInfo({ ...normalized });
+    void loading.catch(error => {
+      if (!controller.signal.aborted) console.error('Operation catalog unavailable', error);
+      return false;
+    }).then(loaded => {
+      if (!controller.signal.aborted) {
+        setInstanceInfo(current => loaded || !sameInstanceInfo(current, normalized) ? normalized : current);
+      }
+    });
+    return () => controller.abort();
+  }, [accessReady, daemonEpoch, daemonHealth?.instance]);
   const [agentPageBinding, setAgentPageBinding] = useState<string | null>(() => getAgentPageBinding());
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [registeredRightSidebar, setRegisteredRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
@@ -1009,7 +929,7 @@ function App(): JSX.Element {
       '0': viewHref('logs'),
     };
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && !e.metaKey && !e.altKey && tabRoutes[e.key]) {
+      if (!daemonUnavailable && e.ctrlKey && !e.metaKey && !e.altKey && tabRoutes[e.key]) {
         e.preventDefault();
         if (e.key === '9') {
           navigateToSettings();
@@ -1020,7 +940,7 @@ function App(): JSX.Element {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [navigate, navigateToSettings]);
+  }, [navigate, navigateToSettings, daemonUnavailable]);
 
   // The daemon pushes `dashboard:badges` on every change; this GET resyncs only
   // on mount and SSE reconnect. A push that lands while it is in flight is newer.
@@ -1262,7 +1182,7 @@ function App(): JSX.Element {
   }, [accessReady, loadDashboardBadges]);
 
   // Warm once the daemon has finished its startup work, so the warmup never meets its cold caches.
-  const routeWarmupAllowed = accessReady && !rebuilding && !daemonStarting && daemonWarm === true;
+  const routeWarmupAllowed = accessReady && daemonHealth?.warm === true;
   useEffect(() => {
     if (!routeWarmupAllowed) return undefined;
     let active = true;
@@ -1516,19 +1436,9 @@ function App(): JSX.Element {
       );
     };
 
-    // Bug: 326a3e2 — show full-page splash when daemon is about to restart
-    const rebuildingHandler = () => {
-      splashEpochRef.current = getLastSeenStartupEpoch();
-      splashCommitRef.current = getLastSeenCommit();
-      requireNewEpochRef.current = true;
-      // An SSE rebuild announcement is the one signal that legitimately advances
-      // the startup commit, so a new commit is required to release this splash.
-      requireNewCommitRef.current = splashRequiresNewCommit(true);
-      stallSinceRef.current = null;
-      setStallEscape(false);
-      setEpochStalled(false);
-      setRebuildFailure(null);
-      setRebuilding(true);
+    const shuttingDownHandler = (payload: SSEPayload) => {
+      const data = payload.data as { request_id?: string; startup_epoch?: string } | undefined;
+      if (data?.request_id) daemonMonitor.current?.shuttingDown(data.request_id, data.startup_epoch);
     };
 
     // Issue a09b4d2 — the merge landed but Mandible did not update.
@@ -1589,7 +1499,7 @@ function App(): JSX.Element {
       client.on('console:telemetry', consoleTelemetryHandler),
       client.on('console:permission:request', consolePermissionHandler),
       client.on('console:permission:cleared', consolePermissionHandler),
-      client.on('mandible:rebuilding', rebuildingHandler),
+      client.on('mandible:shutting-down', shuttingDownHandler),
       client.on('mandible:rebuild-failed', rebuildFailedHandler),
       // Bug: b5abaea — push/sync SSE events forwarded to window for WorkOverviewView
       client.on('push:started', pushEventHandler),
@@ -1608,6 +1518,7 @@ function App(): JSX.Element {
     const offState = client.onState((state, { reconnected, error }) => {
       sseStateRef.current = state;
       setSseWireError(error ?? null);
+      if (state === 'open' || (state === 'down' && !error)) daemonMonitor.current?.transport(state);
       if (!reconnected) return;
       // Events may have been missed while disconnected: no cached read is fresh any more.
       invalidateDashboardCaches();
@@ -1631,12 +1542,12 @@ function App(): JSX.Element {
       outputCoalescer.dispose();
       client.close();
     };
-  }, [accessReady, loadDashboardBadges, refreshRailOrder, refreshAppearance]);
+  }, [accessReady, daemonMonitor, loadDashboardBadges, refreshRailOrder, refreshAppearance]);
 
   // Fallback polling: periodically fetch fresh data so the UI stays current
   // even if the SSE connection drops events or disconnects silently.
   useEffect(() => {
-    if (!accessReady) return;
+    if (!accessReady || daemonUnavailable) return;
     const POLL_INTERVAL = 10_000;
     // Freshness is now connection health, not last-event receipt: while the
     // shared SSE socket is open and a server heartbeat arrived within the last
@@ -1656,172 +1567,7 @@ function App(): JSX.Element {
     }, POLL_INTERVAL);
 
     return () => window.clearInterval(timer);
-  }, [accessReady, route.tab, loadVisibleRouteData, refreshRailOrder, refreshAppearance]);
-
-  // Bug: 645f8a8 — splash is active for either a self-merge rebuild (SSE-driven)
-  // or a mid-startup / not-ready daemon (probe-driven). Mutations are gated off
-  // while the splash is active: the daemon is not ready for normal use.
-  const splashActive = rebuilding || daemonStarting;
-  const daemonReady = !splashActive;
-
-  // Initial mount plus low-cost background probe. Besides detecting explicit
-  // not-ready states, the epoch comparison catches a self-merge whose SSE
-  // rebuilding event was missed while EventSource was reconnecting.
-  // mid-startup will not have seen the mandible:rebuilding SSE event. Probe
-  // /api/health once on mount; enter the splash ONLY on a POSITIVE not-ready
-  // signal — a successful health response that reports rebuilding or ready
-  // !== true (see shouldEnterSplashOnProbe). A failed / indeterminate cold-mount
-  // probe (health === null) must NOT hijack the UI: a daemon that cannot serve
-  // health did not serve this page either, and we must not flash the splash on
-  // every normal load. (The POLL predicate keeps the splash up through the
-  // exit/restart gap once it is already active — that is a different question.)
-  useEffect(() => {
-    if (splashActive) return;
-    let cancelled = false;
-    const probe = async () => {
-      let health: DaemonHealthSnapshot | null = null;
-      try {
-        const res = await browserSessionFetch('/api/health');
-        health = res.ok ? ((await res.json()) as DaemonHealthSnapshot) : null;
-      } catch {
-        health = null;
-      }
-      if (cancelled) return;
-      if (health?.instance) {
-        const normalized = normalizeInstanceInfo(health.instance);
-        if (normalized) {
-          try { await loadOperationCatalog(normalized); }
-          catch (error) { console.error('Operation catalog unavailable', error); }
-          if (cancelled) return;
-        }
-        setInstanceInfo((current) => (sameInstanceInfo(current, normalized) ? current : normalized));
-      }
-      setDaemonWarm(daemonIsWarm(health));
-      const previousEpoch = getLastSeenStartupEpoch();
-      const previousCommit = getLastSeenCommit();
-      const currentEpoch = daemonStartupEpoch(health);
-      const currentCommit = daemonStartupCommit(health);
-      if (!shouldEnterSplashOnBackgroundProbe(health, previousEpoch)) {
-        if (currentEpoch && !previousEpoch) setLastSeenStartupEpoch(currentEpoch);
-        if (currentCommit && !previousCommit) setLastSeenCommit(currentCommit);
-        return;
-      }
-      splashEpochRef.current = previousEpoch ?? currentEpoch;
-      splashCommitRef.current = previousCommit ?? currentCommit;
-      requireNewEpochRef.current = health?.rebuilding === true
-        || daemonEpochChanged(health, previousEpoch);
-      // Bug: afaea18 — a bare epoch change (manual/ops daemon restart) must NOT
-      // require a new commit, or the page stalls on the epoch-stalled splash
-      // forever. Only an announced rebuild (health still reports rebuilding)
-      // advances the commit and may require it.
-      requireNewCommitRef.current = splashRequiresNewCommit(health?.rebuilding === true);
-      stallSinceRef.current = null;
-      setStallEscape(false);
-      setEpochStalled(false);
-      if (health?.rebuilding) {
-        setRebuilding(true);
-      } else {
-        setDaemonStarting(true);
-      }
-    };
-    void probe();
-    const timer = window.setInterval(() => { void probe(); }, 5_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [splashActive]);
-
-  // Bug: 326a3e2 — poll /api/health every 2s while the splash is active; reload
-  // when the daemon reports it is ready.
-  // Bug: 4db692a — the health response includes a `rebuilding` flag while the
-  // old daemon is still alive but about to restart after a self-merge.
-  // Bug: 645f8a8 — and a lifecycle-owned `ready` flag. The poll must wait until
-  // the (restarted) daemon responds with rebuilding falsy AND ready === true,
-  // so we never reload into a daemon that is merely listening but still starting
-  // up. Reload happens exactly once; the post-reload mount probe confirms ready.
-  useEffect(() => {
-    if (!splashActive) return;
-    const POLL_MS = 2_000;
-    // Bug: afaea18 — how long the daemon must stay healthy on the same commit
-    // (ready, not rebuilding) before the stall is judged non-transient and
-    // the "continue anyway" escape is surfaced.
-    const STALL_ESCAPE_MS = 15_000;
-    let intervalId: number | null = null;
-    // Give the daemon a moment to shut down before starting to poll
-    const startTimer = window.setTimeout(() => {
-      intervalId = window.setInterval(async () => {
-        try {
-          const res = await browserSessionFetch('/api/health');
-          if (!res.ok) return; // not up yet — keep polling
-          const data = (await res.json()) as DaemonHealthSnapshot;
-          setDaemonWarm(daemonIsWarm(data));
-          const currentEpoch = daemonStartupEpoch(data);
-          const currentCommit = daemonStartupCommit(data);
-          // Issue a09b4d2 — a rebuild that will not restart the daemon is a
-          // failure to report, not a stall to wait out: end the splash on the
-          // serving daemon and let the toast carry the message.
-          const failure = requireNewCommitRef.current ? data.rebuild_failure?.message : undefined;
-          if (failure) {
-            if (currentEpoch) setLastSeenStartupEpoch(currentEpoch);
-            if (currentCommit) setLastSeenCommit(currentCommit);
-            setRebuildFailure(failure);
-            setRebuilding(false);
-            return;
-          }
-          if (data.rebuilding && !splashEpochRef.current && currentEpoch) {
-            splashEpochRef.current = currentEpoch;
-          }
-          if (data.rebuilding && !splashCommitRef.current && currentCommit) {
-            splashCommitRef.current = currentCommit;
-          }
-          // Reload only once the restarted daemon is mutation-safe and, for a
-          // rebuild, its startup commit differs from the connected daemon.
-          if (daemonIsReadyAfterEpoch(
-            data,
-            splashEpochRef.current,
-            requireNewEpochRef.current,
-          ) && (
-            !requireNewCommitRef.current
-            || daemonCommitChanged(data, splashCommitRef.current)
-          )) {
-            if (currentEpoch) setLastSeenStartupEpoch(currentEpoch);
-            if (currentCommit) setLastSeenCommit(currentCommit);
-            window.location.reload();
-          } else if (
-            requireNewEpochRef.current
-            && data.ready === true
-            && data.rebuilding !== true
-          ) {
-            setEpochStalled(true);
-            // Bug: afaea18 — the stall must never be permanent. Track when it
-            // began and, once the daemon has stayed healthy on the same commit
-            // past the bounded window, surface the "continue anyway" escape
-            // (which records the current epoch/commit as last-seen and reloads).
-            stalledEpochRef.current = currentEpoch ?? splashEpochRef.current;
-            stalledCommitRef.current = currentCommit ?? splashCommitRef.current;
-            const now = Date.now();
-            if (stallSinceRef.current === null) {
-              stallSinceRef.current = now;
-            }
-            if (stallEscapeReady(data, now - stallSinceRef.current, STALL_ESCAPE_MS)) {
-              setStallEscape(true);
-            }
-          } else {
-            // Left the stalled condition before the escape armed; reset so a
-            // later stall measures its own bounded window from scratch.
-            stallSinceRef.current = null;
-          }
-        } catch {
-          // Server not yet up — keep polling
-        }
-      }, POLL_MS);
-    }, 1_000);
-    return () => {
-      window.clearTimeout(startTimer);
-      if (intervalId !== null) window.clearInterval(intervalId);
-    };
-  }, [splashActive]);
+  }, [accessReady, daemonUnavailable, route.tab, loadVisibleRouteData, refreshRailOrder, refreshAppearance]);
 
   // Persist cacheable state to localStorage for stale-while-revalidate on next load.
   // Bug: 099fa86 — eliminate blank flash when refreshing the page
@@ -1873,22 +1619,11 @@ function App(): JSX.Element {
   }, [state.daemonReload?.hash]);
 
   const handleApprove = async (requestId: string, proof?: ShownAuthApproval) => {
-    try {
-      const shown = state.authQueue.find((request) => request.id === requestId);
-      await approveAuthRequest(requestId, proof ? proof.revision : shown?.lifecycle_revision ?? null, proof?.review);
-      // Set to 'approved' locally for immediate feedback; the SSE auth:resolved
-      // event will update to 'completed' when the command finishes.
+    const shown = state.authQueue.find((request) => request.id === requestId);
+    const status = await approveAuthRequest(requestId, proof ? proof.revision : shown?.lifecycle_revision ?? null, proof?.review);
+    if (status) {
       authProjectionRefreshRef.current!.notePush();
-      dispatch({ type: 'authResolved', requestId, status: 'approved' });
-    } catch (err) {
-      // Bug: f690657 — do NOT dispatch a local status change on failure.
-      // Dispatching status:'error' made isHistoryStatus() return true, which hid
-      // the Approve button and left the user stuck until the 10-second poll
-      // restored the true server state. The toast (from onError in runAction) is
-      // enough feedback. The server state is still 'pending' so the card stays
-      // actionable. Rethrow so the dashboard's onError callback surfaces the
-      // message (e.g. "Auth request has no command set").
-      throw err;
+      dispatch({ type: 'authAccepted', requestId, status });
     }
   };
 
@@ -2463,32 +2198,26 @@ function App(): JSX.Element {
     );
   };
 
-  // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
-  // Bug: 645f8a8 — also covers the mid-startup / not-ready daemon case.
   const renderAppShell = (children: ComponentChildren): JSX.Element => (
-    <div
-      className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${instanceInfo?.role === 'preview' ? ' app-shell--preview' : ''}`}
-      style={{
-        '--app-rail-width': `${frameRailWidth}px`,
-        '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
-        '--app-right-sidebar-width': `${rightSidebarOpen ? rightSidebarLayout.effectiveWidth : 0}px`,
-        ...appearanceCssVariables(appearance),
-      } as JSX.CSSProperties}
-    >
-      <AppearanceSettingsContext.Provider value={{ ready: appearanceReady, error: appearanceError, retry: refreshAppearance }}><div className="app-shell__workspace">{children}</div></AppearanceSettingsContext.Provider>
-      <AppHoverTips />
-      <PreviewAppearanceTools instance={instanceInfo} controller={chromeAppearancePreview.controller} />
-    </div>
+    <>
+      <div
+        className={`app-shell app-shell--rail-${railDisplayMode}${viewSidebarOpen ? ' app-shell--view-sidebar-open' : ''}${instanceInfo?.role === 'preview' ? ' app-shell--preview' : ''}`}
+        inert={daemonUnavailable}
+        style={{
+          '--app-rail-width': `${frameRailWidth}px`,
+          '--app-view-sidebar-persisted-width': `${viewSidebarWidth ?? 0}px`,
+          '--app-right-sidebar-width': `${rightSidebarOpen ? rightSidebarLayout.effectiveWidth : 0}px`,
+          ...appearanceCssVariables(appearance),
+        } as JSX.CSSProperties}
+      >
+        <AppearanceSettingsContext.Provider value={{ ready: appearanceReady, error: appearanceError, retry: refreshAppearance }}><div className="app-shell__workspace">{children}</div></AppearanceSettingsContext.Provider>
+        <AppHoverTips />
+        <PreviewAppearanceTools instance={instanceInfo} controller={chromeAppearancePreview.controller} />
+      </div>
+      {daemonUnavailable && <NativeTopBarBand />}
+      {outageIndicator && <div className="daemon-outage-indicator" role="status" aria-label="Restarting Mandible" />}
+    </>
   );
-
-  if (splashActive) {
-    return renderAppShell(<RebuildingSplash
-      reason={rebuilding ? 'rebuilding' : 'starting'}
-      epochStalled={epochStalled}
-      stallEscape={stallEscape}
-      onContinue={continuePastStall}
-    />);
-  }
 
   return renderAppShell(
     <>
@@ -2507,11 +2236,6 @@ function App(): JSX.Element {
           >
             <Icon name="dismiss" />
             </button>
-        </div>
-      )}
-      {daemonWarm === false && (
-        <div className="daemon-warm-status" role="status" aria-live="polite">
-          Still loading workspace data…
         </div>
       )}
       {state.daemonReload && (
@@ -2633,11 +2357,6 @@ function App(): JSX.Element {
           <DetailPaneNotice severity="error" source="live-update-wire" title="Live updates need attention"
             actions={<button type="button" onClick={() => window.location.reload()}>Reload</button>}>
             {sseWireError}
-          </DetailPaneNotice>
-        ) : null}
-        {clientAccess.phase === 'initializing' || clientAccess.phase === 'recovering' ? (
-          <DetailPaneNotice severity="info" source="local-access">
-            {accessEverReady ? 'Reconnecting to Mandible…' : 'Connecting to Mandible…'}
           </DetailPaneNotice>
         ) : null}
         {clientAccess.phase === 'failed' ? (

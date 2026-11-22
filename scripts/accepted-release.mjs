@@ -180,7 +180,10 @@ export function resolveAcceptedRelease(reference, expectedCandidate) {
 }
 
 export function readAcceptedInstalledRelease(receipt, resources) {
-  const { release, sha256 } = readInstalledReleaseIdentity(resources);
+  return assertAcceptedInstalledReleaseIdentity(receipt, readInstalledReleaseIdentity(resources));
+}
+
+export function assertAcceptedInstalledReleaseIdentity(receipt, { release, sha256 }) {
   const agrees = receipt.schema === ACCEPTANCE_CERTIFICATE_SCHEMA
     ? sha256 === receipt.manifest_sha256
     : JSON.stringify(release) === JSON.stringify(receipt.shipped);

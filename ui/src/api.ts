@@ -7,6 +7,8 @@ import type { CarriedReviewRange, ReviewDocumentReference } from "../../src/feed
 import { reviewRangeMatches } from "../../src/feedback/review-ranges";
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, OPERATOR_PROOF_WINDOW_MS, type DashboardBadgeCounts } from '../../src/contracts';
+import { parseAppPath } from '../../src/app-routes';
+import { PRODUCTION_ORIGIN } from '../../src/canonical-origin';
 import { queryClient } from './query/client';
 import { detailKeys, detailKeysForEvent } from './query/detailKeys';
 import { isSpaceDocumentQuery, projectionAffectedByEvent, spacePacketMatches } from './query/resourceInvalidation';
@@ -172,11 +174,18 @@ export function bindOperationCatalog(instance: InstanceInfo, value: unknown): bo
   return true;
 }
 
-export async function loadOperationCatalog(instance: InstanceInfo): Promise<void> {
-  if (operationHints.has(hintKey(instance))) return;
-  const response = await apiGet('/api/instance');
+/** Returns whether a new exact-instance catalog was bound. */
+export async function loadOperationCatalog(instance: InstanceInfo, {
+  refresh = false, signal,
+}: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<boolean> {
+  const key = hintKey(instance);
+  if (refresh) operationHints.delete(key);
+  else if (operationHints.has(key)) return false;
+  const response = await apiGet('/api/instance', { cache: 'no-store', signal });
   const payload = await response.json() as { operations?: unknown };
+  if (signal?.aborted) return false;
   if (!bindOperationCatalog(instance, payload.operations)) throw new Error('Daemon operation catalog is incompatible with this instance');
+  return true;
 }
 
 /** An affordance hint only; the daemon decides body, custody, and credential permissions. */
@@ -1161,7 +1170,7 @@ export async function cancelApprovalProof(requestId: string): Promise<void> {
 }
 
 /** Approve the request at `lifecycleRevision`, the revision that was shown; the server refuses any other. */
-export async function approveAuthRequest(requestId: string, lifecycleRevision: number | null, review?: AuthApprovalReview): Promise<void> {
+export async function approveAuthRequest(requestId: string, lifecycleRevision: number | null, review?: AuthApprovalReview): Promise<'approved' | 'executing' | null> {
   // Bug: 58d93ee — extract server error message so the dashboard can surface it
   // (e.g. invalid_command: "Auth request has no command set")
   // Bug: 737df04 — wrap in AbortController so the fetch does not hang indefinitely
@@ -1205,6 +1214,8 @@ export async function approveAuthRequest(requestId: string, lifecycleRevision: n
     }
     throw new ApiError(message, response.status, code);
   }
+  const body = await parseMaybeJson(response) as { status?: string } | null;
+  return body?.status === 'approved' || body?.status === 'executing' ? body.status : null;
 }
 
 export async function rejectAuthRequest(requestId: string, reason?: string): Promise<void> {
@@ -2872,9 +2883,11 @@ type TauriDesktopWindow = { setTheme: (theme: DesktopWindowTheme) => Promise<voi
 
 export type NativeHost = {
   kind: 'tauri';
+  handoverRoute?: boolean;
   platform: string;
   framePresentation: 'macos-overlay' | 'system';
   sessionId: string;
+  startupTrace?: boolean;
 };
 
 export type WindowHost = NativeHost | { kind: 'browser'; framePresentation: 'system' };
@@ -2996,6 +3009,31 @@ async function invokeDesktop<T>(command: string, args?: Record<string, unknown>)
     throw new Error('Desktop daemon controls are only available in the Tauri app.');
   }
   return invoke<T>(command, args);
+}
+
+export async function reportDesktopDashboardFrame(phase: 'ready' | 'painted', daemonStartupEpoch: string | undefined): Promise<void> {
+  if (!tauriGlobalWindow()?.__MANDIBLE_NATIVE_HOST__?.startupTrace) return;
+  await invokeDesktop(`desktop_frame_${phase}`, { dashboard: true, daemonStartupEpoch }).catch(error =>
+    console.warn(`Could not report dashboard frame ${phase}`, error));
+}
+
+export function reportDesktopStartupTrace(event: {
+  phase: 'web_outage_started' | 'web_outage_ready';
+  atMs: number;
+  startupEpoch?: string;
+  requestId?: string;
+}): void {
+  if (!tauriGlobalWindow()?.__MANDIBLE_NATIVE_HOST__?.startupTrace) return;
+  void invokeDesktop('desktop_trace', event).catch(error =>
+    console.warn('Could not report dashboard outage', error));
+}
+
+export function reportDesktopDashboardRoute(href: string): void {
+  if (window.location.origin !== PRODUCTION_ORIGIN || !tauriGlobalWindow()?.__MANDIBLE_NATIVE_HOST__?.handoverRoute) return;
+  const route = new URL(href);
+  if (route.origin !== PRODUCTION_ORIGIN || parseAppPath(route.pathname).kind === 'not_found') return;
+  void invokeDesktop('desktop_route_observed', { href: route.href }).catch(error =>
+    console.warn('Could not preserve the desktop route', error));
 }
 
 export async function getDesktopDaemonStatus(): Promise<DesktopDaemonStatus | null> {

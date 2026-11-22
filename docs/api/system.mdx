@@ -76,7 +76,8 @@ data: {"type":"auth:resolved","data":{"request_id":"...","status":"completed"},"
 | `auth:resolved` | Auth request reached terminal state |
 | `conversation:updated` | Conversation metadata changed |
 | `daemon:reloaded` | Daemon restarted (includes recent auth results) |
-| `mandible:rebuilding` | Daemon is about to restart for a rebuild |
+| `mandible:shutting-down` | The old daemon has finished update preparation and drain and is exiting. Carries `request_id` and `startup_epoch`. |
+| `mandible:rebuilding` | Legacy administrative announcement |
 | `mandible:rebuild-failed` | The merge landed, but Mandible did not update; carries the message |
 
 ```bash
@@ -201,7 +202,7 @@ curl -X PUT http://localhost:19420/api/backup/settings \
 
 ### POST /api/admin/rebuilding
 
-Broadcast a `mandible:rebuilding` SSE event to all connected clients. Called by the post-merge hook before initiating a daemon restart so the UI can show a splash screen.
+Broadcast a legacy `mandible:rebuilding` SSE announcement to connected clients. The runtime update emits its own `mandible:shutting-down` event when the daemon is exiting.
 
 **Response:** `200 OK`
 

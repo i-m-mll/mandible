@@ -20,6 +20,7 @@ type WarmedTab = 'overview' | 'timeline' | 'console' | 'artifacts' | 'graph';
 /** Requests every page load makes, whichever view is active. */
 const STARTUP_GLOBALS = new Set([
   'GET /api/health',
+  'GET /api/instance',
   'GET /api/settings',
   'GET /api/dashboard/badges',
   'GET /api/host-preferences/app-theme',
@@ -169,7 +170,7 @@ class Harness {
   get requested(): string[] { return this.fixture.requested; }
   events!: ReturnType<typeof stubEventSource>;
   hang = false;
-  health: unknown = { ready: true, warm: true };
+  health: unknown = { status: 'ok', ready: true, warm: true, instance: writablePreviewInstance };
   private readonly idle = new Map<number, () => void>();
   private nextIdleHandle = 1;
 

@@ -1,7 +1,8 @@
 import type { ServiceInstallationContext, ServiceDefinitionInspection, ServiceKind } from './service-definitions.mjs';
+import type { InstalledApplicationVerification } from './installed-release.mjs';
 export type BundleContext = ServiceInstallationContext & { bundleRoot: string };
 export interface BundleRelease { provenance: { commit: string; source_digest: string } }
-export interface BundleOwner { schema: 'mandible-bundle-owner@1'; bundleRoot: string; installationId: string; generation: string; sourceDigest: string; acceptedRelease?: string }
+export interface BundleOwner { schema: 'mandible-bundle-owner@1'; bundleRoot: string; installationId: string; generation: string; sourceDigest: string; acceptedRelease?: string; verification?: InstalledApplicationVerification }
 export interface BundleLaunch { enabled: boolean; gatewayEnabled?: boolean; launchMode: 'manual' | 'on_demand'; session?: string }
 export type NativeServiceStatus = 'not_registered' | 'enabled' | 'requires_approval' | 'not_found';
 export interface NativeServiceObservation { service: ServiceKind; label: string; status: NativeServiceStatus; registration_changed: boolean; unregistration_completed?: boolean }
@@ -9,9 +10,9 @@ export type BundleAdmission = { ok: true; owner: BundleOwner | null } | { ok: fa
 export function readBundleOwner(context: ServiceInstallationContext): BundleOwner | null;
 export function readBundleLaunch(context: ServiceInstallationContext): BundleLaunch;
 export function bundleLoginSession(): string;
-export function bundleLaunchAllowed(preference: BundleLaunch | null, session: string, role?: ServiceKind): boolean;
+export function bundleLaunchAllowed(preference: BundleLaunch | null, session: string | null, role?: ServiceKind): boolean;
 export function admitBundleOwner(context: BundleContext, release: BundleRelease, options?: { relocation?: boolean }): BundleAdmission;
-export function adoptBundleRelease(context: BundleContext, release: BundleRelease, expectedOwner: BundleOwner | null, acceptedRelease?: string, options?: { until?: number }): BundleOwner;
+export function adoptBundleRelease(context: BundleContext, release: BundleRelease, expectedOwner: BundleOwner | null, acceptedRelease: string | undefined, options: { until?: number; verification: InstalledApplicationVerification }): BundleOwner;
 export function nativeServiceControl(context: BundleContext, operation: 'status' | 'register' | 'unregister' | 'settings', role: ServiceKind, options?: { until?: number }): NativeServiceObservation;
 export function nativeServiceControls(context: BundleContext, operation: 'status' | 'register' | 'unregister' | 'settings', roles: ServiceKind[], options?: { until?: number; release?: import('./installed-release.mjs').InstalledRelease }): Partial<Record<ServiceKind, NativeServiceObservation>>;
 export interface BundleRuntimeObservation {
@@ -31,4 +32,5 @@ export function bundleRuntimeCommand(command: string, options: {
   readProcess: Parameters<typeof import('./bundle-service-start.mjs').reconcileBundleServiceStart>[2]['readProcess'];
   startService?: typeof import('./bundle-service-start.mjs').reconcileBundleServiceStart; registrationUntil?: number;
   observe?: (context: ServiceInstallationContext) => ServiceDefinitionInspection;
+  verifyInstallation?: (app: string, options: { until: number }) => InstalledApplicationVerification;
 }): Promise<Record<string, unknown>>;

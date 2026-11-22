@@ -3,12 +3,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { bindingDigest, COMMITTED_OBSERVATION_WINDOW_MS, handoffDirectory, runRuntimeHandoffWorker, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, cleanupRuntimeHandoff, scheduleRuntimeHandoffCleanup, runtimeHandoffCleanupWake, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
+import { activateStagedRuntime, bindingDigest, COMMITTED_OBSERVATION_WINDOW_MS, handoffDirectory, runRuntimeHandoffWorker, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, cleanupRuntimeHandoff, scheduleRuntimeHandoffCleanup, runtimeHandoffCleanupWake, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
 import { acceptedInstallPaths, applicationRootIdentity } from '../scripts/accepted-app-install.mjs';
-import { installedFileIdentity } from '../scripts/installed-release.mjs';
+import { assertInstalledApplicationVerification, installedFileIdentity, verifyApplicationRelease } from '../scripts/installed-release.mjs';
+import { stagedInstallPaths, prepareStagedApplication } from '../scripts/staged-app-install.mjs';
+import { serviceInstallationContext } from '../scripts/service-definitions.mjs';
+import { readBundleOwner } from '../scripts/bundle-services.mjs';
 import { waitUntil } from './helpers/wait-until.js';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
-import { RuntimeObservationError } from '../scripts/runtime-observation.mjs';
+import { RuntimeObservationError, withRuntimeCommands } from '../scripts/runtime-observation.mjs';
 import { readRuntimeHandoffLock } from '../scripts/runtime-handoff-lock.mjs';
 import { runtimeReceiptAcceptanceMarker } from '../scripts/runtime-observation.mjs';
 import { createHash } from 'node:crypto';
@@ -58,6 +61,87 @@ function fixture() {
   return { home, file, binding, journal };
 }
 
+it('activates a verified native stage against its bound ledger without developer authority or acquisition', async () => {
+  const f = fixture();
+  const database = path.join(f.home, 'bound-ledger.db');
+  const writer = new SqliteDatabase(database);
+  try { writer.exec('CREATE TABLE expected_stage_target (version INTEGER); INSERT INTO expected_stage_target VALUES (41)'); }
+  finally { writer.close(); }
+  const context = serviceInstallationContext({ home: f.home, accountHome: f.home, bundleRoot: f.binding.nativeApp });
+  const authority = path.join(f.home, 'config/client-auth');
+  fs.mkdirSync(authority, { recursive: true });
+  fs.writeFileSync(path.join(authority, 'authority-id'), 'isolated-test');
+  const { acceptedRelease, root, runtime, ...installation } = f.binding;
+  const binding = { ...installation, accountHome: f.home, domain: context.domain, backendLabel: context.backendLabel,
+    gatewayLabel: context.gatewayLabel, bundleOwner: null, priorAppIdentity: applicationRootIdentity(f.binding.nativeApp),
+    predecessorHandoffProtocol: 2, desktopWasRunning: false,
+    serviceConfiguration: { configuration: { environment: { MANDIBLE_DB: database } } } };
+  const { staging, previous } = stagedInstallPaths(binding);
+  const resources = path.join(staging, 'Contents/Resources');
+  const programs = path.join(staging, 'Contents/MacOS');
+  fs.mkdirSync(resources, { recursive: true });
+  fs.mkdirSync(programs, { recursive: true });
+  fs.copyFileSync(path.join(binding.nativeApp, 'Contents/Info.plist'), path.join(staging, 'Contents/Info.plist'));
+  fs.copyFileSync(process.execPath, path.join(programs, 'bun'), fs.constants.COPYFILE_FICLONE);
+  fs.writeFileSync(path.join(resources, 'preflight.mjs'), `import { Database } from 'bun:sqlite';
+if (process.argv[2] !== '--preflight') throw Error('Expected daemon preflight');
+const db = new Database(process.argv[3], { readonly: true });
+const schemaVersion = db.query('SELECT version FROM expected_stage_target').get().version;
+db.close();
+console.log(JSON.stringify({ schema: 'mandible-daemon-preflight@1', schemaVersion }));
+`);
+  const release = { schema: 'mandible-installed-release@1', version: '1', target: `${process.platform}-${process.arch}`,
+    layout: { kind: 'macos-app', roots: { resources: '.', programs: '../MacOS' } },
+    provenance: { commit: 'a'.repeat(40), source_digest: 'b'.repeat(64) }, entrypoints: { daemon: 'preflight.mjs' },
+    native: { bun: '../MacOS/bun', sqlite: '../MacOS/bun', caddy: '../MacOS/bun' },
+    files: Object.fromEntries(['preflight.mjs', '../MacOS/bun'].map(relative => [relative, installedFileIdentity(path.resolve(resources, relative))])) };
+  fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify(release));
+  const { digest, verification } = verifyApplicationRelease(staging);
+  const deadline = Date.now() + 15_000;
+  const journal = { schema: 'mandible-runtime-handoff@1', binding, bindingDigest: bindingDigest(binding), deadline,
+    phase: 'armed', bridgeInstalled: true, admission: { attemptId: 'verified-stage', publication: 'published' },
+    attempt: { id: 'verified-stage', deadline, state: 'running',
+      effects: { prepare: { stagePath: staging, stageIdentity: verification.identity } } } };
+  fs.writeFileSync(f.file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(context.runtimeDir, 'handoff-active.json'), JSON.stringify({ journal: f.file, bindingDigest: journal.bindingDigest }));
+  const backend = { pid: 43, startedAt: 'new-backend', runs: 1 };
+  const effects: string[] = [];
+  let draining = true;
+  const activation = await withRuntimeCommands({ spawn: (binary, args, options) => {
+    if (path.basename(binary) === 'git') throw new Error('Activation called Git');
+    if (binary === '/bin/launchctl') return { status: 113, stderr: 'Could not find service' };
+    if (binary === '/bin/ps' && args[1] === String(binding.oldProcess.pid)) {
+      return draining ? { status: 0, stdout: binding.oldProcess.startedAt } : { status: 1 };
+    }
+    return originalSpawn(binary, args, options);
+  } }, () => withRuntimeObservation(journal, () => activateStagedRuntime(journal, {
+    context,
+    prepare: (_binding, options) => prepareStagedApplication(binding, digest, options),
+    validateGateway: async () => 'validated-gateway',
+    wait: async () => {
+      expect(journal.attempt.effects.prepare).toMatchObject({ daemon: { schemaVersion: 41 } });
+      expect(journal).toMatchObject({ drainReady: { attemptId: journal.attempt.id } });
+      draining = false;
+    },
+    control: async (_journal, operation) => {
+      effects.push(operation);
+      if (operation === 'handoff-remove') return JSON.stringify({ processes: {} });
+      if (operation === 'handoff-start') {
+        expect(applicationRootIdentity(binding.nativeApp)).toEqual(verification.identity);
+        assertInstalledApplicationVerification(path.join(binding.nativeApp, 'Contents/Resources'), readBundleOwner(context)?.verification);
+      }
+      return JSON.stringify({ processes: { backend }, process: { ...backend, startupEpoch: 'new-epoch' },
+        health: { instance: { backend_generation: release.provenance.commit, db_path: database } } });
+    },
+  })));
+  expect(activation).toMatchObject({ packageSha256: digest, installed: { root: binding.nativeApp, identity: verification.identity },
+    services: { backend }, startup: { epoch: 'new-epoch', database, generation: release.provenance.commit } });
+  expect(effects).toEqual(['handoff-remove', 'handoff-start', 'handoff-verify', 'handoff-evidence', 'handoff-probe']);
+  expect(readBundleOwner(context)?.acceptedRelease).toBeUndefined();
+  expect(applicationRootIdentity(previous)).toEqual(binding.priorAppIdentity);
+  expect(fs.existsSync(path.join(f.home, 'accepted-releases'))).toBe(false);
+});
+
 it('resumes an installed-before-launch interruption through the same recorded attempt and restores desktop intent', async () => {
   const f = fixture();
   let installed = false;
@@ -82,18 +166,52 @@ it('resumes an installed-before-launch interruption through the same recorded at
     expect(options.until).toBeLessThanOrEqual(Date.now() + 2 * COMMITTED_OBSERVATION_WINDOW_MS);
     return { schema: 'mandible-runtime-receipt@2', bindingDigest: journal.bindingDigest, services: identities };
   });
-  const options = { actor: { provider: 'fixture' }, prepare, install, control, desktop, observe, verifyPublication: vi.fn(async () => {}), validateGateway: async () => null };
+  const validateDaemon = vi.fn(async () => { effects.push('daemon-preflight'); return { schema: 'mandible-daemon-preflight@1', schemaVersion: 242 }; });
+  const options = { actor: { provider: 'fixture' }, prepare, install, control, desktop, observe, verifyPublication: vi.fn(async () => {}), validateGateway: async () => null, validateDaemon };
   const first = await runRuntimeHandoffWorker(f.file, options);
   expect(first.attempt.state, JSON.stringify(first.attempt.lastObservation)).toBe('running');
-  expect(effects).toEqual(['prepare', 'drain', 'replace']);
+  expect(effects).toEqual(['prepare', 'daemon-preflight', 'drain', 'replace']);
   const resumed = await runRuntimeHandoffWorker(f.file, options);
   expect(resumed.attempt.id).toBe(first.attempt.id);
   expect(resumed).toMatchObject({ phase: 'complete', error: 'original failure', failure: f.journal.failure,
     attempt: { state: 'complete', fence: { reason: 'terminal-completion' }, receipt: { schema: 'mandible-runtime-receipt@2', attemptId: first.attempt.id } } });
-  expect(effects).toEqual(['prepare', 'drain', 'replace', 'prepare', 'services', 'desktop']);
+  expect(effects).toEqual(['prepare', 'daemon-preflight', 'drain', 'replace', 'prepare', 'services', 'desktop']);
   await runRuntimeHandoffWorker(f.file, options);
   expect(desktop).toHaveBeenCalledOnce(); expect(observe).toHaveBeenCalledOnce();
   expect(readRuntimeHandoff(f.home, f.binding.requestId, f.binding.executionId)?.attempt.receiptDigest).toMatch(/^[a-f0-9]{64}$/);
+});
+
+it('does not authorize drain when the staged daemon cannot open the ledger', async () => {
+  const f = fixture();
+  const control = vi.fn();
+  const install = vi.fn();
+  const current = await runRuntimeHandoffWorker(f.file, {
+    actor: { provider: 'fixture' }, verifyPublication: async () => {},
+    prepare: async () => ({ installed: false, packageSha256: 'exact' }),
+    validateGateway: async () => null,
+    validateDaemon: async () => { throw new Error('The ledger schema is newer than this daemon.'); },
+    control, install,
+  });
+  expect(current).toMatchObject({ phase: 'failed', drainReady: null, attempt: { lastObservation: { reason: 'The ledger schema is newer than this daemon.' } } });
+  expect(current.attempt.effects.drain).toBeUndefined();
+  expect(control).not.toHaveBeenCalled();
+  expect(install).not.toHaveBeenCalled();
+});
+
+it('refuses a developer publication bound to a different database before preparing or draining', async () => {
+  const f = fixture();
+  const binding = { ...f.binding, delivery: 'accepted-release',
+    serviceConfiguration: { configuration: { environment: { MANDIBLE_DB: path.join(f.home, 'service.db') } } } };
+  const journal = { ...f.journal, binding, bindingDigest: bindingDigest(binding), database: path.join(f.home, 'other-publication.db') };
+  fs.writeFileSync(f.file, JSON.stringify(journal));
+  fs.writeFileSync(path.join(f.home, 'config/local-sessions/handoff-active.json'), JSON.stringify({ journal: f.file, bindingDigest: journal.bindingDigest }));
+  const verifyPublication = vi.fn();
+  const prepare = vi.fn();
+  const result = await runRuntimeHandoffWorker(f.file, { actor: { provider: 'fixture' }, verifyPublication, prepare });
+  expect(result.attempt.lastObservation.reason).toBe('The signed publication and native service target different ledger databases.');
+  expect(result.attempt.effects.drain).toBeUndefined();
+  expect(verifyPublication).not.toHaveBeenCalled();
+  expect(prepare).not.toHaveBeenCalled();
 });
 
 it('does not drain or replace when preparation fails and preserves the previous failure', async () => {
@@ -236,7 +354,7 @@ it('runs historical cleanup with current installed code and reports only the rea
   await expect(scheduleRuntimeHandoffCleanup(journal)).rejects.toThrow();
 });
 
-it('settles each cleanup obligation independently and waits on the exact processes holding the previous app', async () => {
+it.each([false, true])('settles cleanup independently while a process holds the previous app (retained desktop: %s)', async retained => {
   const f = fixture();
   const database = path.join(f.home, 'acceptance.db');
   const db = new SqliteDatabase(database);
@@ -247,27 +365,34 @@ it('settles each cleanup obligation independently and waits on the exact process
   const binding = { ...f.binding, hookId: 'hook', commandDigest: 'command', domain: `gui/${process.getuid!()}`, priorAppIdentity: applicationRootIdentity(previous),
     priorBackend: { argv: ['/runtime', bridge] }, legacyBridgeSha256: createHash('sha256').update('bridge').digest('hex') };
   const digest = bindingDigest(binding);
-  const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: digest, attemptId: 'attempt' };
-  const journal = { ...f.journal, binding, bindingDigest: digest, database, helperLabel: 'fixture-helper',
-    attempt: { id: 'attempt', state: 'complete', effects: {}, receipt, receiptDigest: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'),
-      fence: { reason: 'terminal-completion' } }, cleanup: { state: 'pending' } };
-  db.prepare('INSERT INTO auth_hook_executions VALUES (?,?,?,?,?,?)').run(binding.executionId, binding.requestId, binding.hookId, 'complete', runtimeReceiptAcceptanceMarker(journal), binding.commandDigest);
-  db.close();
-  fs.writeFileSync(f.file, JSON.stringify(journal));
-  vi.mocked(childProcess.spawnSync).mockImplementation((program, args, options) => {
-    if (program === '/bin/launchctl') return { status: 113, stdout: '', stderr: 'Could not find service' } as any;
-    return originalSpawn(program, args, options);
-  });
   const holder = childProcess.spawn('/bin/sleep', ['30'], { cwd: previous, stdio: 'ignore' });
   try {
     await waitUntil(() => originalSpawn('lsof', ['-F', 'p', '+D', previous], { encoding: 'utf8' }).stdout.includes(`p${holder.pid}`), 'holder opened the previous app');
+    const startedAt = originalSpawn('/bin/ps', ['-p', String(holder.pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
+    const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: digest, attemptId: 'attempt',
+      ...(retained ? { desktop: { kind: 'retained', identity: { pid: holder.pid, startedAt } } } : {}) };
+    const journal = { ...f.journal, binding, bindingDigest: digest, database, helperLabel: 'fixture-helper',
+      attempt: { id: 'attempt', state: 'complete', effects: {}, receipt, receiptDigest: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'),
+        fence: { reason: 'terminal-completion' } }, cleanup: { state: 'pending' } };
+    db.prepare('INSERT INTO auth_hook_executions VALUES (?,?,?,?,?,?)').run(binding.executionId, binding.requestId, binding.hookId, 'complete', runtimeReceiptAcceptanceMarker(journal), binding.commandDigest);
+    db.close();
+    fs.writeFileSync(f.file, JSON.stringify(journal));
+    vi.mocked(childProcess.spawnSync).mockImplementation((program, args, options) => {
+      if (program === '/bin/launchctl') return { status: 113, stdout: '', stderr: 'Could not find service' } as any;
+      return originalSpawn(program, args, options);
+    });
     expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'pending' });
     const blocked = readRuntimeHandoff(f.home, binding.requestId, binding.executionId)!;
     expect(fs.existsSync(bridge)).toBe(false);
     expect(blocked.helperFencedAt).toEqual(expect.any(Number));
     expect(blocked.cleanup).toMatchObject({ state: 'pending', blockers: [{ obligation: 'previous-app',
       processes: [{ pid: holder.pid, command: expect.stringContaining('sleep 30'), owner: { pid: process.pid } }] }] });
-    expect(blocked.cleanup.reason).toContain(`Quit or restart: ${blocked.cleanup.blockers[0].processes[0].owner.command.slice(0, 40)}`);
+    if (retained) {
+      expect(blocked.cleanup.blockers[0]).toMatchObject({ expected: true });
+      expect(blocked.cleanup.reason).toContain('after the retained Mandible window closes');
+    } else {
+      expect(blocked.cleanup.reason).toContain(`Quit or restart: ${blocked.cleanup.blockers[0].processes[0].owner.command.slice(0, 40)}`);
+    }
     const waiting = runtimeHandoffCleanupWake(blocked);
     expect(runtimeHandoffCleanupWake(blocked)).toBe(waiting);
     const exited = new Promise(resolve => holder.once('exit', resolve));

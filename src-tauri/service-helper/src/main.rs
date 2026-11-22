@@ -1,12 +1,60 @@
 use block2::RcBlock;
 use objc2_foundation::{NSBundle, NSError, NSString};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
+use sha2::{Digest, Sha256};
+use std::fs;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn time_ms() -> Result<u128, String> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis())
+}
+
+fn read_verified_manifest(root: &Path, home: &Path) -> Result<serde_json::Value, String> {
+    let owner: serde_json::Value = serde_json::from_slice(
+        &fs::read(home.join(".mandible/config/local-sessions/bundle-owner.json"))
+            .map_err(|error| format!("Cannot read verified installation owner: {error}"))?,
+    )
+    .map_err(|error| format!("Cannot decode verified installation owner: {error}"))?;
+    let verification = &owner["verification"];
+    let root_identity = fs::symlink_metadata(root).map_err(|error| error.to_string())?;
+    let digest = verification["packageSha256"].as_str().unwrap_or("");
+    if owner["schema"] != "mandible-bundle-owner@1"
+        || owner["bundleRoot"].as_str().map(Path::new) != Some(root)
+        || verification["schema"] != "mandible-installed-verification@1"
+        || !root_identity.is_dir()
+        || fs::canonicalize(root).map_err(|error| error.to_string())? != root
+        || verification["identity"]["dev"].as_u64() != Some(root_identity.dev())
+        || verification["identity"]["ino"].as_u64() != Some(root_identity.ino())
+        || digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("Application root differs from its verified installation receipt.".into());
+    }
+    let manifest = fs::read(root.join("Contents/Resources/release.json"))
+        .map_err(|error| error.to_string())?;
+    if verification["manifestSha256"] != format!("{:x}", Sha256::digest(&manifest)) {
+        return Err("Application manifest differs from its verified installation receipt.".into());
+    }
+    let release: serde_json::Value =
+        serde_json::from_slice(&manifest).map_err(|error| error.to_string())?;
+    if release["schema"] != "mandible-installed-release@1" {
+        return Err("Unsupported installed release".into());
+    }
+    Ok(release)
+}
 
 fn run() -> Result<(), String> {
+    let native_entered = time_ms()?;
     let args: Vec<_> = std::env::args().skip(1).collect();
     let operation = args.first().map(String::as_str).unwrap_or("status");
     let requested: Vec<&str> = if args.len() > 1 {
@@ -38,29 +86,6 @@ fn run() -> Result<(), String> {
             .to_string_lossy()
             .into_owned();
         let resources = root.join("Contents/Resources");
-        let release: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(resources.join("release.json")).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
-        if release["schema"] != "mandible-installed-release@1" {
-            return Err("Unsupported installed release".into());
-        }
-        let resource = |section: &str, key: &str| -> Result<PathBuf, String> {
-            let relative = release[section][key]
-                .as_str()
-                .ok_or("Installed service resource is not declared")?;
-            if std::path::Path::new(relative).is_absolute() {
-                return Err("Installed resource must be bundle relative".into());
-            }
-            let file = resources
-                .join(relative)
-                .canonicalize()
-                .map_err(|e| e.to_string())?;
-            if !file.starts_with(root.join("Contents")) || !file.is_file() {
-                return Err("Installed resource leaves the app bundle".into());
-            }
-            Ok(file)
-        };
         if identifier.starts_with("bio.mll.mandible.fixture.") {
             let fixture: serde_json::Value = serde_json::from_slice(
                 &std::fs::read(resources.join("service-fixture.json"))
@@ -93,15 +118,61 @@ fn run() -> Result<(), String> {
                 return Err(std::io::Error::last_os_error().to_string());
             }
         }
-        let error = Command::new(resource("native", "bun")?)
+        let release = read_verified_manifest(&root, Path::new(&home))?;
+        let verified = time_ms()?;
+        let resource = |section: &str, key: &str| -> Result<PathBuf, String> {
+            let relative = release[section][key]
+                .as_str()
+                .ok_or("Installed service resource is not declared")?;
+            if Path::new(relative).is_absolute() {
+                return Err("Installed service resource must be bundle relative".into());
+            }
+            let file = resources
+                .join(relative)
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            if !file.starts_with(root.join("Contents")) || !file.is_file() {
+                return Err("Installed service resource leaves the app bundle".into());
+            }
+            Ok(file)
+        };
+        let mut command = Command::new(resource("native", "bun")?);
+        command
             .arg(resource("entrypoints", "service")?)
             .arg(role)
             .env_clear()
             .env("HOME", &home)
             .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
             .env("MANDIBLE_RELEASE_ROOT", &resources)
-            .current_dir(&resources)
-            .exec();
+            .env("MANDIBLE_INSTALLATION_VERIFIED_MS", verified.to_string())
+            .env(
+                "MANDIBLE_SERVICE_NATIVE_ENTERED_MS",
+                native_entered.to_string(),
+            )
+            .current_dir(&resources);
+        if role == "backend" {
+            let mut process = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+            let read = unsafe {
+                libc::proc_pidinfo(
+                    libc::getpid(),
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    process.as_mut_ptr().cast(),
+                    size,
+                )
+            };
+            if read == size {
+                let process = unsafe { process.assume_init() };
+                let process_started =
+                    process.pbi_start_tvsec * 1000 + process.pbi_start_tvusec / 1000;
+                command.env(
+                    "MANDIBLE_SERVICE_PROCESS_STARTED_MS",
+                    process_started.to_string(),
+                );
+            }
+        }
+        let error = command.exec();
         return Err(format!("Cannot execute bundled service runtime: {error}"));
     }
     if operation == "foreground"

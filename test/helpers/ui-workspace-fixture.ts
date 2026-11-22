@@ -316,7 +316,18 @@ export function userSettingFixture(key: UserSettingKey, value: string | null = n
 export function appStartupFixtures(): FixtureHandler[] {
   return [
     { name: 'app settings', method: 'GET', path: '/api/settings', respond: () => jsonFixture({}) },
-    { name: 'cold health', method: 'GET', path: '/api/health', respond: () => jsonFixture({ ready: true, warm: false }) },
+    { name: 'cold health', method: 'GET', path: '/api/health', respond: () => jsonFixture({
+      status: 'ok', ready: true, warm: false, instance: window.__MANDIBLE_BOOTSTRAP__?.instance,
+    }) },
+    { name: 'boot operation catalog', method: 'GET', path: '/api/instance', respond: () => {
+      const instance = window.__MANDIBLE_BOOTSTRAP__?.instance;
+      return jsonFixture({ operations: {
+        schema: 'mandible-operation-catalog@2',
+        source: 'Router.listRoutePolicies',
+        runtime: { instance_id: instance?.instance_id, backend_generation: instance?.backend_generation, version: 'fixture' },
+        routes: [],
+      } });
+    } },
     { name: 'interface notes', method: 'GET', path: INTERFACE_NOTE_ROUTES.collection, respond: () => jsonFixture({ notes: [] }) },
     { name: 'dashboard badges', method: 'GET', path: '/api/dashboard/badges', respond: () => jsonFixture({ auth: 3, briefing: 2, notifications: 1, work: 0, incidents: 0, tasks: 0 }) },
     { name: 'app theme', method: 'GET', path: '/api/host-preferences/app-theme', respond: () => jsonFixture({ version: 1, key: 'app_theme', value: null, revision: 0 } satisfies AppThemePreference) },

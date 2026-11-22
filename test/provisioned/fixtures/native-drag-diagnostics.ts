@@ -25,7 +25,7 @@ export function installNativeDragDiagnostics(): () => void {
   const state: Record<string, unknown> = { pointerCapture: null, mouseCapture: null, mouseBubble: null, error: null };
   const hit = (x: number, y: number) => describe(document.elementFromPoint?.(x, y) ?? null);
   const paint = () => {
-    const band = document.querySelector('.app-native-top-bar-band');
+    const band = document.querySelector('.app-native-top-bar-band, #mandible-startup-frame:not([hidden]) [data-native-drag-boundary]');
     const rect = band?.getBoundingClientRect();
     let handle: unknown;
     try {

@@ -36,10 +36,16 @@ test('bootstrap preparation preserves unchanged native inputs and updates change
     fs.mkdirSync(path.join(fixture, 'scripts'));
     fs.mkdirSync(path.join(fixture, 'src-tauri/bootstrap'), { recursive: true });
     const runtime = path.join(fixture, 'runtime');
-    fs.writeFileSync(runtime, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(runtime, `#!/bin/sh
+case "$1" in
+  scripts/generate-canonical-origin.mjs) exit 0 ;;
+esac
+exec "${process.execPath}" "$@"
+`, { mode: 0o755 });
     fs.writeFileSync(path.join(fixture, 'scripts/bun-runtime.sh'), `#!/bin/sh\nprintf '%s\\n' '${runtime}'\n`, { mode: 0o755 });
     const files = ['index.html', 'bootstrap.css', 'bootstrap.js', 'canonical-origin.js'];
     for (const file of files) fs.writeFileSync(path.join(fixture, 'src-tauri/bootstrap', file), file);
+    fs.writeFileSync(path.join(fixture, 'src-tauri/bootstrap/index.html'), '<head><!-- mandible-startup-frame-style --></head><body><!-- mandible-startup-frame --></body>');
     const prepare = () => {
       const result = spawnSync('/bin/sh', [path.join(root, 'scripts/make-dist.sh')], { cwd: fixture, encoding: 'utf8', timeout: 5000 });
       assert.equal(result.status, 0, result.stderr);
@@ -52,7 +58,9 @@ test('bootstrap preparation preserves unchanged native inputs and updates change
     fs.unlinkSync(path.join(fixture, 'src-tauri/dist/index.html'));
     prepare();
     assert.equal(fs.readFileSync(path.join(fixture, 'src-tauri/dist/bootstrap.js'), 'utf8'), 'changed bootstrap');
-    assert.equal(fs.readFileSync(path.join(fixture, 'src-tauri/dist/index.html'), 'utf8'), 'index.html');
+    const document = fs.readFileSync(path.join(fixture, 'src-tauri/dist/index.html'), 'utf8');
+    assert.match(document, /<head><style>/);
+    assert.match(document, /<body><div id="mandible-startup-frame"/);
     assert.equal(fs.statSync(path.join(fixture, 'src-tauri/dist/bootstrap.css')).mtimeMs, 100_000);
   } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
 });

@@ -5,10 +5,11 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { stageBundleServices } from './prepare-bundle-services.mjs';
 import { parseLoadedService } from './service-definitions.mjs';
+import { applicationIdentity, installedApplicationVerification } from './installed-release.mjs';
 
 if (process.platform !== 'darwin') throw new Error('This qualification requires macOS.');
 const helper = path.resolve(process.argv[2] || 'src-tauri/service-helper/target/release/mandible-service');
-const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-service-proof-'));
+const fixture = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-service-proof-')));
 let contents = path.join(fixture, 'Private Service.app/Contents');
 const identifier = `bio.mll.mandible.fixture.${randomUUID()}`;
 const label = `${identifier}.local-session-production`;
@@ -43,6 +44,19 @@ tick(); setInterval(tick, 50);
 `);
   run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', path.dirname(contents)]);
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', path.dirname(contents)]);
+  const app = path.dirname(contents);
+  const ownerFile = path.join(fixture, '.mandible/config/local-sessions/bundle-owner.json');
+  fs.mkdirSync(path.dirname(ownerFile), { recursive: true });
+  const verification = installedApplicationVerification(app, applicationIdentity(app));
+  const owner = { schema: 'mandible-bundle-owner@1', bundleRoot: app, verification };
+  fs.writeFileSync(ownerFile, JSON.stringify({ ...owner, verification: { ...verification, manifestSha256: '0'.repeat(64) } }));
+  const refused = spawnSync(executable, ['foreground', 'backend'], { encoding: 'utf8', timeout: 3000 });
+  const stderr = path.join(fixture, '.cache/mandible/production-stderr.log');
+  if (refused.status !== 1 || fs.existsSync(path.join(fixture, 'heartbeat.json'))
+      || !fs.readFileSync(stderr, 'utf8').includes('Application manifest differs from its verified installation receipt.')) {
+    throw new Error(`The native launcher did not refuse the mismatched manifest before dispatch: ${refused.stderr || refused.error?.message}`);
+  }
+  fs.writeFileSync(ownerFile, JSON.stringify(owner));
   registered = true;
   const registration = control('register');
   if (registration.status !== 'enabled') throw new Error(`Native background permission is ${registration.status}; private registration did not start.`);
@@ -62,7 +76,7 @@ tick(); setInterval(tick, 50);
   if (control('status').status !== 'enabled') throw new Error('Native registration was lost after app relocation.');
   const relocatedExecutable = run('/bin/ps', ['-ww', '-p', String(loaded.pid), '-o', 'comm=']);
   process.stdout.write(`${JSON.stringify({ passed: true, registration, loaded, registrationProcessExited: true, signedPrivateApp: true,
-    relocatedRegistration: true, relocatedExecutable })}\n`);
+    rejectedManifestBeforeDispatch: true, relocatedRegistration: true, relocatedExecutable })}\n`);
 } catch (error) {
   process.stderr.write(spawnSync('/bin/launchctl', ['print', `gui/${process.getuid()}/${label}`], { encoding: 'utf8', timeout: 2500 }).stdout || 'No private job remains.\n');
   throw error;

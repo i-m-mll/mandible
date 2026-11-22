@@ -1,115 +1,90 @@
 // @vitest-environment node
 import fs from "node:fs";
-import path from "node:path";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 
-function bootBootstrap({ search = "", status }: { search?: string; status: Record<string, unknown> }) {
+async function bootBootstrap({ search = "", available = false, status }: {
+  search?: string;
+  available?: boolean;
+  status?: Record<string, unknown>;
+}) {
   const calls: string[] = [];
   const listeners = new Map<string, () => void>();
-  const elements = new Map<string, Record<string, any>>();
+  const elements = new Map<string, { textContent: string; disabled: boolean; hidden: boolean }>();
   const document = {
     getElementById(id: string) {
-      if (!elements.has(id)) {
-        elements.set(id, {
-          textContent: "",
-          dataset: {},
-          style: {},
-          disabled: false,
-          addEventListener: (event: string, listener: () => void) => listeners.set(`${id}:${event}`, listener),
-        });
-      }
-      return elements.get(id);
+      const element = {
+        textContent: "",
+        disabled: false,
+        hidden: true,
+        getBoundingClientRect: () => ({ height: 42 }),
+        addEventListener: (event: string, listener: () => void) => listeners.set(`${id}:${event}`, listener),
+      };
+      elements.set(id, element);
+      return element;
     },
   };
   const window = {
     __TAURI__: {
       core: {
-        invoke: async (command: string) => {
-          calls.push(command);
+        invoke: async (command: string, args?: { fastOnly?: boolean }) => {
+          calls.push(command === "navigate_to_desktop_dashboard" ? (args?.fastOnly ? "probe" : "navigate") : command);
+          if (command === "navigate_to_desktop_dashboard" && args?.fastOnly && !available) throw new Error("not ready");
           return status;
         },
       },
     },
-    location: { search, replace: () => { throw new Error("bootstrap must not use a browser fallback navigation"); } },
+    location: { search },
     setTimeout: () => 1,
     clearTimeout: () => undefined,
   };
-  const script = fs.readFileSync(path.resolve("src-tauri/bootstrap/bootstrap.js"), "utf8");
-  vm.runInNewContext(script, { document, window, URLSearchParams });
-  return new Promise<{ calls: string[]; elements: Map<string, Record<string, any>>; listeners: Map<string, () => void> }>((resolve) => {
-    setImmediate(() => resolve({ calls, elements, listeners }));
+  const script = fs.readFileSync("src-tauri/bootstrap/bootstrap.js", "utf8");
+  vm.runInNewContext(script, {
+    document, window, URLSearchParams, requestAnimationFrame: (callback: () => void) => callback(),
   });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  return { calls, elements, listeners };
 }
 
-function status(overrides: Record<string, unknown> = {}) {
-  return {
-    state: "running",
-    launch_mode: "on_demand",
-    port: 29420,
-    pid: 123,
-    pid_file: "/tmp/mandible.pid",
-    log_file: "/tmp/mandible.log",
-    gateway_log_file: "/tmp/mandible-gateway.log",
-    detail: null,
-    healthy: true,
-    dashboard_ready: true,
-    dashboard_origin: "https://app.mandible.localhost:19420",
-    gateway_state: "running",
-    gateway_error: null,
-    ...overrides,
-  };
+function stopped(overrides: Record<string, unknown> = {}) {
+  return { state: "stopped", launch_mode: "on_demand", dashboard_ready: false, ...overrides };
 }
 
 describe("desktop bootstrap navigation", () => {
-  it("reconciles a manual first open before status and keeps later status refreshes read-only", async () => {
-    const result = await bootBootstrap({ status: status({ launch_mode: "manual", state: "stopped", healthy: false, dashboard_ready: false }) });
-    expect(result.calls).toEqual(["daemon_status"]);
-    result.listeners.get("retry-btn:click")?.();
-    await new Promise<void>(resolve => setImmediate(resolve));
-    expect(result.calls).toEqual(["daemon_status", "daemon_status"]);
-  });
-  it("opens the dashboard only through native navigation after both readiness checks pass", async () => {
-    const result = await bootBootstrap({ status: status() });
-    expect(result.calls).toEqual(["daemon_status", "navigate_to_desktop_dashboard"]);
-    expect(result.elements.get("status-badge")?.textContent).toBe("dashboard ready");
+  it("opens a ready dashboard without a runtime controller status subprocess", async () => {
+    const result = await bootBootstrap({ available: true });
+    expect(result.calls).toEqual(["desktop_frame_ready", "probe", "desktop_frame_painted"]);
+    expect(result.elements.get("bootstrap-controls")?.hidden).toBe(true);
   });
 
-  it("recovers a missing dashboard gateway without navigating or falsely restarting a healthy backend", async () => {
-    const unavailable = status({
-      state: "gateway_unavailable",
-      dashboard_ready: false,
-      gateway_state: "stopped",
-      gateway_error: "The service is not accepting connections.",
-    });
-    const result = await bootBootstrap({ status: unavailable });
-    expect(result.calls).toEqual(["daemon_status", "daemon_start"]);
-    expect(result.elements.get("status-copy")?.textContent).toContain("backend is healthy");
+  it("keeps a stopped daemon stopped in manual launch mode", async () => {
+    const result = await bootBootstrap({ status: stopped({ launch_mode: "manual" }) });
+    expect(result.calls).toEqual(["desktop_frame_ready", "probe", "desktop_frame_painted", "daemon_status"]);
+    expect(result.elements.get("start-btn")?.hidden).toBe(false);
+  });
+
+  it("recovers a missing dashboard gateway without navigating prematurely", async () => {
+    const result = await bootBootstrap({ status: {
+      state: "gateway_unavailable", dashboard_ready: false, launch_mode: "on_demand",
+    } });
+    expect(result.calls).toEqual(["desktop_frame_ready", "probe", "desktop_frame_painted", "daemon_status", "daemon_start"]);
+    expect(result.elements.get("bootstrap-controls")?.hidden).toBe(true);
   });
 
   it("keeps an explicit Stop stopped when the bootstrap page is reopened", async () => {
-    const stopped = status({
-      state: "stopped",
-      launch_mode: "on_demand",
-      healthy: false,
-      dashboard_ready: false,
-      gateway_state: "stopped",
-    });
-    const result = await bootBootstrap({ search: "?skip_autostart=1", status: stopped });
-    expect(result.calls).toEqual(["daemon_status"]);
-    expect(result.elements.get("status-copy")?.textContent).toContain("can start it on demand");
+    const result = await bootBootstrap({ search: "?skip_autostart=1", status: stopped() });
+    expect(result.calls).toEqual(["desktop_frame_ready", "probe", "desktop_frame_painted", "daemon_status"]);
+    expect(result.elements.get("start-btn")?.hidden).toBe(false);
   });
 
-  it("keeps the bootstrap visible after a failed dashboard load and retries only on user action", async () => {
+  it("retries failed dashboard navigation only on user action", async () => {
     const result = await bootBootstrap({
-      search: "?skip_autostart=1&dashboard_navigation_failed=1",
-      status: status(),
+      search: "?skip_autostart=1&dashboard_navigation_failed=1", status: { dashboard_ready: true },
     });
-    expect(result.calls).toEqual(["daemon_status"]);
-    expect(result.elements.get("status-copy")?.textContent).toContain("did not finish loading");
-
+    expect(result.calls).toEqual(["desktop_frame_ready", "desktop_frame_painted"]);
+    expect(result.elements.get("bootstrap-error")?.hidden).toBe(false);
     result.listeners.get("retry-btn:click")?.();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(result.calls).toEqual(["daemon_status", "daemon_status", "navigate_to_desktop_dashboard"]);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(result.calls).toEqual(["desktop_frame_ready", "desktop_frame_painted", "probe", "daemon_status", "navigate"]);
   });
 });

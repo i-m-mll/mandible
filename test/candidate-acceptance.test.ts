@@ -338,6 +338,16 @@ it('retains bounded aggregate route diagnostics without treating caller volume a
   expect(assessRuntimeLogs(`${aggregate}\n${error}`).failures).toEqual([error]);
 });
 
+it('keeps correlated first-frame timing from the owned desktop after diagnostic compaction', () => {
+  const at = Date.parse('2026-10-05T05:00:00.123Z');
+  const painted = { event: 'desktop_startup', phase: 'first_frame_ready', frame: 'dashboard', startup_epoch: 'boot-1', at_ms: at, elapsed_ms: 83 };
+  const logs = [{ ...painted, pid: 88 }, { ...painted, pid: 42 }].map(entry => JSON.stringify(entry)).join('\n');
+  const { diagnostics } = assessAcceptanceLogs(logs, { process: { role: 'desktop', pid: 42, owned: true } });
+  const result = compactAcceptanceResult({ status: 'passed', checks: { startup_trace: { desktop: diagnostics.startup }, oversized_log: 'x'.repeat(65_000) } });
+  expect(result).toMatchObject({ checks: { startup_trace: { desktop: { pid: 42, omitted: 0,
+    phases: [{ phase: 'first_frame_ready', frame: 'dashboard', startup_epoch: 'boot-1', at_ms: at, elapsed_ms: 83 }] } } } });
+});
+
 it('waits through the initial certificate alert but rejects the same alert after validated HTTPS', async () => {
   const alert = Object.assign(new Error('leaf certificate is not available yet'), { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR' });
   const initialErrors: unknown[] = [];

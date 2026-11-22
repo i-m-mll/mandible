@@ -28,7 +28,7 @@ import { reconcileBundleServiceStart, bundleServiceStartAction, bundleServiceCom
 import { installAcceptedApplication } from './accepted-app-install.mjs';
 
 import * as installedModuleReader from './installed-release.mjs';
-import * as acceptedInstall from './accepted-app-install.mjs';
+import { activationDatabase, preparedApplicationContext } from './staged-app-install.mjs';
 import { configureLocalFrontDoor, gatewayConfiguration, validateGatewayConfiguration } from './local-front-door.mjs';
 import SqliteDatabase from '../src/sqlite.ts';
 import { LocalSessionAuthority } from '../src/client-auth/session-authority.ts';
@@ -389,7 +389,7 @@ async function unloadExactHandoffService(label, expectedArguments, expectedDefin
 function bundleContext(binding) { return serviceInstallationContext({ ...defaultInstallation(), bundleRoot: binding.nativeApp }); }
 
 function assertHandoffContext(binding, context, assertHeld) {
-  if (!context || typeof assertHeld !== 'function') throw new Error('Accepted runtime operations require explicit installation context and live ownership.');
+  if (!context || typeof assertHeld !== 'function') throw new Error('Native activation requires explicit installation context and live ownership.');
   assertHeld();
   if (binding.home !== context.home || binding.domain !== context.domain || binding.backendLabel !== context.backendLabel
       || binding.gatewayLabel !== context.gatewayLabel || binding.nativeApp !== context.bundleRoot
@@ -407,13 +407,17 @@ function assertHandoffMutation(binding, { context, journal, assertHeld }) {
       || current.attempt?.fence || current.attempt?.state !== 'running') throw new Error('Runtime mutation requires the exact active unfenced attempt.');
 }
 
-export async function removeHandoffDefinitions(binding, { context = defaultInstallation(), journal, assertHeld, until = runtimeDeadline() } = {}) {
+export async function removeHandoffDefinitions(binding, { context = defaultInstallation(), journal, prepared, assertHeld, until = runtimeDeadline() } = {}) {
+  const staged = !!prepared || !!journal?.attempt;
   const HOME = context.home, RUNTIME_DIR = context.runtimeDir;
   const INSTALLATION_AUTHORITY = path.join(HOME, "config/client-auth/authority-id");
   const BACKEND_LABEL = context.backendLabel, GATEWAY_LABEL = context.gatewayLabel;
-  if (binding.acceptedRelease) assertHandoffMutation(binding, { context, journal, assertHeld });
+  if (staged) {
+    assertHandoffMutation(binding, { context, journal, assertHeld });
+    preparedApplicationContext(prepared, binding);
+  }
   if (binding.home !== HOME || binding.installationId !== fs.readFileSync(INSTALLATION_AUTHORITY, 'utf8').trim()) throw new Error('Runtime handoff belongs to another installation.');
-  if (!binding.acceptedRelease) assertLifecycleMutation(true);
+  if (!staged) assertLifecycleMutation(true);
   const inspectionContext = binding.bundleOwner ? { ...context, bundleRoot: binding.bundleOwner.bundleRoot } : context;
   const inspection = inspectServiceDefinitionsSync(inspectionContext, { until });
   if (!inspection.ok) throw new Error(inspection.refusal.message);
@@ -429,7 +433,7 @@ export async function removeHandoffDefinitions(binding, { context = defaultInsta
     if (!captured.migrated && current.migrated || !current.migrated && JSON.stringify(current.configuration) !== JSON.stringify(captured.configuration)) throw new Error('Service configuration changed after capture; preserving it.');
     publishServiceConfiguration(captured.file, captured.configuration);
   }
-  if (binding.acceptedRelease && binding.bundleOwner) {
+  if (staged && binding.bundleOwner) {
     if (JSON.stringify(readBundleOwner(inspectionContext)) !== JSON.stringify(binding.bundleOwner)) throw new Error('Bundle owner changed before drain.');
     const processes = Object.fromEntries(inspection.observations.map(item => [item.service, item.job.pid && {
       pid: item.job.pid, startedAt: item.job.startedAt, runs: item.job.runs,
@@ -468,7 +472,7 @@ export async function removeHandoffDefinitions(binding, { context = defaultInsta
   for (const [label, prior] of [[BACKEND_LABEL, binding.priorBackend], [GATEWAY_LABEL, binding.priorGateway]]) {
     // A stable Caddy gateway can remain live. A legacy JS gateway must be
     // unloaded before its source/dependencies change under the old interpreter.
-    if (!binding.acceptedRelease && label === GATEWAY_LABEL && !prior.argv.some(arg => /\.m?js$/.test(arg))) continue;
+    if (!staged && label === GATEWAY_LABEL && !prior.argv.some(arg => /\.m?js$/.test(arg))) continue;
     const current = inspectJob(label);
     if (!current.loaded) continue;
     // Retained journals predating definition capture retain their argv guard.
@@ -481,7 +485,7 @@ export async function removeHandoffDefinitions(binding, { context = defaultInsta
     }
     await unloadExactHandoffService(label, prior.argv, prior.definition);
   }
-  if (binding.acceptedRelease) {
+  if (staged) {
     for (const observation of inspection.observations) for (const item of observation.installed) {
       if (item.record.BundleProgram) continue;
       if (createHash('sha256').update(fs.readFileSync(item.file)).digest('hex') !== item.sha256) throw new Error('Legacy definition changed before removal.');
@@ -505,16 +509,16 @@ export function readBundleProcess(context, role, { until } = {}) {
  * old version still serves. This also pays the first launch of the copied binary.
  */
 export function validatePreparedGateway(binding, prepared, { until } = {}) {
-  const application = acceptedInstall.preparedApplicationContext(prepared, binding);
+  const application = preparedApplicationContext(prepared, binding);
   return validateGatewayConfiguration(path.resolve(application.resources, application.release.native.caddy), gatewayConfiguration(binding.home), { until });
 }
 
 export async function startHandoffDefinitions(binding, { context, journal, assertHeld, prepared,
   until = runtimeDeadline(), processes = {},
   initialize = initializeMainRegistration, configure = configureLocalFrontDoor } = {}) {
-  if (binding.acceptedRelease) {
+  if (prepared || journal?.attempt) {
     assertHandoffMutation(binding, { context, journal, assertHeld });
-    const application = acceptedInstall.preparedApplicationContext(prepared, binding);
+    const application = preparedApplicationContext(prepared, binding);
     if (!application.installed) throw new Error('Service start requires the installed prepared application.');
     if (processStart(binding.oldProcess.pid, until) === binding.oldProcess.startedAt) throw new Error('The old production process has not finished draining.');
     const ownership = inspectServiceDefinitionsSync(context, { until });
@@ -740,7 +744,7 @@ function readLogTail(file, limit = 1024 * 1024) {
 export function inspectHandoffProcesses(binding, { context, prepared, assertHeld, until, processes = {} }) {
   assertHandoffContext(binding, context, assertHeld);
   const resources = path.join(context.bundleRoot, 'Contents/Resources');
-  const application = prepared ? acceptedInstall.preparedApplicationContext(prepared, binding)
+  const application = prepared ? preparedApplicationContext(prepared, binding)
     : { resources, release: installedModuleReader.readInstalledRelease(resources) };
   const execution = nativeExecutionModel(context.bundleRoot, application.release);
   if (!execution.ok) throw new RuntimeObservationError('unreadable_state', execution.message);
@@ -796,7 +800,7 @@ export function inspectHandoffProcesses(binding, { context, prepared, assertHeld
   return { processes: qualified, jobs, pending };
 }
 
-function acceptedHandoffEvidence(binding, expectedProcesses, options) {
+function nativeHandoffEvidence(binding, expectedProcesses, options) {
   const { context, assertHeld, until } = options;
   const observed = inspectHandoffProcesses(binding, { ...options, processes: expectedProcesses ?? {} });
   if (observed.pending) throw new RuntimeObservationError('starting', observed.pending, { processes: observed.processes }, 'pending');
@@ -820,9 +824,9 @@ function acceptedHandoffEvidence(binding, expectedProcesses, options) {
 export async function probeHandoffRuntime(binding, { context, prepared, assertHeld, until, startupEpoch, generation, processes = {}, expectedServing = false,
   probe = probeJson } = {}) {
   assertHandoffContext(binding, context, assertHeld);
-  if (prepared) generation = acceptedInstall.preparedApplicationContext(prepared, binding).release.provenance.commit;
+  if (prepared) generation = preparedApplicationContext(prepared, binding).release.provenance.commit;
   if (!/^[a-f0-9]{40}$/.test(generation ?? '')) throw new Error('Runtime readiness requires an exact generation target.');
-  const main = readMainInstance(context.root ?? path.join(context.bundleRoot, 'Contents/Resources'), { context });
+  const main = readMainInstance(path.join(context.bundleRoot, 'Contents/Resources'), { context });
   if (main.backend_generation !== generation) throw new RuntimeObservationError('wrong_generation', 'Registered production generation differs from the prepared application.');
   const paths = localCaPaths(context.home);
   const response = await probe(healthEndpointUrl(main.public_origin), { ca: fs.readFileSync(paths.rootCert), timeoutMs: handoffProbeTimeout(until) });
@@ -834,7 +838,7 @@ export async function probeHandoffRuntime(binding, { context, prepared, assertHe
   const health = response.document;
   const expected = { installationId: binding.installationId, publicOrigin: binding.publicOrigin, generation };
   const verdict = healthDocumentObservation(health, expected);
-  const database = binding.serviceConfiguration?.configuration.environment.MANDIBLE_DB ?? path.join(context.home, 'mandible.db');
+  const database = activationDatabase(binding);
   if (health.instance?.db_path !== database) throw new RuntimeObservationError('wrong_database', 'Serving runtime uses another database.');
   if (typeof health.startup_epoch !== 'string' || !health.startup_epoch || startupEpoch && health.startup_epoch !== startupEpoch) {
     throw new RuntimeObservationError('process_changed', 'Serving runtime startup epoch changed.', { expected: startupEpoch, current: health.startup_epoch });
@@ -844,9 +848,9 @@ export async function probeHandoffRuntime(binding, { context, prepared, assertHe
     process: { ...processes.backend, startupEpoch: health.startup_epoch } };
 }
 
-async function verifyAcceptedHandoff(binding, options) {
+async function verifyNativeHandoff(binding, options) {
   const { until, awaitReady = false, assertHeld } = options;
-  const initial = acceptedHandoffEvidence(binding, options.expectedProcesses, options);
+  const initial = nativeHandoffEvidence(binding, options.expectedProcesses, options);
   let startupEpoch = options.startupEpoch;
   for (;;) {
     assertHeld();
@@ -858,13 +862,13 @@ async function verifyAcceptedHandoff(binding, options) {
       await new Promise(resolve => setTimeout(resolve, Math.min(RUNTIME_HEALTH_PROBE_INTERVAL_MS, until - Date.now())));
       continue;
     }
-    const final = acceptedHandoffEvidence(binding, initial.processes, options);
+    const final = nativeHandoffEvidence(binding, initial.processes, options);
     return { ...final, ...health };
   }
 }
 
 export function inspectHandoffEvidence(binding, expectedProcesses = null, options = {}) {
-  if (binding.acceptedRelease) return acceptedHandoffEvidence(binding, expectedProcesses, options);
+  if (options.context || options.prepared) return nativeHandoffEvidence(binding, expectedProcesses, options);
   if (binding.home !== HOME || binding.installationId !== fs.readFileSync(INSTALLATION_AUTHORITY, 'utf8').trim()) throw new Error('Candidate installation identity differs.');
   const context = defaultInstallation();
   for (const [role, expected] of Object.entries(expectedProcesses ?? {})) {
@@ -924,7 +928,7 @@ export function inspectHandoffEvidence(binding, expectedProcesses = null, option
 export async function verifyHandoffDefinitions(binding, { context, prepared, assertHeld, startupEpoch, probe, until = Date.now(), awaitReady = false, expectedProcesses = null, expectedServing = false,
   inspect: inspectStatus = probeTimeoutMs => inspectRuntime({ launchMode: binding.priorBackend.launchMode, probeTimeoutMs }),
 } = {}) {
-  if (binding.acceptedRelease) return verifyAcceptedHandoff(binding, { context, prepared, assertHeld, startupEpoch, probe, until, awaitReady, expectedProcesses, expectedServing });
+  if (context || prepared) return verifyNativeHandoff(binding, { context, prepared, assertHeld, startupEpoch, probe, until, awaitReady, expectedProcesses, expectedServing });
   let qualified = { ...expectedProcesses };
   const observeOwnership = () => {
     try {

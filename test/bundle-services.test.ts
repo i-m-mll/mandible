@@ -5,15 +5,19 @@ import path from 'node:path';
 import { admitBundleOwner, bundleLaunchAllowed, bundleRuntimeCommand, readBundleOwner } from '../scripts/bundle-services.mjs';
 import { serviceInstallationContext } from '../scripts/service-definitions.mjs';
 import { RuntimeObservationError } from '../scripts/runtime-observation.mjs';
+import { installedApplicationVerification } from '../scripts/installed-release.mjs';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 const release = { provenance: { commit: 'a'.repeat(40), source_digest: 'b'.repeat(64) } };
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bundle-contract-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bundle-contract-')));
   roots.push(root);
   const context = serviceInstallationContext({ home: path.join(root, 'state'), accountHome: root, bundleRoot: path.join(root, 'Mandible.app'), bundleIdentifier: 'bio.mll.mandible' });
-  fs.mkdirSync(context.bundleRoot!, { recursive: true });
+  const resources = path.join(context.bundleRoot!, 'Contents/Resources');
+  fs.mkdirSync(resources, { recursive: true });
+  const manifest = path.join(resources, 'release.json');
+  fs.writeFileSync(manifest, '{}');
   fs.mkdirSync(path.join(context.home, 'config/client-auth'), { recursive: true });
   fs.writeFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'original-authority');
   fs.writeFileSync(path.join(context.home, 'mandible.db-wal'), 'durable-existing-writes');
@@ -21,6 +25,7 @@ function fixture() {
   const inspect = async () => ({ status: { state: 'stopped', healthy: false }, trusted: { error: 'no trust' }, backendPortOpen: false, backendJob: { loaded: false } });
   const options = { context, release, launchMode: 'manual', session: () => 'login-1',
     initialize: async () => { events.push('initialize'); },
+    verifyInstallation: (app: string) => installedApplicationVerification(app, 'c'.repeat(64)),
     inspect, waitReady: inspect, previewCount: () => 0, reloadGateway: () => { events.push('reload-gateway'); },
     configureGateway: () => { events.push('gateway-config'); return { adminRestartRequired: false }; },
     restartGateway: () => { events.push('restart-gateway'); },
@@ -29,7 +34,7 @@ function fixture() {
     observe: () => ({ ok: true, observations: [] }),
     control: (_: unknown, operation: string, role: string) => { if (operation !== 'status') events.push(`${operation}:${role}`); return { status: 'not_registered' }; },
   };
-  return { context, options, events };
+  return { context, options, events, manifest };
 }
 
 it('starts from existing mutable state, refuses duplicate/replacement ownership before effects, and removes registration while preserving data', async () => {
@@ -48,13 +53,26 @@ it('starts from existing mutable state, refuses duplicate/replacement ownership 
   await expect(bundleRuntimeCommand('start', { ...options, release: { provenance: { ...release.provenance, commit: 'c'.repeat(40) } } })).rejects.toThrow('accepted-package handoff');
   expect(events).toEqual([]);
   expect(admitBundleOwner({ ...context, bundleRoot: `${context.bundleRoot}.moved` }, release, { relocation: true }).ok).toBe(false);
-  fs.rmdirSync(context.bundleRoot!);
+  fs.rmSync(context.bundleRoot!, { recursive: true });
   expect(admitBundleOwner({ ...context, bundleRoot: `${context.bundleRoot}.moved` }, release, { relocation: true }).ok).toBe(true);
   await bundleRuntimeCommand('remove', options);
   expect(events).toEqual(['unregister:gateway', 'unregister:backend']);
   expect(readBundleOwner(context)).toBeNull();
   expect(fs.readFileSync(path.join(context.home, 'mandible.db-wal'), 'utf8')).toBe('durable-existing-writes');
   expect(fs.readFileSync(configFile, 'utf8')).toBe(configuration);
+});
+
+it('checks the verified bundle manifest before starting an existing registration', async () => {
+  const { context, options, events, manifest } = fixture();
+  await bundleRuntimeCommand('start', options);
+  expect(readBundleOwner(context)?.verification?.packageSha256).toBe('c'.repeat(64));
+  events.length = 0;
+  await bundleRuntimeCommand('start', { ...options, verifyInstallation: () => { throw new Error('Unexpected package re-verification'); } });
+  expect(events).toEqual(['initialize', 'register:backend']);
+  events.length = 0;
+  fs.appendFileSync(manifest, '\n');
+  await expect(bundleRuntimeCommand('start', options)).rejects.toThrow('differs from the verified installation receipt');
+  expect(events).toEqual([]);
 });
 
 it('keeps manual starts within their login session and never overrides native denial', async () => {

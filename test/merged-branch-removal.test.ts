@@ -240,7 +240,9 @@ describe("merged-branch removal", () => {
     const id = await mergeStoppedBeforeRemoval();
     const preview = new AuthQueue({ db, hookManager: createNoopHookManager(), allowExternalEffects: false });
     try {
-      await (preview as unknown as { runBackgroundFinalizers(id: string): Promise<void> }).runBackgroundFinalizers(id);
+      const finalizers = (preview as unknown as { finalizerQueue: { enqueue(id: string): boolean } }).finalizerQueue;
+      expect(finalizers.enqueue(id)).toBe(true);
+      await preview.drainFinalizers();
       expect(finalizerState(id)[REMOVE_MERGED_BRANCHES_STEP]).toMatchObject({ state: "pending", error: expect.stringContaining("copied auth preview") });
 
       const kept: BranchRemovalOutput = { branches: [HEAD, child.branch].map(branch => ({

@@ -5,7 +5,7 @@ import { assertLifecycleLockHeld, processIdentity } from './lifecycle-lock.mjs';
 import { runRuntimeCommand, runtimeObservationTimeout } from './runtime-observation.mjs';
 import { inspectServiceDefinitionsSync, assertBundleServiceIdentity } from './service-definitions.mjs';
 import { readServiceConfiguration, publishServiceConfiguration } from './service-configuration.mjs';
-import { readInstalledRelease, releaseFile } from './installed-release.mjs';
+import { applicationRootIdentity, assertInstalledApplicationVerification, readInstalledRelease, releaseFile, verifyApplicationRelease } from './installed-release.mjs';
 import { reconcileBundleServiceStart, BUNDLE_SERVICE_START_TIMEOUT_MS } from './bundle-service-start.mjs';
 import { observationPending } from './runtime-observation.mjs';
 
@@ -56,7 +56,7 @@ export function admitBundleOwner(context, release, { relocation = false } = {}) 
 }
 
 /** The delivery journal authorizes replacement; this boundary proves the old writer is gone. */
-export function adoptBundleRelease(context, release, expectedOwner, acceptedRelease, { until } = {}) {
+export function adoptBundleRelease(context, release, expectedOwner, acceptedRelease, { until, verification } = {}) {
   assertLifecycleLockHeld();
   assertBundleServiceIdentity(context, until);
   const current = readBundleOwner(context);
@@ -69,9 +69,17 @@ export function adoptBundleRelease(context, release, expectedOwner, acceptedRele
   const installationId = fs.readFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'utf8').trim();
   if (current && current.installationId !== installationId) throw new Error('Bundle owner belongs to another installation authority.');
   runtimeObservationTimeout(until);
+  assertInstalledApplicationVerification(path.join(context.bundleRoot, 'Contents/Resources'), verification);
   publish(ownerFile(context), { schema: 'mandible-bundle-owner@1', bundleRoot: context.bundleRoot, installationId,
-    generation: release.provenance.commit, sourceDigest: release.provenance.source_digest, ...(acceptedRelease ? { acceptedRelease } : {}) });
+    generation: release.provenance.commit, sourceDigest: release.provenance.source_digest, verification, ...(acceptedRelease ? { acceptedRelease } : {}) });
   return readBundleOwner(context);
+}
+
+function verifyBundleRegistration(app, { until }) {
+  applicationRootIdentity(app);
+  const signature = runRuntimeCommand('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], { until });
+  if (signature.status !== 0) throw new Error(`Installed application signature is invalid: ${signature.stderr}`);
+  return verifyApplicationRelease(app).verification;
 }
 
 export function nativeServiceControl(context, operation, role, { until } = {}) {
@@ -110,7 +118,8 @@ export function nativeServiceControls(context, operation, roles, { until, releas
 export async function bundleRuntimeCommand(command, { context, release, launchMode, initialize, inspect, configureGateway,
   reloadGateway, restartGateway, previewCount, waitReady, readProcess,
   startService = reconcileBundleServiceStart, registrationUntil = Date.now() + BUNDLE_SERVICE_START_TIMEOUT_MS,
-  control = nativeServiceControl, session = bundleLoginSession, observe = inspectServiceDefinitionsSync }) {
+  control = nativeServiceControl, session = bundleLoginSession, observe = inspectServiceDefinitionsSync,
+  verifyInstallation = verifyBundleRegistration }) {
   if (control === nativeServiceControl && (context.home !== path.join(os.userInfo().homedir, '.mandible')
       || context.accountHome !== os.userInfo().homedir || context.bundleIdentifier !== 'bio.mll.mandible' || process.env.MANDIBLE_INSTANCE_ROLE === 'preview')) {
     throw new Error('Isolated instances cannot inspect or register production bundle services.');
@@ -143,6 +152,25 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
   if (command === 'background-settings') { control(context, 'settings', 'backend'); return (await inspect({ launchMode })).status; }
   const previews = admission.owner ? previewCount(path.join(context.bundleRoot, 'Contents/Resources')) : 0;
   if ((command === 'remove' || relocating) && previews > 0) throw new Error('Registered previews still use the shared gateway; stop them before removing or relocating the app.');
+  const startsServices = ['start', 'restart', 'install', 'repair', 'configure-launch-mode', 'reload-gateway'].includes(command);
+  const resources = path.join(context.bundleRoot, 'Contents/Resources');
+  let verification = admission.owner?.verification;
+  if (startsServices) {
+    if (verification && !relocating) assertInstalledApplicationVerification(resources, verification);
+    else {
+      if (admission.owner && !['install', 'repair'].includes(command)) {
+        throw new Error('Existing bundle owner has no verified installation receipt. Install or repair the owned app before starting its services.');
+      }
+      const verified = verifyInstallation(context.bundleRoot, { until: registrationUntil });
+      let expectedDigest = verification?.packageSha256;
+      if (!expectedDigest && admission.owner?.acceptedRelease) {
+        const { readAcceptedReleaseReceipt } = await import('./accepted-release.mjs');
+        expectedDigest = readAcceptedReleaseReceipt(admission.owner.acceptedRelease).package.sha256;
+      }
+      if (expectedDigest && verified.packageSha256 !== expectedDigest) throw new Error('Application bytes differ from the verified installation.');
+      verification = verified;
+    }
+  }
   const restarting = command === 'restart' || relocating;
   const beforeRestart = restarting ? await inspect({ launchMode }) : null;
   if (['stop', 'remove', 'restart'].includes(command) || relocating) {
@@ -161,13 +189,13 @@ export async function bundleRuntimeCommand(command, { context, release, launchMo
     }
     if (command === 'remove' && readBundleOwner(context)) fs.unlinkSync(ownerFile(context));
   }
-  if (['start', 'restart', 'install', 'repair', 'configure-launch-mode', 'reload-gateway'].includes(command)) {
-    await initialize(path.join(context.bundleRoot, 'Contents/Resources'));
+  if (startsServices) {
+    await initialize(resources);
     const configuration = readServiceConfiguration(context);
     if (configuration.migrated) publishServiceConfiguration(configuration.file, configuration.configuration);
     const installationId = fs.readFileSync(path.join(context.home, 'config/client-auth/authority-id'), 'utf8').trim();
     publish(ownerFile(context), { ...admission.owner, schema: 'mandible-bundle-owner@1', bundleRoot: context.bundleRoot, installationId,
-      generation: release.provenance.commit, sourceDigest: release.provenance.source_digest });
+      generation: release.provenance.commit, sourceDigest: release.provenance.source_digest, verification });
     const prior = fs.existsSync(launchFile(context)) ? readBundleLaunch(context) : null;
     const currentSession = session();
     const enabled = ['start', 'restart'].includes(command) || relocating && !!beforeRestart?.backendJob.pid

@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { desktopImage } from './helpers/desktop-image.js';
 
 const signing = vi.hoisted(() => ({ app: '', tamper: false, verified: [] as boolean[] }));
 vi.mock('../scripts/app-signing.mjs', async original => ({
@@ -40,7 +41,7 @@ it('validates the final signed package after optional stapling and refuses chang
       fs.mkdirSync(resources, { recursive: true });
       fs.mkdirSync(path.join(signing.app, 'Contents/MacOS'));
       fs.writeFileSync(path.join(signing.app, 'Contents/Info.plist'), 'fixture');
-      fs.writeFileSync(path.join(signing.app, 'Contents/MacOS/mandible-app'), 'app');
+      fs.writeFileSync(path.join(signing.app, 'Contents/MacOS/mandible-app'), desktopImage());
       fs.writeFileSync(path.join(signing.app, 'Contents/MacOS/mandible-service'), 'helper');
       fs.writeFileSync(path.join(resources, 'program'), 'program');
       fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: 'fixture',

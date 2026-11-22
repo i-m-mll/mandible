@@ -5,12 +5,20 @@ import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { nativeSigningIdentifier, openAppSigner, requireNativeAppSigning, resolveAppSigning, verifyNativeAppSignatures } from '../scripts/app-signing.mjs';
+import { desktopMachOIdentity } from "../scripts/desktop-execution.mjs";
 import { finalizeAppPayload } from '../scripts/finalize-app-payload.mjs';
 import { installedFileIdentity } from '../scripts/installed-release.mjs';
+import { desktopImage } from './helpers/desktop-image.js';
 
 vi.mock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: vi.fn() }));
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+
+it("distinguishes desktop code changes from changes to its signing seal", () => {
+  const original = desktopMachOIdentity(desktopImage());
+  expect(desktopMachOIdentity(desktopImage(7, 32, 2))).toBe(original);
+  expect(desktopMachOIdentity(desktopImage(8, 16, 1))).not.toBe(original);
+});
 
 it('requires an explicit certificate for native qualification while preserving ad-hoc development selection', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-signing-')); roots.push(root);
@@ -59,6 +67,7 @@ it('signs distinct native generations with one certificate and stable first-part
   vi.mocked(spawnSync).mockImplementation((program, args = []) => {
     if (program === '/usr/bin/security' && args[0] === 'find-identity') return { status: 0, stdout: `1) ${identity} "Apple Development: Fixture (TEAM)"`, stderr: '' } as any;
     if (program === '/usr/bin/plutil') return { status: 0, stdout: identifier, stderr: '' } as any;
+    if (program === '/usr/bin/otool') return { status: 0, stdout: "\t/System/Library/Frameworks/WebKit.framework (compatibility version 1.0.0)\n", stderr: '' } as any;
     if (program === '/usr/bin/codesign') {
       if (args[0] === '--display') return { status: 0, stdout: '', stderr: `Identifier=${identifier}\nTeamIdentifier=FIXTURETEAM\n` } as any;
       if (args[0] === '--verify') {
@@ -73,6 +82,7 @@ it('signs distinct native generations with one certificate and stable first-part
     return { status: 0, stdout: '', stderr: '' } as any;
   });
   const signer = openAppSigner({ identity: 'Apple Development: Fixture', hardenedRuntime: true, entitlements: null });
+  const desktopIds = [];
   try {
     for (const generation of ['a', 'b']) {
       const app = path.join(root, generation, 'Mandible.app');
@@ -80,12 +90,14 @@ it('signs distinct native generations with one certificate and stable first-part
       fs.mkdirSync(resources, { recursive: true });
       fs.mkdirSync(path.join(app, 'Contents/MacOS'));
       fs.writeFileSync(path.join(app, 'Contents/Info.plist'), 'fixture plist');
+      fs.writeFileSync(path.join(app, 'Contents/MacOS/mandible-app'), desktopImage());
       const native = { serviceHelper: '../MacOS/mandible-service', trustHelper: '../MacOS/mandible-trust-helper', bun: '../MacOS/mandible-bun',
         approvalHelper: '../Helpers/MandibleApproval.app/Contents/MacOS/mandible-approval-helper' };
       fs.mkdirSync(path.join(app, 'Contents/Helpers/MandibleApproval.app/Contents/MacOS'), { recursive: true });
       for (const relative of Object.values(native)) fs.writeFileSync(path.resolve(resources, relative), generation);
       fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ native, signing: {} }));
       const finalized = finalizeAppPayload(app, signer);
+      desktopIds.push(finalized.desktopExecutionSha256);
       for (const relative of Object.values(native)) expect(finalized.files[relative]).toEqual(installedFileIdentity(path.resolve(resources, relative)));
       verifyNativeAppSignatures(app, signer, finalized);
       if (generation === 'b') {
@@ -94,6 +106,8 @@ it('signs distinct native generations with one certificate and stable first-part
       }
     }
   } finally { signer.close(); }
+  expect(desktopIds[0]).toMatch(/^[0-9a-f]{64}$/);
+  expect(desktopIds[1]).toBe(desktopIds[0]);
   expect(new Set(signatures.map(item => item.identity))).toEqual(new Set([identity]));
   for (const [name, role] of [['mandible-service', 'serviceHelper'], ['mandible-trust-helper', 'trustHelper'], ['MandibleApproval.app', 'approvalHelper']]) {
     const expected = nativeSigningIdentifier(identifier, role);

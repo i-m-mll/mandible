@@ -387,7 +387,7 @@ function isHistoryStatus(status: string): boolean {
     || status === 'returned' || status === 'dismissed' || status === 'error';
 }
 
-function isAuthExecutingStatus(status: string): boolean {
+function isActiveApprovalStatus(status: string): boolean {
   return status === 'approved' || status === 'executing';
 }
 
@@ -397,7 +397,7 @@ type AuthExecutionCallout = {
 };
 
 function getAuthExecutionCallout(status: string, consoleText: string): AuthExecutionCallout | null {
-  if (!isAuthExecutingStatus(status)) return null;
+  if (status !== 'executing') return null;
   const text = consoleText.toLowerCase();
   if (text.includes('merge conflict') || text.includes('conflicts remain') || text.includes('manual resolution')) {
     return { text: 'Merge needs attention in the terminal', spinner: false };
@@ -432,7 +432,8 @@ function approvalPhaseLabel(phase: ApprovalPhase | undefined): string {
 
 function getStatusLabel(request: AuthRequest): string {
   const status = getAuthStatus(request);
-  if (isAuthExecutingStatus(status)) return 'Executing';
+  if (status === 'approved') return getAuthType(request) === 'merge' ? 'Signed and queued' : 'Queued';
+  if (status === 'executing') return 'Executing';
   if (status === 'needs_rebase') return 'Needs rebase';
   if (status === 'completed') {
     const type = getAuthType(request);
@@ -947,7 +948,7 @@ function AuthRequestDetail({
   const [savedViewMode, setSavedViewMode] = usePersistedViewState<'abstract' | 'console' | 'diff'>(
     `auth-review-tab:${getAuthId(request)}`,
     (value, defaults) => value === 'abstract' || value === 'console' || value === 'diff' ? value : defaults,
-    autoShowConsoleOnApproval && isAuthExecutingStatus(getAuthStatus(request)) ? 'console' : 'abstract',
+    autoShowConsoleOnApproval && getAuthStatus(request) === 'executing' ? 'console' : 'abstract',
   );
   const viewMode = navigation.view === 'info' ? 'abstract' : navigation.view ?? savedViewMode;
   const setViewMode = (view: 'abstract' | 'console' | 'diff') => {
@@ -1110,12 +1111,11 @@ function AuthRequestDetail({
     const selectionChanged = previousRequestIdRef.current !== fullId;
     const previous = previousStatusRef.current;
 
-    if (!navigation.view && !selectionChanged && autoShowConsoleOnApproval && isAuthExecutingStatus(status)
-      && (previous === null || !isAuthExecutingStatus(previous))) {
+    if (!navigation.view && !selectionChanged && autoShowConsoleOnApproval && status === 'executing' && previous !== 'executing') {
       setSavedViewMode('console');
     }
     if (!navigation.view && !selectionChanged && autoReturnToAbstractOnSuccess && status === 'completed'
-      && previous !== null && isAuthExecutingStatus(previous)) {
+      && previous !== null && isActiveApprovalStatus(previous)) {
       setSavedViewMode('abstract');
     }
 
@@ -1747,7 +1747,7 @@ function AuthSidebarItem({
     dotStatus = 'failed';
   } else if (status === 'completed') {
     dotStatus = 'completed';
-  } else if (isAuthExecutingStatus(status)) {
+  } else if (isActiveApprovalStatus(status)) {
     dotStatus = 'approved';  // Keep CSS class as 'approved' for now
   } else if (status === 'rejected' || status === 'withdrawn' || status === 'superseded' || status === 'returned' || status === 'dismissed') {
     dotStatus = 'dismissed';
@@ -1787,7 +1787,8 @@ function AuthSidebarItem({
         <span className="auth-sidebar-item__metadata">
           {repo && <span className="auth-sidebar-item__repo" title={repo}>{repo}</span>}
           <span className={`type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`}>{sidebarTypeMeta.label}</span>
-          <span className="auth-sidebar-item__time">{timestampLabel}</span>
+          {status === 'approved' && <span className="auth-sidebar-item__metadata-text">Queued</span>}
+          <span className="auth-sidebar-item__metadata-text">{timestampLabel}</span>
         </span>
       </span>
     </button>
@@ -2438,7 +2439,7 @@ export function AuthQueueView({
     () =>
       queue.filter((r) => {
         const status = getAuthStatus(r);
-        return status === 'pending' || isAuthExecutingStatus(status) ||
+        return status === 'pending' || isActiveApprovalStatus(status) ||
           isFailedLikeStatus(status);
       }),
     [queue],
@@ -2775,7 +2776,7 @@ export function AuthQueueView({
   // Build the sidebar list based on the active filter mode
   const sidebarItems = useMemo((): AuthRequest[] => {
     if (filterMode === 'active') {
-      // Active = pending, approved (executing), recently-failed — plus lingering
+      // Active = pending, queued, executing, recently-failed — plus lingering
       const active = [...orderedActiveQueue, ...lingeringQueue];
       // Deduplicate (lingering items may overlap with orderedActiveQueue)
       const seen = new Set<string>();
@@ -3119,11 +3120,8 @@ export function AuthQueueView({
     const retryAllowed = daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/retry`);
     const approvalAllowed = !request.publication_blocker && daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/approve`);
     const actionDisabled = inFlight.has(id);
-    // Bug: 816476e — isExecuting covers both the optimistic 'approved' status and
-    // the inFlight window before the API returns (where status is still 'pending'
-    // but a click is in progress). Both cases should hide Approve/Reject and show
-    // an in-progress label.
-    const isExecuting = isAuthExecutingStatus(status);
+    if (status === 'approved') return null;
+    const isExecuting = status === 'executing';
     const isSubmitting = actionDisabled && !isExecuting && !isFailed;
 
     if (isFailed) {
@@ -3163,8 +3161,6 @@ export function AuthQueueView({
       );
     }
 
-    // Once status becomes 'approved' (optimistic or via SSE), hide Approve/Reject
-    // and let the phase-aware callout in the card body carry status.
     if (isExecuting) {
       return (
         <div className="auth-actions">

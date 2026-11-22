@@ -3,6 +3,10 @@ import path from 'node:path';
 
 export const daemonBuildOutput = 'dist';
 export const frontendBuildOutput = 'ui/dist';
+export const uiStaticFiles = [
+  'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg',
+  'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png',
+];
 
 const desktopOutputs = {
   MANDIBLE_DESKTOP_BOOTSTRAP_DIR: 'src-tauri/dist',

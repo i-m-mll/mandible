@@ -11,7 +11,7 @@ pub fn presentation() -> &'static str {
     }
 }
 
-pub fn host_initialization_script() -> String {
+pub fn host_initialization_script(startup_trace: bool) -> String {
     static SESSION_ID: OnceLock<String> = OnceLock::new();
     let session_id = SESSION_ID.get_or_init(|| {
         format!("{}-{}", std::process::id(), std::time::SystemTime::now()
@@ -21,6 +21,8 @@ pub fn host_initialization_script() -> String {
         "kind": "tauri", "platform": std::env::consts::OS,
         "framePresentation": presentation(),
         "sessionId": session_id,
+        "startupTrace": startup_trace,
+        "handoverRoute": startup_trace,
     });
     format!("Object.defineProperty(window, '__MANDIBLE_NATIVE_HOST__', {{ value: Object.freeze({host}) }});")
 }

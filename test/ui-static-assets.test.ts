@@ -14,6 +14,7 @@ import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 type AssetManifest = {
   version: number;
   entry: string;
+  ui_asset_revision: string;
   entryPreloads: string[];
   routes: Record<string, string>;
 };
@@ -36,7 +37,14 @@ describe("UI static asset delivery", () => {
       expect(response.headers.get("cache-control")).toBe("no-cache");
       expect(html).toContain(`<link rel="modulepreload" href="${manifest.entryPreloads[0]}" />`);
       expect(html).toContain(JSON.stringify(manifest.routes.spaces));
-      expect(html.indexOf("modulepreload")).toBeLessThan(html.indexOf('src="/dist/app.js"'));
+      const entry = `/dist/app.js?v=${manifest.ui_asset_revision}`;
+      expect(html.indexOf("modulepreload")).toBeLessThan(html.indexOf(`src="${entry}"`));
+      expect(html.indexOf('id="mandible-startup-frame"')).toBeLessThan(html.indexOf(`src="${entry}"`));
+      expect(html).toContain(`href="/dist/app.css?v=${manifest.ui_asset_revision}"`);
+      const health = await (await fetch(`${origin}/api/health`)).json();
+      expect(health.ui_asset_revision).toMatch(/^[0-9a-f]{64}$/);
+      expect(html).toContain(JSON.stringify({ ui_asset_revision: health.ui_asset_revision }).slice(1, -1));
+      expect((await fetch(`${origin}${entry}`)).status).toBe(200);
     } finally {
       await closeServer(server);
     }
