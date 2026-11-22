@@ -1,3 +1,5 @@
+import * as z from "zod";
+import { convertTrackedBriefingGroup, planTrackedBriefingGroupConversion } from "../feedback/convert-tracked-briefing-group.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { attributionForRequest, ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity, requireOperator } from "../client-auth/authz.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -683,6 +685,32 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       sendJson(res, 200, { candidate });
     } catch (error) { handleError(res, error); }
   }, { operation: { id: "post:/api/briefing-groups/:groupId/review-candidates", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
+
+  server.get("/api/briefing-groups/:groupId/tracking-conversion", (req, res) => {
+    try {
+      requireOperator(db, req);
+      sendJson(res, 200, { plan: planTrackedBriefingGroupConversion(db, req.params.groupId) });
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "get:/api/briefing-groups/:groupId/tracking-conversion", effects: ["ledger:read", "process:external"],
+    requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  server.post("/api/briefing-groups/:groupId/tracking-conversion", (req, res) => {
+    try {
+      requireOperator(db, req);
+      const input = req.body as { expected_base_bundle_ref: string; plan_digest: string };
+      const result = convertTrackedBriefingGroup(db, { groupRef: req.params.groupId,
+        expectedBaseRef: input.expected_base_bundle_ref, planDigest: input.plan_digest });
+      if (result.changed) broadcast(BRIEFING_EVENTS.groupConfigurationUpdated, {
+        group_id: result.plan.group_id, current_bundle_id: result.bundle_id,
+      });
+      sendJson(res, 200, result);
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/tracking-conversion",
+    effects: ["ledger:write", "files:production", "process:external", "auth:protected"],
+    requestSchema: z.object({
+      expected_base_bundle_ref: z.string().trim().min(1),
+      plan_digest: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict(), reportingCategory: "briefing" }, fileRpc: "allow" });
 
   server.post("/api/briefing-groups/:groupId/destinations", (req, res) => {
     try {

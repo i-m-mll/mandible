@@ -1,7 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+import { canonicalJson } from "../canonical-json.js";
 import type { Db } from "../db.js";
 import { requestOriginJson } from "../request-origin.js";
-import { bundleMemberRows, writeBundleMemberRows } from "./briefing-bundles.js";
+import { bundleMemberRows, resolveBundleId, writeBundleMemberRows } from "./briefing-bundles.js";
 import { resolveGroupId } from "./briefing-groups.js";
 import { BriefingStoreError } from "./briefing-errors.js";
 import { mutateBriefing } from "./mutation-history.js";
@@ -19,9 +22,14 @@ type ConversionPlan = {
   pending_proposal_ids: string[];
   decision_count: number;
   members: ConversionMember[];
+  plan_digest: string;
 };
 
 export function planTrackedBriefingGroupConversion(db: Db, groupRef: string): ConversionPlan {
+  return db.transaction(() => readConversionPlan(db, groupRef)).deferred();
+}
+
+function readConversionPlan(db: Db, groupRef: string): ConversionPlan {
   const groupId = resolveGroupId(db, groupRef);
   const group = db.prepare("SELECT current_bundle_id, archived_at FROM briefing_groups WHERE id = ?")
     .get(groupId) as { current_bundle_id: string | null; archived_at: number | null };
@@ -63,7 +71,8 @@ export function planTrackedBriefingGroupConversion(db: Db, groupRef: string): Co
       commit_sha: tree.commit_sha, evidence: result.kind === "current" ? "current_path" : "recorded_rename" };
   });
   const identity = (projectId: string | null, path: string) => JSON.stringify([projectId, path]);
-  const seen = new Set(bundleMemberRows(db, base).flatMap(row => row.briefing_id === null
+  const layout = bundleMemberRows(db, base);
+  const seen = new Set(layout.flatMap(row => row.briefing_id === null
     ? [identity(row.tracked_project_id, row.tracked_path)] : []));
   const collisions = new Set(seen);
   for (const candidate of candidates) {
@@ -77,22 +86,34 @@ export function planTrackedBriefingGroupConversion(db: Db, groupRef: string): Co
     const { briefing_id, title, project_id, old_path } = candidate;
     return { briefing_id, title, project_id, old_path, kind: "keep_custody", reason: "duplicate_tracked_path" };
   });
-  return { group_id: groupId, base_bundle_id: base, pending_proposal_ids: pending.map(row => row.bundle_id),
+  const plan = { group_id: groupId, base_bundle_id: base, pending_proposal_ids: pending.map(row => row.bundle_id),
     decision_count: history.count, members };
+  const plan_digest = createHash("sha256").update(canonicalJson({ plan, layout, custody: rows })).digest("hex");
+  return { ...plan, plan_digest };
 }
 
-export function convertTrackedBriefingGroup(db: Db, groupRef: string, expectedBaseId: string, now = Date.now()) {
+export function convertTrackedBriefingGroup(db: Db, input: {
+  groupRef: string; expectedBaseRef: string; planDigest: string;
+}, now = Date.now()) {
   return db.transaction(() => {
-    const plan = planTrackedBriefingGroupConversion(db, groupRef);
-    if (plan.base_bundle_id !== expectedBaseId) {
+    const plan = readConversionPlan(db, input.groupRef);
+    if (plan.base_bundle_id !== resolveBundleId(db, input.expectedBaseRef)) {
       throw new BriefingStoreError("The group’s current bundle changed", 409, "conversion_base_drift");
     }
     if (plan.pending_proposal_ids.length) {
       throw new BriefingStoreError("Decide all custody proposals before conversion", 409, "conversion_pending_proposals",
         { proposal_ids: plan.pending_proposal_ids });
     }
+    if (plan.plan_digest !== input.planDigest) {
+      throw new BriefingStoreError("The group’s conversion plan changed. Review it again.", 409, "conversion_plan_drift");
+    }
     const conversions = new Map(plan.members.flatMap(member => member.kind === "track" ? [[member.briefing_id, member]] : []));
-    if (!conversions.size) return { plan, bundle_id: plan.base_bundle_id, changed: false };
+    if (!conversions.size) return { plan, bundle_id: plan.base_bundle_id, changed: false, backup_path: null };
+    const directory = path.join(path.dirname(path.resolve(db.name)), "backups");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const stamp = new Date(now).toISOString().replaceAll(":", "-");
+    const backup_path = path.join(directory, `before-briefing-conversion-${stamp}-${randomUUID()}.db`);
+    db.backupBeforeMigration(backup_path);
     const bundleId = randomUUID();
     const rows = bundleMemberRows(db, plan.base_bundle_id).map(row => {
       const member = row.briefing_id === null ? undefined : conversions.get(row.briefing_id);
@@ -108,6 +129,6 @@ export function convertTrackedBriefingGroup(db: Db, groupRef: string, expectedBa
     mutateBriefing(db, "briefing_group", plan.group_id, () =>
       db.prepare("UPDATE briefing_groups SET current_bundle_id = ?, updated_at = ? WHERE id = ?")
         .run(bundleId, now, plan.group_id));
-    return { plan, bundle_id: bundleId, changed: true };
+    return { plan, bundle_id: bundleId, changed: true, backup_path };
   }).immediate();
 }

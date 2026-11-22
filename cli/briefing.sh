@@ -292,6 +292,37 @@ cmd_group_configure() {
   emit_group "$response" "$json"
 }
 
+cmd_group_convert() {
+  local group_ref="" base_ref="" digest="" apply=0 json=0 response payload endpoint
+  local binding
+  binding=$(mandible_bind_arguments "briefing.group.convert" '{"group_ref":{"position":0},"apply":{"option":"apply","constant":"1"},"base_ref":{"option":"expected-base"},"digest":{"option":"plan-digest"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  eval "$binding"
+  endpoint="/api/briefing-groups/$(urlencode "$group_ref")/tracking-conversion"
+  if (( apply )); then
+    [[ -n "$base_ref" && -n "$digest" ]] || die "Apply requires --expected-base and --plan-digest from the dry run." 2
+    payload="$(jq -n --arg base "$base_ref" --arg digest "$digest" '{expected_base_bundle_ref:$base,plan_digest:$digest}')"
+    response="$(api_send POST "$endpoint" "$payload")" || die "Failed to apply Briefing group conversion." 1
+  else
+    [[ -z "$base_ref" && -z "$digest" ]] || die "--expected-base and --plan-digest require --apply." 2
+    response="$(api_get "$endpoint")" || die "Failed to plan Briefing group conversion." 1
+  fi
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  elif (( apply )); then
+    printf '%s\n' "$response" | api_jq_human '
+      if .changed then "Converted to briefing-bundle:\(.bundle_id | mandible_short_id)\nBackup \(.backup_path)"
+      else "No members to convert" end'
+  else
+    printf '%s\n' "$response" | api_jq_human '
+      .plan | "Base \(.base_bundle_id | mandible_short_id)", "Plan digest \(.plan_digest)",
+      "Recorded decisions \(.decision_count)",
+      (.pending_proposal_ids[] | "Pending custody proposal \(. | mandible_short_id)"),
+      (.members[] | if .kind == "track" then
+        "Track \(.project_key)/\(.path)\(if .evidence == "recorded_rename" then " from \(.old_path)" else "" end)"
+      else "Keep custody \(.old_path // .title) (\(.reason))" end)'
+  fi
+}
+
 cmd_group_add() {
   local group_ref="" bundle_ref="" sharing_reason="" json=0 response payload
   local binding
@@ -485,6 +516,7 @@ cmd_group() {
   case "$subcommand" in
     create) cmd_group_create "$@" ;; add) cmd_group_add "$@" ;; configure) cmd_group_configure "$@" ;;
     archive|restore) cmd_group_archive_state "$subcommand" "$@" ;;
+    convert) cmd_group_convert "$@" ;;
     promote) cmd_group_promote "$@" ;;
     review) cmd_group_review "$@" ;;
     accept|reject) cmd_group_review_disposition "$subcommand" "$@" ;;

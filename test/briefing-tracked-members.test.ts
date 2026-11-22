@@ -1,22 +1,44 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { expect, it } from "vitest";
 import { computeAuthMergeReviewMetadata } from "../src/auth-context.js";
 import { AuthQueue } from "../src/auth-queue.js";
+import { setSetting } from "../src/client-auth/settings-kv.js";
 import { createBriefingBundle, replaceBriefingBundleLayout } from "../src/feedback/briefing-bundles.js";
 import { configureBriefingGroup, createBriefingGroup, readBriefingGroup } from "../src/feedback/briefing-groups.js";
 import { publishBriefingFromArtifactVersion } from "../src/feedback/briefings.js";
-import { convertTrackedBriefingGroup, planTrackedBriefingGroupConversion } from "../src/feedback/convert-tracked-briefing-group.js";
 import { readRequestReview } from "../src/feedback/request-review.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
-import { getOperatorId } from "../src/users/store.js";
+import { inlineLedgerReader } from "../src/ledger-reads/index.js";
+import { registerBriefingRoutes } from "../src/routes/briefing.js";
+import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
+import { Router } from "../src/server.js";
+import Database from "../src/sqlite.js";
+import { createUser } from "../src/users/store.js";
 import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import {
-  AUTH_MERGE_REVIEW, createAuthCheckRepo, createMigratedDb, createNoopHookManager, git, registerWorkRepo, writeFile,
+  AUTH_MERGE_REVIEW, createAuthCheckRepo, createNoopHookManager, git, registerWorkRepo, uniqueMissingPath, writeFile,
 } from "./helpers/auth-queue-fixtures.js";
+import { runCli, startStubDaemon } from "./helpers/cli-process.js";
+import { migratedFileDb } from "./helpers/ledger-fixtures.js";
 
 it("qualifies tracked paths by project and keeps reviewed pins and custody history across conversion", async () => {
-  const db = createMigratedDb();
+  const db = migratedFileDb(uniqueMissingPath("tracking-conversion.db"));
   const queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
-  const viewer = { userId: getOperatorId(db)!, operator: true };
+  const operator = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" });
+  setSetting(db, "user.operator_id", operator.id);
+  const viewer = { userId: operator.id, operator: true };
+  const agent = createUser(db, { slug: "layout-editor", kind: "agent", display_name: "Layout editor" });
+  const router = new Router({ clientAuth: {
+    authenticate: token => {
+      const userId = token === "operator" ? viewer.userId : token === "agent" ? agent.id : null;
+      return userId ? { user_id: userId, slug: token!, method: "api_token", credential_id: null,
+        source: "in_process", effect_ceiling: PRODUCTION_EFFECTS } : null;
+    },
+    mode: () => "compat",
+    recordUnattributedWrite: () => {},
+  } });
+  registerBriefingRoutes(router, db, inlineLedgerReader(() => db));
   const firstRepo = createAuthCheckRepo();
   const secondRepo = createAuthCheckRepo();
   const commit = (repo: string, subject: string) => {
@@ -62,15 +84,57 @@ it("qualifies tracked paths by project and keeps reviewed pins and custody histo
     ] }, viewer);
     const group = createBriefingGroup(db, { key: "mixed-policy", name: "Mixed policy",
       currentBundleRef: current.id, bundleRefs: [pending.id], viewer });
+    const endpoint = `/api/briefing-groups/${group.id}/tracking-conversion`;
+    const plan = async () => {
+      const response = await router.invoke({ method: "GET", url: endpoint, credential: "operator" });
+      expect(response.status).toBe(200);
+      return (response.body as { plan: { plan_digest: string } }).plan;
+    };
+    const apply = (plan_digest: string, credential = "operator") => router.invoke({
+      method: "POST", url: endpoint, credential,
+      body: { expected_base_bundle_ref: current.id.slice(0, 8), plan_digest },
+    });
+    const backupDirectory = path.join(path.dirname(db.name), "backups");
     const beforePlan = db.prepare("SELECT total_changes() AS writes").get();
-    const plan = planTrackedBriefingGroupConversion(db, group.id);
-    expect(plan).toMatchObject({ pending_proposal_ids: [pending.id], members: [
+    const blocked = await plan();
+    expect(blocked).toMatchObject({ pending_proposal_ids: [pending.id], members: [
       { kind: "track", old_path: "legacy.md", path: "current.md", evidence: "recorded_rename" },
     ] });
-    expect(() => convertTrackedBriefingGroup(db, group.id, current.id)).toThrow(/decide all custody proposals/i);
+    expect(await apply(blocked.plan_digest)).toMatchObject({
+      status: 409, body: { code: "conversion_pending_proposals", proposal_ids: [pending.id] },
+    });
     expect(db.prepare("SELECT total_changes() AS writes").get()).toEqual(beforePlan);
+    expect(existsSync(backupDirectory)).toBe(false);
     const dismissal = configureBriefingGroup(db, group.id, { currentBundleRef: current.id, bundleRefs: [] }, viewer).group.history[0]!;
-    const conversion = convertTrackedBriefingGroup(db, group.id, current.id);
+    const ready = await plan();
+    expect(await apply(ready.plan_digest, "agent")).toMatchObject({
+      status: 403, body: { code: "operator_required" },
+    });
+    expect(await apply(blocked.plan_digest)).toMatchObject({
+      status: 409, body: { code: "conversion_plan_drift" },
+    });
+    expect(existsSync(backupDirectory)).toBe(false);
+    const daemon = await startStubDaemon(({ method, url, headers, body }) =>
+      router.invoke({ method, url, credential: headers.authorization?.replace(/^Bearer /i, ""), body }));
+    let conversion: { bundle_id: string; backup_path: string; changed: boolean };
+    try {
+      const applied = await runCli(["briefing", "group", "convert", group.id.slice(0, 8), "--apply",
+        "--expected-base", current.id.slice(0, 8), "--plan-digest", ready.plan_digest, "--json"], {
+        env: { ...daemon.env, MANDIBLE_TOKEN: "operator", MANDIBLE_NO_KEYCHAIN_TOKEN: "1" },
+      });
+      expect(applied.status, applied.stderr).toBe(0);
+      conversion = JSON.parse(applied.stdout) as typeof conversion;
+      expect(conversion.changed).toBe(true);
+    } finally {
+      await daemon.close();
+    }
+    const backup = new Database(conversion.backup_path, { readonly: true, fileMustExist: true });
+    try {
+      expect(backup.prepare("SELECT current_bundle_id FROM briefing_groups WHERE id = ?").get(group.id))
+        .toEqual({ current_bundle_id: current.id });
+    } finally {
+      backup.close();
+    }
     const converted = readBriefingGroup(db, group.id, viewer);
     expect(converted.history[0]).toMatchObject({ id: dismissal.id, prior_base: { id: current.id } });
     expect(converted.current?.id).toBe(conversion.bundle_id);
