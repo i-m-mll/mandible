@@ -4,7 +4,7 @@ import { STANDING_REVIEW_ROUND_SCHEMA_SQL, REVIEW_EVIDENCE_SCHEMA_SQL, REVIEW_TH
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
 import { INTERFACE_NOTES_SCHEMA_SQL } from "./interface-notes/schema.js";
-import { NOTICE_REVIEW_SUBMISSION_SQL, NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
+import { NOTICE_MESSAGE_SQL, NOTICE_REVIEW_SUBMISSION_SQL, NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL } from "./work-unit-assignment-schema.js";
 import { AUTH_GO_LIVE_SUPERSESSIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
@@ -39,7 +39,7 @@ import { ANTIGRAVITY_PROVIDER_SCHEMA_SQL } from "./antigravity-provider-schema.j
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 257;
+export const BASELINE_SCHEMA_VERSION = 258;
 
 export const FROZEN_REQUEST_REVIEW_COLUMNS_SQL = [
   "ALTER TABLE auth_requests ADD COLUMN merge_effective_head_sha TEXT",
@@ -962,6 +962,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   ...INTERFACE_NOTES_SCHEMA_SQL,
   ...NOTIFICATIONS_SCHEMA_SQL,
   NOTICE_REVIEW_SUBMISSION_SQL,
+  ...NOTICE_MESSAGE_SQL,
   ...OPERATOR_TRUST_CHANGES_SCHEMA_SQL,
 ];
 

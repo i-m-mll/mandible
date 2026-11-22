@@ -7,7 +7,7 @@ import { exactAgentRef } from "./ambient-provider-identity.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { INTERFACE_NOTE_EMBED_GRANTS_SQL } from "./interface-notes/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
-import { NOTICE_REVIEW_SUBMISSION_SQL, NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
+import { NOTICE_MESSAGE_SQL, NOTICE_REVIEW_SUBMISSION_SQL, NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL, recoverHistoricalExactAssignments } from "./work-unit-assignment-schema.js";
@@ -2519,6 +2519,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 256, name: "tracked_briefing_members",
     statements: [...TRACKED_BRIEFING_MEMBER_MIGRATION_SQL, ...TRACKED_BRIEFING_REVIEW_SCHEMA_SQL] },
   { version: 257, name: "antigravity_provider", requires_foreign_keys_off: true, statements: [...ANTIGRAVITY_PROVIDER_MIGRATION_SQL] },
+  { version: 258, name: "agent_messages", statements: [...NOTICE_MESSAGE_SQL] },
 ];
 
 /**

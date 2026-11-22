@@ -9,7 +9,7 @@ import type { HookCallback, Options } from "@anthropic-ai/claude-agent-sdk";
 import { AuthQueue } from "../src/auth-queue.js";
 import { ClaudeSdkTransport } from "../src/conversation-control/claude-sdk-transport.js";
 import { setDb, type Db } from "../src/db.js";
-import type { BranchKeptReason, OutcomeReport, OutcomeStep } from "../src/notices/contract.js";
+import type { BranchKeptReason, NoticeCaller, OutcomeReport, OutcomeStep } from "../src/notices/contract.js";
 import { NoticeLog } from "../src/notices/log.js";
 import { createOutcomeReporter } from "../src/notices/report.js";
 import { renderNotice } from "../src/notices/render.js";
@@ -88,7 +88,7 @@ afterEach(async () => { await queue.dispose(); db.close(); });
 const submit = (session: string, title = "Reviewed command") => queue.submit({ ...AUTH_COMMAND_REVIEW, type: "command", command: "printf reviewed",
   title, repo, session_id: session, requester_evidence_method: "session_claim" }, user.id);
 const operator = { user_id: "", evidence_method: "operator" };
-const texts = (provider: "claude" | "codex", session: string) => queue.notices!.collect(provider, session).map((notice) => notice.text);
+const texts = (provider: "claude" | "codex", session: string) => queue.notices!.collect({ provider, session_id: session }).map((notice) => notice.text);
 
 it("tells the root session of the responsible agent once, and only that session", async () => {
   const request = await submit("agent:claude:s1:a1");
@@ -97,7 +97,7 @@ it("tells the root session of the responsible agent once, and only that session"
   expect(texts("claude", "a1")).toEqual([]);
   expect(texts("codex", "s1")).toEqual([]);
   expect(texts("claude", "s1")).toEqual([line]);
-  const owed = queue.notices!.collect("claude", "s1");
+  const owed = queue.notices!.collect({ provider: "claude", session_id: "s1" });
   expect(owed.map((notice) => notice.text)).toEqual([line]);
   queue.notices!.delivered(owed.map((notice) => notice.id));
   expect(texts("claude", "s1")).toEqual([]);
@@ -129,7 +129,7 @@ it("raises a second notice when the report changes after delivery, and only then
   db.prepare(`INSERT INTO auth_hook_executions (id, auth_request_id, hook_id, command, command_digest, required, state, created_at, updated_at)
     VALUES (?, ?, 'rebuild', 'true', ?, 1, 'pending', 1, 1)`).run(randomUUID(), id, "0".repeat(64));
   const log = new NoticeLog(db, createOutcomeReporter(db), () => ({ owner_user_id: user.id, responsibility_session_id: "agent:claude:s5:s5", work_unit_id: null }));
-  const deliver = () => { const owed = log.collect("claude", "s5"); log.delivered(owed.map((n) => n.id)); return owed.map((n) => n.text); };
+  const deliver = () => { const owed = log.collect({ provider: "claude", session_id: "s5" }); log.delivered(owed.map((n) => n.id)); return owed.map((n) => n.text); };
 
   log.raise(id, { kind: "change" });
   expect(deliver()).toEqual([]);
@@ -158,7 +158,7 @@ it("broadcasts each change to a session notice once it commits, and each once", 
   setSseManager(manager);
   try {
     log.raise(id, { kind: "transition", actor: null });
-    const owed = log.collect("claude", "s6");
+    const owed = log.collect({ provider: "claude", session_id: "s6" });
     log.delivered(owed.map((notice) => notice.id));
     expect(changed).toEqual([{ id: owed[0].id, committed: true }, { id: owed[0].id, committed: true }, { id: owed[0].id, committed: true }]);
 
@@ -169,7 +169,7 @@ it("broadcasts each change to a session notice once it commits, and each once", 
     }), { userId: user.id, evidenceMethod: "session_claim" }, { now: Date.parse(at) - 1000, projectId: repo }));
     reconcileManagedReminders(db, Date.parse(at));
     const rows = db.prepare("SELECT id, recipient_kind FROM notifications WHERE subject_kind = 'reminder'").all() as Array<{ id: string; recipient_kind: string }>;
-    const reminder = log.collect("claude", "s6");
+    const reminder = log.collect({ provider: "claude", session_id: "s6" });
     log.delivered(reminder.map((notice) => notice.id));
     const session = rows.find((row) => row.recipient_kind === "session")!.id;
     const user_ = rows.find((row) => row.recipient_kind === "user")!.id;
@@ -197,7 +197,7 @@ it("tells a fired reminder to the root session of the agent that armed it, once,
 
   const short = (id: string) => id.slice(0, 21);
   const deliver = (provider: "claude" | "codex", session: string) => {
-    const owed = queue.notices!.collect(provider, session);
+    const owed = queue.notices!.collect({ provider, session_id: session });
     queue.notices!.delivered(owed.map((notice) => notice.id));
     return owed.map((notice) => notice.text);
   };
@@ -258,7 +258,11 @@ it("prints owed notices and confirms them; a subagent prints nothing; an absent 
 it("tells a Mandible-hosted Claude chat in process unless its settings already run the hook", async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "notices-chat-"));
   const delivered: string[][] = [];
-  const notices = { collect: () => [{ id: "n1", text: "Mandible: auth 01234567 expired." }], delivered: (ids: readonly string[]) => { delivered.push([...ids]); } };
+  const callers: NoticeCaller[] = [];
+  const notices = {
+    collect: (caller: NoticeCaller) => { callers.push(caller); return caller.agent_id ? [] : [{ id: "n1", text: "Mandible: auth 01234567 expired." }]; },
+    delivered: (ids: readonly string[]) => { delivered.push([...ids]); },
+  };
   const hooks = async () => {
     let options: Options | undefined;
     const transport = new ClaudeSdkTransport({ kind: "start", conversation_id: "c", generation: 1, controller_instance_id: "i", cwd,
@@ -271,6 +275,7 @@ it("tells a Mandible-hosted Claude chat in process unless its settings already r
   try {
     const [, told] = await hooks();
     expect(await told!(prompt("a1") as never, undefined, { signal })).toEqual({});
+    expect(callers).toEqual([{ provider: "claude", session_id: "s1", agent_id: "a1" }]);
     expect(delivered).toEqual([]);
     expect(await told!(prompt() as never, undefined, { signal }))
       .toEqual({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "Mandible: auth 01234567 expired." } });

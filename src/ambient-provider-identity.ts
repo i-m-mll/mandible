@@ -59,6 +59,16 @@ export function resolveAmbientProviderIdentity(env: NodeJS.ProcessEnv = process.
   return normalizeAmbientProviderIdentity({ provider, agent_id: env.CLAUDE_AGENT_ID || null, session_id: env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID });
 }
 
+/**
+ * The agent a provider hook's payload speaks for: the agent it names, or the
+ * session's main thread when it names none. The same rule binds the hook's
+ * Bash commands to `MANDIBLE_AGENT_REF`, so a session's commands and its hooks
+ * resolve to one exact ref.
+ */
+export function hookAgentIdentity(provider: string, sessionId: unknown, agentId: unknown): AmbientProviderIdentity | null {
+  return normalizeAmbientProviderIdentity({ provider, session_id: sessionId, agent_id: agentId ?? sessionId });
+}
+
 /** Lossless scalar projection for exact executor aliases. */
 export function exactAgentRef(value: AmbientProviderIdentity | null): string | null {
   const context = normalizeAmbientProviderIdentity(value);

@@ -289,7 +289,7 @@ describe("auth request immutable lifecycle", () => {
       expect(emptyCli.status, emptyCli.stderr).toBe(0);
       expect(emptyCli.stdout).toContain("No comments");
       expect(emptyCli.stdout).toContain("Review notice undelivered");
-      const notices = queue.notices!.collect("claude", "review-requester");
+      const notices = queue.notices!.collect({ provider: "claude", session_id: "review-requester" });
       expect(notices.map(notice => notice.text).join("\n")).toContain(`mandible auth review show ${unbound.id.slice(0, 8)}`);
       queue.notices!.delivered(notices.map(notice => notice.id));
       queue.assumeRequestResponsibility(unbound.id, { kind: "user", user_id: operator.id }, "Take responsibility", 2, 0);

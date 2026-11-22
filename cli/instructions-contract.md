@@ -193,6 +193,15 @@ Standing notes attach selected text to an exact artifact version. They are saved
 - {{command identity.exec}} - Run a command with scoped caller identity and derived `MANDIBLE_AGENT_REF`, preserving its process and argument semantics. The sourceable ledger client exposes `mandible_current_agent_ref` for the same scalar projection. Wrapper/process bindings never establish an exact executor.
 - Agent lifecycle operations use exact targets. Codex controls address the thread ID. Claude child operations cannot substitute whole-session kill/resume; unsupported exact-child operations return their typed capability result. Unavailable child activity evidence remains unknown.
 
+## Messages
+
+- A message goes from one agent (or a shell) to one exact agent of any provider, addressed by its exact-agent ref; send your own ref (`MANDIBLE_AGENT_REF`) to whoever should reach you. The recipient's own hooks hand it to its model at its next registered event: a tool boundary inside a turn, the start of its next turn, or its attempt to stop. Nothing reaches a recipient that is idle until its next turn.
+- It arrives as one line, `Mandible: message <id> from <sender ref>: <text>`, with whitespace collapsed; reply with `mandible message send --to <sender ref>`. A message sent outside any agent session is from `a shell` and cannot be answered this way.
+- Settlement notices and reminders are delivered by the same hooks, to the session's main thread only; a message is delivered only to the agent it names, so a Claude subagent can be addressed.
+- {{command message.send}} - Send a message, from `-m` or stdin, to any well-formed exact-agent ref of a known provider; prints the message id. The recipient is not checked for existence or liveness.
+- {{command message.status}} - Show whether a message is queued or delivered and when, with the recipient session's last recorded execution state where Mandible records one (Claude and Codex).
+- {{command message.list}} - List the messages the calling agent sent and received, newest first. Requires an exact calling agent.
+
 ## Coordination
 
 - The umbrella issue is the coordinator; sessions are disposable role holders.
