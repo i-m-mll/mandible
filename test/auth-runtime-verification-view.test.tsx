@@ -9,6 +9,7 @@ import { jsonFixture } from './helpers/strict-ui-fixture';
 import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { queryClient } from '../ui/src/query/client';
 import { rememberEntityRoute } from '../ui/src/query/entityRoute';
+import type { AuthReviewProjection } from '../ui/src/api';
 
 const id = '12345678-1234-4123-8123-123456789abc';
 const desktopReason = 'Backend is at the expected build; the updated desktop has not been observed. Quit and reopen the installed Mandible app; verification will resume.';
@@ -20,8 +21,19 @@ const request = (convergence: AuthConvergence): AuthRequest => ({
   status: 'completed', exit_code: 0, created_at: 1, updated_at: 2, actions: [], change_report: null,
   commit_message: 'Install the reviewed update.\n\nKeep the selected review visible.', output: '', spec_content: '', diff_summary: '', convergence,
 });
-const actionsFixture = { name: 'selected request actions', method: 'GET' as const,
-  path: `/api/auth/request/${id}/actions`, respond: () => jsonFixture([]) };
+const reviewFixtures = [
+  { name: 'selected request actions', method: 'GET' as const,
+    path: `/api/auth/request/${id}/actions`, respond: () => jsonFixture([]) },
+  { name: 'selected request review', method: 'GET' as const,
+    path: `/api/auth/request/${id}/review`, respond: () => jsonFixture({
+      round: { id: 'completed-round', owner: { kind: 'request_revision', auth_request_id: id }, bindings: [] },
+      versions: [], annotations: [], drafts: [], editable_files: [], tracked_groups: [], tracked_group_history: [],
+      narrative: null, narrative_report: null, narrative_questions: [],
+      active_answer_event_ids: [], active_annotation_event_ids: [], frozen_head: null, comparison_head: null,
+      returned: null, status: 'completed', precondition: { expected_revision: 3, expected_custody_generation: 0 },
+      proof_digest: 'completed-proof',
+    } satisfies AuthReviewProjection) },
+];
 
 class FixtureStream {
   static instances: FixtureStream[] = [];
@@ -49,7 +61,7 @@ it('automatically shows and refreshes pending instructions through auth updates 
   stubRailSettingsFetch(undefined, false, [
     { name: 'selected auth queue', method: 'GET', path: '/api/auth/queue', respond: () => { reads(); return jsonFixture([current, other]); } },
     { name: 'auth history', method: 'GET', path: '/api/auth/history', respond: () => jsonFixture([]) },
-    actionsFixture,
+    ...reviewFixtures,
     { name: 'resolve route', method: 'GET', path: '/api/refs/resolve', respond: () => jsonFixture({ resolution: { kind: 'auth', ref: id.slice(0, 8), status: 'resolved', entity: { id } } }) },
   ]);
   __resetSharedSseForTests(FixtureStream);
@@ -112,7 +124,7 @@ it('automatically shows and refreshes pending instructions through auth updates 
 it('clears the notice from an omitted pending projection even while convergence remains pending', () => {
   const props = { historyQueue: [], outputs: {}, selectedAuthId: id, entityRef: id.slice(0, 8), daemonReady: true, instance: mainInstance,
     onApprove: vi.fn(), onReject: vi.fn(), onRetry: vi.fn(), onSelectAuth: vi.fn() };
-  stubRailSettingsFetch(undefined, false, [actionsFixture]);
+  stubRailSettingsFetch(undefined, false, reviewFixtures);
   rememberEntityRoute('auth', id.slice(0, 8), { id });
   const view = render(<AuthQueueView {...props} queue={[request(pending())]} />);
   expect(screen.getByText(desktopReason)).toBeTruthy();

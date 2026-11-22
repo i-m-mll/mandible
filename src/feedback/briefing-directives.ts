@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { remarkDirectives } from "../presentation/remark-directives.js";
-import { parseAuthoredReferences } from "../ledger/authored-references.js";
+import { maskAuthoredReferenceColons } from "../ledger/authored-references.js";
 import { leadingMarkdownFrontmatter } from "../markdown-frontmatter.js";
 
 export const BRIEFING_PROFILE = "mandible-briefing.v2" as const;
@@ -237,14 +237,6 @@ function blankLeadingFrontmatter(source: string): string {
   const frontmatter = leadingMarkdownFrontmatter(source);
   if (!frontmatter) return source;
   return frontmatter.raw.replace(/[^\r\n]/g, " ") + source.slice(frontmatter.end);
-}
-
-function maskAuthoredReferenceColons(source: string): string {
-  const references = parseAuthoredReferences(source);
-  if (references.length === 0) return source;
-  const masked = source.split("");
-  for (const reference of references) masked[reference.start + reference.kind.length + 1] = "：";
-  return masked.join("");
 }
 
 export function requestNarrativeQuestions(source: string): BriefingDirective[] {

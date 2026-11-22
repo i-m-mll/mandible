@@ -3,6 +3,7 @@ import { getChunks } from '@codemirror/merge';
 import { Facet, StateEffect, StateField, type EditorState, type Range } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view';
 import katex from 'katex';
+import { maskAuthoredReferenceColons } from '../../../../src/ledger/authored-references.js';
 import { leadingMarkdownFrontmatter, type MarkdownFrontmatter } from '../../../../src/markdown-frontmatter';
 import { mathToken } from '../../lib/markdownMath';
 import { markdownParts, type MarkdownNode } from '../../../../src/presentation/remark-directives.js';
@@ -190,7 +191,7 @@ function readSpecialSyntax(state: EditorState) {
   const start = frontmatter ? markdownSourceRange(state, { from: 0, to: frontmatter.end }).end : 0;
   const body = source.slice(start);
   if (/:+[a-z]/i.test(body)) {
-    for (const part of markdownParts(body, SPACE_FRAME_NAMES)) {
+    for (const part of markdownParts(maskAuthoredReferenceColons(body), SPACE_FRAME_NAMES)) {
       if (part.kind === 'frame') {
         const bodyStart = part.node.body.from + start, bodyEnd = part.node.body.to + start;
         directives.push({ name: part.node.name, kind: 'container', attributes: part.node.attributes ?? {},

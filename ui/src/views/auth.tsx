@@ -3189,6 +3189,7 @@ export function AuthQueueView({
       ? { revision: shown.precondition.expected_revision, review: authApprovalReview(shown) } : undefined;
     const mustFreeze = review.drafts.hasEdits || review.drafts.hasConflicts;
     const unavailable = actionDisabled || review.busy || Boolean(review.against);
+    const approveDisabled = unavailable || !approvalAllowed || dependencyBlocked || Boolean(request.merge_effective_head_sha && !proof);
     return (
       <div className="auth-actions">
         {mustFreeze ? <button type="button" className="btn btn--success"
@@ -3199,8 +3200,8 @@ export function AuthQueueView({
         </button> : <button
           type="button"
           className="btn btn--success"
-          onClick={() => handleApprove(id, proof)}
-          disabled={unavailable || !approvalAllowed || dependencyBlocked || Boolean(request.merge_effective_head_sha && !proof)}
+          onClick={() => { if (!approveDisabled) handleApprove(id, proof); }}
+          disabled={approveDisabled}
           title={dependencyBlocked
             ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
             : request.publication_blocker?.message ?? (!approvalAllowed ? 'Approval is unavailable in this instance.' : approveTitle(getApprovalTier(request)))}
