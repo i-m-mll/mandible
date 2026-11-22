@@ -143,6 +143,24 @@ current_branch_sha() {
   git rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true
 }
 
+# Issue c8817ff — an unborn base has the empty tree, and the merge commit's
+# only parent is the head.
+tree_of() {
+  if is_unborn "$1"; then
+    git hash-object -t tree /dev/null
+  else
+    git rev-parse --verify "${1}^{tree}"
+  fi
+}
+
+merge_parents() {
+  if is_unborn "$1"; then
+    printf '%s' "$2"
+  else
+    printf '%s %s' "$1" "$2"
+  fi
+}
+
 run_merge_preflight() {
   local cwd="$1"
   local head_branch="$2"
@@ -156,7 +174,7 @@ run_merge_preflight() {
 
   if [[ -n "${MANDIBLE_AUTH_PREFLIGHT_BASE_SHA:-}" ]]; then
     local current_base_sha
-    current_base_sha=$(current_branch_sha "$base_branch")
+    current_base_sha=$(target_branch_sha "$base_branch")
     if [[ -z "$current_base_sha" || "$current_base_sha" != "$MANDIBLE_AUTH_PREFLIGHT_BASE_SHA" ]]; then
       err "${RED}Target ${base_branch} moved from reviewed base ${MANDIBLE_AUTH_PREFLIGHT_BASE_SHA} to ${current_base_sha:-unknown}; requeue and reapprove. No ref or worktree was changed.${RESET}"
       return 1
@@ -194,8 +212,7 @@ cached_candidate_tree() {
   git cat-file -e "${tree_sha}^{tree}" 2>/dev/null || return 1
   [[ "$(git cat-file -t "$pin_sha" 2>/dev/null || true)" == "commit" ]] || return 1
   [[ "$(git rev-parse --verify "${pin_sha}^{tree}" 2>/dev/null || true)" == "$tree_sha" ]] || return 1
-  [[ "$(git rev-parse --verify "${pin_sha}^1" 2>/dev/null || true)" == "$base_sha" ]] || return 1
-  [[ "$(git rev-parse --verify "${pin_sha}^2" 2>/dev/null || true)" == "$head_sha" ]] || return 1
+  [[ "$(git rev-list --parents -n 1 "$pin_sha" 2>/dev/null || true)" == "$pin_sha $(merge_parents "$base_sha" "$head_sha")" ]] || return 1
   if [[ -n "$cache_ref" ]]; then
     [[ "$(git rev-parse --verify "$cache_ref" 2>/dev/null || true)" == "$pin_sha" ]] || return 1
   fi
@@ -219,7 +236,7 @@ verify_atomic_merge_not_empty() {
   local tree_sha=$1
   local parent_sha=$2
   local parent_tree
-  parent_tree=$(git rev-parse --verify "${parent_sha}^{tree}") || return 1
+  parent_tree=$(tree_of "$parent_sha") || return 1
   if [[ "$tree_sha" == "$parent_tree" ]]; then
     err "${RED}FATAL: Merge candidate has the same tree as its first parent.${RESET}"
     err "${DIM_WHITE}No ref or worktree was changed.${RESET}"
@@ -241,7 +258,7 @@ require_signed_merge_commit() {
   }
   if [[ "$(git cat-file -t "$merge_sha" 2>/dev/null || true)" != "commit" ]] || \
      [[ "$(git rev-parse --verify "${merge_sha}^{tree}" 2>/dev/null || true)" != "$tree_sha" ]] || \
-     [[ "$(git rev-list --parents -n 1 "$merge_sha" 2>/dev/null || true)" != "$merge_sha $first_parent $second_parent" ]]; then
+     [[ "$(git rev-list --parents -n 1 "$merge_sha" 2>/dev/null || true)" != "$merge_sha $(merge_parents "$first_parent" "$second_parent")" ]]; then
     err "${RED}The approval-signed commit ${merge_sha} is not the reviewed merge; approve the request again. No ref or worktree was changed.${RESET}"
     return 1
   fi
@@ -348,7 +365,7 @@ cas_update_and_sync_target() {
   local source=$4
 
   if [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$target" ]] || \
-     [[ "$(git rev-parse --verify HEAD 2>/dev/null || true)" != "$expected_sha" ]]; then
+     [[ "$(target_branch_sha "$target")" != "$expected_sha" ]]; then
     err "${RED}Protected checkout branch or HEAD changed before ref update; compare-and-swap refused.${RESET}"
     return 1
   fi
@@ -356,7 +373,7 @@ cas_update_and_sync_target() {
     err "${CHECKOUT_READINESS_FAILURE} No ref or worktree was changed."
     return 1
   fi
-  if [[ "$(current_branch_sha "$target")" != "$expected_sha" ]]; then
+  if [[ "$(target_branch_sha "$target")" != "$expected_sha" ]]; then
     err "${RED}Target ${target} moved before ref update; compare-and-swap refused.${RESET}"
     return 1
   fi
@@ -386,7 +403,7 @@ cas_update_and_sync_target() {
     return 1
   fi
   local sync_error
-  if ! sync_error=$(git read-tree -m -u "$expected_sha" "$merge_sha" 2>&1); then
+  if ! sync_error=$(git read-tree -m -u "$(tree_of "$expected_sha")" "$merge_sha" 2>&1); then
     restore_unsynced_target "$target" "$expected_sha" "$merge_sha" "$sync_error"
     return $?
   fi
@@ -402,7 +419,7 @@ cas_update_and_sync_target() {
     err "${RED}Protected worktree did not synchronize cleanly to ${merge_sha}.${RESET}"
     return 75
   fi
-  if ! git update-ref ORIG_HEAD "$expected_sha"; then
+  if ! is_unborn "$expected_sha" && ! git update-ref ORIG_HEAD "$expected_sha"; then
     err "Protected publication succeeded, but its native-hook original-head input could not be recorded; recovery is required."
     return 75
   fi
@@ -428,7 +445,7 @@ checkout_sync_check() {
 restore_unsynced_target() {
   local target=$1 expected_sha=$2 merge_sha=$3 sync_error=$4 blockers
   blockers=$(checkout_sync_check "$expected_sha" "$merge_sha") || true
-  if [[ "$(git write-tree 2>/dev/null)" != "$(git rev-parse --verify "${expected_sha}^{tree}")" ]] || \
+  if [[ "$(git write-tree 2>/dev/null)" != "$(tree_of "$expected_sha")" ]] || \
      ! git update-ref -m "mandible auth merge ${MANDIBLE_AUTH_REQUEST_ID:-unknown} not synced" \
        "refs/heads/${target}" "$expected_sha" "$merge_sha"; then
     err "$sync_error"
@@ -545,7 +562,7 @@ main() {
   [[ ! -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]] || die "Interrupted legacy merge state requires operator recovery; candidate publication cannot resume it." 1
 
 
-  if ! branch_exists "$target"; then
+  if [[ -z "$(target_branch_sha "$target")" ]]; then
     die "Target branch '$target' does not exist." 2
   fi
 
@@ -561,7 +578,7 @@ main() {
   fi
 
   local current_branch
-  current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+  current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null)
 
   if [[ "$current_branch" != "$target" ]]; then
     die "Atomic auth merge must run in the worktree already tracking target branch '$target'; current branch is '${current_branch:-detached HEAD}'." 1
@@ -571,7 +588,7 @@ main() {
   fi
 
   local atomic_base
-  atomic_base=$(current_branch_sha "$target")
+  atomic_base=$(target_branch_sha "$target")
   local source_head merge_tree merge_sha
   source_head=$(current_branch_sha "$source")
   # Issue 08a5f04 (review F3) — the reviewed-head context must be internally

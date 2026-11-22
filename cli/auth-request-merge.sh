@@ -471,7 +471,7 @@ RESET='\033[0m'
 
 if [[ "$force" != "true" ]]; then
   # Validation 1: Confirm target_cwd is on the protected branch
-  cwd_branch=$(git -C "$target_cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  cwd_branch=$(git -C "$target_cwd" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
   if [[ "$cwd_branch" != "$base_branch" ]]; then
     echo -e "${RED}Error: target CWD '$target_cwd' is on branch '$cwd_branch', expected '$base_branch'${RESET}" >&2
     echo "The CWD for auth merge must be the worktree tracking the protected branch." >&2
@@ -526,8 +526,21 @@ fi
 # which is exactly `base..branch`. Three dots would add the base's own new
 # commits to the count and this guard would stop refusing already-merged
 # branches.
-unique_commits=$(git log --oneline "${base_branch}..${branch}" 2>/dev/null | wc -l | tr -d ' ')
-if [[ "$unique_commits" -eq 0 ]]; then
+base_sha=$(target_branch_sha "$base_branch" "$target_cwd")
+if [[ -z "$base_sha" ]]; then
+  echo "Error: target branch '${base_branch}' does not exist in '${target_cwd}'." >&2
+  exit 1
+fi
+if is_unborn "$base_sha"; then
+  unique_range=("$branch")
+else
+  unique_range=("${base_branch}..${branch}")
+fi
+if ! unique_log=$(git log --oneline "${unique_range[@]}" --); then
+  echo "Error: could not list the commits '${branch}' adds to '${base_branch}'." >&2
+  exit 1
+fi
+if [[ -z "$unique_log" ]]; then
   echo "Error: branch '${branch}' has no unique commits vs '${base_branch}' -- already merged?" >&2
   exit 1
 fi
@@ -544,24 +557,6 @@ protected_root_dirty_action_json=$(ensure_clean_with_dirty_policy \
 # This is the same read-only preflight used by `mandible auth check` and the
 # merge executor. It deliberately does not call user dotfiles policy scripts.
 mandible_auth_merge_preflight "$target_cwd" "$branch" "$base_branch" "$repo"
-
-# --- Auto-detect diff summary ---
-# Bug: c8dd9c8 — use unified diff format so the UI's per-file tab viewer works.
-# The --diff-summary CLI flag still works but should contain unified diff format.
-
-MAX_DIFF_BYTES=102400  # 100KB truncation limit
-
-if [[ -z "$diff_summary" ]]; then
-  review_range="${base_branch}...${branch}"
-  full_diff=$(git diff "$review_range" 2>/dev/null) || full_diff=""
-  diff_bytes=${#full_diff}
-  if [[ "$diff_bytes" -gt "$MAX_DIFF_BYTES" ]]; then
-    diff_summary="${full_diff:0:$MAX_DIFF_BYTES}
-... [truncated: ${diff_bytes} bytes total, showing first ${MAX_DIFF_BYTES}]"
-  else
-    diff_summary="$full_diff"
-  fi
-fi
 
 # --- Build command and metadata ---
 

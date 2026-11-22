@@ -44,7 +44,7 @@
 #   the message or the verification text.
 #
 # Options:
-#   --diff-summary <text>   Unified diff (auto-generated from git diff if omitted; truncated at 100KB)
+#   --diff-summary <text>   Unified diff for a non-merge request (the daemon captures a merge's own)
 #   --repo <name>           Repo name (auto-detected from git toplevel basename)
 #   --cwd <path>            Merge: protected worktree override. Other types: required execution directory
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
@@ -99,7 +99,9 @@
 # command must exist on the target branch at merge time.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
-set -euo pipefail
+set -eEuo pipefail
+# An unhandled failure names itself rather than exiting silently (issue c8817ff).
+trap 'status=$?; echo "Error: mandible auth request stopped: \`${BASH_COMMAND}\` exited ${status}." >&2' ERR
 
 # MANDIBLE_PORT and MANDIBLE_BASE are exported by the dispatcher
 GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"

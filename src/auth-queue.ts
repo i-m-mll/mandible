@@ -61,6 +61,10 @@ import {
   readCommitRefs,
   resolveAuthMergeExecutionContext,
   resolveBranchHeadSha,
+  resolveTargetBranchSha,
+  isUnbornBase,
+  mergeParents,
+  baseTree,
   type CommitRefReader,
 } from "./auth-context.js";
 import { readGitCommitFacts } from "./git-object-facts.js";
@@ -467,6 +471,15 @@ export interface CodexArchiveReplayResult {
     work_unit_id: string | null;
     archived: boolean;
   }>;
+}
+
+/**
+ * A target ref as read from a ref snapshot. A missing ref reads as the
+ * reviewed base when that base is unborn (issue c8817ff), and as absent
+ * otherwise.
+ */
+function targetRefValue(read: string | null | undefined, reviewedBase: string | null | undefined): string | null {
+  return read ?? (reviewedBase && isUnbornBase(reviewedBase) ? reviewedBase : null);
 }
 
 type CandidateRef = Pick<AuthRequest, "merge_candidate_pin_sha" | "merge_candidate_tree_sha" | "merge_preflight_base_sha" | "merge_head_sha">;
@@ -1707,7 +1720,7 @@ export class AuthQueue {
     ) {
       return { outcome: "failed", detail: "durable atomic state does not match the reviewed inputs" };
     }
-    const targetSha = (await git(["rev-parse", "--verify", `refs/heads/${request.base_branch}^{commit}`]));
+    const targetSha = (await resolveTargetBranchSha(cwd, request.base_branch));
     if (targetSha === baseSha) {
       if (atomicState.applied) return { outcome: "atomic_needs_recovery", detail: "Recorded publication no longer matches the protected ref; operator inspection is required." };
       return { outcome: "requeued", detail: "prepared atomic commit was not applied" };
@@ -1719,7 +1732,7 @@ export class AuthQueue {
     }
     const parents = (await git(["show", "-s", "--format=%P", prepared.merge_sha])).split(/\s+/).filter(Boolean);
     const targetTree = (await git(["rev-parse", "--verify", `${prepared.merge_sha}^{tree}`]));
-    if (parents.length !== 2 || parents[0] !== baseSha || parents[1] !== expectedHead || targetTree !== candidateTree) {
+    if (parents.join(" ") !== mergeParents(baseSha, expectedHead).join(" ") || targetTree !== candidateTree) {
       return { outcome: "failed", detail: "target ref does not match the pinned atomic merge commit" };
     }
     const signature = (await verifyApprovedMerge(this.db, cwd, request, prepared.merge_sha));
@@ -1738,15 +1751,14 @@ export class AuthQueue {
       return { outcome: "atomic_applied", mergeSha: prepared.merge_sha };
     }
     if (indexTree !== candidateTree) {
-      const baseTree = (await git(["rev-parse", "--verify", `${baseSha}^{tree}`]));
-      if (indexTree !== baseTree) {
+      if (indexTree !== (await baseTree(cwd, baseSha))) {
         return { outcome: "atomic_needs_recovery", detail: "protected index is neither the pinned base nor merge tree" };
       }
       try {
         (await git(["diff", "--quiet"]));
         this.assertExecution(request.id, execution);
         this.assertPublicationAuthority(request, signature.credential_id);
-        (await git(["read-tree", "-m", "-u", baseSha, prepared.merge_sha]));
+        (await git(["read-tree", "-m", "-u", (await baseTree(cwd, baseSha)), prepared.merge_sha]));
       } catch (error) {
         return {
           outcome: "atomic_needs_recovery",
@@ -1771,7 +1783,7 @@ export class AuthQueue {
         return { outcome: "atomic_needs_recovery", detail: `protected checkout differs from the merge tree: ${remaining.join("; ")}` };
       }
     }
-    try { this.assertExecution(request.id, execution); this.assertPublicationAuthority(request, signature.credential_id); (await git(["update-ref", "ORIG_HEAD", baseSha])); }
+    try { this.assertExecution(request.id, execution); this.assertPublicationAuthority(request, signature.credential_id); if (!isUnbornBase(baseSha)) (await git(["update-ref", "ORIG_HEAD", baseSha])); }
     catch { return { outcome: "atomic_needs_recovery", detail: "Native post-hook original-head input could not be restored." }; }
     return { outcome: "atomic_applied", mergeSha: prepared.merge_sha };
   }
@@ -2020,7 +2032,7 @@ export class AuthQueue {
       }
       if (payload.change_report && (payload.type ?? "merge") === "merge") {
         const baseAfter = payload.cwd && payload.base_branch
-          ? (await this.resolveBranchHeadForCheck(payload.cwd, payload.base_branch))
+          ? (await this.resolveTargetHeadForCheck(payload.cwd, payload.base_branch))
           : null;
         const headAfter = payload.cwd && payload.head_branch
           ? (await this.resolveBranchHeadForCheck(payload.cwd, payload.head_branch))
@@ -3131,7 +3143,7 @@ export class AuthQueue {
         };
       }
 
-      const targetHeadSha = (await this.resolveBranchHeadForCheck(cwd, baseBranch));
+      const targetHeadSha = (await this.resolveTargetHeadForCheck(cwd, baseBranch));
       if (!targetHeadSha) {
         return {
           status: "error",
@@ -3151,7 +3163,7 @@ export class AuthQueue {
       });
       const queueFingerprint = this.mergeQueueFingerprint(pending);
 
-      const candidateTarget = (await this.mergeTree(cwd, baseBranch, headBranch));
+      const candidateTarget = (await this.mergeTree(cwd, targetHeadSha, headBranch));
       if (candidateTarget.status === "error") {
         return {
           status: "error",
@@ -3199,7 +3211,7 @@ export class AuthQueue {
         };
       }
 
-      let simulatedBase = baseBranch;
+      let simulatedBase = targetHeadSha;
       let checked = 0;
       const staleRequests: AuthMergeStaleRequest[] = [];
 
@@ -4016,7 +4028,7 @@ export class AuthQueue {
     }
     const identity = this.operatorCommitIdentity();
     const message = request.commit_message_digest ? this.reviewedChangeMessage(request) : await defaultMergeMessage(cwd, head, branch);
-    return buildCommit({ tree, parents: [base, head], message, identity, time: commitTime(at) });
+    return buildCommit({ tree, parents: mergeParents(base, head), message, identity, time: commitTime(at) });
   }
 
   private reviewedChangeMessage(request: AuthRequest): string {
@@ -4479,7 +4491,7 @@ export class AuthQueue {
     }
     if (request.merge_preflight_base_sha) {
       const currentBase = request.cwd && request.base_branch
-        ? (await this.resolveBranchHeadForCheck(request.cwd, request.base_branch))
+        ? (await this.resolveTargetHeadForCheck(request.cwd, request.base_branch))
         : null;
       if (currentBase !== request.merge_preflight_base_sha) {
         throw new AuthQueueError(
@@ -4545,9 +4557,7 @@ export class AuthQueue {
       const pin = (await readGitCommitFacts(request.cwd, request.merge_candidate_pin_sha, { timeout: 5_000, env: authGitEnv() }));
       return (
         pin.tree === request.merge_candidate_tree_sha &&
-        pin.parents.length === 2 &&
-        pin.parents[0] === request.merge_preflight_base_sha &&
-        pin.parents[1] === request.merge_head_sha &&
+        pin.parents.join(" ") === mergeParents(request.merge_preflight_base_sha, request.merge_head_sha).join(" ") &&
         (await refs(this.mergeCandidateRef(request.id))) === request.merge_candidate_pin_sha
       );
     } catch {
@@ -4647,10 +4657,7 @@ export class AuthQueue {
       [
         "commit-tree",
         request.merge_candidate_tree_sha,
-        "-p",
-        request.merge_preflight_base_sha,
-        "-p",
-        request.merge_head_sha,
+        ...mergeParents(request.merge_preflight_base_sha, request.merge_head_sha).flatMap((parent) => ["-p", parent]),
         "-m",
         `mandible auth candidate pin ${request.id}`,
       ],
@@ -4729,7 +4736,7 @@ export class AuthQueue {
     const refs = await readCommitRefs(request.cwd, [
       `refs/heads/${request.base_branch}`, `refs/heads/${request.head_branch}`, this.mergeCandidateRef(request.id),
     ]);
-    if (refs.get(`refs/heads/${request.base_branch}`) !== request.merge_preflight_base_sha ||
+    if (targetRefValue(refs.get(`refs/heads/${request.base_branch}`), request.merge_preflight_base_sha) !== request.merge_preflight_base_sha ||
         refs.get(`refs/heads/${request.head_branch}`) !== request.merge_head_sha ||
         refs.get(this.mergeCandidateRef(request.id)) !== request.merge_candidate_pin_sha) {
       throw new AuthQueueError("merge_check_failed", "Reviewed base, head or candidate pin changed during approval.");
@@ -4743,7 +4750,7 @@ export class AuthQueue {
     if (!request.merge_preflight_base_sha || !request.merge_preflight_queue_fingerprint) {
       return false;
     }
-    const currentBaseSha = (await this.resolveBranchHeadForCheck(request.cwd, request.base_branch));
+    const currentBaseSha = (await this.resolveTargetHeadForCheck(request.cwd, request.base_branch));
     if (currentBaseSha !== request.merge_preflight_base_sha) {
       return false;
     }
@@ -4772,7 +4779,7 @@ export class AuthQueue {
       request.merge_candidate_pin_sha &&
       request.cwd &&
       request.base_branch &&
-      request.merge_preflight_base_sha === (await refs(`refs/heads/${request.base_branch}`)) &&
+      request.merge_preflight_base_sha === targetRefValue(await refs(`refs/heads/${request.base_branch}`), request.merge_preflight_base_sha) &&
       (await this.mergeCandidatePinIsValid(request, refs))
     );
   }
@@ -4849,7 +4856,7 @@ export class AuthQueue {
       refuse("head_branch_moved", { head_branch: headBranch, reviewed_head: request.merge_head_sha, current_head: currentHead });
     }
     // Never run a preflight against a repo whose execution chain is busy.
-    const currentBase = (await this.resolveBranchHeadForCheck(cwd, baseBranch));
+    const currentBase = (await this.resolveTargetHeadForCheck(cwd, baseBranch));
     if (!currentBase) refuse("base_head_unresolvable", { base_branch: baseBranch, cwd });
     if (currentBase === request.merge_preflight_base_sha) refuse("base_unchanged", { base_sha: currentBase });
     // Review F1 — the base transition must be fully accounted for by
@@ -5235,7 +5242,7 @@ export class AuthQueue {
     }
     try {
       const currentRefs = await readCommitRefs(request.cwd, [`refs/heads/${request.base_branch}`, `refs/heads/${request.head_branch}`, this.mergeCandidateRef(request.id)]);
-      if (currentRefs.get(`refs/heads/${request.base_branch}`) !== targetHeadSha || currentRefs.get(`refs/heads/${request.head_branch}`) !== request.merge_head_sha || currentRefs.get(this.mergeCandidateRef(request.id)) !== pinSha) throw new AuthQueueError("lifecycle_conflict", "Repository inputs changed during candidate refresh.");
+      if (targetRefValue(currentRefs.get(`refs/heads/${request.base_branch}`), targetHeadSha) !== targetHeadSha || currentRefs.get(`refs/heads/${request.head_branch}`) !== request.merge_head_sha || currentRefs.get(this.mergeCandidateRef(request.id)) !== pinSha) throw new AuthQueueError("lifecycle_conflict", "Repository inputs changed during candidate refresh.");
       this.db.transaction(() => {
         this.assertObservation(request.id, observed);
         if (this.currentLifecycleSnapshot(request.id) !== priorSnapshot) {
@@ -5486,7 +5493,7 @@ export class AuthQueue {
       const options = { timeout: 5_000, env: authGitEnv() };
       const published = (await readGitCommitFacts(cwd, mergeSha, options));
       const parents = published.parents;
-      if (parents.length !== 2 || parents[0] !== state.prepared.base_sha || parents[1] !== state.prepared.head_sha || published.tree !== state.prepared.tree_sha) return "Published commit differs from the exact reviewed candidate.";
+      if (parents.join(" ") !== mergeParents(state.prepared.base_sha, state.prepared.head_sha).join(" ") || published.tree !== state.prepared.tree_sha) return "Published commit differs from the exact reviewed candidate.";
       if (request.commit_message_digest && canonicalizeChangeMessage(published.message) !== request.commit_message) return "Published commit message differs from the reviewed canonical message.";
       (await childOutput("git", ["merge-base", "--is-ancestor", mergeSha, `refs/heads/${request.base_branch}`], { cwd, ...options, stdio: "ignore" }));
     } catch {
@@ -7261,12 +7268,27 @@ export class AuthQueue {
     }
   }
 
+  /** A merge target's commit, or the null object id when it is unborn. */
+  private async resolveTargetHeadForCheck(cwd: string, branch: string): Promise<string | null> {
+    try {
+      return (await resolveTargetBranchSha(cwd, branch));
+    } catch {
+      return null;
+    }
+  }
+
   private async mergeTree(
     cwd: string,
     base: string,
     head: string
   ): Promise<MergeTreeResult> {
     try {
+      if (isUnbornBase(base)) {
+        const tree = (await childOutput("git", ["rev-parse", "--verify", `${head}^{tree}`], {
+          cwd, encoding: "utf8", timeout: 10_000, env: authGitEnv(),
+        })).trim();
+        return { status: "clean", tree, files: [], message: "clean" };
+      }
       const stdout = (await childOutput("git", ["merge-tree", "--write-tree", base, head], {
         cwd,
         encoding: "utf8",
@@ -7323,7 +7345,7 @@ export class AuthQueue {
   ): Promise<string> {
     return (await childOutput(
       "git",
-      ["commit-tree", tree, "-p", firstParent, "-p", secondParent, "-m", "mandible auth check synthetic merge"],
+      ["commit-tree", tree, ...mergeParents(firstParent, secondParent).flatMap((parent) => ["-p", parent]), "-m", "mandible auth check synthetic merge"],
       {
         cwd,
         encoding: "utf8",

@@ -18,6 +18,8 @@ checkout=$1
 base=$2
 target=$3
 g() { GIT_OPTIONAL_LOCKS=0 git -C "$checkout" "$@"; }
+# An unborn base (Git's null object id, issue c8817ff) has the empty tree.
+[[ ! $base =~ ^0+$ ]] || base=$(g hash-object -t tree /dev/null)
 
 # read-tree treats stale stat data as a local edit even when the file still
 # matches the index. Refresh tracked stat data before asking it for a verdict.

@@ -16,6 +16,7 @@ import { authGitEnv } from "./auth-context.js";
 import { describeHolds, type AccountedIssue, type IssueAccounting } from "./contracts.js";
 import { protectedBranchNames } from "./protected-branches.js";
 import { observeRepoIdentities, requestRepoMatcher, type RequestRepoScope } from "./repo-identity.js";
+import { isUnbornBase } from "./auth-context.js";
 
 export type { AccountedIssue, IssueAccounting };
 
@@ -102,7 +103,7 @@ const NEVER_ACCOUNTED_KINDS = new Set(["tracker", "maintenance"]);
  */
 export async function accountLandedIssues(db: Db, input: LandedScanInput): Promise<IssueAccountingResult> {
   const [revList, refs] = await Promise.all([
-    git(input.gitRoot, ["rev-list", input.headSha, `^${input.baseSha}`]),
+    git(input.gitRoot, ["rev-list", input.headSha, ...(isUnbornBase(input.baseSha) ? [] : [`^${input.baseSha}`])]),
     git(input.gitRoot, ["for-each-ref", "--format=%(objectname) %(refname:short)", "refs/heads"]),
   ]);
   const landed = new Set(revList.split("\n").map((line) => line.trim().toLowerCase()).filter(Boolean));

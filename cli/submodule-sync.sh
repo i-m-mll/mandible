@@ -26,6 +26,8 @@ checkout=$2
 base=$3
 target=$4
 head_branch=$5
+# An unborn base (Git's null object id, issue c8817ff) has the empty tree.
+[[ ! $base =~ ^0+$ ]] || base=$(git -C "$checkout" hash-object -t tree /dev/null)
 
 head_worktree() {
   local line worktree=""

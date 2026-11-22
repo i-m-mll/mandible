@@ -450,3 +450,27 @@ describe("auth request protected-root dirty policy", () => {
     expect(git(["status", "--porcelain=v1", "--", "staged.txt"])).toBe("A  staged.txt");
   });
 });
+
+// Issue c8817ff — a protected branch with no commits yet can only receive its
+// first history through an auth request.
+it("submits a merge into an unborn protected branch", async () => {
+  git(["init", "-q", "-b", "main"]);
+  git(["config", "user.name", "Mandible Test"]);
+  git(["config", "user.email", "mandible-test@localhost"]);
+  git(["config", "commit.gpgsign", "false"]);
+  fs.appendFileSync(path.join(tempDir, ".git", "info", "exclude"), "worktrees/\n");
+  const tree = git(["write-tree"], tempDir);
+  git(["update-ref", "refs/heads/feature/first", git(["commit-tree", tree, "-m", "First history"]), ""]);
+  const worktree = path.join(tempDir, "worktrees", "feature__first");
+  git(["worktree", "add", "-q", worktree, "feature/first"]);
+  const server = await listenForAuthRequest();
+  try {
+    const result = await runAsync(["auth", "request", "feature/first", "--title", "First history", "--issue", "first123", "--no-watch"],
+      worktree, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
+    expect(result.status, result.stderr).toBe(0);
+    expect(server.bodies).toHaveLength(1);
+    expect(server.bodies[0]).toMatchObject({ base_branch: "main", head_branch: "feature/first" });
+  } finally {
+    await server.close();
+  }
+});
