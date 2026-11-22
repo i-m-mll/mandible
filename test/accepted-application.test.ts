@@ -49,7 +49,10 @@ function fixture() {
 
 it('verifies the complete shipped inventory with the unchanged full-app identity and rejects native or payload tampering', () => {
   const f = fixture();
-  expect(verifyApplicationRelease(f.app)).toEqual({ release: f.receipt.shipped, digest: f.receipt.package.sha256 });
+  expect(verifyApplicationRelease(f.app)).toEqual({ release: f.receipt.shipped, digest: f.receipt.package.sha256, verification: {
+    schema: 'mandible-installed-verification@1', identity: applicationRootIdentity(f.app),
+    manifestSha256: installedFileIdentity(path.join(f.resources, 'release.json')).sha256, packageSha256: f.receipt.package.sha256,
+  } });
   for (const relative of ['program', '../MacOS/mandible-bun']) {
     const file = path.resolve(f.resources, relative); const bytes = fs.readFileSync(file);
     fs.writeFileSync(file, 'tampered');
@@ -80,6 +83,7 @@ it('carries prepared authority through exchange without rereading app bytes, exp
     expect(prepared.identity).toEqual(stage.identity);
     expect(fs.existsSync(path.join(stage.path, 'partial'))).toBe(false);
     expect(fs.existsSync(path.join(f.app, 'Contents/Resources/program'))).toBe(true);
+    const manifestSha256 = installedFileIdentity(path.join(f.resources, 'release.json')).sha256;
     const originalRead = fs.readFileSync;
     const read = vi.spyOn(fs, 'readFileSync').mockImplementation((...args: any[]) => {
       if (typeof args[0] === 'string' && (args[0].startsWith(prepared.staging) || args[0].startsWith(f.binding.nativeApp))) throw new Error('Application bytes were read twice.');
@@ -87,7 +91,10 @@ it('carries prepared authority through exchange without rereading app bytes, exp
     });
     fs.writeFileSync(path.join(f.binding.nativeApp, 'old'), 'obsolete content is not an installation identity');
     installAcceptedApplication(f.binding, f.context, { prepared });
-    expect(adoptBundleRelease).toHaveBeenCalledExactlyOnceWith(f.context, f.receipt.shipped, null, f.reference, { until: undefined });
+    expect(adoptBundleRelease).toHaveBeenCalledExactlyOnceWith(f.context, f.receipt.shipped, null, f.reference, {
+      until: undefined,
+      verification: { schema: 'mandible-installed-verification@1', identity: stage.identity, manifestSha256, packageSha256: f.receipt.package.sha256 },
+    });
     expect(preparedApplicationContext(prepared, f.binding)).toMatchObject({ installed: true, app: f.binding.nativeApp, digest: f.receipt.package.sha256 });
     expect(fs.existsSync(prepared.previous)).toBe(true);
     read.mockRestore();
@@ -95,7 +102,7 @@ it('carries prepared authority through exchange without rereading app bytes, exp
   expect(() => preparedApplicationContext(prepared, f.binding)).toThrow();
   fs.writeFileSync(path.join(f.binding.nativeApp, 'Contents/Resources/program'), 'changed after lease');
   await withInstallationGatewayLock(f.binding.home, (_token, assertHeld) => {
-    expect(() => prepareAcceptedApplication(f.binding, { attemptId: 'attempt-one', assertHeld, phase: 'installed', stageIdentity: prepared.identity })).toThrow('differs from the exact accepted package');
+    expect(() => prepareAcceptedApplication(f.binding, { attemptId: 'attempt-one', assertHeld, phase: 'installed', stageIdentity: prepared.identity })).toThrow('differs from the verified package');
   });
 });
 
@@ -111,7 +118,7 @@ it('refuses substituted stage roots and every executable-closure input while lea
   fs.writeFileSync(path.join(f.resources, 'program'), 'substituted payload');
   expect(verifyUpdaterClosure(f.reference).app).toBe(f.app);
   await withInstallationGatewayLock(f.binding.home, (_token, assertHeld) => {
-    expect(() => prepareAcceptedApplication(f.binding, { attemptId: 'attempt-one', assertHeld })).toThrow('differs from the exact accepted package');
+    expect(() => prepareAcceptedApplication(f.binding, { attemptId: 'attempt-one', assertHeld })).toThrow('differs from the verified package');
     fs.rmSync(path.join(f.root, 'installed/.Mandible-request-fixture-execution-fixture.staging.app'), { recursive: true });
     fs.writeFileSync(path.join(f.resources, 'program'), 'program');
     const prepared = prepareAcceptedApplication(f.binding, { attemptId: 'attempt-one', assertHeld });
