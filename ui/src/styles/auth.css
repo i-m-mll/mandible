@@ -1790,12 +1790,12 @@
 }
 
 .auth-sidebar-item__metadata > .type-badge,
-.auth-sidebar-item__time {
+.auth-sidebar-item__metadata-text {
   flex: none;
   white-space: nowrap;
 }
 
-.auth-sidebar-item__time {
+.auth-sidebar-item__metadata-text {
   font-size: calc(11px + var(--chrome-text-increment, 0px));
   color: var(--text-muted);
 }

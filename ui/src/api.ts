@@ -1160,7 +1160,7 @@ export async function cancelApprovalProof(requestId: string): Promise<void> {
 }
 
 /** Approve the request at `lifecycleRevision`, the revision that was shown; the server refuses any other. */
-export async function approveAuthRequest(requestId: string, lifecycleRevision: number | null, review?: AuthApprovalReview): Promise<void> {
+export async function approveAuthRequest(requestId: string, lifecycleRevision: number | null, review?: AuthApprovalReview): Promise<'approved' | 'executing' | null> {
   // Bug: 58d93ee — extract server error message so the dashboard can surface it
   // (e.g. invalid_command: "Auth request has no command set")
   // Bug: 737df04 — wrap in AbortController so the fetch does not hang indefinitely
@@ -1204,6 +1204,8 @@ export async function approveAuthRequest(requestId: string, lifecycleRevision: n
     }
     throw new ApiError(message, response.status, code);
   }
+  const body = await parseMaybeJson(response) as { status?: string } | null;
+  return body?.status === 'approved' || body?.status === 'executing' ? body.status : null;
 }
 
 export async function rejectAuthRequest(requestId: string, reason?: string): Promise<void> {
@@ -2874,6 +2876,7 @@ export type NativeHost = {
   platform: string;
   framePresentation: 'macos-overlay' | 'system';
   sessionId: string;
+  startupTrace?: boolean;
 };
 
 export type WindowHost = NativeHost | { kind: 'browser'; framePresentation: 'system' };
@@ -2995,6 +2998,23 @@ async function invokeDesktop<T>(command: string, args?: Record<string, unknown>)
     throw new Error('Desktop daemon controls are only available in the Tauri app.');
   }
   return invoke<T>(command, args);
+}
+
+export async function reportDesktopDashboardFrame(phase: 'ready' | 'painted', daemonStartupEpoch: string | undefined): Promise<void> {
+  if (!tauriGlobalWindow()?.__MANDIBLE_NATIVE_HOST__?.startupTrace) return;
+  await invokeDesktop(`desktop_frame_${phase}`, { dashboard: true, daemonStartupEpoch }).catch(error =>
+    console.warn(`Could not report dashboard frame ${phase}`, error));
+}
+
+export function reportDesktopStartupTrace(event: {
+  phase: 'web_outage_started' | 'web_outage_ready';
+  atMs: number;
+  startupEpoch?: string;
+  requestId?: string;
+}): void {
+  if (!tauriGlobalWindow()?.__MANDIBLE_NATIVE_HOST__?.startupTrace) return;
+  void invokeDesktop('desktop_trace', event).catch(error =>
+    console.warn('Could not report dashboard outage', error));
 }
 
 export async function getDesktopDaemonStatus(): Promise<DesktopDaemonStatus | null> {

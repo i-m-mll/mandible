@@ -11,7 +11,7 @@ import { trackedSourceDigest } from './build-revision.mjs';
 import { checkoutRepositoryIdentity } from '../src/ledger/projects.ts';
 import { buildBundleService, stageBundleServices } from './prepare-bundle-services.mjs';
 import { bundleServiceLabel } from './bundle-service-roles.mjs';
-import { daemonBuildOutput, desktopPackageEnvironment, frontendBuildOutput } from './desktop-build-layout.mjs';
+import { daemonBuildOutput, desktopPackageEnvironment, frontendBuildOutput, uiStaticFiles } from './desktop-build-layout.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageEnvironment = desktopPackageEnvironment(root, process.env);
@@ -75,7 +75,7 @@ export async function stageAppPayload(contents) {
   if (provenance.source_digest !== trackedSourceDigest(root)) throw new Error('Build inputs changed after compilation. Run the source build before staging the app.');
   const resources = path.join(contents, 'Resources');
   fs.mkdirSync(resources, { recursive: true });
-  for (const relative of [daemonBuildOutput, frontendBuildOutput, 'cli', 'bin', 'config', '.bun-version', 'bun.lock', 'package.json', 'docs/cli-reference.md', 'hooks', 'ui/index.html', 'ui/manifest.json', 'ui/sw.js', 'ui/icon.svg', 'ui/header-logo.svg', 'ui/icon-192.png', 'ui/icon-512.png']) copy(path.join(root, relative), path.join(resources, relative));
+  for (const relative of [daemonBuildOutput, frontendBuildOutput, 'cli', 'bin', 'config', '.bun-version', 'bun.lock', 'package.json', 'docs/cli-reference.md', 'hooks', ...uiStaticFiles]) copy(path.join(root, relative), path.join(resources, relative));
   const packageCount = copyProductionDependencies(resources);
   stageCoworkRuntime(root, resources);
   const scripts = new Set(['local-runtime.mjs', 'bundle-service.mjs', 'local-front-door.mjs', 'local-session-production-runner.mjs', 'runtime-handoff.mjs', 'verify-accepted-release.mjs', 'installed-release.mjs', 'project-db-snapshot.mjs', 'preview-custody.mjs', 'installed-command.mjs', 'generated-owner-observation.mjs']);

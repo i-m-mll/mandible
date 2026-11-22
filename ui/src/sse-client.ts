@@ -47,7 +47,7 @@ export class SSEClient {
     this.url = options.url || '/api/events/subscribe';
     this.fetchImpl = options.fetchImpl || fetch.bind(window);
     this.backoffMs = options.backoffMs ?? 500;
-    this.maxBackoffMs = options.maxBackoffMs ?? 15000;
+    this.maxBackoffMs = options.maxBackoffMs ?? 1000;
     this.currentBackoff = this.backoffMs;
   }
 

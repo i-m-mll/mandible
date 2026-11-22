@@ -169,7 +169,7 @@ class Harness {
   get requested(): string[] { return this.fixture.requested; }
   events!: ReturnType<typeof stubEventSource>;
   hang = false;
-  health: unknown = { ready: true, warm: true };
+  health: unknown = { status: 'ok', ready: true, warm: true, instance: writablePreviewInstance };
   private readonly idle = new Map<number, () => void>();
   private nextIdleHandle = 1;
 

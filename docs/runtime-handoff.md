@@ -62,6 +62,8 @@ All generated Caddy configurations share a one-second HTTP shutdown grace, inclu
 
 A historical terminal update does not prevent ordinary use of its authorized installed runtime. Service startup uses the current attempt's service intent and ready observation rather than an old failed phase or lifetime exit status.
 
+A browser document uses the `ui_asset_revision` of the HTML it loaded. The build derives that revision from the dashboard bytes and its static shell, and the daemon reports it in both the HTML and `/api/health`. When the connected daemon shuts down, the dashboard keeps the current view mounted and disables interaction. It probes for readiness on stream loss and retries with short backoff. A ready daemon re-enables the view before workspace warmup, or reloads the current URL if its dashboard revision changed. The native bootstrap and dashboard share one startup frame. The dashboard reports its laid-out frame before waiting for a paint. Native traces record both milestones and correlate browser outage edges with the daemon startup epoch, including the approval request on announced exits.
+
 ## Ownership, receipts, and cleanup
 
 Every journal writer requires the live installation gateway lease and an observation scope bound to that exact journal. The scope derives its authority from the installation lease; losing that lease stops effects and writes. Live or uncertain owners block a contender, and only proven stale owners are recovered. For a live protocol-v1 predecessor, the worker also acquires the predecessor's real observation lock inside the installation lease through preparation and drain. Protocol-v2 predecessors need no separate observation lock. Full journal state comparisons remain strict within the ownership epoch.

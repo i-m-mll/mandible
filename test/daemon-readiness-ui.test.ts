@@ -1,82 +1,90 @@
-// Splash enter/exit predicates used by the dashboard mount probe and the
-// rebuild poll (645f8a8, afaea18). Entering requires an explicit signal; staying
-// requires anything short of proven readiness; a stall always has an escape.
-import { describe, expect, it } from "vitest";
-
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  daemonCommitChanged,
-  daemonEpochChanged,
-  daemonIsReadyAfterEpoch,
-  daemonNeedsSplash,
-  shouldEnterSplashOnBackgroundProbe,
-  shouldEnterSplashOnProbe,
-  splashRequiresNewCommit,
-  stallEscapeReady,
-} from "../ui/src/daemon-readiness";
+  monitorDaemonConnection,
+  type DaemonConnection,
+  type DaemonHealthSnapshot,
+} from '../ui/src/daemon-readiness';
+import { resolveInstanceInfo } from '../src/instance-policy';
 
-const oldEpoch = "a".repeat(40);
-const newEpoch = "b".repeat(40);
+const instance = resolveInstanceInfo({ env: {} });
+const healthy = (startup_epoch = 'old', ui_asset_revision = 'dashboard-a'): DaemonHealthSnapshot => ({
+  status: 'ok', ready: true, warm: false, startup_epoch, ui_asset_revision, instance,
+});
 
-describe("daemon splash predicates", () => {
-  it("stays up until the daemon is reachable, ready, and not rebuilding", () => {
-    const cases: Array<[Parameters<typeof daemonNeedsSplash>[0], boolean]> = [
-      [null, true],
-      [undefined, true],
-      [{ rebuilding: true, ready: true }, true],
-      [{ ready: false }, true],
-      [{}, true],
-      [{ ready: true }, true],
-      [{ status: 'failed', ready: true }, true],
-      [{ status: 'ok', ready: true, warm: false }, false],
-      [{ status: 'ok', ready: true, rebuilding: false }, false],
-    ];
-    for (const [health, expected] of cases) expect(daemonNeedsSplash(health), JSON.stringify(health)).toBe(expected);
+function fixture(initialHealth: DaemonHealthSnapshot | null = healthy()) {
+  let health = initialHealth;
+  const states: DaemonConnection[] = [];
+  const reload = vi.fn();
+  const monitor = monitorDaemonConnection({
+    instanceId: instance.instance_id,
+    assetRevision: 'dashboard-a',
+    readHealth: async () => health,
+    onConnection: connection => states.push(connection),
+    reload,
+  });
+  return { monitor, states, reload, setHealth(value: DaemonHealthSnapshot | null) { health = value; } };
+}
+
+describe('dashboard daemon availability', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('serves through preparation and keeps the outage active until the new daemon is ready', async () => {
+    const f = fixture({ ...healthy(), rebuilding: true });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.states.at(-1)?.phase).toBe('ready');
+
+    f.monitor.shuttingDown('approval', 'old');
+    expect(f.states.at(-1)).toMatchObject({ phase: 'outage', outage: { requestId: 'approval', startupEpoch: 'old' } });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(f.states.at(-1)?.phase).toBe('outage');
+
+    f.setHealth({ ...healthy('new'), ready: false });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(f.states.at(-1)?.phase).toBe('outage');
+    f.setHealth(healthy('new'));
+    await vi.advanceTimersByTimeAsync(750);
+    expect(f.states.at(-1)).toMatchObject({ phase: 'ready', health: { startup_epoch: 'new', warm: false } });
+    f.monitor.shuttingDown('late fanout', 'old');
+    expect(f.states.at(-1)?.phase).toBe('ready');
+    expect(f.reload).not.toHaveBeenCalled();
+    f.monitor.stop();
   });
 
-  it("enters on a cold-mount probe only for an explicit rebuilding or not-ready signal", () => {
-    const cases: Array<[Parameters<typeof shouldEnterSplashOnProbe>[0], boolean]> = [
-      // A daemon that cannot serve health did not serve this page either.
-      [null, false],
-      [undefined, false],
-      [{ rebuilding: true }, true],
-      [{ ready: false }, true],
-      // A 200 that merely omits readiness must not flash the splash.
-      [{}, false],
-      [[] as unknown as Record<string, never>, false],
-      [{ ready: true }, false],
-    ];
-    for (const [health, expected] of cases) expect(shouldEnterSplashOnProbe(health), JSON.stringify(health)).toBe(expected);
+  it('checks health on SSE loss and leaves a serving process usable', async () => {
+    const f = fixture();
+    await vi.advanceTimersByTimeAsync(1);
+    f.monitor.transport('down');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(f.states.every(state => state.phase === 'ready')).toBe(true);
+
+    f.setHealth(null);
+    f.monitor.transport('down');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(f.states.at(-1)?.phase).toBe('outage');
+    f.setHealth({ ...healthy('new'), instance: { ...instance, instance_id: 'another-daemon' } });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(f.states.at(-1)?.phase).toBe('outage');
+
+    f.setHealth(healthy());
+    f.monitor.transport('open');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(f.states.at(-1)?.phase).toBe('ready');
+    expect(f.reload).not.toHaveBeenCalled();
+    f.monitor.stop();
   });
 
-  it("releases an announced rebuild only on a new epoch and recovers a missed rebuild from epoch drift", () => {
-    expect(daemonIsReadyAfterEpoch({ status: 'ok', ready: true, startup_epoch: oldEpoch }, oldEpoch, true)).toBe(false);
-    expect(daemonIsReadyAfterEpoch({ status: 'ok', ready: true }, oldEpoch, true)).toBe(false);
-    expect(daemonIsReadyAfterEpoch({ status: 'ok', ready: true, warm: false, startup_epoch: newEpoch }, oldEpoch, true)).toBe(true);
-    expect(daemonIsReadyAfterEpoch({ status: 'ok', ready: true }, null, false)).toBe(true);
-    expect(shouldEnterSplashOnBackgroundProbe(
-      { ready: true, startup_epoch: newEpoch, startup_commit: { hash: oldEpoch } },
-      oldEpoch,
-    )).toBe(true);
-    expect(shouldEnterSplashOnBackgroundProbe({ ready: true, startup_epoch: oldEpoch }, oldEpoch)).toBe(false);
-  });
-
-  it("does not strand a manual restart: bare epoch drift releases without a new commit", () => {
-    const requireNewCommit = splashRequiresNewCommit(false);
-    const restarted = { status: 'ok', ready: true, startup_epoch: newEpoch, startup_commit: { hash: oldEpoch } };
-    expect(splashRequiresNewCommit(true)).toBe(true);
-    expect(daemonEpochChanged(restarted, oldEpoch)).toBe(true);
-    expect(daemonIsReadyAfterEpoch(restarted, oldEpoch, true)).toBe(true);
-    expect(requireNewCommit || daemonCommitChanged(restarted, oldEpoch)).toBe(false);
-  });
-
-  it("arms the stall escape only for a healthy daemon held past the window", () => {
-    const healthy = { status: 'ok', ready: true, warm: true, startup_epoch: oldEpoch, startup_commit: { hash: oldEpoch } };
-    expect(stallEscapeReady(healthy, 20_000, 15_000)).toBe(true);
-    expect(stallEscapeReady(healthy, 5_000, 15_000)).toBe(false);
-    expect(stallEscapeReady({ ...healthy, rebuilding: true }, 30_000, 15_000)).toBe(false);
-    expect(stallEscapeReady({ ...healthy, warm: false }, 30_000, 15_000)).toBe(true);
-    expect(stallEscapeReady({ ...healthy, status: 'failed' }, 30_000, 15_000)).toBe(false);
-    expect(stallEscapeReady({ ...healthy, ready: false }, 30_000, 15_000)).toBe(false);
-    expect(stallEscapeReady(null, 30_000, 15_000)).toBe(false);
+  it('reloads once for a different ready dashboard revision and carries the outage into the new document', async () => {
+    const f = fixture();
+    await vi.advanceTimersByTimeAsync(1);
+    f.monitor.shuttingDown('approval', 'old');
+    f.setHealth({ ...healthy('new', 'dashboard-b'), ready: false });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(f.reload).not.toHaveBeenCalled();
+    f.setHealth(healthy('new', 'dashboard-b'));
+    await vi.advanceTimersByTimeAsync(1_000);
+    f.monitor.transport('open');
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(f.reload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ requestId: 'approval', startupEpoch: 'old' }));
   });
 });

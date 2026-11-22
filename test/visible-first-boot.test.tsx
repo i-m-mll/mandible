@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from "./helpers/dom.js";
+import { act, cleanup, render, screen, waitFor } from "./helpers/dom.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { waitUntilPasses } from "./helpers/wait-until.js";
 import { __resetSharedSseForTests } from "../ui/src/sse-shared";
@@ -8,6 +8,7 @@ import { h } from "preact";
 
 import { App } from "../ui/src/app";
 import { clearApiGetCache } from "../ui/src/api";
+import { useDashboardStartupFrame } from "../ui/src/hooks/useDashboardConnection";
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -164,6 +165,64 @@ describe("visible-first dashboard boot", () => {
     source.emit("message", { type: "dashboard:badges", data: { auth: 4, notifications: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 } });
     await waitUntilPasses(() => expect(screen.getByLabelText("Approvals").textContent).toContain("4"));
     expect(badgeReads()).toBe(1);
+  });
+
+  it("reports a hidden dashboard frame ready before waiting for animation frames", async () => {
+    const nextFrame = vi.fn(() => 1);
+    const invoke = vi.fn(async () => undefined);
+    vi.stubGlobal("requestAnimationFrame", nextFrame);
+    vi.stubGlobal("__MANDIBLE_NATIVE_HOST__", { startupTrace: true });
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+    const frame = document.createElement("div");
+    frame.id = "mandible-startup-frame";
+    document.body.append(frame);
+    function Dashboard() {
+      useDashboardStartupFrame(true, "boot-epoch", { current: undefined });
+      return <main>Dashboard</main>;
+    }
+    try {
+      render(h(Dashboard, {}));
+      await act(async () => undefined);
+      expect(frame.hidden).toBe(true);
+      expect(invoke).toHaveBeenCalledExactlyOnceWith("desktop_frame_ready", { dashboard: true, daemonStartupEpoch: "boot-epoch" });
+    } finally {
+      frame.remove();
+    }
+  });
+
+  it("preserves the mounted dashboard through a quiet outage and resumes before warmup", async () => {
+    vi.useFakeTimers();
+    let health = { status: "ok", ready: true, warm: false, startup_epoch: "before", rebuilding: true };
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/client-auth/whoami") return operatorSession();
+      if (url === "/api/health") return jsonResponse(health);
+      return jsonResponse({});
+    }));
+
+    const { container } = render(h(App, {}));
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    const shell = container.querySelector(".app-shell")!;
+    const content = container.querySelector("main.app-content")!;
+    expect(shell.hasAttribute("inert")).toBe(false);
+
+    health = { ...health, ready: false, rebuilding: false };
+    document.dispatchEvent(new Event("visibilitychange"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    expect(shell.hasAttribute("inert")).toBe(true);
+    expect(screen.queryByRole("status", { name: "Restarting Mandible" })).toBeNull();
+    expect(container.querySelector("main.app-content")).toBe(content);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(700); });
+    expect(screen.getByRole("status", { name: "Restarting Mandible" })).toBeTruthy();
+
+    health = { ...health, ready: true, startup_epoch: "after" };
+    document.dispatchEvent(new Event("visibilitychange"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    expect(shell.hasAttribute("inert")).toBe(false);
+    expect(container.querySelector("main.app-content")).toBe(content);
+    expect(screen.queryByRole("status", { name: "Restarting Mandible" })).toBeNull();
+    expect(window.location.pathname).toBe("/issues");
   });
 
   it("suppresses fallback polling while dashboard SSE is fresh", async () => {
