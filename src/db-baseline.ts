@@ -22,7 +22,7 @@ import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.j
 import { PROTECTED_BASE_AUDIT_SCHEMA_SQL } from "./protected-base-audit-schema.js";
 import { OPERATOR_TRUST_CHANGES_SCHEMA_SQL, USER_CREDENTIALS_INDEX_SQL, USER_CREDENTIALS_TABLE_SQL } from "./operator-signing/schema.js";
 import { ISSUE_SEARCH_SCHEMA_SQL } from "./ledger/issue-search.js";
-import { BRIEFING_OWNER_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
+import { CURRENT_BRIEFING_OWNER_SCHEMA_SQL, REQUEST_NARRATIVE_CUSTODY_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
 import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
@@ -38,7 +38,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 252;
+export const BASELINE_SCHEMA_VERSION = 253;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -936,7 +936,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   TASK_COMMAND_V2_INDEX_SQL[0],
   TASK_COMMAND_EVENTS_V2_SQL,
   ...TASK_COMMAND_V2_INDEX_SQL.slice(1),
-  ...BRIEFING_OWNER_SCHEMA_SQL,
+  ...CURRENT_BRIEFING_OWNER_SCHEMA_SQL,
   ...REVIEW_ROUND_SCHEMA_SQL,
   ...REVIEW_EVIDENCE_SCHEMA_SQL,
   ...REVIEW_THREAD_SCHEMA_SQL,
@@ -1162,7 +1162,8 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     for (const statement of WORKER_THREAD_ARCHIVES_SCHEMA_SQL) db.exec(statement);
     for (const statement of LEDGER_ORIGIN_SCHEMA_SQL) {
       if (statement.startsWith("ALTER TABLE briefing_annotation_events ")
-          || statement.startsWith("ALTER TABLE briefing_submissions ")) continue;
+          || statement.startsWith("ALTER TABLE briefing_submissions ")
+          || statement.startsWith("ALTER TABLE briefing_response_events ")) continue;
       db.exec(statement);
     }
     db.exec(MANAGED_SESSION_ORIGIN_INDEX_SQL);
@@ -1173,6 +1174,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     for (const sql of RESPONSIBILITY_SCHEMA_SQL) db.exec(sql);
     for (const statement of EXACT_AGENT_WORK_UNIT_SCHEMA_SQL) db.exec(statement);
     for (const statement of LANDED_ISSUE_ACCOUNTING_COLUMNS_SQL) db.exec(statement);
+    for (const sql of REQUEST_NARRATIVE_CUSTODY_SQL) db.exec(sql);
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
       .run("schema_version", String(schemaVersion));
 

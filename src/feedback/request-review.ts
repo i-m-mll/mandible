@@ -1,3 +1,6 @@
+import { requestNarrativeQuestions } from "./briefing-directives.js";
+import { appendDirectiveAnswer, readDirectiveAnswer } from "./review-answers.js";
+import { BriefingStoreError } from "./briefing-errors.js";
 import { canEditRequestFile, canEditRequestFiles, requestDrafts } from "./request-drafts.js";
 import type { ReviewChangeEdit } from "./request-draft-types.js";
 import { canonicalJson } from "../canonical-json.js";
@@ -16,7 +19,7 @@ import type { CarriedReviewRange, RequestReviewFile, ReviewAnnotation, ReviewDoc
 
 type Owner = Extract<ReviewRoundOwner, { kind: "request_revision" }>;
 type RequestBinding = ReviewDocumentBinding & {
-  source: Extract<ReviewDocumentBinding["source"], { kind: "request_file" | "request_description" }>;
+  source: Extract<ReviewDocumentBinding["source"], { kind: "request_file" | "request_description" | "request_narrative" }>;
 };
 
 export type RequestReviewRound = {
@@ -27,8 +30,9 @@ export type RequestReviewRound = {
 
 export function requestReviewRound(request: AuthRequest): RequestReviewRound {
   const report = request.change_report;
+  const narrativeDigest = request.narrative == null ? null : authSnapshotDigest(request.narrative);
   const id = authSnapshotDigest(canonicalJson([request.id, request.title, request.command, request.spec_content,
-    request.commit_message, request.merge_head_sha, report]));
+    request.commit_message, request.merge_head_sha, report, ...(narrativeDigest ? [narrativeDigest] : [])]));
   const bindings: RequestBinding[] = [];
   const bind = (documentKey: string, source: RequestBinding["source"], target: RequestBinding["comparison_target"]) => {
     const position = bindings.length;
@@ -48,6 +52,7 @@ export function requestReviewRound(request: AuthRequest): RequestReviewRound {
     bind(`file:${index}:before`, before, after);
     bind(`file:${index}:after`, after, before);
   });
+  if (narrativeDigest) bind("narrative", { kind: "request_narrative", request_id: request.id, sha256: narrativeDigest }, null);
   return { id, owner: { kind: "request_revision", auth_request_id: request.id }, bindings };
 }
 
@@ -55,6 +60,56 @@ export function ensureRequestReviewRound(db: Db, round: RequestReviewRound): voi
   if (!db.prepare("SELECT 1 FROM review_rounds WHERE id = ?").get(round.id)) {
     createReviewRound(db, round.id, round.owner, round.bindings);
   }
+}
+
+function requestQuestions(db: Db, request: AuthRequest, round: RequestReviewRound, reviewerId: string | null) {
+  const binding = round.bindings.find(({ source }) => source.kind === "request_narrative");
+  if (!binding || !request.narrative) return [];
+  return requestNarrativeQuestions(request.narrative).map(directive => {
+    const id = `${binding.id}:${directive.key}`;
+    return {
+      id, directive,
+      effective_response: reviewerId ? readDirectiveAnswer(db, round.id, id, reviewerId) : null,
+    };
+  });
+}
+
+export type NarrativeAnswerMutation =
+  | { operation: "set"; expected_response_event_id: string | null; value: unknown }
+  | { operation: "retract"; expected_response_event_id: string };
+
+export function appendRequestNarrativeAnswer(db: Db, request: AuthRequest, round: RequestReviewRound,
+  actorUserId: string, key: string, mutation: NarrativeAnswerMutation, now: number,
+) {
+  const binding = round.bindings.find(({ source }) => source.kind === "request_narrative");
+  const question = requestQuestions(db, request, round, null).find(({ directive }) => directive.key === key);
+  if (!binding || !question) throw new BriefingStoreError("Narrative directive not found.", 404, "directive_not_found");
+  const { id, directive } = question;
+  return appendDirectiveAnswer(db, { roundId: round.id, actorUserId, bindingId: binding.id },
+    { id, response_type: directive.type, options_json: JSON.stringify(directive.options), variants_json: JSON.stringify(directive.variants) },
+    mutation, now);
+}
+
+export function requestNarrativeAnswerMembers(db: Db, request: AuthRequest, round: RequestReviewRound,
+  reviewerId: string, expected: readonly string[],
+) {
+  const current = requestQuestions(db, request, round, reviewerId).flatMap(({ id, effective_response }) =>
+    effective_response ? [{ directive_instance_id: id, response_event_id: effective_response.response_event_id }] : []);
+  const expectedIds = new Set(expected);
+  if (current.length !== expected.length || current.some(answer => !expectedIds.has(answer.response_event_id))) {
+    throw new BriefingStoreError("Narrative answers changed. Review them again.", 409, "stale_answer");
+  }
+  return current;
+}
+
+function submittedNarrativeAnswers(db: Db, submissionId: string) {
+  const rows = db.prepare(`SELECT substr(e.directive_instance_id, length(e.document_binding_id) + 2) AS directive_key,
+      e.id AS response_event_id, e.value_json FROM briefing_submission_answers a
+      JOIN briefing_response_events e ON e.id = a.response_event_id
+      WHERE a.submission_id = ? AND e.document_binding_id IS NOT NULL ORDER BY a.position`).all(submissionId) as Array<{
+    directive_key: string; response_event_id: string; value_json: string;
+  }>;
+  return rows.map(({ value_json, ...answer }) => ({ ...answer, value: JSON.parse(value_json) as import("../contracts.js").FeedbackResponseValue }));
 }
 
 type RequestReviewNote = ReviewAnnotation & { source: RequestBinding["source"] };
@@ -66,6 +121,7 @@ type FrozenRequestReviewReturn = {
   delivered: boolean;
   change_edit: ReviewChangeEdit | null;
   targets: ReturnType<typeof reviewSubmissionTargets>;
+  answers: ReturnType<typeof submittedNarrativeAnswers>;
   comments: RequestReviewNote[];
 };
 
@@ -80,6 +136,7 @@ function frozenRequestReviewReturn(db: Db, requestId: string): FrozenRequestRevi
   const { round_id, delivered, ...receipt } = returned;
   const bindings = new Map((reviewDocumentBindings(db, round_id) as RequestBinding[]).map(binding => [binding.id, binding]));
   return { ...receipt, delivered: Boolean(delivered), change_edit: submittedChangeEdit(db, receipt.submission_id), targets: reviewSubmissionTargets(db, receipt.submission_id),
+    answers: submittedNarrativeAnswers(db, receipt.submission_id),
     comments: reviewSubmissionAnnotations(db, receipt.submission_id).map(comment => ({
       ...comment, source: bindings.get(comment.document_binding_id)!.source,
     })) };
@@ -133,8 +190,12 @@ function projectRequestThreads(db: Db, notes: readonly ReviewAnnotation[]) {
   };
 }
 
-export async function readRequestReviewSource(root: string | null, source: RequestBinding["source"]): Promise<string | null> {
+export async function readRequestReviewSource(db: Db, root: string | null, source: RequestBinding["source"]): Promise<string | null> {
   if (source.kind === "request_description") return source.text;
+  if (source.kind === "request_narrative") {
+    const row = db.prepare("SELECT narrative FROM auth_requests WHERE id = ?").get(source.request_id) as { narrative: string | null } | null;
+    return row?.narrative != null && authSnapshotDigest(row.narrative) === source.sha256 ? row.narrative : null;
+  }
   if (!root || source.format === "binary" || !source.path || !source.blob) return null;
   const result = await readGitFilePair(root, { merge_base_sha: source.commit, head_sha: source.commit },
     { old_path: null, new_path: source.path, old_object: null, new_object: source.blob });
@@ -181,15 +242,15 @@ export async function readRequestReview(db: Db, request: AuthRequest, reviewerId
     const key = canonicalJson(source);
     let value = readSources.get(key);
     if (!value) {
-      value = readRequestReviewSource(request.target_repo_root, source);
+      value = readRequestReviewSource(db, request.target_repo_root, source);
       readSources.set(key, value);
     }
     return value;
   };
   for (const { comment, origin } of prior) {
     const source = comment.source;
-    const candidates = round.bindings.filter(binding => source.kind === "request_description"
-      ? binding.source.kind === "request_description"
+    const candidates = round.bindings.filter(binding => source.kind !== "request_file"
+      ? binding.source.kind === source.kind
       : source.path !== null && binding.source.kind === "request_file" && binding.source.side === source.side
         && binding.source.format === source.format && (binding.source.path === source.path
           || (source.side === "after" && binding.comparison_target?.kind === "request_file"
@@ -210,7 +271,12 @@ export async function readRequestReview(db: Db, request: AuthRequest, reviewerId
         ? { document_binding_id: candidate.id, source: candidate.source } : {}) });
   }
   return {
-    round, versions, annotations, drafts, editable_files,
+    round, versions, annotations, drafts, editable_files, narrative: request.narrative ?? null,
+    narrative_report: request.narrative ? request.change_report ?? null : null,
+    narrative_questions: requestQuestions(db, request, round, request.status === "pending" ? reviewerId : null)
+      .map(question => ({ ...question,
+        effective_response: returned?.answers.find(answer => answer.directive_key === question.directive.key) ?? question.effective_response,
+      })),
     returned: returned && { ...returned, comments: returned.comments.map(comment => ({ ...comment, thread: thread(comment) })) },
   };
 }

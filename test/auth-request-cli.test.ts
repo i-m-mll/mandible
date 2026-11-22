@@ -315,17 +315,23 @@ describe("auth request duplicate refusal", () => {
 
   it("exits non-zero and reports the existing request's own identity", async () => {
     const server = await listenForAuthRequest(duplicate409);
+    const narrative = "Review cafè custody.\r\n\r\n";
+    const narrativePath = path.join(homeDir, "request reasons.md");
+    fs.writeFileSync(narrativePath, narrative);
     try {
       const result = await runAsync([
         "auth", "request", "feature/demo",
         "--title", CALLER_TITLE,
         "--issue", "608d1db",
+        "--narrative", narrativePath,
         "--no-watch",
       ], tempDir, {
         MANDIBLE_PORT: String(server.port),
         MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
       });
 
+      expect(server.bodies[0]?.narrative).toBe(narrative);
+      expect(server.bodies[0]?.commit_message).not.toContain("cafè custody");
       // A refusal must never present as success.
       expect(result.status).not.toBe(0);
       expect(result.status).toBe(3);

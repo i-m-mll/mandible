@@ -1,8 +1,9 @@
+import { BriefingStoreError } from "../feedback/briefing-errors.js";
 import { readChangeEditPatch } from "../feedback/change-edit-git.js";
 import { REVIEW_EDIT_MAX_BYTES } from "../feedback/request-draft-types.js";
 import * as z from "zod";
 import { collectAuthMergeReview, type AuthMergeReviewCollectionResult } from "../auth-change-report.js";
-import { requestReviewVersions, readRequestReview, returnedRequestReview } from "../feedback/request-review.js";
+import { requestReviewRound, requestReviewVersions, readRequestReview, returnedRequestReview } from "../feedback/request-review.js";
 import { exactAgentRef } from "../ambient-provider-identity.js";
 import { responsibilityActor, sessionResponsibilityActor } from "../responsibility.js";
 import { describeCustodyHolder } from "../work-unit-custody.js";
@@ -103,9 +104,18 @@ export function registerAuthRoutes(
       z.object({ operation: z.literal("revert") }),
     ]),
   });
+  const narrativeAnswer = reviewPrecondition.extend({
+    round_id: z.string().min(1),
+    directive_key: z.string().regex(/^[A-Za-z0-9._-]{1,128}$/),
+    mutation: z.discriminatedUnion("operation", [
+      z.object({ operation: z.literal("set"), expected_response_event_id: z.string().min(1).nullable(), value: z.unknown() }),
+      z.object({ operation: z.literal("retract"), expected_response_event_id: z.string().min(1) }),
+    ]),
+  });
   const reviewReturn = reviewPrecondition.extend({
     round_id: z.string().min(1),
     annotation_event_ids: z.array(z.string().min(1)),
+    answer_event_ids: z.array(z.string().min(1)).optional(),
     draft_snapshot: z.array(z.object({ path: z.string().min(1), generation: z.number().int().positive() })).optional(),
     reason: z.string().optional(),
   });
@@ -409,6 +419,11 @@ export function registerAuthRoutes(
   app.get("/api/auth/request/:id/files/:index", async (req, res) => {
     const request = await authQueue.getRequest(req.params.id);
     const against = req.query?.against;
+    const expectedRound = req.query?.round;
+    if (expectedRound !== undefined && (!request || expectedRound !== requestReviewRound(request).id || against !== undefined)) {
+      res.status(409).json({ error: "The reviewed documents changed." });
+      return;
+    }
     const comparison = request && typeof against === "string" ? await comparisonReport(request, against) : null;
     const report = typeof against === "string" ? comparison?.ok ? comparison.value.report : null : request?.change_report;
     const index = req.params.index;
@@ -472,6 +487,15 @@ export function registerAuthRoutes(
       res.status(201).json({ annotation_event_id: id });
     } catch (error) { handleQueueError(error, res); }
   }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/annotations", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/review/answers", globalCapabilityRoute("approve_auth", (req, res) => {
+    try {
+      const input = narrativeAnswer.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid narrative answer." }); return; }
+      const eventId = authQueue.answerRequestNarrative(req.params.id, authReviewOperator(db, req), input.data);
+      res.status(201).json({ response_event_id: eventId });
+    } catch (error) { handleQueueError(error, res); }
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/answers", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/review/thread-events", (req, res) => {
     try {
@@ -841,7 +865,7 @@ export function registerAuthRoutes(
     }
     const attributionResolver = new AttributionReadResolver(db);
     const publicationBlockers = await authQueue.publicationBlockersForRequests(requests);
-    const enriched = requests.map((r) => {
+    const enriched = requests.map(({ narrative: _narrative, ...r }) => {
       return {
         ...r,
         dependencies: authQueue.dependenciesForRequest(r),
@@ -1076,6 +1100,7 @@ const SPEC_CONTENT_REFUSAL =
   "'spec_content' is no longer accepted. Put intent in the change message (post-merge steps under Caveats) and link a substantial design to the issue as an artifact.";
 
 function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInput | null {
+  if (body.narrative !== undefined && typeof body.narrative !== "string") return null;
   if (body.depends_on_ids !== undefined && (!Array.isArray(body.depends_on_ids) || body.depends_on_ids.some(id => typeof id !== "string" || !id.trim()))) return null;
   if (body.space_publication_id !== undefined && (typeof body.space_publication_id !== "string" || !body.space_publication_id.trim())) return null;
   if (typeof body.command !== "string" || typeof body.title !== "string") {
@@ -1135,6 +1160,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     depends_on_ids: body.depends_on_ids as string[] | undefined,
     execution_mode: executionMode,
     target_repo_root: typeof body.target_repo_root === "string" ? body.target_repo_root : null,
+    narrative: typeof body.narrative === "string" ? body.narrative : undefined,
     actions: body.actions === undefined ? undefined : body.actions as AuthRequestInput["actions"],
     supersedes_request_id: typeof body.supersedes_request_id === "string" ? body.supersedes_request_id : null,
     superseded_action_dispositions: Array.isArray(body.superseded_action_dispositions)
@@ -1497,7 +1523,7 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
     sendSigningRefusal(res, error.refusal);
     return;
   }
-  if (error instanceof ClientAuthzError) {
+  if (error instanceof BriefingStoreError || error instanceof ClientAuthzError) {
     res.status(error.status).json({ error: error.message, code: error.code });
     return;
   }

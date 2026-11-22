@@ -1,3 +1,4 @@
+import { AuthReviewNarrative } from './AuthReviewNarrative';
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
 import type { RefObject } from 'preact';
@@ -1027,6 +1028,12 @@ function AuthRequestDetail({
   const fullId = getAuthId(request);
   const status = getAuthStatus(request);
   const review = useAuthRequestReview(fullId, status, request.updated_at, canWriteReview, onReject, onReturned);
+  const [changeOrder, setChangeOrder] = usePersistedViewState<'narrative' | 'files'>(
+    `auth-change-order:${fullId}`, value => value === 'files' ? 'files' : 'narrative', 'narrative',
+  );
+  const hasNarrative = !review.against && review.data?.round.owner.auth_request_id === fullId && !!review.data.narrative;
+  const narrativeOrder = hasNarrative && changeOrder === 'narrative' && !navigation.file
+    && review.navigation?.comment.source.kind !== 'request_file';
   const description = review.data?.round.bindings.find(binding => binding.source.kind === 'request_description');
   const comparedVersion = review.data?.versions.find(version => version.id === review.against);
   const changeReport = review.against ? review.comparison : request.change_report;
@@ -1036,7 +1043,10 @@ function AuthRequestDetail({
     if (comment.source.kind === 'request_description') {
       setDescriptionView(current => ({ ...current, descriptionExpanded: true }));
       setViewMode('abstract');
-    } else setViewMode('diff');
+    } else {
+      if (comment.source.kind === 'request_narrative') setChangeOrder('narrative');
+      setViewMode('diff');
+    }
     review.setNavigation({ comment, token: crypto.randomUUID() });
   };
   const targetComment = review.navigation?.comment;
@@ -1512,7 +1522,27 @@ function AuthRequestDetail({
             {review.comparisonError}
           </DetailPaneNotice>}
           {!review.against && <AuthReviewDetachedDrafts review={review} />}
-          <ChangeList
+          {hasNarrative && <div className="auth-review__side" role="group" aria-label="Change order">
+            <button type="button" aria-pressed={narrativeOrder} onClick={() => {
+              review.setNavigation(null);
+              review.clearSelection();
+              setChangeOrder('narrative');
+              if (navigation.file) setViewMode('diff');
+            }}>Narrative order</button>
+            <button type="button" aria-pressed={!narrativeOrder} onClick={() => {
+              review.setNavigation(null);
+              review.clearSelection();
+              setChangeOrder('files');
+            }}>File order</button>
+          </div>}
+          {narrativeOrder ? <AuthReviewNarrative key={review.data!.round.id} id={fullId} review={review}
+            onFile={index => {
+              const file = review.data?.narrative_report?.files[index];
+              if (!file) return;
+              review.setNavigation(null);
+              review.clearSelection();
+              navigateAuthReviewView(fullId, 'diff', { oldPath: file.old_path, newPath: file.new_path });
+            }} /> : <ChangeList
             files={changeReport?.files}
             patch={authType === 'merge' || review.against ? undefined : diffRaw}
             emptyLabel={authType === 'merge' && request.change_report === null ? 'Change inventory unavailable' : undefined}
@@ -1540,7 +1570,7 @@ function AuthRequestDetail({
               scrollRestoring.resolveTarget();
             }}
             ariaLabel="Approval request changes"
-          />
+          />}
           </div>
       ) : (
           <div id="auth-detail-panel-abstract" role="tabpanel" aria-labelledby="auth-detail-tab-abstract">

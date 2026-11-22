@@ -8,6 +8,8 @@ export type GitReviewDocument = {
   blob: { oid: string; mode: "100644" | "100755" } | null;
 };
 
+export type RequestReviewNarrative = { kind: "request_narrative"; request_id: string; sha256: string };
+
 export type RequestReviewDescription = { kind: "request_description"; text: string };
 
 export type RequestReviewFile = {
@@ -20,7 +22,7 @@ export type RequestReviewFile = {
   format: "markdown" | "lines" | "binary";
 };
 
-export type ReviewDocumentReference = ArtifactReviewDocument | GitReviewDocument | RequestReviewDescription | RequestReviewFile;
+export type ReviewDocumentReference = ArtifactReviewDocument | GitReviewDocument | RequestReviewDescription | RequestReviewNarrative | RequestReviewFile;
 
 export type ReviewDocumentBinding = {
   id: string;

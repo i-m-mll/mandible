@@ -262,6 +262,7 @@ export interface AuthRequest {
    * were removed. Always null for new requests; kept read-only as history.
    */
   spec_content: string | null;
+  narrative?: string | null;
   /** Issue 8ae6b5f — where a protected-root dirty policy moved uncommitted work. */
   protected_root_dirty_action?: ProtectedRootDirtyAction | null;
   repo?: string;
@@ -366,10 +367,11 @@ export interface AuthRequestLifecycleEvent {
  */
 export type AuthRequestSummary = Omit<
   AuthRequest,
-  "diff_summary" | "spec_content" | "output" | "change_report"
+  "diff_summary" | "spec_content" | "narrative" | "output" | "change_report"
 > & { action_count: number };
 
 export interface AuthRequestInput {
+  narrative?: string;
   space_publication_id?: string | null;
   session_id?: string | null;
   type?: AuthRequestType;

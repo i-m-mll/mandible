@@ -50,8 +50,10 @@ printf '%s\n' "$response" | jq -r '
   (.reason // empty | safe),
   (if .change_edit then "Change edit \(.change_edit.commit_sha)", "Git ref \(.change_edit.ref)",
     ((.replacements // .replacements_error // empty) | safe) else empty end),
+  (.answers[]? | "Answer \(.directive_key): \(.value | tojson | safe)"),
   (if (.comments | length) == 0 then "No comments" else .comments[] |
     (if .source.kind == "request_description" then "Description"
+     elif .source.kind == "request_narrative" then "Narrative"
      else (.source.path | safe) + " (" + .source.side + ")" end) +
     (if .source.format == "lines" then " lines \(.start_offset + 1)–\(.end_offset)"
      else " offsets \(.start_offset)–\(.end_offset)" end),

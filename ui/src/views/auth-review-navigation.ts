@@ -78,9 +78,9 @@ export function navigateAuthFile(requestId: string, file: DiffFileIdentity, info
   navigateTo(authReviewHref(requestId, 'diff', file), historyState({ version: 1, entryId: crypto.randomUUID() }));
 }
 
-export function navigateAuthReviewView(requestId: string, view: AuthReviewView): void {
+export function navigateAuthReviewView(requestId: string, view: AuthReviewView, file?: DiffFileIdentity): void {
   rememberEntityRoute('auth', shortRouteId(requestId), { id: requestId });
-  navigateTo(authReviewHref(requestId, view), historyState({ version: 1, entryId: crypto.randomUUID() }));
+  navigateTo(authReviewHref(requestId, view, file), historyState({ version: 1, entryId: crypto.randomUUID() }));
 }
 
 export type AuthReviewNavigation = {
