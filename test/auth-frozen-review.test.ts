@@ -1,28 +1,35 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { computeAuthMergeReviewMetadata } from "../src/auth-context.js";
 import { executeAuthCommand } from "../src/auth-executor.js";
+import { AuthHookManager } from "../src/auth-hooks.js";
+import { createBriefingBundle, replaceBriefingBundleLayout } from "../src/feedback/briefing-bundles.js";
+import { createBriefingGroup, readBriefingGroup } from "../src/feedback/briefing-groups.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { verifyMergeCommitSignature } from "../src/auth-signature-verification.js";
 import { changeEditRef } from "../src/feedback/change-edit-git.js";
+import { narrativeHunks, requestNarrativeChanges, resolveNarrativeChange } from "../src/feedback/request-narrative.js";
+import { readGitFilePair } from "../src/git-change-review.js";
 import { readRequestReview } from "../src/feedback/request-review.js";
 import { reviewSubmissionAnnotations, reviewSubmissionTargets, submittedChangeEdit } from "../src/feedback/review-store.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
 import { buildProtectedBranchGuardProjection, writeProtectedBranchGuardProjection } from "../src/protected-branch-guard.js";
 import {
   AUTH_MERGE_REVIEW, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createMigratedDb,
-  createNoopHookManager, git, registerWorkRepo, waitForStatus, writeFile,
+  git, registerWorkRepo, waitForStatus, writeFile,
 } from "./helpers/auth-queue-fixtures.js";
 import { fixtureOperatorSigning, operatorCaller, SoftwareOperatorSigner } from "./helpers/operator-signing-fixtures.js";
+
+import { waitUntil } from "./helpers/wait-until.js";
 
 const CLI = fileURLToPath(new URL("../cli", import.meta.url));
 const HOOKS = fileURLToPath(new URL("../hooks/git", import.meta.url));
 
 it("freezes and lands the reviewed merge with a single signature and exact review receipts", async () => {
-  const repo = createAuthCheckRepo();
+  const repo = realpathSync(createAuthCheckRepo());
   const db = createMigratedDb();
   const signer = new SoftwareOperatorSigner();
   const branch = "feature/frozen";
@@ -48,7 +55,11 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
     'fi',
     'exec "$FIXTURE_GIT" "$@"',
   ].join("\n"), { mode: 0o755 });
-  const queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false,
+  const hookManager = new AuthHookManager(db);
+  const installed = path.join(repo, ".git", "installed-notes.md");
+  const hook = hookManager.create({ repo_pattern: "frozen-fixture", auth_type: "merge", position: 0,
+    label: "Install tracked notes", command: `git show HEAD:docs/notes.md > '${installed}'`, required: true });
+  const queue = new AuthQueue({ db, hookManager, backgroundMaintenance: false,
     operatorSigning: fixtureOperatorSigning(db, signer),
     executor: async options => {
       const env: NodeJS.ProcessEnv = { ...options.env, MANDIBLE_HOME: privateHome, MANDIBLE_CLI_DIR: CLI };
@@ -81,6 +92,13 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
     addProject(db, { project_key: "frozen-fixture" });
     addOrUpdateCheckout(db, "frozen-fixture", { root: repo, default_branch: "main" });
     const credential = configureSigningCredential(db, repo);
+    const viewer = { userId: credential.operatorId, operator: true };
+    const bundle = createBriefingBundle(db, { name: "Notes", briefingRefs: [], viewer });
+    replaceBriefingBundleLayout(db, bundle.id, { layout: [
+      { kind: "tracked", project_ref: "frozen-fixture", path: "docs/notes.md" },
+    ] }, viewer);
+    const group = createBriefingGroup(db, { key: "notes-policy", name: "Notes policy",
+      currentBundleRef: bundle.id, bundleRefs: [], viewer });
     const projection = buildProtectedBranchGuardProjection(db);
     expect(projection.protectedRefs).toContainEqual([path.join(realpathSync(repo), ".git"), "refs/heads/main"]);
     writeProtectedBranchGuardProjection(path.join(privateHome, "git-guard"), projection);
@@ -95,11 +113,23 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
       command: `mandible auth merge ${branch} --into main`, title: "Freeze edits",
       cwd: repo, target_repo_root: repo, repo: "frozen-fixture", base_branch: "main", head_branch: branch,
       merge_head_sha: requester, change_report: changeReport,
-      narrative: ':::spec-item{key="context" type="verdict" required="false"}\nKeep this explanation?\n:::\n',
+      narrative: ['Clarify the instruction.', ':::change{path="docs/notes.md"}\nRequester change.\n:::',
+        ':::spec-item{key="context" type="verdict" required="false"}\nKeep this explanation?\n:::\n'].join("\n\n"),
     }, credential.operatorId);
     const caller = operatorCaller(credential.operatorId);
     const actor = { user_id: credential.operatorId, evidence_method: "local_default", authority_path: "operator" as const };
     const first = await readRequestReview(db, request, actor.user_id);
+    expect(first.tracked_groups[0]?.documents[0]).toMatchObject({ commit_sha: base,
+      content: requesterText.replace("Requester change.", "Original proposal.")
+        .replace("Base wording.", "Independent protected update.") });
+    expect(readBriefingGroup(db, group.id, viewer).tracked_proposals[0]).toMatchObject({ request_id: request.id });
+    const report = first.narrative_report!;
+    const reference = requestNarrativeChanges(first.narrative!, report.files)[0]!;
+    const compared = await readGitFilePair(repo, report.comparison, report.files[reference.index]);
+    if (!compared.ok || compared.file.kind !== "text") throw new Error("Narrative file pair is unavailable");
+    const { before, after } = compared.file;
+    const proposed = resolveNarrativeChange(after.contents, reference.quote, narrativeHunks(before.contents, after.contents)!);
+    expect(proposed && after.contents.slice(proposed.after.start, proposed.after.end)).toBe("Requester change.\n");
     const expected_revision = queue.lifecycleRevision(request.id)!;
     const input = { expected_revision, expected_custody_generation: queue.requestResponsibility(request).custody_generation };
     const answer = (round_id: string, expected_revision: number, verdict: "keep" | "dismiss") =>
@@ -111,7 +141,7 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
     const firstProof = { proof_digest: queue.reviewApprovalProof(request), round_id: first.round.id,
       annotation_event_ids: [], answer_event_ids: [firstAnswer] };
     const edit = (expected_generation: number, text: string) => queue.mutateRequestReviewDraft(request.id, actor, {
-      ...input, round_id: first.round.id, path: "docs/notes.md", expected_generation, mutation: { operation: "save", text },
+      ...input, round_id: first.round.id, path: reference.path, expected_generation, mutation: { operation: "save", text },
     });
     const old = await edit(0, editedText.replace("Operator", "Draft"));
     const current = await edit(old.generation, editedText);
@@ -160,7 +190,7 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
     expect(signer.touches).toHaveLength(0);
     await queue.approveAsOperator(request.id, caller, revision, { ...proofWithComment, answer_event_ids: [finalAnswer] });
     await waitForStatus(queue, request.id, "completed");
-    await queue.drainFinalizers();
+    await waitUntil(() => queue.getRequestExact(request.id)?.merge_finalized_at, "merge convergence finalization");
     const landed = git(repo, ["rev-parse", "main"]);
     expect(signer.touches).toHaveLength(1);
     expect(git(repo, ["rev-list", "--parents", "-n", "1", landed])).toBe(`${landed} ${base} ${effective}`);
@@ -172,6 +202,12 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
     expect(reviewSubmissionTargets(db, approval.review_submission_id!).map(target => target.document_binding_id).sort())
       .toEqual(reviewed.round.bindings.map(binding => binding.id).sort());
     const completed = await readRequestReview(db, queue.getRequestExact(request.id)!, actor.user_id);
+    expect(hookManager.getRun(request.id, hook.id)).toMatchObject({ state: "complete" });
+    expect(readFileSync(installed, "utf8")).toBe(mergedText);
+    const currentGroup = readBriefingGroup(db, group.id, viewer);
+    expect(currentGroup.current!.layout[0]).toMatchObject({ kind: "tracked", tracked: { commit_sha: landed, content: mergedText } });
+    expect(completed.tracked_group_history[0]?.groups).toEqual(first.tracked_groups);
+    expect(completed.tracked_groups[0]?.documents[0]?.commit_sha).toBe(base);
     expect(completed.narrative_questions[0]?.effective_response)
       .toMatchObject({ response_event_id: finalAnswer, value: { verdict: "dismiss" } });
   } finally {

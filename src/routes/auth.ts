@@ -455,7 +455,7 @@ export function registerAuthRoutes(
       res.json({ ...await readRequestReview(db, request, isUserRequest(db, req) ? viewer.user_id : null),
         precondition, status: request.status, proof_digest });
     } catch (error) { handleQueueError(error, res); }
-  }, { operation: { id: "get:/api/auth/request/:id/review", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+  }, { operation: { id: "get:/api/auth/request/:id/review", effects: ["ledger:read", "ledger:write", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.get("/api/auth/request/:id/review/returned", async (req, res) => {
     const resolved = resolveId(db, "auth_request", req.params.id);

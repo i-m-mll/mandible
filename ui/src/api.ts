@@ -1,3 +1,4 @@
+import type { TrackedBriefingDocument, TrackedBriefingProposal } from "../../src/contracts";
 import type { StandingNoteMutation } from '../../src/feedback/standing-notes';
 import type { ReviewRange, StandingNote, StandingNotePresentation } from '../../src/feedback/review-types';
 import type { RequestReview } from '../../src/feedback/request-review';
@@ -810,6 +811,16 @@ export function invalidateDashboardApiCacheForEvent(type: string, data?: unknown
   } else if (type.startsWith('auth:')) {
     invalidateApiGetCache('/api/auth/');
     if (type !== 'auth:output') invalidateCrossEntityProjections(type, data);
+    if (type === DOMAIN_EVENTS.AUTH_NEW || type === DOMAIN_EVENTS.AUTH_UPDATED
+      || type === DOMAIN_EVENTS.AUTH_MERGED || type === DOMAIN_EVENTS.AUTH_RESOLVED || type === DOMAIN_EVENTS.AUTH_FINALIZED) {
+      const sidebar = queryClient.getQueryData<BriefingSidebarSnapshot>(browserResourceKeys.briefingSidebar);
+      if (sidebar?.groups.some(group => group.current?.layout.some(entry => entry.kind === 'tracked'
+        || (entry.kind === 'subgroup' && entry.members?.some(member => member.kind === 'tracked'))))) {
+        invalidateApiGetCache('/api/briefing-groups');
+        invalidateApiGetCache('/api/briefing-bundles');
+        void refreshBrowserResources(queryClient, [browserResourceKeys.briefingSidebar]);
+      }
+    }
   } else if (type.startsWith('work:') || type.startsWith('push:')) {
     invalidateApiGetCache('/api/work/');
     invalidateCrossEntityProjections(type, data);
@@ -4528,9 +4539,11 @@ const BRIEFINGS_PATH = '/api/briefings';
 const BRIEFING_BUNDLES_PATH = '/api/briefing-bundles';
 const BRIEFING_GROUPS_PATH = '/api/briefing-groups';
 
-export type BriefingBundleLayoutEntry =
+export type BriefingBundleLeaf =
   | { kind: 'briefing'; briefing: FeedbackCollection }
-  | { kind: 'subgroup'; name: string; briefings: FeedbackCollection[] };
+  | { kind: 'tracked'; tracked: TrackedBriefingDocument };
+export type BriefingBundleLayoutEntry = BriefingBundleLeaf
+  | { kind: 'subgroup'; name: string; briefings: FeedbackCollection[]; members?: BriefingBundleLeaf[] };
 
 export type BriefingBundle = {
   id: string;
@@ -4550,6 +4563,7 @@ export type BriefingGroup = {
   archivedAt?: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  trackedProposals?: TrackedBriefingProposal[];
   destinations: Array<{ logicalArtifactId: string; publicationMode: 'reviewed-document' | 'published-report' | null;
     routeKeys: string[] }>;
   destinationHistory: Array<{ id: string; logicalArtifactId: string; priorGroupId: string | null;
@@ -4614,6 +4628,23 @@ export type BriefingSidebarSnapshot = {
   invalidBriefings: InvalidBriefingRow[];
 };
 
+function normalizeBriefingLeaf(entry: unknown, invalid: InvalidBriefingRow[]): BriefingBundleLeaf | null {
+  const row = briefingRecord(entry);
+  if (row.kind === 'briefing') {
+    const briefing = normalizeMemberBriefing(row.briefing, invalid);
+    return briefing ? { kind: 'briefing', briefing } : null;
+  }
+  if (row.kind !== 'tracked') return null;
+  const tracked = briefingRecord(row.tracked);
+  const project_id = briefingString(tracked.project_id);
+  const project_key = briefingString(tracked.project_key);
+  const path = typeof tracked.path === 'string' ? tracked.path : '';
+  return project_id && project_key && path ? { kind: 'tracked', tracked: {
+    project_id, project_key, path, commit_sha: briefingOptionalString(tracked.commit_sha),
+    content: typeof tracked.content === 'string' ? tracked.content : null,
+  } } : null;
+}
+
 function normalizeBriefingBundle(entry: unknown, invalid: InvalidBriefingRow[]): BriefingBundle | null {
   const bundle = briefingRecord(entry);
   const id = briefingString(bundle.id);
@@ -4628,10 +4659,6 @@ function normalizeBriefingBundle(entry: unknown, invalid: InvalidBriefingRow[]):
   const layoutRows = briefingOptionalRows(bundle.layout, 'layout');
   const layout = layoutRows.map((layoutEntry): BriefingBundleLayoutEntry | null => {
     const row = briefingRecord(layoutEntry);
-    if (row.kind === 'briefing') {
-      const briefing = normalizeMemberBriefing(row.briefing, invalid);
-      return briefing ? { kind: 'briefing', briefing } : null;
-    }
     if (row.kind === 'subgroup') {
       const name = briefingString(row.name);
       const briefings = (briefingOptionalRows(row.briefings, 'subgroup briefings'))
@@ -4640,16 +4667,19 @@ function normalizeBriefingBundle(entry: unknown, invalid: InvalidBriefingRow[]):
           return normalizeMemberBriefing(member.briefing ?? entry, invalid);
         })
         .filter((briefing): briefing is FeedbackCollection => Boolean(briefing));
-      return name ? { kind: 'subgroup', name, briefings } : null;
+      const members = Array.isArray(row.members)
+        ? row.members.map(member => normalizeBriefingLeaf(member, invalid)).filter((member): member is BriefingBundleLeaf => member !== null)
+        : undefined;
+      return name ? { kind: 'subgroup', name, briefings, members } : null;
     }
-    return null;
+    return normalizeBriefingLeaf(row, invalid);
   }).filter((layoutEntry): layoutEntry is BriefingBundleLayoutEntry => layoutEntry !== null);
   const canonicalLayout = layout.length > 0
     ? layout
     : members.map((member): BriefingBundleLayoutEntry => ({ kind: 'briefing', briefing: member.briefing }));
   const canonicalMembers = canonicalLayout.flatMap((layoutEntry) => layoutEntry.kind === 'briefing'
     ? [layoutEntry.briefing]
-    : layoutEntry.briefings)
+    : layoutEntry.kind === 'subgroup' ? layoutEntry.briefings : [])
     .map((briefing, position) => ({ position, briefing }));
   return id && briefingString(bundle.name) ? {
     id,
@@ -4793,6 +4823,7 @@ export function normalizeBriefingGroups(payload: unknown, invalid: InvalidBriefi
       archivedAt: briefingOptionalNumber(group.archived_at),
       current,
       updates,
+      trackedProposals: Array.isArray(group.tracked_proposals) ? group.tracked_proposals as TrackedBriefingProposal[] : [],
       destinations,
       destinationHistory,
       reviewCandidates,

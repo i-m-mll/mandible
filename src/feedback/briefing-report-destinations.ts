@@ -5,7 +5,7 @@ import { canonicalJson } from "../canonical-json.js";
 import type { Db } from "../db.js";
 import { resolveArtifactIdentity } from "../provider-artifacts.js";
 import { BriefingStoreError, resolveBriefingId } from "./briefings.js";
-import { resolveBundleId, type BriefingBundleViewer } from "./briefing-bundles.js";
+import { bundleMemberRows, resolveBundleId, writeBundleMemberRows, type BriefingBundleViewer, type BundleMemberRow } from "./briefing-bundles.js";
 import { resolveGroupId } from "./briefing-groups.js";
 import { reconcileBriefingDestinationRoutes, type BriefingDestinationRouteManifest } from "./briefing-composer.js";
 import { placementCandidates } from "./briefing-placement.js";
@@ -23,35 +23,20 @@ export type ReportPlacementInput = {
 
 export type DestinationActor = { userId: string; credentialId: string | null; evidenceMethod: "api_token" | "session_claim" | "local_default"; projectId: string };
 
-type LayoutMember = {
-  briefing_id: string;
-  layout_position: number;
-  entry_kind: "briefing" | "subgroup";
-  subgroup_name: string | null;
-  subgroup_position: number;
-};
-
-function members(db: Db, bundleId: string | null): LayoutMember[] {
-  return bundleId === null ? [] : db.prepare(`SELECT briefing_id, layout_position, entry_kind,
-    subgroup_name, subgroup_position FROM briefing_bundle_members WHERE bundle_id = ?
-    ORDER BY layout_position, subgroup_position`).all(bundleId) as LayoutMember[];
+function members(db: Db, bundleId: string | null): BundleMemberRow[] {
+  return bundleId === null ? [] : bundleMemberRows(db, bundleId);
 }
 
-function successorBundle(db: Db, oldId: string | null, next: LayoutMember[], now: number): string {
+function successorBundle(db: Db, oldId: string | null, next: BundleMemberRow[], now: number): string {
   const name = oldId === null ? "Published reports" : (db.prepare("SELECT name FROM briefing_bundles WHERE id = ?")
     .get(oldId) as { name: string }).name;
   const id = randomUUID();
   db.prepare("INSERT INTO briefing_bundles (request_origin_json, id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
     .run(requestOriginJson(), id, name, now, now);
-  const insert = db.prepare(`INSERT INTO briefing_bundle_members
-    (bundle_id, briefing_id, layout_position, entry_kind, subgroup_name, subgroup_position, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`);
-  const positions = [...new Set(next.map((row) => row.layout_position))];
-  for (const [position, prior] of positions.entries()) {
-    const group = next.filter((row) => row.layout_position === prior);
-    group.forEach((row, subgroupPosition) => insert.run(id, row.briefing_id, position,
-      row.entry_kind, row.subgroup_name, row.entry_kind === "subgroup" ? subgroupPosition : 0, now));
-  }
+  const positions = [...new Set(next.map(row => row.layout_position))];
+  writeBundleMemberRows(db, id, positions.flatMap((prior, layout_position) =>
+    next.filter(row => row.layout_position === prior).map((row, subgroup_position) =>
+      ({ ...row, layout_position, subgroup_position }))), now);
   return id;
 }
 
@@ -151,7 +136,7 @@ export function placeBriefingReport(
     let targetBaseId = target.current_bundle_id;
     if (targetMatches.length === 0) {
       targetBaseId = successorBundle(db, target.current_bundle_id, [...targetRows, {
-        briefing_id: briefingId, layout_position: targetRows.length
+        briefing_id: briefingId, tracked_project_id: null, tracked_path: null, layout_position: targetRows.length
           ? Math.max(...targetRows.map((row) => row.layout_position)) + 1 : 0,
         entry_kind: "briefing", subgroup_name: null, subgroup_position: 0,
       }], now);

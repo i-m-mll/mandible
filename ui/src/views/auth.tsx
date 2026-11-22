@@ -1,3 +1,4 @@
+import { TrackedBriefingDisclosure, TrackedBriefingDocumentPanel } from './feedback/TrackedBriefingDocumentPanel';
 import { AuthReviewNarrative } from './AuthReviewNarrative';
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
@@ -77,6 +78,12 @@ import { EntityRouteState, isUnopenedEntityRoute } from '../components/shared/En
 import { authChangeBreakdownStorageKey } from './auth-change-breakdown-state';
 import { AUTH_TYPE_META, authStatusPillClass, isFailedLikeStatus } from './auth-presentation';
 import { navigateAuthFile, navigateAuthReviewView, useAuthReviewNavigation, type AuthActionViewState, type AuthInfoSnapshot, type AuthReviewNavigation } from './auth-review-navigation';
+
+function TrackedReviewDocuments({ documents }: { documents: import('../../../src/contracts').TrackedBriefingDocument[] }) {
+  return <ul>{documents.map(doc => <li key={`${doc.project_id}:${doc.path}`}>
+    <TrackedBriefingDocumentPanel document={doc} showCommit />
+  </li>)}</ul>;
+}
 
 const RETAINED_FINALIZED_AUTH_KEY = 'mandible.auth.retained-finalized-selection';
 
@@ -1531,6 +1538,35 @@ function AuthRequestDetail({
             {review.comparisonError}
           </DetailPaneNotice>}
           {!review.against && <AuthReviewDetachedDrafts review={review} />}
+          {!review.against && review.data?.tracked_groups?.length ? (
+            <section aria-label="Briefing groups">
+              {review.data.tracked_groups.map(group => (
+                <TrackedBriefingDisclosure key={group.group_id} title={group.name}>
+                  <ul>{group.members.flatMap(member => member.file_indexes.map(index => (
+                    <li key={`${member.project_id}:${member.path}:${index}`}>
+                      <button type="button" onClick={() => {
+                        const file = request.change_report?.files[index];
+                        if (file) {
+                          review.setNavigation(null);
+                          review.clearSelection();
+                          navigateAuthReviewView(fullId, 'diff', { oldPath: file.old_path, newPath: file.new_path });
+                        }
+                      }}>{member.path}</button>
+                    </li>
+                  )))}</ul>
+                  <TrackedReviewDocuments documents={group.documents} />
+                </TrackedBriefingDisclosure>
+              ))}
+            </section>
+          ) : null}
+          {!review.against && review.data?.tracked_group_history?.map(receipt => (
+            <TrackedBriefingDisclosure key={receipt.round_id} title={`Briefing groups · review ${receipt.revision}`}>
+              {receipt.groups.map(group => <section key={group.group_id} aria-label={group.name}>
+                <h4>{group.name}</h4>
+                <TrackedReviewDocuments documents={group.documents} />
+              </section>)}
+            </TrackedBriefingDisclosure>
+          ))}
           {hasNarrative && <div className="auth-review__side" role="group" aria-label="Change order">
             <button type="button" aria-pressed={narrativeOrder} onClick={() => {
               review.setNavigation(null);

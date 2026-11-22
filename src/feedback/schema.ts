@@ -24,6 +24,59 @@ export const BRIEFING_BUNDLE_SCHEMA_SQL: readonly string[] = [
     ON briefing_bundle_members(briefing_id)`,
 ];
 
+const TRACKED_BRIEFING_MEMBER_TABLE_SQL = `CREATE TABLE briefing_bundle_members (
+      bundle_id TEXT NOT NULL REFERENCES briefing_bundles(id) ON DELETE RESTRICT,
+      briefing_id TEXT REFERENCES briefings(id) ON DELETE RESTRICT,
+      layout_position INTEGER NOT NULL CHECK(layout_position >= 0),
+      entry_kind TEXT NOT NULL CHECK(entry_kind IN ('briefing','subgroup')),
+      subgroup_name TEXT,
+      subgroup_position INTEGER NOT NULL CHECK(subgroup_position >= 0),
+      created_at INTEGER NOT NULL,
+      tracked_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+      tracked_path TEXT,
+      PRIMARY KEY(bundle_id, layout_position, subgroup_position),
+      UNIQUE(bundle_id, briefing_id),
+      UNIQUE(bundle_id, tracked_project_id, tracked_path),
+      CHECK((briefing_id IS NOT NULL AND tracked_project_id IS NULL AND tracked_path IS NULL)
+        OR (briefing_id IS NULL AND tracked_project_id IS NOT NULL AND tracked_path IS NOT NULL AND length(tracked_path) > 0)),
+      CHECK((entry_kind = 'briefing' AND subgroup_name IS NULL AND subgroup_position = 0)
+        OR (entry_kind = 'subgroup' AND subgroup_name IS NOT NULL AND trim(subgroup_name) != ''))
+    )`;
+
+const TRACKED_BRIEFING_MEMBER_INDEX_SQL = [
+    "CREATE INDEX idx_briefing_bundle_members_briefing ON briefing_bundle_members(briefing_id)",
+    `CREATE INDEX idx_briefing_bundle_members_tracked ON briefing_bundle_members(tracked_project_id, tracked_path)
+      WHERE tracked_project_id IS NOT NULL`,
+];
+
+export const TRACKED_BRIEFING_MEMBER_MIGRATION_SQL = [
+  `CREATE TEMP TABLE briefing_bundle_members_v255 AS SELECT * FROM briefing_bundle_members`,
+  "DROP TABLE briefing_bundle_members",
+  TRACKED_BRIEFING_MEMBER_TABLE_SQL,
+    `INSERT INTO briefing_bundle_members (
+      bundle_id, briefing_id, layout_position, entry_kind, subgroup_name, subgroup_position, created_at
+    ) SELECT bundle_id, briefing_id, layout_position, entry_kind, subgroup_name, subgroup_position, created_at
+      FROM briefing_bundle_members_v255`,
+    "DROP TABLE briefing_bundle_members_v255",
+  ...TRACKED_BRIEFING_MEMBER_INDEX_SQL,
+];
+
+export const TRACKED_BRIEFING_REVIEW_SCHEMA_SQL = [
+  ...["briefing_group_dispositions", "briefing_group_review_dispositions"].map(table =>
+    `ALTER TABLE ${table} ADD COLUMN tracked_snapshot_json TEXT
+      CHECK(tracked_snapshot_json IS NULL OR json_valid(tracked_snapshot_json))`),
+    `CREATE TABLE briefing_request_group_snapshots (
+      round_id TEXT PRIMARY KEY REFERENCES review_rounds(id) ON DELETE RESTRICT,
+      snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json))
+    )`,
+    `CREATE TRIGGER briefing_request_group_snapshots_immutable_update BEFORE UPDATE ON briefing_request_group_snapshots BEGIN
+      SELECT RAISE(ABORT, 'Briefing review snapshots are immutable');
+    END`,
+    `CREATE TRIGGER briefing_request_group_snapshots_immutable_delete BEFORE DELETE ON briefing_request_group_snapshots BEGIN
+      SELECT RAISE(ABORT, 'Briefing review snapshots are immutable');
+    END`,
+];
+
 export const BRIEFING_GROUP_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS briefing_groups (
     id TEXT PRIMARY KEY,
@@ -633,7 +686,7 @@ export const REQUEST_NARRATIVE_MIGRATION_SQL = [
   "DROP TABLE prior_review_response_events",
 ];
 
-function briefingOwnerSchema(responseSchema: readonly string[]): readonly string[] { return [
+function briefingOwnerSchema(responseSchema: readonly string[], bundleSchema = BRIEFING_BUNDLE_SCHEMA_SQL): readonly string[] { return [
   `CREATE TABLE IF NOT EXISTS briefings (
     id TEXT PRIMARY KEY,
     briefing_key TEXT NOT NULL UNIQUE CHECK(trim(briefing_key) != ''),
@@ -821,14 +874,16 @@ function briefingOwnerSchema(responseSchema: readonly string[]): readonly string
     created_at INTEGER NOT NULL,
     UNIQUE(briefing_id, source_profile)
   )`,
-  ...BRIEFING_BUNDLE_SCHEMA_SQL,
+  ...bundleSchema,
   ...BRIEFING_GROUP_SCHEMA_SQL,
   ...BRIEFING_COMPOSER_SCHEMA_SQL,
   ...BRIEFING_DESTINATION_MUTATION_SCHEMA_SQL,
 ]; }
 
 export const BRIEFING_OWNER_SCHEMA_SQL = briefingOwnerSchema(BRIEFING_RESPONSE_SCHEMA_SQL);
-export const CURRENT_BRIEFING_OWNER_SCHEMA_SQL = briefingOwnerSchema(REVIEW_RESPONSE_SCHEMA_SQL);
+export const CURRENT_BRIEFING_OWNER_SCHEMA_SQL = briefingOwnerSchema(REVIEW_RESPONSE_SCHEMA_SQL, [
+  BRIEFING_BUNDLE_SCHEMA_SQL[0], TRACKED_BRIEFING_MEMBER_TABLE_SQL, ...TRACKED_BRIEFING_MEMBER_INDEX_SQL,
+]);
 
 export const CANONICAL_AGENT_DISPATCH_SQL = `CREATE TABLE agent_dispatch_events (
   id TEXT PRIMARY KEY,

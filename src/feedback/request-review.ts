@@ -3,6 +3,7 @@ import { appendDirectiveAnswer, readDirectiveAnswer } from "./review-answers.js"
 import { BriefingStoreError } from "./briefing-errors.js";
 import { canEditRequestFile, canEditRequestFiles, requestDrafts } from "./request-drafts.js";
 import type { ReviewChangeEdit } from "./request-draft-types.js";
+import { storedTrackedReviewGroups, trackedReviewGroups } from "./tracked-briefing-reviews.js";
 import { canonicalJson } from "../canonical-json.js";
 import { authSnapshotDigest } from "../auth-request-snapshot.js";
 import type { Db } from "../db.js";
@@ -62,6 +63,20 @@ export function ensureRequestReviewRound(db: Db, round: RequestReviewRound): voi
   }
 }
 
+function pinRequestReviewGroups(db: Db, request: AuthRequest, round: RequestReviewRound, capture: boolean) {
+  const stored = storedTrackedReviewGroups(db, round.id);
+  if (stored !== null) return stored;
+  if (!capture) return [];
+  const groups = trackedReviewGroups(db, request);
+  if (groups.length === 0) return groups;
+  return db.transaction(() => {
+    ensureRequestReviewRound(db, round);
+    db.prepare(`INSERT INTO briefing_request_group_snapshots (round_id, snapshot_json) VALUES (?, ?)
+      ON CONFLICT(round_id) DO NOTHING`).run(round.id, JSON.stringify(groups));
+    return storedTrackedReviewGroups(db, round.id)!;
+  }).immediate();
+}
+
 function requestQuestions(db: Db, request: AuthRequest, round: RequestReviewRound, reviewerId: string | null) {
   const binding = round.bindings.find(({ source }) => source.kind === "request_narrative");
   if (!binding || !request.narrative) return [];
@@ -115,6 +130,7 @@ function submittedNarrativeAnswers(db: Db, submissionId: string) {
 type RequestReviewNote = ReviewAnnotation & { source: RequestBinding["source"] };
 
 type FrozenRequestReviewReturn = {
+  round_id: string;
   submission_id: string;
   revision: number;
   reason: string | null;
@@ -122,6 +138,7 @@ type FrozenRequestReviewReturn = {
   change_edit: ReviewChangeEdit | null;
   targets: ReturnType<typeof reviewSubmissionTargets>;
   answers: ReturnType<typeof submittedNarrativeAnswers>;
+  tracked_groups: NonNullable<ReturnType<typeof storedTrackedReviewGroups>>;
   comments: RequestReviewNote[];
 };
 
@@ -134,7 +151,7 @@ function requestReviewSubmissions(db: Db, requestId: string, eventType: "returne
     Array<Pick<FrozenRequestReviewReturn, "submission_id" | "revision" | "reason"> & { round_id: string; delivered: number }>;
   return returned.map(({ round_id, delivered, ...receipt }) => {
     const bindings = new Map((reviewDocumentBindings(db, round_id) as RequestBinding[]).map(binding => [binding.id, binding]));
-    return { ...receipt, delivered: Boolean(delivered), change_edit: submittedChangeEdit(db, receipt.submission_id),
+    return { ...receipt, round_id, delivered: Boolean(delivered), tracked_groups: storedTrackedReviewGroups(db, round_id) ?? [], change_edit: submittedChangeEdit(db, receipt.submission_id),
       targets: reviewSubmissionTargets(db, receipt.submission_id),
       answers: submittedNarrativeAnswers(db, receipt.submission_id),
       comments: reviewSubmissionAnnotations(db, receipt.submission_id).map(comment => ({
@@ -151,7 +168,8 @@ export function returnedRequestReview(db: Db, requestId: string) {
   const receipt = frozenRequestReviewReturn(db, requestId);
   if (!receipt) return null;
   const threads = projectRequestThreads(db, receipt.comments);
-  return { ...receipt, comments: receipt.comments.map(comment => ({ ...comment, thread: threads(comment) })) };
+  const { tracked_groups: _trackedGroups, ...publicReceipt } = receipt;
+  return { ...publicReceipt, comments: receipt.comments.map(comment => ({ ...comment, thread: threads(comment) })) };
 }
 
 export type RequestReviewVersion = {
@@ -244,13 +262,14 @@ function requestReviewRoots(db: Db, request: AuthRequest, reviewerId: string | n
     ...comment, source: bindings.get(comment.document_binding_id)!.source,
   }));
   const currentIndex = versions.findIndex(version => version.id === request.id);
+  const revised = requestReviewSubmissions(db, request.id, "revised");
   const prior = [
     ...versions.slice(0, currentIndex).filter(version => !version.id.includes("@")).flatMap(version =>
       (frozenRequestReviewReturn(db, version.id)?.comments ?? []).map(comment => ({ comment, origin: version.id }))),
-    ...requestReviewSubmissions(db, request.id, "revised").flatMap(submission =>
+    ...revised.flatMap(submission =>
       submission.comments.map(comment => ({ comment, origin: `${request.id}@${submission.revision - 1}` }))),
   ];
-  return { round, versions, returned, approved, notes, prior, active };
+  return { round, versions, returned, approved, revised, notes, prior, active };
 }
 
 export function resolveRequestReviewComment(db: Db, request: AuthRequest, reviewerId: string | null, ref: string) {
@@ -261,7 +280,8 @@ export function resolveRequestReviewComment(db: Db, request: AuthRequest, review
 }
 
 export async function readRequestReview(db: Db, request: AuthRequest, reviewerId: string | null) {
-  const { round, versions, returned, approved, notes, prior, active } = requestReviewRoots(db, request, reviewerId);
+  const { round, versions, returned, approved, revised, notes, prior, active } = requestReviewRoots(db, request, reviewerId);
+  const tracked_groups = reviewerId ? pinRequestReviewGroups(db, request, round, request.status === "pending") : [];
   const drafts = reviewerId ? requestDrafts(db, request.id, reviewerId) : [];
   const editable_files = canEditRequestFiles(request) ? request.change_report!.files.flatMap((file, index) =>
     canEditRequestFile(file) ? [{ index, path: file.new_path }] : []) : [];
@@ -304,8 +324,11 @@ export async function readRequestReview(db: Db, request: AuthRequest, reviewerId
   }
   const questions = requestQuestions(db, request, round, request.status === "pending" ? reviewerId : null);
   const submitted = returned ?? approved;
+  const tracked_group_history = reviewerId ? revised.flatMap(receipt =>
+    receipt.tracked_groups.length ? [{ round_id: receipt.round_id, revision: receipt.revision, groups: receipt.tracked_groups }] : []) : [];
+  const returnedReview = returned && (({ tracked_groups: _trackedGroups, ...receipt }) => receipt)(returned);
   return {
-    round, versions, annotations, drafts, editable_files,
+    round, versions, annotations, drafts, editable_files, tracked_groups, tracked_group_history,
     narrative: request.narrative ?? null, narrative_report: request.narrative ? request.change_report ?? null : null,
     narrative_questions: questions.map(question => ({ ...question,
       effective_response: submitted?.answers.find(answer => answer.directive_key === question.directive.key) ?? question.effective_response,
@@ -313,7 +336,7 @@ export async function readRequestReview(db: Db, request: AuthRequest, reviewerId
     active_answer_event_ids: questions.flatMap(question => question.effective_response ? [question.effective_response.response_event_id] : []),
     active_annotation_event_ids: active.map(note => note.annotation_event_id),
     frozen_head: request.merge_effective_head_sha ?? null, comparison_head: request.change_report?.comparison.head_sha ?? null,
-    returned: returned && { ...returned, comments: returned.comments.map(comment => ({ ...comment, thread: thread(comment) })) },
+    returned: returnedReview && { ...returnedReview, comments: returnedReview.comments.map(comment => ({ ...comment, thread: thread(comment) })) },
   };
 }
 

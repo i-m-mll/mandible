@@ -1693,12 +1693,43 @@ export type BriefingBundleMember = {
   position: number;
   briefing: BriefingListEntry;
 };
-export type BriefingBundleLayoutEntry =
+export type TrackedBriefingPath = { project_id: string; path: string };
+export type TrackedBriefingPin = { project_id: string; project_key: string; commit_sha: string | null };
+export type TrackedBriefingDocument = TrackedBriefingPath & {
+  project_key: string;
+  commit_sha: string | null;
+  content: string | null;
+};
+export type BriefingBundleLeaf =
   | { kind: "briefing"; position: number; briefing: BriefingListEntry }
-  | { kind: "subgroup"; position: number; name: string; briefings: BriefingBundleMember[] };
-export type BriefingBundleLayoutInputEntry =
+  | { kind: "tracked"; position: number; tracked: TrackedBriefingDocument };
+export type BriefingBundleLayoutEntry = BriefingBundleLeaf
+  | { kind: "subgroup"; position: number; name: string; briefings: BriefingBundleMember[]; members: BriefingBundleLeaf[] };
+export type BriefingBundleLeafInput =
   | { kind: "briefing"; briefing_ref: string }
-  | { kind: "subgroup"; name: string; briefing_refs: string[] };
+  | { kind: "tracked"; project_ref: string; path: string };
+export type BriefingBundleLayoutInputEntry = BriefingBundleLeafInput
+  | { kind: "subgroup"; name: string; briefing_refs: string[] }
+  | { kind: "subgroup"; name: string; members: BriefingBundleLeafInput[] };
+
+export type TrackedBriefingMatch = TrackedBriefingPath & { file_indexes: number[] };
+export type TrackedBriefingProposal = {
+  request_id: string;
+  request_ref: string;
+  title: string;
+  project_id: string;
+  project_key: string;
+  members: TrackedBriefingMatch[];
+  depends_on: AuthDependencyProjection[];
+};
+export type TrackedBriefingReviewGroup = {
+  group_id: string;
+  group_key: string;
+  name: string;
+  members: TrackedBriefingMatch[];
+  documents: TrackedBriefingDocument[];
+};
+
 export type BriefingBundle = {
   request_origin_json?: string | null;
   request_origin?: import("./request-origin.js").RequestOrigin | null;
@@ -1721,6 +1752,7 @@ export type BriefingGroup = {
   archived_at: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  tracked_proposals: TrackedBriefingProposal[];
   destinations: BriefingGroupDestination[];
   destination_history: Array<{ id: string; logical_artifact_id: string; prior_group_id: string | null;
     resulting_group_id: string; actor_user_id: string; created_at: number }>;
@@ -1780,6 +1812,7 @@ export type BriefingGroupReviewCandidate = {
   proposal_layout: BriefingGroupReviewLayoutEntry[];
   destination_changes: BriefingGroupDestinationChange[];
   items: BriefingGroupReviewItem[];
+  tracked_documents?: TrackedBriefingDocument[];
 };
 export type BriefingGroupDisposition = {
   request_origin_json?: string | null;
