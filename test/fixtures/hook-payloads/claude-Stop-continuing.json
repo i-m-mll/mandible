@@ -1,0 +1,11 @@
+{
+  "session_id": "8f2c6b1e-4d3a-4e7b-9a10-2b5c7d9e0f11",
+  "transcript_path": "/Users/user/.claude/projects/-Users-user-scratch/8f2c6b1e-4d3a-4e7b-9a10-2b5c7d9e0f11.jsonl",
+  "cwd": "/Users/user/scratch",
+  "permission_mode": "default",
+  "hook_event_name": "Stop",
+  "stop_hook_active": true,
+  "last_assistant_message": "done",
+  "background_tasks": [],
+  "session_crons": []
+}
