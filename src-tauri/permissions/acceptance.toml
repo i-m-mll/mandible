@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "allow-candidate-acceptance"
 description = "Reports an isolated candidate dashboard interaction to its owned acceptance run."
-commands.allow = ["candidate_acceptance_report"]
+commands.allow = ["candidate_acceptance_report", "desktop_frame_ready", "desktop_frame_painted", "desktop_trace"]

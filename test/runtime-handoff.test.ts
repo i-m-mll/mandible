@@ -354,7 +354,7 @@ it('runs historical cleanup with current installed code and reports only the rea
   await expect(scheduleRuntimeHandoffCleanup(journal)).rejects.toThrow();
 });
 
-it('settles each cleanup obligation independently and waits on the exact processes holding the previous app', async () => {
+it.each([false, true])('settles cleanup independently while a process holds the previous app (retained desktop: %s)', async retained => {
   const f = fixture();
   const database = path.join(f.home, 'acceptance.db');
   const db = new SqliteDatabase(database);
@@ -365,27 +365,34 @@ it('settles each cleanup obligation independently and waits on the exact process
   const binding = { ...f.binding, hookId: 'hook', commandDigest: 'command', domain: `gui/${process.getuid!()}`, priorAppIdentity: applicationRootIdentity(previous),
     priorBackend: { argv: ['/runtime', bridge] }, legacyBridgeSha256: createHash('sha256').update('bridge').digest('hex') };
   const digest = bindingDigest(binding);
-  const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: digest, attemptId: 'attempt' };
-  const journal = { ...f.journal, binding, bindingDigest: digest, database, helperLabel: 'fixture-helper',
-    attempt: { id: 'attempt', state: 'complete', effects: {}, receipt, receiptDigest: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'),
-      fence: { reason: 'terminal-completion' } }, cleanup: { state: 'pending' } };
-  db.prepare('INSERT INTO auth_hook_executions VALUES (?,?,?,?,?,?)').run(binding.executionId, binding.requestId, binding.hookId, 'complete', runtimeReceiptAcceptanceMarker(journal), binding.commandDigest);
-  db.close();
-  fs.writeFileSync(f.file, JSON.stringify(journal));
-  vi.mocked(childProcess.spawnSync).mockImplementation((program, args, options) => {
-    if (program === '/bin/launchctl') return { status: 113, stdout: '', stderr: 'Could not find service' } as any;
-    return originalSpawn(program, args, options);
-  });
   const holder = childProcess.spawn('/bin/sleep', ['30'], { cwd: previous, stdio: 'ignore' });
   try {
     await waitUntil(() => originalSpawn('lsof', ['-F', 'p', '+D', previous], { encoding: 'utf8' }).stdout.includes(`p${holder.pid}`), 'holder opened the previous app');
+    const startedAt = originalSpawn('/bin/ps', ['-p', String(holder.pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
+    const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: digest, attemptId: 'attempt',
+      ...(retained ? { desktop: { kind: 'retained', identity: { pid: holder.pid, startedAt } } } : {}) };
+    const journal = { ...f.journal, binding, bindingDigest: digest, database, helperLabel: 'fixture-helper',
+      attempt: { id: 'attempt', state: 'complete', effects: {}, receipt, receiptDigest: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'),
+        fence: { reason: 'terminal-completion' } }, cleanup: { state: 'pending' } };
+    db.prepare('INSERT INTO auth_hook_executions VALUES (?,?,?,?,?,?)').run(binding.executionId, binding.requestId, binding.hookId, 'complete', runtimeReceiptAcceptanceMarker(journal), binding.commandDigest);
+    db.close();
+    fs.writeFileSync(f.file, JSON.stringify(journal));
+    vi.mocked(childProcess.spawnSync).mockImplementation((program, args, options) => {
+      if (program === '/bin/launchctl') return { status: 113, stdout: '', stderr: 'Could not find service' } as any;
+      return originalSpawn(program, args, options);
+    });
     expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'pending' });
     const blocked = readRuntimeHandoff(f.home, binding.requestId, binding.executionId)!;
     expect(fs.existsSync(bridge)).toBe(false);
     expect(blocked.helperFencedAt).toEqual(expect.any(Number));
     expect(blocked.cleanup).toMatchObject({ state: 'pending', blockers: [{ obligation: 'previous-app',
       processes: [{ pid: holder.pid, command: expect.stringContaining('sleep 30'), owner: { pid: process.pid } }] }] });
-    expect(blocked.cleanup.reason).toContain(`Quit or restart: ${blocked.cleanup.blockers[0].processes[0].owner.command.slice(0, 40)}`);
+    if (retained) {
+      expect(blocked.cleanup.blockers[0]).toMatchObject({ expected: true });
+      expect(blocked.cleanup.reason).toContain('after the retained Mandible window closes');
+    } else {
+      expect(blocked.cleanup.reason).toContain(`Quit or restart: ${blocked.cleanup.blockers[0].processes[0].owner.command.slice(0, 40)}`);
+    }
     const waiting = runtimeHandoffCleanupWake(blocked);
     expect(runtimeHandoffCleanupWake(blocked)).toBe(waiting);
     const exited = new Promise(resolve => holder.once('exit', resolve));

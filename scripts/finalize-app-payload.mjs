@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import fs from 'node:fs';
 import path from 'node:path';
+import { desktopExecutionIdentity } from "./desktop-execution.mjs";
 import { inventoryRelease } from './stage-app-payload.mjs';
 import { nativeSigningIdentifier, nativeSigningTarget } from './app-signing.mjs';
 
@@ -21,14 +22,15 @@ export function finalizeAppPayload(app, signer) {
     signer.sign(nativeSigningTarget(app, path.resolve(resources, relative)), release.signing[role] ? path.join(resources, release.signing[role]) : null,
       role !== 'sqlite' && signer.plan.hardenedRuntime, nativeSigningIdentifier(appIdentifier, role));
   }
-  const finalized = inventoryRelease(resources, release);
-  fs.writeFileSync(manifest, `${JSON.stringify(finalized, null, 2)}\n`);
   let entitlements = signer.plan.entitlements;
   if (entitlements && typeof entitlements !== 'string') {
     entitlements = path.join(signer.temporary, 'app-entitlements.plist');
     fs.writeFileSync(entitlements, JSON.stringify(signer.plan.entitlements));
     signer.run('/usr/bin/plutil', ['-convert', 'xml1', entitlements]);
   }
+  const finalized = inventoryRelease(resources, { ...release,
+    desktopExecutionSha256: desktopExecutionIdentity(app, signer, appIdentifier, entitlements) });
+  fs.writeFileSync(manifest, `${JSON.stringify(finalized, null, 2)}\n`);
   signer.sign(app, entitlements, signer.plan.hardenedRuntime, appIdentifier);
   return finalized;
 }

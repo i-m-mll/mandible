@@ -8,6 +8,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { runtimeEnvironment } from './runtime-environment.mjs';
+import { ownedDesktopRoute } from './desktop-route.mjs';
 import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal, runtimeHandoffBindingDigest, readRuntimeHandoffRetirement } from './runtime-handoff-lock.mjs';
 import { RuntimeObservationError, observationPending, runtimeObservationAcceptance, runRuntimeCommand, runtimeNow, runtimeObservationTimeout, withRuntimeBudget } from './runtime-observation.mjs';
 import { authHookTimeoutMs } from '../src/auth-hook-timeout.ts';
@@ -121,7 +122,16 @@ function removePreviousApplication(journal) {
   const owned = [b.oldProcess, ...Object.values(journal.attempt?.effects.drain?.processes ?? {})]
     .filter(identity => identity && startedAt(identity.pid) === identity.startedAt).map(identity => identity.pid);
   const consumers = owned.length ? { idle: false, pids: owned } : inspectRunConsumers(previous);
-  if (!consumers.idle) throw consumers.pids?.length ? inUse(`The superseded app copy ${previous}`, consumers.pids) : new Error(consumers.reason);
+  if (!consumers.idle) {
+    const desktop = journal.attempt?.receipt?.desktop;
+    const blocked = consumers.pids?.length ? inUse(`The superseded app copy ${previous}`, consumers.pids) : new Error(consumers.reason);
+    if (desktop?.kind === "retained" && blocked.processes?.length === 1
+        && sameDesktop(desktop.identity, blocked.processes[0])) {
+      blocked.message = "The previous app copy will be removed after the retained Mandible window closes.";
+      blocked.expected = true;
+    }
+    throw blocked;
+  }
   assertObservationLease(journal);
   fs.rmSync(previous, { recursive: true });
 }
@@ -165,17 +175,6 @@ function launchctl(args) {
   if (result.status !== 0) throw new Error(`launchctl ${args[0]} failed: ${result.stderr || result.status}`);
   return result.stdout.trim();
 }
-/** A supervised stage that outlasts the current budget is pending, like any runtime command. */
-async function runStage(binary, args, { cwd, env, log }) {
-  const timeout = runtimeObservationTimeout();
-  const fd = fs.openSync(log, 'a', 0o600);
-  try {
-    await runSupervisedCommand(binary, args, { cwd, env: { ...env, GIT_OPTIONAL_LOCKS: '0' }, timeout, log: fd });
-  } catch (error) {
-    if (error.timedOut) throw new RuntimeObservationError('command_unanswered', `${path.basename(binary)} did not finish within ${timeout} ms.`, { command: [binary, ...args], timeoutMs: timeout }, 'pending');
-    throw error;
-  } finally { fs.closeSync(fd); }
-}
 const startedAt = pid => {
   const result = runRuntimeCommand('/bin/ps', ['-p', String(pid), '-o', 'lstart=']);
   return result.status === 0 ? result.stdout.trim() || null : null;
@@ -185,31 +184,62 @@ const oldProcessGone = binding => {
   try { return startedAt(binding.oldProcess.pid) !== binding.oldProcess.startedAt; }
   catch (error) { if (observationPending(error)) return null; throw error; }
 };
-function desktopIdentities(app) {
-  const executable = path.join(app, 'Contents/MacOS/mandible-app');
+function desktopIdentities(app, replacementArgument) {
+  const relative = 'Contents/MacOS/mandible-app';
+  const executable = path.join(app, relative);
   const installed = fs.existsSync(executable) ? fs.statSync(executable) : null;
   const pids = runRuntimeCommand('/usr/bin/pgrep', ['-x', 'mandible-app']).stdout.trim().split('\n').filter(Boolean);
   return pids.flatMap(pid => {
     const command = runRuntimeCommand('/bin/ps', ['-ww', '-p', pid, '-o', 'command=']).stdout.trim();
-    if (command !== executable && !command.startsWith(`${executable} `)) return [];
+    if ((command !== executable && !command.startsWith(`${executable} `))
+        || replacementArgument && !command.endsWith(` --mandible-update-paint ${replacementArgument}`)) return [];
     const mapped = runRuntimeCommand('/usr/sbin/lsof', ['-a', '-p', pid, '-d', 'txt', '-Fni']);
-    let inode; let installedImage = false;
+    let inode;
+    let imageRoot = null;
+    let imageInode = null;
     for (const line of mapped.stdout.split('\n')) {
       if (line.startsWith('i')) inode = Number(line.slice(1));
-      if (line === `n${executable}` && inode === installed?.ino) installedImage = true;
+      if (!line.startsWith('n') || !line.endsWith(`/${relative}`)) continue;
+      const file = line.slice(1);
+      const root = path.resolve(file, '../../..');
+      if (root !== app && (path.dirname(root) !== path.dirname(app) || !previousDesktopScope(root))) continue;
+      if (fs.statSync(file, { throwIfNoEntry: false })?.ino !== inode) continue;
+      imageRoot = root;
+      imageInode = inode;
+      break;
     }
-    return [{ pid: Number(pid), startedAt: startedAt(Number(pid)), installedImage, imageInode: installedImage ? installed.ino : null }];
+    const birth = startedAt(Number(pid));
+    const installedImage = imageRoot === app && imageInode === installed?.ino;
+    return birth ? [{ pid: Number(pid), startedAt: birth, installedImage, imageRoot, imageInode }] : [];
   });
 }
-const desktopRunning = app => desktopIdentities(app).length > 0;
+const sameDesktop = (left, right) => left.pid === right.pid && left.startedAt === right.startedAt;
+const desktopExecutionDigest = release => /^[a-f0-9]{64}$/.test(release.desktopExecutionSha256) ? release.desktopExecutionSha256 : null;
+const previousDesktopScope = root => /^\.Mandible-([a-zA-Z0-9_-]{17,257})\.previous\.app$/.exec(path.basename(root))?.[1];
+const sameDesktopImage = (left, right) => sameDesktop(left, right) && left.imageInode && left.imageInode === right.imageInode;
+
+function retainedDesktopDigest(binding, process) {
+  const scope = process.imageRoot && previousDesktopScope(process.imageRoot);
+  if (!scope) return null;
+  const file = path.join(homeDirectory(binding.home), 'handoff', scope, 'journal.json');
+  if (!fs.existsSync(file)) return null;
+  const prior = validateJournal(JSON.parse(fs.readFileSync(file, 'utf8')));
+  if (!prior.attempt?.receipt || prior.binding.nativeApp !== binding.nativeApp
+      || acceptedInstallPaths(prior.binding).previous !== process.imageRoot) return null;
+  const desktop = currentReceipt(prior).desktop;
+  return desktop?.kind === 'retained' && sameDesktopImage(desktop.identity, process) && /^[a-f0-9]{64}$/.test(desktop.executionSha256)
+    ? desktop.executionSha256 : null;
+}
 function requireDesktopForObservation(journal) {
   assertObservationLease(journal);
   const b = journal.binding;
   if (!b.desktopWasRunning) return;
   const stage = journal.attempt?.effects.desktop ?? journal.stages?.desktopRelaunch;
   const identities = desktopIdentities(b.nativeApp);
+  if (stage?.kind === "closed") return;
   if (stage?.identity) {
-    if (!identities.some(identity => JSON.stringify(identity) === JSON.stringify(stage.identity))) {
+    if (!identities.some(identity => sameDesktopImage(identity, stage.identity)
+        && (stage.kind === "retained" || identity.installedImage))) {
       throw observationFailure('desktop_exited', 'Installed desktop did not remain running after relaunch.');
     }
     return;
@@ -218,7 +248,7 @@ function requireDesktopForObservation(journal) {
   const prior = stage?.prior ?? journal.desktopInstallation?.prior ?? journal.launch?.desktopPrior;
   const exact = issuedAt && prior ? identities.filter(identity => identity.startedAt && identity.installedImage
     && Date.parse(identity.startedAt) >= Math.floor(issuedAt / 1000) * 1000
-    && !prior.some(old => old.pid === identity.pid && old.startedAt === identity.startedAt)) : [];
+    && !prior.some(old => sameDesktop(old, identity))) : [];
   if (exact.length !== 1) throw new RuntimeObservationError('desktop_unconfirmed',
     'Backend is at the expected build; the updated desktop has not been observed. Quit and reopen the installed Mandible app; verification will resume.', { issuedAt, identities, prior }, 'pending');
   if (journal.attempt) { saveEffect(journal, 'desktop', { identity: exact[0], confirmedAt: Date.now() }); return; }
@@ -228,26 +258,115 @@ function requireDesktopForObservation(journal) {
     identity: exact[0], confirmedAt: Date.now(), ...(!stage?.issuedAt ? { suppliedExternally: true } : {}) } } });
 }
 
-async function restoreDesktop(journal) {
-  const b = journal.binding;
-  if (!b.desktopWasRunning) return;
-  if (journal.attempt) {
-    const effect = journal.attempt.effects.desktop;
-    if (effect?.identity) { requireDesktopForObservation(journal); return; }
-    if (!effect?.issuedAt) saveEffect(journal, 'desktop', { issuedAt: Date.now(), prior: desktopIdentities(b.nativeApp) });
-    const current = journal.attempt.effects.desktop;
-    const identities = desktopIdentities(b.nativeApp).filter(identity => identity.installedImage && identity.startedAt
-      && !current.prior.some(old => old.pid === identity.pid && old.startedAt === identity.startedAt));
-    if (identities.length !== 1) {
-      await runStage('/bin/bash', [path.join(installedApplication(journal).resources, 'cli/install-desktop-app.sh'), '--relaunch', b.nativeApp, 'mandible-app', '0'], {
-        cwd: path.dirname(journalFile(b)), env: { ...journal.environment, MANDIBLE_RUNTIME_HANDOFF_JOURNAL: journalFile(b) },
-        log: path.join(path.dirname(journalFile(b)), 'convergence.log') });
+function replacementPaint(journal, effect, process) {
+  const file = path.join(path.dirname(journalFile(journal.binding)), `desktop-paint-${effect.token}.json`);
+  let evidence;
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.mtimeMs < effect.issuedAt || stat.size > 1024) {
+      throw new Error("Desktop frame evidence is not an owned regular file.");
     }
+    evidence = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  if (evidence.schema !== "mandible-desktop-paint@1" || evidence.token !== effect.token
+      || evidence.pid !== process.pid || evidence.startup_epoch !== acceptedOperations.getStore().startupEpoch) {
+    throw observationFailure("desktop_evidence_mismatch", "The painted desktop belongs to another process, update, or daemon startup.");
+  }
+  return true;
+}
+
+function predecessorDesktopRoute(journal, prior) {
+  const file = path.join(homeDirectory(journal.binding.home), 'desktop-route.json');
+  const metadata = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (!metadata?.isFile() || metadata.size > 8192) return null;
+  const observed = prior.filter(process => journal.binding.priorDesktop?.identities
+    .some(captured => sameDesktopImage(process, captured)));
+  return ownedDesktopRoute(JSON.parse(fs.readFileSync(file, 'utf8')), observed);
+}
+
+function retirePredecessorDesktop(journal, effect) {
+  const identities = desktopIdentities(journal.binding.nativeApp);
+  for (const process of identities) {
+    if (!process.installedImage && effect.prior.some(prior => sameDesktopImage(prior, process))) {
+      assertObservationLease(journal);
+      const result = runRuntimeCommand("/bin/kill", ["-TERM", String(process.pid)]);
+      if (result.status !== 0 && startedAt(process.pid) === process.startedAt) {
+        throw observationFailure("desktop_retirement_failed", result.stderr || "Could not retire the superseded desktop.");
+      }
+    }
+  }
+}
+
+async function restoreDesktop(journal) {
+  const binding = journal.binding;
+  if (!binding.desktopWasRunning) return;
+  if (!journal.attempt) throw new Error("Desktop effects require a current approved update attempt.");
+  let effect = journal.attempt.effects.desktop;
+  if (effect?.completedAt) {
     requireDesktopForObservation(journal);
-    saveEffect(journal, 'desktop', { completedAt: Date.now() });
     return;
   }
-  throw new Error('Desktop effects require a current approved update attempt.');
+  if (effect?.identity) {
+    requireDesktopForObservation(journal);
+    if (effect.kind === "replaced") retirePredecessorDesktop(journal, effect);
+    saveEffect(journal, "desktop", { completedAt: Date.now() });
+    return;
+  }
+  const directory = path.dirname(journalFile(binding));
+  const application = installedApplication(journal);
+  const executionSha256 = desktopExecutionDigest(application.release);
+  if (!executionSha256) throw new Error("Installed app has no desktop execution identity.");
+  if (!effect?.token) {
+    const prior = desktopIdentities(binding.nativeApp).filter(process => !process.installedImage);
+    const retained = prior.find(process => binding.priorDesktop?.identities.some(identity =>
+      sameDesktopImage(identity, process) && identity.executionSha256 === executionSha256));
+    if (retained) {
+      saveEffect(journal, "desktop", { kind: "retained", executionSha256, identity: retained, completedAt: Date.now() });
+      return;
+    }
+    if (!prior.length && binding.priorDesktop?.identities.length) {
+      saveEffect(journal, "desktop", { kind: "closed", completedAt: Date.now() });
+      return;
+    }
+    const route = predecessorDesktopRoute(journal, prior);
+    saveEffect(journal, "desktop", { kind: "replaced", executionSha256, issuedAt: Date.now(), prior,
+      token: randomBytes(16).toString("hex"), ...(route ? { route } : {}) });
+    effect = journal.attempt.effects.desktop;
+  }
+  const launchArgument = `${path.basename(directory)}:${effect.token}`;
+  let candidates = desktopIdentities(binding.nativeApp, launchArgument).filter(process => process.installedImage);
+  if (!candidates.length && !effect.launchedAt) {
+    assertObservationLease(journal);
+    if (effect.route) atomic(path.join(directory, `desktop-route-${effect.token}.json`), {
+      schema: 'mandible-desktop-handover-route@1', token: effect.token, href: effect.route.href,
+    });
+    const open = runRuntimeCommand("/usr/bin/open", ["-n", "-g", "--env", `MANDIBLE_HOME=${binding.home}`,
+      "--stderr", path.join(directory, "desktop-successor.log"), binding.nativeApp, "--args", "--mandible-update-paint", launchArgument]);
+    if (open.status !== 0) throw observationFailure("desktop_launch_failed", open.stderr || "Could not launch the installed desktop.");
+    saveEffect(journal, "desktop", { launchedAt: Date.now() });
+    effect = journal.attempt.effects.desktop;
+  }
+  for (;;) {
+    assertObservationLease(journal);
+    candidates = desktopIdentities(binding.nativeApp, launchArgument).filter(process => process.installedImage);
+    if (candidates.length > 1) throw observationFailure("desktop_ambiguous", "More than one successor desktop is running.");
+    if (candidates.length === 1 && replacementPaint(journal, effect, candidates[0])) {
+      saveEffect(journal, "desktop", { identity: candidates[0], confirmedAt: Date.now() });
+      retirePredecessorDesktop(journal, effect);
+      saveEffect(journal, "desktop", { completedAt: Date.now() });
+      return;
+    }
+    if (candidates.length && !effect.observed) {
+      saveEffect(journal, "desktop", { observed: candidates[0] });
+      effect = journal.attempt.effects.desktop;
+    } else if (effect.observed && !candidates.some(candidate => sameDesktopImage(effect.observed, candidate))) {
+      throw observationFailure("desktop_exited", "The installed desktop exited before painting the dashboard.");
+    }
+    await sleep(Math.min(50, runtimeObservationTimeout()));
+  }
 }
 
 const homeDirectory = home => path.join(home, 'config', 'local-sessions');
@@ -420,16 +539,26 @@ async function armRuntimeHandoffOwned(root) {
     delivery: 'accepted-release', requestId, executionId, hookId: process.env.MANDIBLE_HOOK_ID, commandDigest: process.env.MANDIBLE_HOOK_COMMAND_DIGEST,
     mergeBase: process.env.MANDIBLE_AUTH_MERGE_BASE_SHA || undefined, mergeHead: process.env.MANDIBLE_AUTH_MERGE_HEAD_SHA || undefined,
     mergeCommit: process.env.MANDIBLE_AUTH_MERGE_COMMIT_SHA || undefined,
-    nativeApp: path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app'), desktopWasRunning: desktopRunning(path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || '/Applications/Mandible.app')),
+    nativeApp: path.resolve(process.env.MANDIBLE_DESKTOP_INSTALL_PATH || "/Applications/Mandible.app"),
     runtime: { path: runtime, version: accepted.release.provenance.bun_revision, sha256: runtimeHash } };
   assertNativePredecessor(binding);
   if (binding.bundleOwner) {
     if (!process.env.MANDIBLE_DESKTOP_INSTALL_PATH) binding.nativeApp = binding.bundleOwner.bundleRoot;
     if (binding.nativeApp !== binding.bundleOwner.bundleRoot) throw new Error('Accepted-package replacement must preserve the owning app location. Relocate it explicitly before publication.');
-    binding.desktopWasRunning = desktopRunning(binding.nativeApp);
   }
   binding.priorAppIdentity = fs.existsSync(binding.nativeApp) ? applicationRootIdentity(binding.nativeApp) : null;
-  binding.predecessorHandoffProtocol = readInstalledRelease(path.join(binding.nativeApp, 'Contents/Resources')).handoff_protocol ?? 1;
+  const previousResources = path.join(binding.nativeApp, "Contents/Resources");
+  const previous = readInstalledRelease(previousResources);
+  const identities = desktopIdentities(binding.nativeApp);
+  const priorReference = binding.bundleOwner.acceptedRelease;
+  const executionSha256 = identities.length && priorReference && desktopExecutionDigest(previous)
+    ? desktopExecutionDigest(readAcceptedInstalledRelease(readAcceptedReleaseReceipt(priorReference), previousResources))
+    : null;
+  binding.desktopWasRunning = identities.length > 0;
+  binding.priorDesktop = { identities: identities.map(process => ({
+    ...process, executionSha256: process.installedImage ? executionSha256 : retainedDesktopDigest(binding, process),
+  })) };
+  binding.predecessorHandoffProtocol = previous.handoff_protocol ?? 1;
   if (![1, 2].includes(binding.predecessorHandoffProtocol)) throw new Error('Unsupported predecessor handoff protocol.');
   const journal = { schema: 'mandible-runtime-handoff@1', binding, bindingDigest: '', phase: 'preparing', attempts: 0,
     deadline: Math.min(Date.now() + ADMISSION_WINDOW_MS, hookStartedAt + authHookTimeoutMs(preliminary.hookId)), stages: {}, environment,
@@ -994,7 +1123,8 @@ async function cleanupHandoff(journal) {
     try { await settle(); }
     catch (error) {
       if (error instanceof RuntimeObservationError) throw error;
-      blockers.push({ obligation, reason: error.message, ...(error.processes ? { processes: error.processes } : {}), ...(error.retryAfter ? { retryAfter: error.retryAfter } : {}) });
+      blockers.push({ obligation, reason: error.message, ...(error.processes ? { processes: error.processes } : {}), ...(error.retryAfter ? { retryAfter: error.retryAfter } : {}),
+        ...(error.expected ? { expected: true } : {}) });
     }
   }
   if (!blockers.length) {
@@ -1063,7 +1193,8 @@ export async function scheduleRuntimeHandoffCleanup(journal) {
     if (!current || current.bindingDigest !== journal.bindingDigest || current.attempt?.receiptDigest !== journal.attempt.receiptDigest) throw new Error('Cleanup result no longer belongs to its terminal receipt.');
     currentReceipt(current);
     return current.cleanup?.state === 'complete' ? { cleanup: 'complete' }
-      : { cleanup: 'pending', reason: current.cleanup?.reason ?? 'Runtime delivery cleanup remains pending.', wake: runtimeHandoffCleanupWake(current) };
+      : { cleanup: 'pending', reason: current.cleanup?.reason ?? 'Runtime delivery cleanup remains pending.', wake: runtimeHandoffCleanupWake(current),
+          ...(current.cleanup?.blockers?.length && current.cleanup.blockers.every(blocker => blocker.expected) ? { expected: true } : {}) };
   } finally { fs.closeSync(log); }
 }
 export function runtimeHandoffNeedsAcknowledgment(journal) {
