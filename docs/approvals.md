@@ -32,7 +32,7 @@ Once approved, the interface labels these "Courtesy approval". A courtesy approv
 4. Mandible writes the signed commit object and the approval evidence, which names that commit. No branch refers to the commit yet.
 5. The executor moves the protected branch to that commit by compare-and-swap and runs what follows a merge. During a Mandible update, an approval may be signed and queued before its executor starts. Dispatch waits for the new runtime receipt or for the old daemon to reopen admission after a failed update. It checks the stored signed commit against the current approval key and confirms the reviewed request, base, and custody still match before publishing. A changed request returns for a new approval and names the reason. The operator can withdraw a queued request before dispatch.
 
-The same queue can hold a courtesy approval. Dispatch checks the reviewed command, hook plan, and custody. The durable execution transition precedes the command, so interruption recovery can distinguish a queued approval from a command that may have run.
+The same queue can hold a courtesy approval. Dispatch checks the reviewed command, hook plan, and custody. The durable execution transition precedes the command, so interruption recovery can distinguish a queued approval from a command that may have run. After a restart, an abandoned predecessor publication or an unverifiable receipt returns its queued requests for fresh approval.
 
 The approval dialog follows what the approval helper reports:
 

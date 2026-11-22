@@ -500,6 +500,8 @@ function targetRefValue(read: string | null | undefined, reviewedBase: string | 
 }
 
 type CandidateRef = Pick<AuthRequest, "merge_candidate_pin_sha" | "merge_candidate_tree_sha" | "merge_preflight_base_sha" | "merge_head_sha" | "merge_effective_head_sha">;
+type RestartQueuedApproval = AuthRequestLifecycleEvent & { queue_order: number };
+type RestartQueueRelease = "released" | "waiting" | "needs_approval";
 
 type ReviewDecisionInput = { round_id: string; annotation_event_ids: string[]; answer_event_ids?: string[] };
 type ApprovalReview = ReviewDecisionInput & { proof_digest: string };
@@ -1235,7 +1237,8 @@ export class AuthQueue {
   }
 
   private reopenRestartAdmission(requestId: string): void {
-    if (this.restartAdmissionOwner !== requestId || this.activeConvergenceDrain) return;
+    if (this.restartAdmissionOwner !== requestId || this.activeConvergenceDrain
+        || [...this.uncertainRepoExecutions.values()].includes(requestId)) return;
     this.restartAdmissionOwner = null;
     this.failedConvergenceDrain = null;
     this.reopenedRestartAdmissions.add(requestId);
@@ -1608,13 +1611,13 @@ export class AuthQueue {
     });
   }
 
-  private restartQueuedApproval(request: AuthRequest): AuthRequestLifecycleEvent | null {
+  private restartQueuedApproval(request: AuthRequest): RestartQueuedApproval | null {
     if (request.status !== "approved" || !request.execution_evidence_id || request.execution_mode === "remote") return null;
-    return (this.db.prepare(`SELECT * FROM auth_request_lifecycle_events
+    return (this.db.prepare(`SELECT rowid AS queue_order, * FROM auth_request_lifecycle_events
       WHERE auth_request_id = ? AND evidence_id = ? AND next_status = 'approved'
         AND related_request_id IS NOT NULL AND (event_type = 'approved' OR
           (event_type = 'revised' AND prior_status IN ('approved', 'executing')))
-      ORDER BY revision DESC LIMIT 1`).get(request.id, request.execution_evidence_id) as AuthRequestLifecycleEvent | undefined) ?? null;
+      ORDER BY revision DESC LIMIT 1`).get(request.id, request.execution_evidence_id) as RestartQueuedApproval | undefined) ?? null;
   }
 
   private queueUnstartedApproval(request: AuthRequest, owner: string): void {
@@ -1662,7 +1665,7 @@ export class AuthQueue {
         WHERE e.auth_request_id = r.id AND e.event_type = 'approved' AND e.evidence_id = r.execution_evidence_id
         ORDER BY e.revision DESC LIMIT 1)`)
       .all() as Record<string, unknown>[];
-    const predecessors = new Map<string, "released" | "waiting" | "needs_approval">();
+    const predecessors = new Map<string, RestartQueueRelease>();
     for (const row of rows) {
       if (this.disposed || this.isUpdateAdmissionClosed) return;
       const request = mapRow(row);
@@ -1671,21 +1674,36 @@ export class AuthQueue {
       const owner = queued.related_request_id;
       let release = predecessors.get(owner);
       if (release === undefined) {
-        if (this.reopenedRestartAdmissions.has(owner) || await this.hookManager.runtimeReceiptAccepted?.(owner) === true) {
-          release = "released";
-        } else {
-          const predecessor = this.getRequestById(owner);
-          const run = this.hookManager.getRun?.(owner, MANDIBLE_REBUILD_HOOK_ID);
-          release = predecessor?.status === "failed" || run?.state === "failed" || run?.state === "retired"
-            ? "needs_approval" : "waiting";
-        }
+        release = await this.restartQueueRelease(owner);
         predecessors.set(owner, release);
       }
       if (this.disposed || this.isUpdateAdmissionClosed) return;
       const current = this.getRequestById(request.id);
       if (current?.status !== "approved") continue;
+      // Recovery can return the owner to pending and a later approval can reuse
+      // its request ID. Only the update in progress when this approval queued
+      // can release it across daemon instances.
+      if (this.db.prepare(`SELECT 1 FROM auth_request_lifecycle_events
+        WHERE auth_request_id = ? AND rowid > ? AND next_status NOT IN ('approved', 'executing', 'completed', 'failed')
+        LIMIT 1`).get(owner, queued.queue_order)) release = "needs_approval";
       if (release === "released") await this.executeInBackground(current, true);
       if (release === "needs_approval") await this.parkExecutionForRestart(current, "Queued approval needs a new review. The Mandible update ended without a verified receipt.");
+    }
+  }
+
+  private async restartQueueRelease(owner: string): Promise<RestartQueueRelease> {
+    if (this.reopenedRestartAdmissions.has(owner)) return "released";
+    const predecessor = this.getRequestById(owner);
+    if (!predecessor || !["approved", "executing", "completed"].includes(predecessor.status)) return "needs_approval";
+    try {
+      if (await this.hookManager.runtimeReceiptAccepted?.(owner)) return "released";
+      const run = this.hookManager.getRun?.(owner, MANDIBLE_REBUILD_HOOK_ID);
+      return run?.state === "pending" || run?.state === "running" ? "waiting" : "needs_approval";
+    } catch (error) {
+      authLog("warn", "auth_restart_queue_receipt_unverified", {
+        subsystem: "auth", auth_request_id: owner, error: errorMessage(error) ?? String(error),
+      });
+      return "needs_approval";
     }
   }
 
@@ -6447,10 +6465,11 @@ export class AuthQueue {
                 (await this.storeExecutionResult(request.id, null, message, execution));
               }
             } finally {
+              // No terminal-proof handle exists. Keep both the repository and
+              // the self-update's admission gate fenced.
+              if (!settlementSafe) await new Promise<never>(() => undefined);
               if (this.restartAdmissionOwner === request.id && !this.activeConvergenceDrain && !this.failedConvergenceDrain
                   && !this.hookManager.runtimeHandoffOwnsRequest(request.id)) this.reopenRestartAdmission(request.id);
-              // No terminal-proof handle exists; the unresolved run keeps the repository fenced.
-              if (!settlementSafe) await new Promise<never>(() => undefined);
               this.queuedAdmissions.delete(runPromise);
               if (this.inFlight.get(request.id) === runPromise) this.inFlight.delete(request.id);
               if (this.executionEnvs.get(request.id) === executionEnv) this.executionEnvs.delete(request.id);
@@ -6536,6 +6555,7 @@ export class AuthQueue {
             })();
             const requeued = this.requireRequest(request.id);
             this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: requeued } });
+            if (this.hasPlannedRuntimeRebuild(requeued)) void this.dispatchRestartQueue();
             return;
           }
           // The three remaining outcomes used to share one message, "Atomic merge
