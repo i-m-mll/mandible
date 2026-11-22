@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { act, cleanup, render, screen, waitFor } from "./helpers/dom.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { waitUntilPasses } from "./helpers/wait-until.js";
 import { __resetSharedSseForTests } from "../ui/src/sse-shared";
 import { __resetBrowserSessionForTests } from "../ui/src/client-auth-token";
 import { h } from "preact";
+import { DEFAULT_CHILD_RETENTION_SETTINGS } from "../src/conversations/retention-contract";
 
 import { App } from "../ui/src/app";
 import { clearApiGetCache } from "../ui/src/api";
@@ -165,6 +167,100 @@ describe("visible-first dashboard boot", () => {
     source.emit("message", { type: "dashboard:badges", data: { auth: 4, notifications: 0, work: 0, briefing: 0, incidents: 0, tasks: 0 } });
     await waitUntilPasses(() => expect(screen.getByLabelText("Approvals").textContent).toContain("4"));
     expect(badgeReads()).toBe(1);
+  });
+
+  it("opens Settings for packaged acceptance and refreshes its affordances on a same-document restart", async () => {
+    vi.stubGlobal("ResizeObserver", class {
+      observe(): void {}
+      disconnect(): void {}
+    });
+    const instance = {
+      role: "main" as const, instance_id: "hidden-settings", installation_id: "hidden-settings",
+      backend_generation: "packaged-dashboard", public_origin: window.location.origin,
+      allowed_effects: ["maintenance:shared", "preferences:instance"], writable_roots: [],
+      db_path: null, db_path_source: "fixture",
+    };
+    const operations = {
+      schema: "mandible-operation-catalog@2", source: "Router.listRoutePolicies",
+      runtime: { instance_id: instance.instance_id, backend_generation: instance.backend_generation, version: "fixture" },
+      routes: [
+        { method: "PUT", path: "/api/host-preferences/app-theme", effects: ["preferences:instance"] },
+        { method: "PUT", path: "/api/settings/integrations", effects: ["maintenance:shared"] },
+        { method: "PUT", path: "/api/settings/instructions-delivery", effects: ["maintenance:shared"] },
+      ],
+    };
+    let releaseCatalog!: (response: Response) => void;
+    const pendingCatalog = () => new Promise<Response>(resolve => { releaseCatalog = resolve; });
+    let catalog = pendingCatalog();
+    let epoch = "initial";
+    const settings: Record<string, string> = {};
+    const fetchFixture = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/health") return jsonResponse({ status: "ok", ready: true, warm: false, instance, startup_epoch: epoch });
+      if (url === "/api/client-auth/whoami") return operatorSession();
+      if (url === "/api/instance") return catalog;
+      if (url === "/api/settings") return jsonResponse(settings);
+      if (url.startsWith("/api/interface-notes?")) return jsonResponse({ notes: [] });
+      if (url === "/api/settings/child-retention") return jsonResponse(DEFAULT_CHILD_RETENTION_SETTINGS);
+      if (url === "/api/settings/integrations") return jsonResponse({ available: true, items: [] });
+      if (url === "/api/settings/instructions-delivery") return jsonResponse({ targets: [] });
+      if (url === "/api/settings/integrations.setup" && init?.method === "PUT") {
+        settings["integrations.setup"] = JSON.parse(String(init.body)).value;
+      }
+      if (url === "/api/host-preferences/app-theme") return jsonResponse({ version: 1, key: "app_theme", value: "system", revision: 0 });
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchFixture);
+    const bootstrap = document.createElement("script");
+    bootstrap.id = "mandible-bootstrap";
+    bootstrap.type = "application/json";
+    bootstrap.textContent = JSON.stringify({ instance });
+    document.body.append(bootstrap);
+    const report = vi.fn(async () => undefined);
+    const reload = vi.fn();
+    const script = readFileSync("src-tauri/src/acceptance-interaction.js", "utf8")
+      .replace("__MANDIBLE_ACCEPTANCE_NONCE__", JSON.stringify("fixture"))
+      .replace("__MANDIBLE_ACCEPTANCE_STEP_IDLE_MS__", "3000");
+    const runAcceptance = new Function("window", "document", "location", "sessionStorage", "fetch", `return ${script}`);
+    try {
+      render(h(App, {}));
+      const proof = runAcceptance(
+        { __TAURI__: { core: { invoke: report } } }, document,
+        { get pathname() { return window.location.pathname; }, reload }, window.sessionStorage, fetchFixture,
+      ) as Promise<void>;
+      try {
+        await waitFor(() => expect(window.location.pathname).toBe("/settings"));
+        const theme = await screen.findByLabelText("App theme") as HTMLSelectElement;
+        expect(theme.disabled).toBe(true);
+        releaseCatalog(await jsonResponse({ operations }));
+        await proof;
+        expect(report).not.toHaveBeenCalled();
+        expect(theme.disabled).toBe(false);
+        expect(reload).toHaveBeenCalledOnce();
+        expect(settings["integrations.setup"]).toBe("skipped");
+
+        catalog = pendingCatalog();
+        epoch = "successor";
+        document.dispatchEvent(new Event("visibilitychange"));
+        const complete = screen.getByRole("button", { name: "Complete optional integrations" }) as HTMLButtonElement;
+        await waitFor(() => expect(theme.disabled).toBe(true));
+        expect(complete.disabled).toBe(true);
+        releaseCatalog(await jsonResponse({ operations: {
+          ...operations,
+          routes: operations.routes.filter(route => route.path !== "/api/host-preferences/app-theme"),
+        } }));
+        await waitFor(() => expect(complete.disabled).toBe(false));
+        expect(theme.disabled).toBe(true);
+        expect(screen.getByLabelText("App theme")).toBe(theme);
+        expect(window.location.pathname).toBe("/settings");
+        expect(reload).toHaveBeenCalledOnce();
+      } finally {
+        await proof;
+      }
+    } finally {
+      bootstrap.remove();
+      window.sessionStorage.removeItem("mandible-candidate-interaction:fixture");
+    }
   });
 
   it("reports a hidden dashboard frame ready before waiting for animation frames", async () => {

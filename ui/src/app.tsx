@@ -561,20 +561,26 @@ function App(): JSX.Element {
   useEffect(() => {
     if (healthFailure) setRebuildFailure(healthFailure);
   }, [healthFailure]);
-  useEffect(() => {
+  const catalogEpoch = useRef<string | undefined>(undefined);
+  const daemonEpoch = daemonHealth?.startup_epoch;
+  useLayoutEffect(() => {
     const normalized = normalizeInstanceInfo(daemonHealth?.instance);
-    if (!normalized || sameInstanceInfo(instanceInfo, normalized)) return;
-    let cancelled = false;
-    void loadOperationCatalog(normalized).catch(error => {
-      console.error('Operation catalog unavailable', error);
-    }).then(() => {
-      if (!cancelled) setInstanceInfo(normalized);
+    if (!accessReady || !normalized) return;
+    const refresh = daemonEpoch !== undefined && catalogEpoch.current !== undefined && catalogEpoch.current !== daemonEpoch;
+    catalogEpoch.current = daemonEpoch;
+    const controller = new AbortController();
+    const loading = loadOperationCatalog(normalized, { refresh, signal: controller.signal });
+    if (refresh) setInstanceInfo({ ...normalized });
+    void loading.catch(error => {
+      if (!controller.signal.aborted) console.error('Operation catalog unavailable', error);
+      return false;
+    }).then(loaded => {
+      if (!controller.signal.aborted) {
+        setInstanceInfo(current => loaded || !sameInstanceInfo(current, normalized) ? normalized : current);
+      }
     });
-    return () => { cancelled = true; };
-  }, [daemonHealth?.instance, instanceInfo]);
-  // The self-asserted binding gates explicit page controls. It lives only for
-  // this page lifetime (never localStorage), so concurrent tabs cannot share
-  // either identity or optional chrome state.
+    return () => controller.abort();
+  }, [accessReady, daemonEpoch, daemonHealth?.instance]);
   const [agentPageBinding, setAgentPageBinding] = useState<string | null>(() => getAgentPageBinding());
   useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [registeredRightSidebar, setRegisteredRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
