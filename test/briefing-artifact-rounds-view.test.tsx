@@ -382,7 +382,8 @@ describe('artifact-backed Briefing rounds', () => {
     fireEvent.keyDown(latestSubmit, { key: 'Enter' });
     fireEvent.click(latestSubmit);
     expect(calls.some((call) => call.method === 'POST')).toBe(false);
-    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Dismiss' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(calls.some((call) => call.method === 'POST')).toBe(false);
     await waitFor(() => expect(latestSubmit.getAttribute('aria-disabled')).toBe('false'));
     fireEvent.click(latestSubmit);
