@@ -1,6 +1,6 @@
 import type { Db } from "../db.js";
 import type { AnnotationTarget } from "../conversation-control/attachments.js";
-import type { InterfaceNote, InterfaceNotePin } from "./contract.js";
+import type { InterfaceNote, InterfaceNoteIssue, InterfaceNotePin } from "./contract.js";
 
 export type NoteRow = {
   id: string;
@@ -56,4 +56,19 @@ export function interfaceNoteStatsByIssue(db: Db): Map<string, { count: number; 
 
 export function commentCarriesInterfaceNotes(db: Db, commentId: string): boolean {
   return db.prepare("SELECT 1 FROM interface_notes WHERE comment_id = ? LIMIT 1").get(commentId) !== undefined;
+}
+
+/** A project's open issues that carry notes, most recently annotated first. */
+export function listOpenIssuesWithInterfaceNotes(db: Db, project: { id: string; key: string }): InterfaceNoteIssue[] {
+  const rows = db.prepare(
+    `SELECT i.id, i.short_id, i.title, max(n.updated_at) AS last_at
+     FROM interface_notes n JOIN ledger_comments c ON c.id = n.comment_id JOIN ledger_issues i ON i.id = c.issue_id
+     WHERE c.deleted_at IS NULL AND i.deleted_at IS NULL AND i.status = 'open' AND i.project_id = ?
+     GROUP BY i.id
+     ORDER BY last_at DESC, i.id`,
+  ).all(project.id) as Array<{ id: string; short_id: string; title: string }>;
+  return rows.map((row) => {
+    const id = row.short_id || row.id.slice(0, 7);
+    return { ref: `${project.key}/${id}`, id, title: row.title };
+  });
 }

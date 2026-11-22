@@ -33,6 +33,8 @@ let closeSource: (() => Promise<void>) | null;
 let preview: Router;
 let stopRelay: () => void;
 const events: InterfaceNoteChangedPayload[] = [];
+/** The preview's own build matches no project, so a receiving project in an answer is the source's. */
+const UNMATCHED_BUILD = { kind: "release", repository: null } as const;
 
 function sourceInstance(): InstanceInfo {
   return { role: "main", instance_id: "production", installation_id: "install-test", public_origin: PRODUCTION_ORIGIN,
@@ -50,7 +52,7 @@ beforeEach(async () => {
   setSseManager(sse);
   const auth = new ClientAuthenticator(source, { instance: sourceInstance(), secretsDir: path.join(root, "auth"), sessionAuthorityDir: path.join(root, "sessions") });
   const sourceRouter = new Router({ clientAuth: auth, instance: sourceInstance() });
-  registerInterfaceNoteRoutes(sourceRouter, source, { kind: "local" });
+  registerInterfaceNoteRoutes(sourceRouter, source, { kind: "local" }, { kind: "checkout", root: path.join(root, "notes"), remoteUrl: "" });
   const options: Parameters<typeof createServer>[0] = { db: source, sse, logger: () => undefined, version: "test", router: sourceRouter,
     getStartupInfo: () => null, instance: sourceInstance(), clientAuth: auth };
   createServer(options);
@@ -60,7 +62,7 @@ beforeEach(async () => {
 
   copy = migratedFileDb(path.join(root, "copy.db"));
   preview = authenticatedTestRouter(setupOperator(copy, { display_name: "Operator" }));
-  registerInterfaceNoteRoutes(preview, copy, { kind: "source", socketPath });
+  registerInterfaceNoteRoutes(preview, copy, { kind: "source", socketPath }, UNMATCHED_BUILD);
   events.length = 0;
   stopRelay = relaySourceNoteEvents(socketPath, (payload) => events.push(payload), () => undefined);
 });
@@ -120,6 +122,11 @@ it("writes every note route to the source instance as its operator and nothing t
   expect(author.author_user_id).toBe(getOperator(source)!.id);
   const onIssue = await call<{ notes: InterfaceNote[] }>(preview, "GET", `/api/interface-notes?issue=${issue.id}`);
   expect(onIssue.body.notes.map((note) => note.id)).toEqual(["a"]);
+  const { project_key: key, short_id: shortId } = source.prepare(
+    "SELECT p.project_key, i.short_id FROM ledger_issues i JOIN ledger_projects p ON p.id = i.project_id WHERE i.id = ?",
+  ).get(issue.id) as { project_key: string; short_id: string };
+  expect((await call(preview, "GET", "/api/interface-notes/destinations")).body)
+    .toEqual({ project: key, issues: [{ ref: `${key}/${shortId}`, id: shortId, title: "Interface" }] });
 
   expect((await call(preview, "DELETE", "/api/interface-notes/b")).status).toBe(204);
   expect(sourceNotes()).toEqual([{ id: "a", text: "Tighten the gap", comment_id: filed.body.comment_id }]);
@@ -128,7 +135,7 @@ it("writes every note route to the source instance as its operator and nothing t
 
 it("refuses an agent of the preview before anything reaches the source", async () => {
   const agent = authenticatedTestRouter(createUser(copy, { slug: "preview-agent", kind: "agent", display_name: "Agent" }));
-  registerInterfaceNoteRoutes(agent, copy, { kind: "source", socketPath });
+  registerInterfaceNoteRoutes(agent, copy, { kind: "source", socketPath }, UNMATCHED_BUILD);
   expect((await call(agent, "POST", "/api/interface-notes", input("a", "From an agent"))).status).toBe(403);
   expect((await call(agent, "GET", "/api/interface-notes")).status).toBe(200);
   expect(sourceNotes()).toEqual([]);
@@ -141,7 +148,7 @@ it("refuses a session whose ceiling lacks notes:source, as a production instance
   const session = (effects: InstanceInfo["allowed_effects"]) => {
     const identity = { ...authenticatedTestIdentity(operator), effect_ceiling: effects };
     const router = new Router({ instance, clientAuth: { authenticate: () => identity, mode: () => "strict", recordUnattributedWrite: () => undefined } });
-    registerInterfaceNoteRoutes(router, copy, { kind: "source", socketPath });
+    registerInterfaceNoteRoutes(router, copy, { kind: "source", socketPath }, UNMATCHED_BUILD);
     return router;
   };
   const ungranted = session(STANDARD_PREVIEW_EFFECTS.filter((effect) => effect !== "notes:source"));

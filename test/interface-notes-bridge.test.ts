@@ -24,7 +24,7 @@ function setup(access: BridgeAccess = { kind: 'granted', identity: IDENTITY }) {
     updateText: vi.fn(async (id: string) => ({ id }) as InterfaceNote),
     deleteUnfiled: vi.fn(async () => undefined),
     file: vi.fn(async () => ({ issue_id: 'i', issue_short_id: 'i', comment_id: 'c', comment_ordinal: 1, filed: [] })),
-    listIssuesWithNotes: vi.fn(async () => [{ project_key: 'feedbax', issues: [{ id: 'abc1234' }] }]),
+    destinations: vi.fn(async () => ({ project: 'feedbax', issues: [{ ref: 'feedbax/abc1234', id: 'abc1234', title: 'Studio' }] })),
   };
   const asked: string[] = [];
   const handle = createBridge({
@@ -93,7 +93,7 @@ it('keeps notes on the page’s origin and touches only notes and issues it list
   expect(bridge.transport.updateText.mock.calls.map(([id]) => id)).toEqual(['listed']);
 
   expect(await bridge.call('file', { note_ids: ['made'], destination: { issue: 'abc1234' } })).toMatchObject({ ok: false, error: { code: 'issue_not_found' } });
-  await bridge.call('listIssuesWithNotes', 'mandible');
+  await bridge.call('destinations');
   expect(await bridge.call('file', { note_ids: ['made', 'someone-elses'], destination: { issue: 'feedbax/abc1234' } })).toMatchObject({ ok: true });
   expect(bridge.transport.file).toHaveBeenLastCalledWith({ note_ids: ['made'], destination: { issue: 'feedbax/abc1234' } });
 });

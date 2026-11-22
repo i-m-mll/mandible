@@ -40,7 +40,7 @@ export function connectToBridge(daemonOrigin: string): Promise<EmbedConnection |
     updateText: (id, text) => call('updateText', id, text),
     deleteUnfiled: (id) => call('deleteUnfiled', id),
     file: (request) => call('file', request),
-    listIssuesWithNotes: (projectRef) => call('listIssuesWithNotes', projectRef),
+    destinations: () => call('destinations'),
     subscribe(handlers) {
       changeHandlers.add(handlers);
       return () => changeHandlers.delete(handlers);

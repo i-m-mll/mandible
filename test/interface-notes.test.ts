@@ -8,7 +8,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { setDb, type Db } from "../src/db.js";
-import { INTERFACE_NOTES_PROJECT_SETTING, type FileInterfaceNotesResult, type InterfaceNote } from "../src/interface-notes/contract.js";
+import type { FileInterfaceNotesResult, InterfaceNote, InterfaceNoteDestinations } from "../src/interface-notes/contract.js";
+import type { MandibleBuild } from "../src/interface-notes/receiving-project.js";
 import type { LedgerIssueDetailProjection } from "../src/issue-detail-contract.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -26,11 +27,12 @@ let root: string;
 let router: Router;
 let projectId: string;
 let clock: number;
+let operator: ReturnType<typeof setupOperator>;
 
-function register(target: Router): Router {
+function register(target: Router, build: MandibleBuild = { kind: "checkout", root, remoteUrl: "" }): Router {
   const repo = { id: "notes", name: "notes", root, exists: true, default_branch: "main", excluded: false, user_modified: false, last_scanned_at: null };
   registerIssueRoutes(target, { getRepos: () => [repo], getRepoById: () => repo, getBranches: () => [] } as never, undefined, inlineLedgerReader());
-  registerInterfaceNoteRoutes(target, db, { kind: "local" });
+  registerInterfaceNoteRoutes(target, db, { kind: "local" }, build);
   return target;
 }
 
@@ -42,7 +44,8 @@ beforeEach(() => {
   db = migratedMemoryDb();
   setDb(db);
   projectId = resolveProjectForCheckout(db, { root, name: "notes", workRepoId: "notes", defaultBranch: "main" }).project.id;
-  router = register(authenticatedTestRouter(setupOperator(db, { display_name: "Operator" })));
+  operator = setupOperator(db, { display_name: "Operator" });
+  router = register(authenticatedTestRouter(operator));
 });
 
 afterEach(() => {
@@ -80,6 +83,10 @@ async function file(noteIds: string[], destination: unknown) {
   return call<FileInterfaceNotesResult & { error?: string }>("POST", "/api/interface-notes/file", { note_ids: noteIds, destination });
 }
 
+async function destinations(): Promise<InterfaceNoteDestinations> {
+  return (await call<InterfaceNoteDestinations>("GET", "/api/interface-notes/destinations")).body;
+}
+
 async function detail(issueId: string): Promise<LedgerIssueDetailProjection> {
   return (await call<LedgerIssueDetailProjection>("GET", `/api/ledger/issues/${issueId}`)).body;
 }
@@ -88,8 +95,13 @@ it("files each listed unfiled note onto one comment exactly once", async () => {
   await note("a", "Tighten the gap");
   await note("b", "Wrong colour");
   await note("c", "Missing tooltip");
-  expect((await file(["a"], { new_issue: { title: "Interface" } })).body).toEqual({ error: "receiving_project_unset" });
-  db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, 1)").run(INTERFACE_NOTES_PROJECT_SETTING, "notes");
+  router = register(authenticatedTestRouter(operator), { kind: "release", repository: "github.com/acme/elsewhere" });
+  expect(await destinations()).toEqual({ project: null, issues: [] });
+  expect((await file(["a"], { new_issue: { title: "Interface" } })).body).toEqual({ error: "no_receiving_project" });
+  const { remote_identity } = db.prepare("SELECT remote_identity FROM ledger_projects WHERE id = ?").get(projectId) as { remote_identity: string };
+  router = register(authenticatedTestRouter(operator), { kind: "release", repository: remote_identity });
+  expect(await destinations()).toEqual({ project: "notes", issues: [] });
+  router = register(authenticatedTestRouter(operator));
 
   const agent = register(authenticatedTestRouter(createUser(db, { slug: "notes-agent", kind: "agent", display_name: "Agent" })));
   const refused = await agent.invoke({ method: "POST", url: "/api/interface-notes/file", transport: "http",
@@ -110,6 +122,10 @@ it("files each listed unfiled note onto one comment exactly once", async () => {
   const other = issue("Elsewhere");
   const second = await file(["a", "b", "c"], { issue: other });
   expect(second.body.filed).toEqual(["c"]);
+  expect(await destinations()).toEqual({ project: "notes", issues: [
+    { ref: `notes/${second.body.issue_short_id}`, id: second.body.issue_short_id, title: "Elsewhere" },
+    { ref: `notes/${first.body.issue_short_id}`, id: first.body.issue_short_id, title: "Interface polish" },
+  ] });
   expect((await file(["a", "c"], { issue: other })).body).toEqual({ error: "nothing_to_file" });
   expect((await call<{ notes: InterfaceNote[] }>("GET", "/api/interface-notes")).body.notes).toEqual([]);
   const owners = db.prepare("SELECT n.id, c.issue_id FROM interface_notes n JOIN ledger_comments c ON c.id = n.comment_id ORDER BY n.id").all();

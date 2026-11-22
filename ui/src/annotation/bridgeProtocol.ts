@@ -14,7 +14,7 @@ export const BRIDGE_MESSAGE = 'mandible-interface-notes';
 
 /** The transport operations the bridge performs; a loaded issue is Mandible's own. */
 export type BridgeOperation = Exclude<keyof InterfaceNotesTransport, 'subscribe' | 'listIssueNotes'>;
-export const BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['listUnfiled', 'create', 'updateText', 'deleteUnfiled', 'file', 'listIssuesWithNotes'];
+export const BRIDGE_OPERATIONS: readonly BridgeOperation[] = ['listUnfiled', 'create', 'updateText', 'deleteUnfiled', 'file', 'destinations'];
 
 export type BridgeFailure = { message: string; status: number; code: string | null };
 

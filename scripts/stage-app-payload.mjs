@@ -8,6 +8,7 @@ import { stageCoworkRuntime } from './stage-cowork-runtime.mjs';
 import { installPinnedCaddy } from './pinned-caddy.mjs';
 import { RELEASE_SCHEMA, installedFileIdentity } from './installed-release.mjs';
 import { trackedSourceDigest } from './build-revision.mjs';
+import { checkoutRepositoryIdentity } from '../src/ledger/projects.ts';
 import { buildBundleService, stageBundleServices } from './prepare-bundle-services.mjs';
 import { bundleServiceLabel } from './bundle-service-roles.mjs';
 import { daemonBuildOutput, desktopPackageEnvironment, frontendBuildOutput } from './desktop-build-layout.mjs';
@@ -139,7 +140,7 @@ esac
   const commitInfo = run('git', ['show', '-s', '--format=%s%n%cI', provenance.commit]).split('\n');
   const release = { schema: RELEASE_SCHEMA, handoff_protocol: 2, version: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version,
     layout: { kind: 'macos-app', roots: { resources: '.', executables: '../MacOS', libraries: '../Frameworks', agents: '../Library/LaunchAgents', helpers: '../Helpers' } },
-    target: `${process.platform}-${process.arch}`, provenance: { ...provenance, summary: commitInfo[0], date: commitInfo[1], bun_revision: run(runtime, ['--revision']) },
+    target: `${process.platform}-${process.arch}`, provenance: { ...provenance, repository: checkoutRepositoryIdentity(root), summary: commitInfo[0], date: commitInfo[1], bun_revision: run(runtime, ['--revision']) },
     qualification: { bun_sha256: hash(runtime), sqlite_sha256: hash(sqlite), caddy_sha256: hash(caddy) },
     entrypoints: { daemon: 'dist/index.js', cli: 'bin/mandible', controller: 'scripts/local-runtime.mjs', trustSetup: 'scripts/local-ca-trust.mjs', service: 'scripts/bundle-service.mjs' },
     resources: { ...Object.fromEntries(['backend', 'gateway'].map(role => [`${role}Agent`, `../Library/LaunchAgents/${bundleServiceLabel(role)}.plist`])), mandibleSkill: 'cli/skills/mandible/SKILL.md' },

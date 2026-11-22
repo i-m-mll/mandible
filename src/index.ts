@@ -46,6 +46,7 @@ import { createOutcomeReporter } from "./notices/report.js";
 import { registerWorkRoutes } from "./routes/work.js";
 import { registerIssueRoutes } from "./routes/issues.js";
 import { registerInterfaceNoteRoutes } from "./routes/interface-notes.js";
+import { currentMandibleBuild } from "./interface-notes/receiving-project.js";
 import { interfaceNotesHome, relaySourceNoteEvents } from "./interface-notes/source.js";
 import { registerLedgerChangeRoutes } from "./routes/ledger-changes.js";
 import { registerNotificationRoutes } from "./routes/notifications.js";
@@ -301,7 +302,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager; conversationControl?: ConversationControlService } = { sessionRegistry };
   registerIssueRoutes(router, workScanner, issueDeps, ledgerReader);
   const notesHome = interfaceNotesHome(instance);
-  registerInterfaceNoteRoutes(router, db, notesHome);
+  registerInterfaceNoteRoutes(router, db, notesHome, currentMandibleBuild(MANDIBLE_ROOT));
   registerLedgerChangeRoutes(router, db);
   registerSettingsRoutes(router, instance.role, operatorSigning);
   registerUserSettingsRoutes(router, db);

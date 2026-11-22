@@ -11,7 +11,7 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
 import { MIGRATIONS } from "../src/db-migrations.js";
-import { INTERFACE_NOTES_PROJECT_SETTING, type EmbedGrant, type EmbedIdentity, type FileInterfaceNotesResult, type InterfaceNote } from "../src/interface-notes/contract.js";
+import type { EmbedGrant, EmbedIdentity, FileInterfaceNotesResult, InterfaceNote, InterfaceNoteDestinations } from "../src/interface-notes/contract.js";
 import { EmbedGrants, PENDING_GRANT_TTL_MS } from "../src/interface-notes/embed-grants.js";
 import type { EmbedProcessProbe } from "../src/interface-notes/embed-identity.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
@@ -20,7 +20,6 @@ import { LedgerStore } from "../src/ledger/store.js";
 import { registerInterfaceNoteRoutes } from "../src/routes/interface-notes.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import type { Router } from "../src/server.js";
-import type { IssueRepoSummary } from "../src/types.js";
 import { setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
@@ -48,13 +47,12 @@ beforeEach(() => {
   const studioRoot = path.join(root, "feedbax");
   resolveProjectForCheckout(db, { root: mandibleRoot, name: "mandible", workRepoId: "mandible", defaultBranch: "main", remoteUrl: "git@github.com:example/mandible.git" });
   resolveProjectForCheckout(db, { root: studioRoot, name: "feedbax", workRepoId: "feedbax", defaultBranch: "main", remoteUrl: STUDIO_REMOTE });
-  db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, 1)").run(INTERFACE_NOTES_PROJECT_SETTING, "mandible");
   const repos = [["mandible", mandibleRoot], ["feedbax", studioRoot]].map(([id, repoRoot]) => ({
     id, name: id, root: repoRoot, exists: true, default_branch: "main", excluded: false, user_modified: false, last_scanned_at: null,
   }));
   router = authenticatedTestRouter(setupOperator(db, { display_name: "Operator" }));
   registerIssueRoutes(router, { getRepos: () => repos, getRepoById: (id: string) => repos.find((repo) => repo.id === id), getBranches: () => [] } as never, undefined, inlineLedgerReader());
-  registerInterfaceNoteRoutes(router, db, { kind: "local" }, probe);
+  registerInterfaceNoteRoutes(router, db, { kind: "local" }, { kind: "release", repository: "github.com/example/mandible" }, probe);
   machine = { listeners: new Map(), checkouts: new Map() };
 });
 
@@ -110,28 +108,30 @@ it("records where another app's note was made, and refuses a note whose origin d
   expect(body).toContain(`Made on: ${EMBED_ORIGIN} (feedbax:web), not in Mandible\nAnnotation 1: Note studio`);
 });
 
-it("files an app's notes onto a new issue of the app's project, where the notes listing finds it", async () => {
-  await note("studio", "feedbax:web");
-  const filed = await call<FileInterfaceNotesResult>("POST", "/api/interface-notes/file", {
-    note_ids: ["studio"], destination: { new_issue: { title: "Studio polish", project: "feedbax" } },
-  });
-  expect(filed.status).toBe(201);
-  const issue = new LedgerStore(db).getIssue(filed.body.issue_id);
+it("files each app's notes onto a new issue of the project serving the app, which its destinations then offer", async () => {
+  const destinations = async (app: string) => (await call<InterfaceNoteDestinations>("GET", `/api/interface-notes/destinations?app=${encodeURIComponent(app)}`)).body;
   const projectKey = (id: string) => (db.prepare("SELECT project_key FROM ledger_projects WHERE id = ?").get(id) as { project_key: string }).project_key;
-  expect(projectKey(issue.project_id)).toBe("feedbax");
+  const fileNew = (id: string, title: string) => call<FileInterfaceNotesResult & { error?: string }>("POST", "/api/interface-notes/file", {
+    note_ids: [id], destination: { new_issue: { title } },
+  });
+  await note("studio", "feedbax:web");
+  await note("own");
+  const studio = await fileNew("studio", "Studio polish");
+  expect(studio.status).toBe(201);
+  expect(projectKey(new LedgerStore(db).getIssue(studio.body.issue_id).project_id)).toBe("feedbax");
+  const own = await fileNew("own", "Mandible polish");
+  expect(projectKey(new LedgerStore(db).getIssue(own.body.issue_id).project_id)).toBe("mandible");
 
-  const listed = async (repo: string) => (await call<IssueRepoSummary[]>("GET", `/api/issues?repo=${repo}&status=open&has_notes=true`)).body
-    .flatMap((summary) => summary.issues.map((entry) => entry.title));
-  expect(await listed("feedbax")).toEqual(["Studio polish"]);
-  expect(await listed("mandible")).toEqual([]);
-  // The bridge lists by project id, which matches no repo name, root or key.
-  const byProject = async (id: string) => (await call<IssueRepoSummary[]>("GET", `/api/issues?project=${id}&status=open&has_notes=true`)).body
-    .flatMap((summary) => summary.issues.map((entry) => entry.title));
-  expect(await byProject(issue.project_id)).toEqual(["Studio polish"]);
-  expect(await byProject("feedbax")).toEqual([]);
-  expect((await call("POST", "/api/interface-notes/file", {
-    note_ids: ["studio"], destination: { new_issue: { title: "Elsewhere", project: "no-such-project" } },
-  })).body).toMatchObject({ error: "receiving_project_unset" });
+  expect(await destinations("feedbax:web")).toEqual({ project: "feedbax", issues: [
+    { ref: `feedbax/${studio.body.issue_short_id}`, id: studio.body.issue_short_id, title: "Studio polish" },
+  ] });
+  expect(await destinations("mandible")).toEqual({ project: "mandible", issues: [
+    { ref: `mandible/${own.body.issue_short_id}`, id: own.body.issue_short_id, title: "Mandible polish" },
+  ] });
+
+  await note("stray", "unregistered:web");
+  expect(await destinations("unregistered:web")).toEqual({ project: null, issues: [] });
+  expect((await fileNew("stray", "Elsewhere")).body).toMatchObject({ error: "no_receiving_project" });
 });
 
 const identity = (origin: string) => call<EmbedIdentity & { error?: string; grant?: EmbedGrant }>("POST", "/api/interface-notes/embed-identity", { origin });
