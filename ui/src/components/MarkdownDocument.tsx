@@ -54,6 +54,14 @@ function documentMode(readOnly: boolean) {
   return [EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)];
 }
 
+function documentAccessibility(label: string, readOnly: boolean) {
+  return EditorView.contentAttributes.of({
+    'aria-label': label,
+    'aria-readonly': String(readOnly),
+    ...(readOnly ? { tabindex: '0' } : {}),
+  });
+}
+
 const setRangeDecorations = StateEffect.define<DecorationSet>();
 const rangeDecorations = StateField.define<DecorationSet>({
   create: () => Decoration.none,
@@ -158,7 +166,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
           ] : [],
           editorTheme, EditorView.lineWrapping, keymap.of([...defaultKeymap, ...historyKeymap]),
           compartments.mode.of(documentMode(readOnly)),
-          compartments.label.of(EditorView.contentAttributes.of({ 'aria-label': initial.ariaLabel, 'aria-readonly': String(readOnly) })),
+          compartments.label.of(documentAccessibility(initial.ariaLabel, readOnly)),
           compartments.comparison.of(compareWith(initial.comparison, initial.comparisonLayout)),
           EditorView.updateListener.of((update) => {
             const external = update.transactions.some((transaction) => transaction.annotation(externalSourceUpdate));
@@ -215,7 +223,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
   useLayoutEffect(() => {
     view.current?.dispatch({ effects: [
       compartments.mode.reconfigure(documentMode(readOnly)),
-      compartments.label.reconfigure(EditorView.contentAttributes.of({ 'aria-label': props.ariaLabel, 'aria-readonly': String(readOnly) })),
+      compartments.label.reconfigure(documentAccessibility(props.ariaLabel, readOnly)),
     ] });
   }, [readOnly, props.ariaLabel]);
 
