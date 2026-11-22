@@ -2606,6 +2606,19 @@ function getSchemaVersion(db: Db): number {
   return Number.isFinite(version) ? version : 0;
 }
 
+/** Read the live schema window without applying migrations. Null denotes a fresh database. */
+export function checkSchemaCompatibility(db: Db): number | null {
+  if (isFreshDatabase(db)) return null;
+  const found = getSchemaVersion(db);
+  if (found < MINIMUM_SUPPORTED_SCHEMA_VERSION) {
+    throw new UnsupportedSchemaVersionError(found, belowFloorMessage(found, databasePath(db)));
+  }
+  if (found > CURRENT_SCHEMA_VERSION) {
+    throw new UnsupportedSchemaVersionError(found, aboveHeadMessage(found, databasePath(db)));
+  }
+  return found;
+}
+
 /**
  * Reconcile retained schema-number collisions from persistent Chat previews.
  * Reading-window v230/v231 already contain source positions and optionally
@@ -2801,20 +2814,14 @@ export function migrate(db: Db, through: number = CURRENT_SCHEMA_VERSION): void 
     throw new Error(`Cannot migrate to v${through}: this build serves v${MINIMUM_SUPPORTED_SCHEMA_VERSION}-v${CURRENT_SCHEMA_VERSION}`);
   }
 
-  if (isFreshDatabase(db)) {
+  const existingVersion = checkSchemaCompatibility(db);
+  if (existingVersion === null) {
     if (through !== CURRENT_SCHEMA_VERSION) throw new Error(`A fresh database is created at head, not v${through}`);
     createFreshSchemaBaseline(db, CURRENT_SCHEMA_VERSION);
     return;
   }
 
-  let found = getSchemaVersion(db);
-  if (found < MINIMUM_SUPPORTED_SCHEMA_VERSION) {
-    throw new UnsupportedSchemaVersionError(found, belowFloorMessage(found, databasePath(db)));
-  }
-  if (found > CURRENT_SCHEMA_VERSION) {
-    throw new UnsupportedSchemaVersionError(found, aboveHeadMessage(found, databasePath(db)));
-  }
-
+  let found = existingVersion;
   found = reconcileExecutionSchemaCollision(db, found, through);
   found = reconcileCollidedChatPreviewSchema(db, found, through);
 

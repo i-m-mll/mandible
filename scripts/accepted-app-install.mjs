@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { applicationIdentity, resolveAcceptedRelease, readAcceptedReleaseReceipt, readAcceptedInstalledRelease } from './accepted-release.mjs';
+import { applicationIdentity, resolveAcceptedRelease, readAcceptedReleaseReceipt, readAcceptedInstalledRelease, readAcceptedInstalledReleaseIdentity } from './accepted-release.mjs';
 import { assertLifecycleLockHeld } from './lifecycle-lock.mjs';
 import { adoptBundleRelease, readBundleOwner } from './bundle-services.mjs';
+import { applicationRootIdentity, assertInstalledApplicationVerification, installedApplicationVerification, installedRuntimeEnvironment } from './installed-release.mjs';
+import { daemonPreflightCommand, readDaemonPreflight } from './daemon-preflight.mjs';
 import { runRuntimeCommand, runtimeObservationTimeout } from './runtime-observation.mjs';
 import { serviceInstallationContext } from './service-definitions.mjs';
 
@@ -29,11 +31,7 @@ export function acceptedInstallPaths(binding) {
 
 const preparedApplications = new WeakMap();
 
-export function applicationRootIdentity(root) {
-  const stat = fs.lstatSync(root);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(root) !== root) throw new Error('Application root must be a canonical directory.');
-  return Object.freeze({ dev: stat.dev, ino: stat.ino });
-}
+export { applicationRootIdentity };
 
 function sameRoot(root, identity) {
   const actual = applicationRootIdentity(root);
@@ -47,7 +45,17 @@ export function preparedApplicationContext(prepared, binding) {
   sameRoot(verified.app, prepared.identity);
   return { app: verified.app, resources: path.join(verified.app, 'Contents/Resources'), release: verified.release,
     receipt: verified.receipt, reference: binding.acceptedRelease.reference, digest: prepared.packageSha256,
-    bundleIdentifier: prepared.bundleIdentifier, identity: prepared.identity, installed: verified.installed };
+    bundleIdentifier: prepared.bundleIdentifier, identity: prepared.identity, installed: verified.installed, verification: verified.verification };
+}
+
+export function validatePreparedDaemon(binding, prepared, database, { until } = {}) {
+  const application = preparedApplicationContext(prepared, binding);
+  const { resources, release } = application;
+  const { binary, args } = daemonPreflightCommand(resources, release, database);
+  const env = installedRuntimeEnvironment(resources, { HOME: binding.accountHome, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' });
+  const result = runRuntimeCommand(binary, args, { until, cwd: resources, env });
+  if (result.status !== 0) throw new Error(`Staged daemon failed preflight: ${result.stderr || `exit ${result.status}`}`);
+  return readDaemonPreflight(result.stdout);
 }
 
 /** Validate the replacement at its final-volume staging path while the old app serves. */
@@ -75,7 +83,7 @@ export function prepareAcceptedApplication(binding, { until, attemptId, assertHe
       fs.rmSync(path.join(paths.staging, entry), { recursive: true });
     }
     const source = path.join(receipt.package.handle.root, receipt.package.path);
-    const result = runRuntimeCommand('/usr/bin/ditto', [source, paths.staging], { until });
+    const result = runRuntimeCommand('/usr/bin/ditto', ['--clone', source, paths.staging], { until });
     if (result.status !== 0) throw new Error(`Accepted app copy failed: ${result.stderr}`);
     assertHeld();
     sameRoot(paths.staging, stageIdentity);
@@ -87,11 +95,12 @@ export function prepareAcceptedApplication(binding, { until, attemptId, assertHe
   if (stageIdentity) sameRoot(target, stageIdentity);
   const identity = applicationRootIdentity(target);
   if (applicationIdentity(target) !== receipt.package.sha256) throw new Error('Prepared application differs from the exact accepted package.');
-  const release = readAcceptedInstalledRelease(receipt, path.join(target, 'Contents/Resources'));
+  const { release, sha256 } = readAcceptedInstalledReleaseIdentity(receipt, path.join(target, 'Contents/Resources'));
+  const verification = installedApplicationVerification(target, receipt.package.sha256, sha256);
   const bundleIdentifier = serviceInstallationContext({ home: binding.home ?? path.dirname(binding.nativeApp), bundleRoot: target }).bundleIdentifier;
   assertHeld();
   const prepared = Object.freeze({ packageSha256: receipt.package.sha256, bundleIdentifier, target, installed, identity, attemptId, ...paths });
-  preparedApplications.set(prepared, { binding: JSON.stringify(binding), receipt, release, app: target, installed, assertHeld });
+  preparedApplications.set(prepared, { binding: JSON.stringify(binding), receipt, release, app: target, installed, assertHeld, verification });
   return prepared;
 }
 
@@ -110,7 +119,11 @@ export function installAcceptedApplication(binding, context, { until, prepared }
   const paths = acceptedInstallPaths(binding);
   if (accepted.installed) {
     check();
-    if (!installedOwner) adoptBundleRelease(context, accepted.release, owner, binding.acceptedRelease.reference, { until });
+    if (!installedOwner || !owner.verification) adoptBundleRelease(context, accepted.release, owner, binding.acceptedRelease.reference, { until, verification: accepted.verification });
+    else {
+      assertInstalledApplicationVerification(accepted.resources, owner.verification);
+      if (owner.verification.packageSha256 !== accepted.verification.packageSha256) throw new Error('Installed verification differs from the exact accepted package.');
+    }
     check();
     return { packageSha256: accepted.receipt.package.sha256, ...paths };
   }
@@ -128,7 +141,7 @@ export function installAcceptedApplication(binding, context, { until, prepared }
   const verified = preparedApplications.get(prepared);
   verified.app = binding.nativeApp; verified.installed = true;
   check();
-  adoptBundleRelease(context, accepted.release, owner, binding.acceptedRelease.reference, { until });
+  adoptBundleRelease(context, accepted.release, owner, binding.acceptedRelease.reference, { until, verification: accepted.verification });
   check();
   return { packageSha256: accepted.receipt.package.sha256, ...paths };
 }

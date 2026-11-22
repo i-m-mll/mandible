@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import { expect, it } from 'vitest';
 import { applicationIdentity, readAcceptedReleaseReceipt } from '../../scripts/accepted-release.mjs';
 import { acceptedInstallPaths, applicationRootIdentity, preparedApplicationContext } from '../../scripts/accepted-app-install.mjs';
-import { installedFileIdentity, readInstalledRelease } from '../../scripts/installed-release.mjs';
+import { assertInstalledApplicationVerification, installedFileIdentity, readInstalledRelease } from '../../scripts/installed-release.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions } from '../../scripts/service-definitions.mjs';
 import { readBundleOwner, nativeServiceControls, bundleRuntimeCommand } from '../../scripts/bundle-services.mjs';
 import { bindingDigest, handoffDirectory, readRuntimeHandoffReceipt, runRuntimeHandoffWorker, withRuntimeObservation } from '../../scripts/runtime-handoff.mjs';
@@ -288,7 +288,7 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         gatewayValidationMs = Date.now() - before;
         return digest;
       } : async () => null;
-      const options = { context, control, verifyPublication: async () => {}, validateGateway, waitMs: Math.max(1, workUntil - Date.now()),
+      const options = { context, control, verifyPublication: async () => {}, validateGateway, validateDaemon: async () => null, waitMs: Math.max(1, workUntil - Date.now()),
         observe: async (journal, { prepared }) => {
           const application = preparedApplicationContext(prepared, binding);
           const access = await readAccess();
@@ -330,6 +330,9 @@ pulse(); const timer=setInterval(pulse,100);process.on('SIGTERM',()=>{clearInter
         expect(matchingServiceDefinitions(inspectServiceDefinitionsSync(context, { until: workUntil })).ok).toBe(true);
         const receipt = readAcceptedReleaseReceipt(reference);
         expect(applicationIdentity(app)).toBe(receipt.package.sha256);
+        const verification = readBundleOwner(context)?.verification;
+        expect(verification?.packageSha256).toBe(receipt.package.sha256);
+        assertInstalledApplicationVerification(path.join(app, 'Contents/Resources'), verification);
         checkDeadline(`generation ${pin} exact installed bytes`);
         const previous = acceptedInstallPaths(binding).previous;
         if (index) expect(applicationRootIdentity(previous)).toEqual(binding.priorAppIdentity);

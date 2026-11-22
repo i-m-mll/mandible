@@ -59,6 +59,14 @@ before creating the request and reference it in the initial review message.
 See [upgrade qualification](accepted-package-delivery.md#qualification) for the
 command and evidence boundary.
 
+The isolated runner verifies the app's signature and full resource inventory.
+It records the package digest and checks the bundle root and manifest against
+that verification receipt before executing the daemon. It then runs a second
+copy of the daemon entrypoint in preflight mode against the isolated running
+daemon's ledger. Preflight loads the shipped runtime, opens the ledger read-only
+and reports the schema version. No migration or service registration is part of
+this check.
+
 Each run records its exact project, work-unit owner, instance and generated outputs before producing them. The shared owned-run lifecycle saves a compact receipt outside the scratch root and reclaims disposed raw material after assessment or failure. Unknown files, active consumers, identity drift and cleanup errors preserve the remaining bytes and fail the gate. The receipt contains source and executable hashes, the runtime, interaction evidence, log digest, shutdown results and cleanup outcome. Apparent unlinked bytes are reported separately from physical space recovery.
 
 When a daemon-managed acceptance settles, it reads the bounded failure details for the ledger before deleting the scratch root and its cache checkpoints. If an interrupted run still owns an unsealed package, the compact scratch disposition stays until that package is cleared. An accepted package's certificate belongs to durable release storage.

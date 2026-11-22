@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 export const RELEASE_SCHEMA = 'mandible-installed-release@1';
+const VERIFICATION_SCHEMA = 'mandible-installed-verification@1';
 const executionContext = 'source';
 const moduleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Hashing is synchronous with no callbacks; each worker has its own module instance.
@@ -47,6 +48,29 @@ function inspectApplication(app, onFile = () => {}) {
 }
 
 export function applicationIdentity(app) { return inspectApplication(app); }
+
+export function applicationRootIdentity(root) {
+  const stat = fs.lstatSync(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(root) !== root) throw new Error('Application root must be a canonical directory.');
+  return Object.freeze({ dev: stat.dev, ino: stat.ino });
+}
+
+/** Record the identity of an app whose exact package digest was already verified. */
+export function installedApplicationVerification(app, packageSha256, manifestSha256 = installedFileIdentity(path.join(app, 'Contents/Resources/release.json')).sha256) {
+  return Object.freeze({ schema: VERIFICATION_SCHEMA, identity: applicationRootIdentity(app), manifestSha256, packageSha256 });
+}
+
+export function assertInstalledApplicationVerification(resources, verification) {
+  if (verification?.schema !== VERIFICATION_SCHEMA || !/^[a-f0-9]{64}$/.test(verification.packageSha256 ?? '')) {
+    throw new Error('Application has no verified installation receipt. Install or repair the owned app before starting its services.');
+  }
+  const app = path.resolve(resources, '../..');
+  const actual = installedApplicationVerification(app, verification.packageSha256);
+  if (actual.identity.dev !== verification.identity?.dev || actual.identity.ino !== verification.identity?.ino
+      || actual.manifestSha256 !== verification.manifestSha256) {
+    throw new Error('Application root or manifest differs from the verified installation receipt.');
+  }
+}
 
 /** Installed context is supplied by the native launcher or the installed module location. */
 export function installedResourceRoot() {
@@ -125,7 +149,7 @@ export function verifyApplicationRelease(app) {
   if (!fs.lstatSync(app).isDirectory()) throw new Error('Application must be a directory.');
   app = fs.realpathSync(app);
   const resources = path.join(app, 'Contents/Resources');
-  const release = readInstalledRelease(resources);
+  const { release, sha256: manifestSha256 } = readInstalledReleaseIdentity(resources);
   const identities = new Map();
   const digest = inspectApplication(app, (file, identity) => identities.set(file, identity));
   verifyReleaseFiles(resources, release, file => {
@@ -133,7 +157,10 @@ export function verifyApplicationRelease(app) {
     if (!identity) throw new Error('Installed resource is outside the application tree: ' + file);
     return identity;
   });
-  return { release, digest };
+  if (identities.get(path.join(resources, 'release.json'))?.sha256 !== manifestSha256) {
+    throw new Error('Installed release manifest changed during package verification.');
+  }
+  return { release, digest, verification: installedApplicationVerification(app, digest, manifestSha256) };
 }
 
 const installedRuntimeKeys = ['MANDIBLE_RELEASE_ROOT', 'MANDIBLE_RUNTIME', 'MANDIBLE_SQLITE_LIBRARY', 'MANDIBLE_CADDY', 'MANDIBLE_CLI_DIR'];

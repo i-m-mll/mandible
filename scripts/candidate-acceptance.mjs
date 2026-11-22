@@ -6,7 +6,8 @@ import net from 'node:net';
 import http from 'node:http';
 import https from 'node:https';
 import { localCaPaths, assertLocalCaIdentity, probeCurrentMacOsTrust } from './local-ca-trust.mjs';
-import { installedRuntimeEnvironment, releaseFile, verifyInstalledRelease, verifyApplicationRelease } from './installed-release.mjs';
+import { assertInstalledApplicationVerification, installedRuntimeEnvironment, releaseFile, verifyInstalledRelease, verifyApplicationRelease } from './installed-release.mjs';
+import { daemonPreflightCommand, readDaemonPreflight } from './daemon-preflight.mjs';
 import { installedExecutionProfile } from './installed-execution.mjs';
 import { applicationIdentity, createPendingRelease, retainAcceptedRelease, disposePendingRelease } from './accepted-release.mjs';
 import { createHash, randomBytes } from 'node:crypto';
@@ -573,7 +574,7 @@ async function main(startedAt) {
     verification.watch.advance('the package signature was verified');
     const resources = path.join(app, 'Contents', 'Resources');
     const marker = diagnostic?.marker || JSON.parse(fs.readFileSync(path.join(root, daemonBuildOutput, 'build-revision.json'), 'utf8'));
-    const { release: shipped, digest } = verifyApplicationRelease(app);
+    const { release: shipped, digest, verification: installedVerification } = verifyApplicationRelease(app);
     if (shipped.provenance.commit !== candidate || shipped.provenance.source_digest !== marker.source_digest) {
       const values = { package_commit: shipped.provenance.commit, package_source_digest: shipped.provenance.source_digest, candidate, candidate_source_digest: marker.source_digest };
       throw acceptanceFailure('either', `The built Mandible.app records commit ${values.package_commit} with source digest ${values.package_source_digest}, but the candidate is commit ${candidate} with source digest ${values.candidate_source_digest}, so the package is not the candidate.`, values);
@@ -589,6 +590,7 @@ async function main(startedAt) {
     result.checks.installed_exports = await verifyPackagedExports({ resources, runtime: packagedRuntime,
       environment: resourceEnv, home, provenance: shipped.provenance, watch: verification.watch, ...superviseCheck });
     result.provenance = { marker, daemon_sha256: sha256(releaseFile(resources, shipped.entrypoints.daemon)), native_sha256: sha256(path.join(app, "Contents/MacOS/mandible-app")), harness_sha256: sha256(fileURLToPath(import.meta.url)), package_sha256: testedPackageDigest, shipped };
+    result.checks.installed_verification = installedVerification;
     verification.pass();
     const readiness = phases.begin('readiness');
     const ports = new Set();
@@ -604,6 +606,7 @@ async function main(startedAt) {
     result.provenance.gateway_sha256 = sha256(gatewayBinary);
     fs.writeFileSync(path.join(home, 'acceptance.json'), JSON.stringify({ home, origin, nonce, stepIdleMs: ACCEPTANCE_STAGES.desktop_interaction.stepIdleMs }), { mode: 0o600 });
     const env = { ...resourceEnv, HOME: home, MANDIBLE_HOME: home, MANDIBLE_DB: path.join(home, 'mandible.db'), MANDIBLE_PORT: String(port), MANDIBLE_PUBLIC_ORIGIN: origin, MANDIBLE_INSTANCE_ROLE: 'main', MANDIBLE_INSTANCE_ID: instanceId, MANDIBLE_INSTALLATION_ID: instanceId, MANDIBLE_BACKEND_GENERATION: candidate, MANDIBLE_WORK_SCANNER_ROOTS: JSON.stringify([{ path: home, depth: 1 }]), MANDIBLE_PID_FILE: path.join(home, 'daemon.pid'), MANDIBLE_SOCKET: path.join(home, 'api.sock'), MANDIBLE_STDERR_LOG_PATH: path.join(run, 'daemon.log'), MANDIBLE_USER_PREFERENCES_DIR: path.join(home, 'settings', 'users'), MANDIBLE_CANDIDATE_ACCEPTANCE: path.join(home, 'acceptance.json') };
+    assertInstalledApplicationVerification(resources, installedVerification);
     daemon = launch(packagedRuntime, [...(diagnostic ? ['--cpu-prof', `--cpu-prof-dir=${diagnostics}`, '--cpu-prof-name=daemon.cpuprofile'] : []), '--no-install', releaseFile(resources, shipped.entrypoints.daemon)], env, 'daemon');
     if (diagnostic) {
       diagnosticDeadline = setTimeout(interrupt, diagnosticDuration);
@@ -655,6 +658,15 @@ async function main(startedAt) {
     if (passiveError) throw passiveError;
     interactionController.signal.throwIfAborted();
     if (!health.local_socket_path?.startsWith(`${home}${path.sep}`)) throw acceptanceFailure('candidate', `The packaged daemon reported its local API socket at ${health.local_socket_path}, outside the isolated home acceptance gave it (${home}); it must keep its files inside that home.`, { socket: health.local_socket_path ?? null, home });
+    if (!diagnostic) {
+      const preflight = daemonPreflightCommand(resources, shipped, env.MANDIBLE_DB);
+      const startedAt = performance.now();
+      const output = await runSupervisedCommand('/usr/bin/sandbox-exec', ['-p', executionProfile, preflight.binary, ...preflight.args], {
+        cwd: run, env, watch: readiness.watch, graceMs: 1000, ...superviseCheck,
+      });
+      result.checks.daemon_preflight = { ...readDaemonPreflight(output.stdout), elapsed_ms: performance.now() - startedAt };
+      readiness.watch.advance('the staged daemon opened the active ledger read-only');
+    }
     if (diagnostic) {
       const out = fs.openSync(path.join(diagnostics, 'probe.jsonl'), 'w'); files.push(out);
       const err = fs.openSync(path.join(diagnostics, 'probe.stderr'), 'w'); files.push(err);

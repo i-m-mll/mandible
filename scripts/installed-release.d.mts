@@ -14,14 +14,23 @@ export interface InstalledRelease {
   files: Record<string, { sha256: string; size: number }>;
 }
 export const RELEASE_SCHEMA: string;
+export interface InstalledApplicationVerification {
+  schema: 'mandible-installed-verification@1';
+  identity: { dev: number; ino: number };
+  manifestSha256: string;
+  packageSha256: string;
+}
 export function installedFileIdentity(file: string): { sha256: string; size: number };
 export function applicationIdentity(app: string): string;
+export function applicationRootIdentity(app: string): InstalledApplicationVerification['identity'];
+export function installedApplicationVerification(app: string, packageSha256: string, manifestSha256?: string): InstalledApplicationVerification;
+export function assertInstalledApplicationVerification(resources: string, verification?: InstalledApplicationVerification): void;
 export function installedResourceRoot(): string | null;
 export function installedProgramRoots(root: string, layout: InstalledRelease['layout']): string[];
 export function releaseFile(root: string, relative: string, layout?: InstalledRelease['layout']): string;
 export function readInstalledRelease(root: string): InstalledRelease;
 export function readInstalledReleaseIdentity(root: string): { release: InstalledRelease; sha256: string };
 export function verifyInstalledRelease(root: string): InstalledRelease;
-export function verifyApplicationRelease(app: string): { release: InstalledRelease; digest: string };
+export function verifyApplicationRelease(app: string): { release: InstalledRelease; digest: string; verification: InstalledApplicationVerification };
 export function installedRuntimeEnvironment(root: string, environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
 export function leaveInstalledRuntime(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;

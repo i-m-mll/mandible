@@ -12,7 +12,7 @@ import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefus
 import { RuntimeObservationError, observationPending, runtimeObservationAcceptance, runRuntimeCommand, runtimeNow, runtimeObservationTimeout, withRuntimeBudget } from './runtime-observation.mjs';
 import { authHookTimeoutMs } from '../src/auth-hook-timeout.ts';
 import { withLifecycleLock, withInstallationGatewayLock, inspectLifecycleLock, assertLifecycleLockHeld, processIdentity as lockProcessIdentity } from './lifecycle-lock.mjs';
-import { acceptedInstallPaths, preparedApplicationContext, applicationRootIdentity, prepareAcceptedApplication, installAcceptedApplication } from './accepted-app-install.mjs';
+import { acceptedInstallPaths, preparedApplicationContext, applicationRootIdentity, prepareAcceptedApplication, installAcceptedApplication, validatePreparedDaemon } from './accepted-app-install.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions, parseLoadedService } from './service-definitions.mjs';
 import { admitBundleOwner } from './bundle-services.mjs';
 import { installedResourceRoot, installedRuntimeEnvironment, installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
@@ -1218,7 +1218,7 @@ function archiveAttempt(journal) {
 export async function runRuntimeHandoffWorker(file, {
   now = runtimeNow, wait = sleep, control = controller, verifyPublication = publication,
   prepare = prepareAcceptedApplication, install = installAcceptedApplication,
-  observe = confirmPreparedRuntime, desktop = restoreDesktop, validateGateway = validatePreparedGateway,
+  observe = confirmPreparedRuntime, desktop = restoreDesktop, validateGateway = validatePreparedGateway, validateDaemon = validatePreparedDaemon,
   waitMs = COMMITTED_OBSERVATION_WINDOW_MS, actor, context,
 } = {}) {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -1279,8 +1279,13 @@ export async function runRuntimeHandoffWorker(file, {
         stageIdentity: journal.attempt.effects.prepare?.stageIdentity,
         onStageCreated: stage => saveEffect(journal, 'prepare', { stageIdentity: stage.identity, stagePath: stage.path }) });
       acceptedOperations.getStore().prepared = prepared;
-      const gatewayConfig = !prepared.installed && !committed ? await validateGateway(b, prepared, { until }) : undefined;
-      saveEffect(journal, 'prepare', { completedAt: now(), packageSha256: prepared.packageSha256, ...(gatewayConfig ? { gatewayConfig } : {}) });
+      if (!prepared.installed && !committed) {
+        const gatewayConfig = await validateGateway(b, prepared, { until });
+        const daemonStartedAt = now();
+        const daemon = await validateDaemon(b, prepared, journal.database, { until });
+        saveEffect(journal, 'prepare', { gatewayConfig, daemon, daemonStartedAt, daemonValidatedAt: now() });
+      }
+      saveEffect(journal, 'prepare', { completedAt: now(), packageSha256: prepared.packageSha256 });
       const priorDrain = journal.attempt.effects.drain;
       drained = priorDrain?.completedAt && priorDrain.processes
         && Object.values(priorDrain.processes).every(identity => !identity || startedAt(identity.pid) !== identity.startedAt);

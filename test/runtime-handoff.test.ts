@@ -82,18 +82,36 @@ it('resumes an installed-before-launch interruption through the same recorded at
     expect(options.until).toBeLessThanOrEqual(Date.now() + 2 * COMMITTED_OBSERVATION_WINDOW_MS);
     return { schema: 'mandible-runtime-receipt@2', bindingDigest: journal.bindingDigest, services: identities };
   });
-  const options = { actor: { provider: 'fixture' }, prepare, install, control, desktop, observe, verifyPublication: vi.fn(async () => {}), validateGateway: async () => null };
+  const validateDaemon = vi.fn(async () => { effects.push('daemon-preflight'); return { schema: 'mandible-daemon-preflight@1', schemaVersion: 242 }; });
+  const options = { actor: { provider: 'fixture' }, prepare, install, control, desktop, observe, verifyPublication: vi.fn(async () => {}), validateGateway: async () => null, validateDaemon };
   const first = await runRuntimeHandoffWorker(f.file, options);
   expect(first.attempt.state, JSON.stringify(first.attempt.lastObservation)).toBe('running');
-  expect(effects).toEqual(['prepare', 'drain', 'replace']);
+  expect(effects).toEqual(['prepare', 'daemon-preflight', 'drain', 'replace']);
   const resumed = await runRuntimeHandoffWorker(f.file, options);
   expect(resumed.attempt.id).toBe(first.attempt.id);
   expect(resumed).toMatchObject({ phase: 'complete', error: 'original failure', failure: f.journal.failure,
     attempt: { state: 'complete', fence: { reason: 'terminal-completion' }, receipt: { schema: 'mandible-runtime-receipt@2', attemptId: first.attempt.id } } });
-  expect(effects).toEqual(['prepare', 'drain', 'replace', 'prepare', 'services', 'desktop']);
+  expect(effects).toEqual(['prepare', 'daemon-preflight', 'drain', 'replace', 'prepare', 'services', 'desktop']);
   await runRuntimeHandoffWorker(f.file, options);
   expect(desktop).toHaveBeenCalledOnce(); expect(observe).toHaveBeenCalledOnce();
   expect(readRuntimeHandoff(f.home, f.binding.requestId, f.binding.executionId)?.attempt.receiptDigest).toMatch(/^[a-f0-9]{64}$/);
+});
+
+it('does not authorize drain when the staged daemon cannot open the ledger', async () => {
+  const f = fixture();
+  const control = vi.fn();
+  const install = vi.fn();
+  const current = await runRuntimeHandoffWorker(f.file, {
+    actor: { provider: 'fixture' }, verifyPublication: async () => {},
+    prepare: async () => ({ installed: false, packageSha256: 'exact' }),
+    validateGateway: async () => null,
+    validateDaemon: async () => { throw new Error('The ledger schema is newer than this daemon.'); },
+    control, install,
+  });
+  expect(current).toMatchObject({ phase: 'failed', drainReady: null, attempt: { lastObservation: { reason: 'The ledger schema is newer than this daemon.' } } });
+  expect(current.attempt.effects.drain).toBeUndefined();
+  expect(control).not.toHaveBeenCalled();
+  expect(install).not.toHaveBeenCalled();
 });
 
 it('does not drain or replace when preparation fails and preserves the previous failure', async () => {

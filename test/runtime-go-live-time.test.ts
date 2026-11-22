@@ -52,7 +52,7 @@ const services = { backend: { pid: 42, startedAt: 'backend', runs: 1 }, gateway:
 function delivery(effects: string[]) {
   const installed = () => effects.includes('replace');
   return {
-    verifyPublication: async () => {}, validateGateway: async () => null, desktop: async () => {},
+    verifyPublication: async () => {}, validateGateway: async () => null, validateDaemon: async () => null, desktop: async () => {},
     prepare: async () => { effects.push('prepare'); runRuntimeCommand('/fixture/ditto', []); return { installed: installed(), packageSha256: 'exact' }; },
     install: async () => { effects.push('replace'); return { packageSha256: 'exact' }; },
     control: async (_journal: unknown, command: string) => {
