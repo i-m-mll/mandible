@@ -3,7 +3,7 @@ import { appendDirectiveAnswer, readDirectiveAnswer } from "./review-answers.js"
 import { BriefingStoreError } from "./briefing-errors.js";
 import { canEditRequestFile, canEditRequestFiles, requestDrafts } from "./request-drafts.js";
 import type { ReviewChangeEdit } from "./request-draft-types.js";
-import { storedTrackedReviewGroups, trackedReviewGroups } from "./tracked-briefing-reviews.js";
+import { hydrateTrackedReviewGroups, storedTrackedReviewGroups, trackedReviewGroups } from "./tracked-briefing-reviews.js";
 import { canonicalJson } from "../canonical-json.js";
 import { authSnapshotDigest } from "../auth-request-snapshot.js";
 import type { Db } from "../db.js";
@@ -44,8 +44,9 @@ export function requestReviewRound(request: AuthRequest): RequestReviewRound {
     // Older captured inventories lack blob IDs. Those still render through the
     // pinned file viewer but don't identify two exact comment targets.
     if (file.old_object === undefined || file.new_object === undefined) return;
+    // Older rounds retain the anchor coordinate system captured with their report.
     const format = file.additions === null || file.deletions === null ? "binary"
-      : /\.(?:md|markdown)$/i.test(file.new_path ?? file.old_path ?? "") ? "markdown" : "lines";
+      : file.review_format ?? (/\.(?:md|markdown)$/i.test(file.new_path ?? file.old_path ?? "") ? "markdown" : "lines");
     const before: RequestReviewFile = { kind: "request_file", side: "before", file_index: index, path: file.old_path,
       commit: report.comparison.merge_base_sha, blob: file.old_object, format };
     const after: RequestReviewFile = { kind: "request_file", side: "after", file_index: index, path: file.new_path,
@@ -63,17 +64,21 @@ export function ensureRequestReviewRound(db: Db, round: RequestReviewRound): voi
   }
 }
 
-function pinRequestReviewGroups(db: Db, request: AuthRequest, round: RequestReviewRound, capture: boolean) {
+function pinRequestReviewGroups(db: Db, request: AuthRequest, round: RequestReviewRound, retain: boolean) {
   const stored = storedTrackedReviewGroups(db, round.id);
   if (stored !== null) return stored;
-  if (!capture) return [];
-  const groups = trackedReviewGroups(db, request);
-  if (groups.length === 0) return groups;
+  if (request.status !== "pending") return [];
+  const captured = trackedReviewGroups(db, request);
+  if (!captured?.references.length) return [];
+  if (!retain) return hydrateTrackedReviewGroups(db, captured.references);
   return db.transaction(() => {
+    const existing = storedTrackedReviewGroups(db, round.id);
+    if (existing !== null) return existing;
+    captured.retain();
     ensureRequestReviewRound(db, round);
-    db.prepare(`INSERT INTO briefing_request_group_snapshots (round_id, snapshot_json) VALUES (?, ?)
-      ON CONFLICT(round_id) DO NOTHING`).run(round.id, JSON.stringify(groups));
-    return storedTrackedReviewGroups(db, round.id)!;
+    db.prepare("INSERT INTO briefing_request_group_snapshots (round_id, snapshot_json) VALUES (?, ?)")
+      .run(round.id, JSON.stringify(captured.references));
+    return hydrateTrackedReviewGroups(db, captured.references);
   }).immediate();
 }
 
@@ -138,7 +143,6 @@ type FrozenRequestReviewReturn = {
   change_edit: ReviewChangeEdit | null;
   targets: ReturnType<typeof reviewSubmissionTargets>;
   answers: ReturnType<typeof submittedNarrativeAnswers>;
-  tracked_groups: NonNullable<ReturnType<typeof storedTrackedReviewGroups>>;
   comments: RequestReviewNote[];
 };
 
@@ -151,7 +155,7 @@ function requestReviewSubmissions(db: Db, requestId: string, eventType: "returne
     Array<Pick<FrozenRequestReviewReturn, "submission_id" | "revision" | "reason"> & { round_id: string; delivered: number }>;
   return returned.map(({ round_id, delivered, ...receipt }) => {
     const bindings = new Map((reviewDocumentBindings(db, round_id) as RequestBinding[]).map(binding => [binding.id, binding]));
-    return { ...receipt, round_id, delivered: Boolean(delivered), tracked_groups: storedTrackedReviewGroups(db, round_id) ?? [], change_edit: submittedChangeEdit(db, receipt.submission_id),
+    return { ...receipt, round_id, delivered: Boolean(delivered), change_edit: submittedChangeEdit(db, receipt.submission_id),
       targets: reviewSubmissionTargets(db, receipt.submission_id),
       answers: submittedNarrativeAnswers(db, receipt.submission_id),
       comments: reviewSubmissionAnnotations(db, receipt.submission_id).map(comment => ({
@@ -168,8 +172,7 @@ export function returnedRequestReview(db: Db, requestId: string) {
   const receipt = frozenRequestReviewReturn(db, requestId);
   if (!receipt) return null;
   const threads = projectRequestThreads(db, receipt.comments);
-  const { tracked_groups: _trackedGroups, ...publicReceipt } = receipt;
-  return { ...publicReceipt, comments: receipt.comments.map(comment => ({ ...comment, thread: threads(comment) })) };
+  return { ...receipt, comments: receipt.comments.map(comment => ({ ...comment, thread: threads(comment) })) };
 }
 
 export type RequestReviewVersion = {
@@ -279,9 +282,9 @@ export function resolveRequestReviewComment(db: Db, request: AuthRequest, review
   return matches.length === 1 ? matches[0] : null;
 }
 
-export async function readRequestReview(db: Db, request: AuthRequest, reviewerId: string | null) {
+export async function readRequestReview(db: Db, request: AuthRequest, reviewerId: string | null, retainTrackedReviewRefs = true) {
   const { round, versions, returned, approved, revised, notes, prior, active } = requestReviewRoots(db, request, reviewerId);
-  const tracked_groups = reviewerId ? pinRequestReviewGroups(db, request, round, request.status === "pending") : [];
+  const tracked_groups = reviewerId ? pinRequestReviewGroups(db, request, round, retainTrackedReviewRefs) : [];
   const drafts = reviewerId ? requestDrafts(db, request.id, reviewerId) : [];
   const editable_files = canEditRequestFiles(request) ? request.change_report!.files.flatMap((file, index) =>
     canEditRequestFile(file) ? [{ index, path: file.new_path }] : []) : [];
@@ -324,9 +327,10 @@ export async function readRequestReview(db: Db, request: AuthRequest, reviewerId
   }
   const questions = requestQuestions(db, request, round, request.status === "pending" ? reviewerId : null);
   const submitted = returned ?? approved;
-  const tracked_group_history = reviewerId ? revised.flatMap(receipt =>
-    receipt.tracked_groups.length ? [{ round_id: receipt.round_id, revision: receipt.revision, groups: receipt.tracked_groups }] : []) : [];
-  const returnedReview = returned && (({ tracked_groups: _trackedGroups, ...receipt }) => receipt)(returned);
+  const tracked_group_history = reviewerId ? revised.flatMap(({ round_id, revision }) => {
+    const groups = storedTrackedReviewGroups(db, round_id);
+    return groups?.length ? [{ round_id, revision, groups }] : [];
+  }) : [];
   return {
     round, versions, annotations, drafts, editable_files, tracked_groups, tracked_group_history,
     narrative: request.narrative ?? null, narrative_report: request.narrative ? request.change_report ?? null : null,
@@ -336,7 +340,7 @@ export async function readRequestReview(db: Db, request: AuthRequest, reviewerId
     active_answer_event_ids: questions.flatMap(question => question.effective_response ? [question.effective_response.response_event_id] : []),
     active_annotation_event_ids: active.map(note => note.annotation_event_id),
     frozen_head: request.merge_effective_head_sha ?? null, comparison_head: request.change_report?.comparison.head_sha ?? null,
-    returned: returnedReview && { ...returnedReview, comments: returnedReview.comments.map(comment => ({ ...comment, thread: thread(comment) })) },
+    returned: returned && { ...returned, comments: returned.comments.map(comment => ({ ...comment, thread: thread(comment) })) },
   };
 }
 

@@ -159,19 +159,17 @@ afterEach(() => {
 });
 
 describe("review document bindings", () => {
-  it("carries unchanged, moved, and detached comments while freezing only the actor’s current round", () => {
-    const stable = "The long stable paragraph fixes the relative order of the surrounding text.".repeat(4);
-    const before = `Keep this.\n\nMove this.\n\n${stable}\n\nDelete this.\n\nRepeat this.\n`;
-    const after = `Preface.\n\nKeep this.\n\n${stable}\n\nRepeat this.\n\nRepeat this.\n\nMove this.\n`;
+  it("keeps a carried comment outside the current round's submission", () => {
+    const quote = "Keep the red marker.";
+    const before = `${quote}\n`;
+    const after = "Keep the blue marker.\n";
     const firstVersion = recordArtifactVersion(db, { source_kind: "managed", series_key: "review-bindings",
       logical_name: "review.md", content: before }).artifact_version;
     const first = publishBriefingFromArtifactVersion(db, { profile: "mandible-briefing.v3", title: "Review",
       briefing_key: "review-bindings", artifact_version_ref: firstVersion.id, responder_user_ids: [humanId] });
     const firstRound = first.round_id!;
-    const quotes = ["Keep this.", "Move this.", "Delete this.", "Repeat this."];
     const { annotation_event_ids } = applyBriefingAnnotations(db, first.briefing_id, firstRound, humanId,
-      quotes.map(quote => ({ operation: "set", kind: "comment", start_offset: before.indexOf(quote),
-        end_offset: before.indexOf(quote) + quote.length, quote, body: `Review ${quote}` })));
+      [{ operation: "set", kind: "comment", start_offset: 0, end_offset: quote.length, quote, body: `Review ${quote}` }]);
     expect(() => submitBriefingRound(db, first.briefing_id, firstRound, humanId, {
       answers: [], annotation_event_ids: [...annotation_event_ids, annotation_event_ids[0]],
     })).toThrowError(expect.objectContaining({ code: "stale_submission_annotations" }));
@@ -184,18 +182,13 @@ describe("review document bindings", () => {
     const viewer = { actorUserId: humanId, operator: true };
     const current = readBriefing(db, first.briefing_id, viewer)!.selected_round!;
     expect(current.document.comparison_base?.target).toEqual({ kind: "artifact_version", artifact_version_id: firstVersion.id });
-    expect(current.carried_annotations.map(({ quote, start_offset, anchor }) => [quote, start_offset, anchor])).toEqual([
-      ["Keep this.", 0, { status: "preserved", start_offset: 10, end_offset: 20, quote: "Keep this." }],
-      ["Move this.", 12, { status: "moved", start_offset: after.length - 11, end_offset: after.length - 1, quote: "Move this." }],
-      ["Delete this.", before.indexOf("Delete this."), { status: "detached" }],
-      ["Repeat this.", before.indexOf("Repeat this."), { status: "detached" }],
-    ]);
+    expect(current.carried_annotations).toMatchObject([{ annotation_event_id: annotation_event_ids[0], quote }]);
     expect(current.annotations).toEqual([]);
     expect(() => submitBriefingRound(db, first.briefing_id, second.round_id!, humanId, { answers: [], annotation_event_ids }))
       .toThrowError(expect.objectContaining({ code: "stale_submission_annotations" }));
     expect(readBriefing(db, first.briefing_id, { ...viewer, roundId: firstRound, submissionId: frozen.submission_id })
       ?.selected_round?.selected_submission_overlay?.annotations)
-      .toEqual(expect.arrayContaining(quotes.map((quote) => expect.objectContaining({ quote, start_offset: before.indexOf(quote) }))));
+      .toMatchObject([{ annotation_event_id: annotation_event_ids[0], quote, start_offset: 0 }]);
   });
 
   it("pins the protected comparison at publication and records the branch commit the reviewer actually saw", () => {

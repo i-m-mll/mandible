@@ -3,7 +3,10 @@ import type { ComponentChild } from 'preact';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { DiffFilePair, GitChangeFile } from '../../../src/contracts';
 import { quoteReviewLines } from '../../../src/feedback/review-ranges';
+import { isMarkdownFile } from '../../../src/presentation/markdown-file';
 import { diffFileKey, type DiffFileIdentity } from './diff-file-identity';
+import { appTip } from './shared/AppHoverTips';
+import { DetailPaneNotice } from './shared/DetailPaneNotice';
 import { CollapsiblePanel } from './shared/CollapsiblePanel';
 import { Icon } from './icons/Icon';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -84,8 +87,9 @@ function versionKey(file: ChangeListFile, revision?: string): string {
     : [file.old_path, file.new_path, file.old_object, file.new_object]);
 }
 
-function ChangeBody({ name, inputKey, load, mode, wrap, wholeFile, onLineSelection, lineTarget, renderTextFile, knownWhitespace }: {
+function ChangeBody({ name, markdown, inputKey, load, mode, wrap, wholeFile, onLineSelection, lineTarget, renderTextFile, knownWhitespace }: {
   name: string;
+  markdown: boolean;
   inputKey: string;
   load: (signal: AbortSignal) => Promise<DiffFilePair | PierreDiffInput>;
   mode: DiffMode;
@@ -111,7 +115,7 @@ function ChangeBody({ name, inputKey, load, mode, wrap, wholeFile, onLineSelecti
   }, [inputKey]);
 
   const input = useMemo(() => result?.kind === 'text' ? { ...result, kind: 'contents' as const } : result, [result]);
-  if (failed) return <div role="alert">File changes unavailable</div>;
+  if (failed) return <DetailPaneNotice severity="error" density="compact">File changes unavailable</DetailPaneNotice>;
   if (!input) return null;
   if (input.kind === 'binary') return <span class="change-list__badge">Binary</span>;
   const whitespaceOnly = knownWhitespace === undefined && input.kind === 'contents' && input.before.contents !== input.after.contents
@@ -119,7 +123,7 @@ function ChangeBody({ name, inputKey, load, mode, wrap, wholeFile, onLineSelecti
   const defaultContent = <>
     {whitespaceOnly && <span class="change-list__badge">Whitespace only</span>}
     <Suspense fallback={null}>
-      {input.kind === 'contents' && /\.(?:md|markdown)$/i.test(name) ? (
+      {input.kind === 'contents' && markdown ? (
         <MarkdownDiff value={input.after.contents} comparison={input.before.contents}
           comparisonLayout={wholeFile ? 'full-document' : undefined} readOnly ariaLabel={name} />
       ) : (
@@ -172,13 +176,18 @@ export function ChangeInventoryList({
     <section class="change-list" aria-label={ariaLabel} data-diff-mode={view.mode}>
       {files.length > 0 && <div class="change-list__toolbar">
         <div role="group" aria-label="Diff layout">
-          {(['unified', 'split'] as const).map(mode => <button key={mode} type="button" aria-pressed={view.mode === mode}
-            onClick={() => setView(current => ({ ...current, mode }))}>{mode === 'unified' ? 'Unified' : 'Split'}</button>)}
+          {(['unified', 'split'] as const).map(mode => {
+            const label = mode === 'unified' ? 'Unified' : 'Split';
+            return <button key={mode} type="button" aria-pressed={view.mode === mode} aria-label={label}
+              {...appTip(label)} onClick={() => setView(current => ({ ...current, mode }))}>
+              <Icon name={mode === 'unified' ? 'diffUnified' : 'diffSplit'} />
+            </button>;
+          })}
         </div>
-        {!partial && <button type="button" aria-pressed={view.wholeFile}
-          onClick={() => setView(current => ({ ...current, wholeFile: !current.wholeFile }))}>Whole file</button>}
-        <button type="button" aria-pressed={view.wrap}
-          onClick={() => setView(current => ({ ...current, wrap: !current.wrap }))}>Wrap</button>
+        {!partial && <button type="button" aria-pressed={view.wholeFile} aria-label="Whole file" {...appTip('Whole file')}
+          onClick={() => setView(current => ({ ...current, wholeFile: !current.wholeFile }))}><Icon name="openMarkdown" /></button>}
+        <button type="button" aria-pressed={view.wrap} aria-label="Wrap" {...appTip('Wrap')}
+          onClick={() => setView(current => ({ ...current, wrap: !current.wrap }))}><Icon name="wrapLines" /></button>
       </div>}
       {files.map((file, index) => {
         const name = file.new_path ?? file.old_path ?? 'Changes';
@@ -186,6 +195,9 @@ export function ChangeInventoryList({
         const fileRevision = versionKey(file, revision);
         const viewed = view.viewed[key];
         const binary = file.additions === null || file.deletions === null;
+        const gitlink = file.old_object?.mode === '160000' || file.new_object?.mode === '160000';
+        const modeChanged = Boolean(file.old_object && file.new_object && file.old_object.mode !== file.new_object.mode);
+        const modeOnly = modeChanged && file.old_object?.oid === file.new_object?.oid;
         const status = file.change_kind === 'modified' ? null : labels[file.change_kind];
         const targeted = index === targetIndex && (target?.navigationToken !== handled.current?.token || handled.current?.kind !== 'file');
         const expanded = targeted || (view.expanded[key] ?? (!large && index === 0));
@@ -195,7 +207,7 @@ export function ChangeInventoryList({
           onExpandedChange={next => setView(current => ({
             ...current, expanded: { ...current.expanded, [key]: next },
           }))}
-          title={<span class="change-list__path" title={name}
+          title={<span class="change-list__path" {...appTip(name)}
             ref={node => { if (node) headings.current.set(key, node); else headings.current.delete(key); }}>
             {file.old_path && file.new_path && file.old_path !== file.new_path ? `${file.old_path} → ${file.new_path}` : name}
           </span>}
@@ -203,12 +215,15 @@ export function ChangeInventoryList({
             {renderFileStatus?.(file)}
             {status && <span class="change-list__badge">{status}</span>}
             {file.whitespace_only && <span class="change-list__badge">Whitespace only</span>}
-            {binary ? <span class="change-list__badge">Binary</span> : file.additions !== undefined && file.deletions !== undefined && <>
+            {modeChanged && <span class="change-list__badge">Mode {file.old_object!.mode} → {file.new_object!.mode}</span>}
+            {gitlink ? <span class="change-list__badge">Gitlink</span>
+              : binary ? <span class="change-list__badge">Binary</span>
+              : !modeOnly && file.additions !== undefined && file.deletions !== undefined && <>
               <span class="change-list__add">+{file.additions}</span>
               <span class="change-list__del">−{file.deletions}</span>
             </>}
             {viewed !== undefined && viewed !== fileRevision && <span class="change-list__badge">Changed since viewed</span>}
-            <button type="button" class="change-list__viewed" title={`Viewed ${name}`}
+            <button type="button" class="change-list__viewed" {...appTip("Mark viewed")}
               aria-label={`Viewed ${name}`} aria-pressed={viewed === fileRevision}
               onClick={() => setView(current => {
                 const viewed = { ...current.viewed };
@@ -220,7 +235,13 @@ export function ChangeInventoryList({
             </button>
           </>}
         >
-          {!binary && <ChangeBody key={fileRevision} inputKey={fileRevision} name={name} mode={view.mode}
+          {gitlink && <p aria-label="Gitlink revisions">
+            {file.old_object?.mode === '160000' && <code>{file.old_object.oid}</code>}
+            {file.old_object?.mode === '160000' && file.new_object?.mode === '160000' && ' → '}
+            {file.new_object?.mode === '160000' && <code>{file.new_object.oid}</code>}
+          </p>}
+          {!gitlink && !modeOnly && !binary && <ChangeBody key={fileRevision} inputKey={fileRevision} name={name} mode={view.mode}
+            markdown={file.review_format ? file.review_format === 'markdown' : isMarkdownFile(name)}
             wrap={view.wrap} wholeFile={view.wholeFile}
             knownWhitespace={file.whitespace_only}
             renderTextFile={renderTextFile ? (pair, presentation) => renderTextFile(file, pair, index, presentation) : undefined}

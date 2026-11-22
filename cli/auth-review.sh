@@ -11,12 +11,31 @@ comment=""
 message=""
 json=0
 case "$action" in
+  approval) bindings='{"request":{"position":0}}' ;;
   show) bindings='{"request":{"position":0},"json":{"option":"json","constant":"1"}}' ;;
   reply) bindings='{"request":{"position":0},"comment":{"position":1},"message":{"option":"message"}}' ;;
   address) bindings='{"request":{"position":0},"comment":{"position":1}}' ;;
 esac
 binding=$(mandible_bind_main_arguments "auth.review.$action" "$bindings" "$@") || exit $?
 eval "$binding"
+
+if [[ "$action" == "approval" ]]; then
+  if api_managed_client_markers_present; then
+    printf '%s\n' 'Error: only the operator can prepare an approval review.' >&2
+    exit 1
+  fi
+  response=$(api_get "/api/auth/request/$(urlencode "$request")/review") || exit $?
+  printf '%s\n' "$response" | jq -e '
+    select(.status == "pending" and .precondition.expected_revision != null)
+    | . + {request_id: .round.owner.auth_request_id,
+      approval: {lifecycle_revision: .precondition.expected_revision,
+        review: {proof_digest, round_id: .round.id, annotation_event_ids: .active_annotation_event_ids,
+          answer_event_ids: .active_answer_event_ids}}}' || {
+    printf '%s\n' 'Error: no pending approval review is available.' >&2
+    exit 1
+  }
+  exit 0
+fi
 
 if [[ "$action" != "show" ]]; then
   request_path="/api/auth/request/$(urlencode "$request")"

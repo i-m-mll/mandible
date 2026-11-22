@@ -1,6 +1,6 @@
 import { syntaxTree } from '@codemirror/language';
 import { getChunks } from '@codemirror/merge';
-import { Facet, StateEffect, StateField, type EditorState, type Range } from '@codemirror/state';
+import { Facet, StateEffect, StateField, type EditorState, type Range, type Transaction } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view';
 import katex from 'katex';
 import { maskAuthoredReferenceColons } from '../../../../src/ledger/authored-references.js';
@@ -8,7 +8,10 @@ import { leadingMarkdownFrontmatter, type MarkdownFrontmatter } from '../../../.
 import { mathToken } from '../../lib/markdownMath';
 import { markdownParts, type MarkdownNode } from '../../../../src/presentation/remark-directives.js';
 import { isResourceRef, resourceRefHref } from '../../resource-refs';
-import { markdownEditorRange, markdownSourceRange, markdownValue, type MarkdownSelection } from './source';
+import { externalSourceUpdate, markdownEditorRange, markdownSourceRange, markdownValue, type MarkdownSelection } from './source';
+import { markdownTables } from './tables';
+import { markdownCodeHighlighting } from './code-highlighting';
+import { footnoteLabel } from './syntax';
 import { SPACE_FRAME_NAMES } from '../../../../src/spaces/directives.js';
 
 export type MarkdownDirective = MarkdownSelection & {
@@ -31,6 +34,7 @@ export const markdownDirectives = Facet.define<MarkdownDirectives, MarkdownDirec
 export type MarkdownPreviewPolicy = {
   images?: 'omit';
   directivePreview?: 'on-changed-text';
+  protectSpaceFrames?: boolean;
 };
 export const markdownPreviewPolicy = Facet.define<MarkdownPreviewPolicy, MarkdownPreviewPolicy | undefined>({
   combine: ([policy]) => policy,
@@ -69,7 +73,6 @@ type PreviewContent =
   | { kind: 'task'; checked: boolean }
   | { kind: 'image'; url: string; alt: string }
   | { kind: 'math'; formula: string; display: boolean }
-  | { kind: 'table'; rows: string[][] }
   | { kind: 'frontmatter'; entries: MarkdownFrontmatter['entries'] };
 
 class PreviewWidget extends WidgetType {
@@ -107,19 +110,6 @@ class PreviewWidget extends WidgetType {
           maxExpand: 1000, maxSize: 100,
         });
         return math;
-      }
-      case 'table': {
-        const table = document.createElement('table');
-        const [header, ...rows] = content.rows;
-        for (const [row, isHeader] of [[header, true], ...rows.map((row) => [row, false])] as [string[], boolean][]) {
-          const target = (isHeader ? table.createTHead() : table.tBodies[0] ?? table.createTBody()).insertRow();
-          for (const value of row) {
-            const cell = document.createElement(isHeader ? 'th' : 'td');
-            cell.textContent = value;
-            target.append(cell);
-          }
-        }
-        return table;
       }
       case 'frontmatter': {
         const list = document.createElement('dl');
@@ -190,7 +180,8 @@ function readSpecialSyntax(state: EditorState) {
   const directives: DirectiveSpan[] = [];
   const start = frontmatter ? markdownSourceRange(state, { from: 0, to: frontmatter.end }).end : 0;
   const body = source.slice(start);
-  if (/:+[a-z]/i.test(body)) {
+  const hasDirective = /:{2,}[a-z][a-z0-9-]*(?=[\s\[{]|$)|:[a-z][a-z0-9-]*(?=[\[{])/im.test(body);
+  if (hasDirective) {
     for (const part of markdownParts(maskAuthoredReferenceColons(body), SPACE_FRAME_NAMES)) {
       if (part.kind === 'frame') {
         const bodyStart = part.node.body.from + start, bodyEnd = part.node.body.to + start;
@@ -207,10 +198,51 @@ function readSpecialSyntax(state: EditorState) {
   })) };
 }
 
+type SpecialSyntax = ReturnType<typeof readSpecialSyntax>;
+
+function mapProseEdit(previous: SpecialSyntax, { changes, startState, state }: Transaction): SpecialSyntax | null {
+  const surroundingProse = /^\p{L}[^:`\[\]<>]*$/u;
+  const plainText = /^[\p{L}\p{M}\p{N} ]*$/u;
+  let reusable = true;
+  changes.iterChangedRanges((from, to, fromB, toB) => {
+    const line = startState.doc.lineAt(from);
+    const nextLine = state.doc.lineAt(fromB);
+    if (from === line.from || to > line.to || toB > nextLine.to || from < (previous.frontmatter?.end ?? 0)
+      || !surroundingProse.test(line.text) || !surroundingProse.test(nextLine.text)
+      || !plainText.test(startState.sliceDoc(from, to)) || !plainText.test(state.sliceDoc(fromB, toB))
+      || previous.directives.some(directive => directive.from <= to && from <= directive.to)) reusable = false;
+  });
+  if (!reusable) return null;
+  const map = ({ from, to }: Span) => ({ from: changes.mapPos(from), to: changes.mapPos(to) });
+  return {
+    frontmatter: previous.frontmatter,
+    directives: previous.directives.map(directive => ({
+      ...directive, ...map(directive),
+      ...(directive.body && { body: markdownSourceRange(state, map(markdownEditorRange(startState, directive.body))) }),
+    })),
+  };
+}
+
 const specials = StateField.define({
   create: readSpecialSyntax,
-  update: (previous, transaction) => markdownValue(transaction.state) !== markdownValue(transaction.startState)
-    ? readSpecialSyntax(transaction.state) : previous,
+  update(previous, transaction) {
+    const { docChanged, startState, state } = transaction;
+    if (markdownValue(state) === markdownValue(startState)) return previous;
+    return (docChanged && !transaction.annotation(externalSourceUpdate) && mapProseEdit(previous, transaction)) || readSpecialSyntax(state);
+  },
+});
+
+export function spaceFrameRanges(state: EditorState): Array<Span & { body: Span }> {
+  return state.field(specials, false)?.directives.flatMap(directive => directive.body
+    ? [{ from: directive.from, to: directive.to, body: markdownEditorRange(state, directive.body) }] : []) ?? [];
+}
+
+export const spaceFrameNavigation = EditorView.atomicRanges.of(view => {
+  const ranges = spaceFrameRanges(view.state).flatMap(({ from, to, body }) => [
+    Decoration.mark({}).range(from, body.from),
+    Decoration.mark({}).range(body.to, to),
+  ]);
+  return Decoration.set(ranges, true);
 });
 
 function previewDecorations(state: EditorState, focused: boolean): DecorationSet {
@@ -246,12 +278,15 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
   const policy = state.facet(markdownPreviewPolicy);
   for (const directive of directives) {
     const render = allowlist?.get(directive.name);
-    if (!render || selected(state, focused, directive)
-        || (policy?.directivePreview !== 'on-changed-text' && changed(state, directive))) continue;
-    if (render === 'transparent') {
+    if (!render) continue;
+    const protectedFrame = Boolean(policy?.protectSpaceFrames && directive.body);
+    const showFrameBody = protectedFrame && (render === 'transparent' || selected(state, focused, directive));
+    if (!protectedFrame && (selected(state, focused, directive)
+        || (policy?.directivePreview !== 'on-changed-text' && changed(state, directive)))) continue;
+    if (render === 'transparent' || showFrameBody) {
       if (!directive.body) continue;
       const body = markdownEditorRange(state, directive.body);
-      if (body.from === body.to) {
+      if (body.from === body.to && !protectedFrame) {
         marks.push(Decoration.replace({ block: true }).range(directive.from, directive.to));
       } else {
         marks.push(Decoration.replace({ block: true }).range(directive.from, body.from));
@@ -279,6 +314,14 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
       const node = ref.node;
       const inDirective = (range: Span) => directive && directive.from < range.to && directive.to > range.from;
       const name = node.name;
+      const inReadOnlyCell = () => {
+        if (!state.readOnly) return false;
+        for (let parent = node.parent; parent; parent = parent.parent) {
+          if (parent.name === 'TableCell') return true;
+        }
+        return false;
+      };
+      const inlineSourceVisible = () => (!inReadOnlyCell() && !hidden(node)) || inDirective(node);
       const heading = /^(ATX|Setext)Heading([1-6])$/.exec(name);
       if (heading) {
         const showSource = !hidden(node);
@@ -293,21 +336,38 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
         return;
       }
       switch (name) {
-        case 'Table': {
+        case 'HorizontalRule': {
+          const line = state.doc.lineAt(node.from);
           if (hidden(node)) {
-            const rows: string[][] = [];
-            for (let row = node.firstChild; row; row = row.nextSibling) {
-              if (row.name === 'TableHeader' || row.name === 'TableRow') rows.push(row.getChildren('TableCell').map(text));
-            }
-            if (rows.length) replace(node, { kind: 'table', rows }, true);
+            lineMark(node.from, 'markdown-document__rule', state.readOnly ? { role: 'separator' } : undefined);
+            hide({ from: node.from, to: line.to });
           }
           return false;
         }
+        case 'FootnoteDefinition': {
+          const label = node.getChild('FootnoteLabel');
+          if (label) {
+            lineMark(node.from, 'markdown-document__footnote');
+            if (hidden(label)) {
+              hide({ from: label.from, to: label.from + 2 });
+              hide({ from: label.to - 2, to: label.to - 1 });
+              mark({ from: label.from + 2, to: label.to }, 'markdown-document__footnote-label');
+            }
+          }
+          return;
+        }
+        case 'FootnoteReference':
+          if (footnoteLabel.test(text(node)) && !inlineSourceVisible()) {
+            hide({ from: node.from, to: node.from + 2 });
+            hide({ from: node.to - 1, to: node.to });
+            mark({ from: node.from + 2, to: node.to - 1 }, 'markdown-document__footnote-reference');
+          }
+          return false;
         case 'FencedCode':
         case 'CodeBlock': {
           const last = state.doc.lineAt(node.to).number;
           for (let number = state.doc.lineAt(node.from).number; number <= last; number++) {
-            lineMark(state.doc.line(number).from, 'markdown-document__code');
+            lineMark(state.doc.line(number).from, 'markdown-document__code hljs');
           }
           if (name === 'FencedCode' && hidden(node)) {
             const fences = node.getChildren('CodeMark');
@@ -326,7 +386,7 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
         case 'InlineCode': {
           const markers = node.getChildren(name === 'InlineCode' ? 'CodeMark'
             : name === 'Strikethrough' ? 'StrikethroughMark' : 'EmphasisMark');
-          const showSource = !hidden(node) || inDirective(node);
+          const showSource = inlineSourceVisible();
           if (markers.length >= 2 && !showSource) {
             mark({ from: markers[0].to, to: markers[markers.length - 1].from }, `markdown-document__${name}`);
             markers.forEach(hide);
@@ -337,18 +397,28 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
           lineMark(node.from, 'markdown-document__quote');
           if (hidden(state.doc.lineAt(node.from))) hide(node);
           return;
-        case 'ListMark':
-          if (hidden(state.doc.lineAt(node.from)) && /^[*+\-]$/.test(text(node))) {
-            marks.push(Decoration.replace({ widget: new BulletWidget() }).range(node.from, node.to));
+        case 'ListMark': {
+          const line = state.doc.lineAt(node.from);
+          const bullet = /^[*+\-]$/.test(text(node));
+          let depth = 0;
+          for (let parent = node.parent; parent; parent = parent.parent) {
+            if (parent.name === 'ListItem') depth++;
           }
+          lineMark(node.from, 'markdown-document__list', {
+            style: `--markdown-list-indent: ${node.to - line.from + 1}ch`,
+          });
+          if (hidden(line) && bullet) {
+            marks.push(Decoration.replace({ widget: new BulletWidget(depth) }).range(node.from, node.to));
+          } else if (!bullet) mark(node, 'markdown-document__ordered-marker');
           return;
+        }
         case 'TaskMarker':
           if (hidden(node)) replace(node, { kind: 'task', checked: /x/i.test(text(node)) });
           return;
         case 'Link':
         case 'Autolink':
         case 'Image': {
-          if (!hidden(node) || inDirective(node)) return;
+          if (inlineSourceVisible()) return;
           const url = node.getChild('URL');
           const delimiters = node.getChildren('LinkMark');
           const range = delimiters.length >= 2 ? { from: delimiters[0].to, to: delimiters[1].from } : node;
@@ -366,7 +436,7 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
         }
         case 'InlineMath': {
           const math = mathToken(text(node), false);
-          if (math && hidden(node) && !inDirective(node)) {
+          if (math && !inlineSourceVisible()) {
             const block = math.display && node.from === state.doc.lineAt(node.from).from
               && node.to === state.doc.lineAt(node.to).to;
             replace(node, { kind: 'math', formula: math.text, display: block }, block);
@@ -381,9 +451,13 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
 }
 
 class BulletWidget extends WidgetType {
+  constructor(readonly depth: number) { super(); }
+
+  eq(other: BulletWidget) { return other.depth === this.depth; }
+
   toDOM(view: EditorView) {
     const bullet = view.dom.ownerDocument.createElement('span');
-    bullet.textContent = '•';
+    bullet.textContent = ['•', '◦', '▪'][(this.depth - 1) % 3] ?? '•';
     return bullet;
   }
 
@@ -407,5 +481,5 @@ const liveMarkdown = StateField.define<{ focused: boolean; decorations: Decorati
 });
 
 export const markdownPreview = [
-  specials, liveMarkdown, EditorView.focusChangeEffect.of((_state, focused) => setFocus.of(focused)),
+  specials, markdownTables, markdownCodeHighlighting, liveMarkdown, EditorView.focusChangeEffect.of((_state, focused) => setFocus.of(focused)),
 ];

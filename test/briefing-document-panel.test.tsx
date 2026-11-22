@@ -153,7 +153,7 @@ describe('Briefing document panel', () => {
     expect(screen.getByLabelText('Directive text').querySelector('img[src]')).toBeNull();
   });
 
-  it('creates an annotation from a profiled directive before refetching', async () => {
+  it('edits a selected directive in the mounted Markdown editor without changing its pinned anchor', async () => {
     const posts: any[] = [];
     const refresh = vi.fn(async () => round());
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -168,14 +168,21 @@ describe('Briefing document panel', () => {
     await waitFor(() => expect(commentButton.disabled).toBe(false));
     fireEvent.click(commentButton);
     const dialog = screen.getByRole('dialog', { name: 'Add annotation' });
-    const replacementTab = within(dialog).getByRole('tab', { name: 'Edit text' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     expect(posts).toHaveLength(0);
-    fireEvent.click(replacementTab);
-    expect((screen.getByLabelText('Replacement') as HTMLTextAreaElement).value).toBe('Plan');
-    fireEvent.input(screen.getByLabelText('Replacement'), { target: { value: 'Revised plan' } });
+    const mountedEditor = () => EditorView.findFromDOM(screen.getByLabelText('Pinned briefing document').closest('.cm-editor') as HTMLElement)!;
+    const surface = mountedEditor();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Edit text' }));
+    await waitFor(() => expect(surface.state.readOnly).toBe(false));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(mountedEditor()).toBe(surface);
+    await waitFor(() => expect(surface.state.sliceDoc(surface.state.selection.main.from, surface.state.selection.main.to)).toBe('Plan'));
+    const outside = surface.state.doc.toString();
+    surface.dispatch({ changes: { from: 0, to: 1, insert: 'X' }, userEvent: 'input.type' });
+    expect(surface.state.doc.toString()).toBe(outside);
+    surface.dispatch(surface.state.replaceSelection('Revised plan'));
     fireEvent.input(screen.getByLabelText('Note (optional)'), { target: { value: 'Explain the premise.' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.submit(screen.getByRole('form', { name: 'Text replacement' }));
 
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]).toEqual({
@@ -193,6 +200,10 @@ describe('Briefing document panel', () => {
       },
     });
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole('form', { name: 'Text replacement' })).toBeNull());
+    expect(mountedEditor()).toBe(surface);
+    expect(surface.state.doc.toString()).toBe(outside);
+    expect(surface.state.readOnly).toBe(true);
   });
 
   it('posts an exact sub-selection across CRLF and a surrogate pair', async () => {

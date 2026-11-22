@@ -252,7 +252,9 @@ emit_group() {
     printf '%s\n' "$response" | api_jq_human \
       '.group | "briefing-group:\(.id | mandible_short_id)  key=\(.key)  \(.name)\n  Base: \(
         if .current == null then "none" else "\(.current.id | mandible_short_id)  \(if .current.name == "Original" then "Base" else .current.name end)" end
-      )\n\([.updates[]? | "  proposal: \(.id | mandible_short_id)  \(.name)"] | join("\n"))\n  history: \((.history // []) | length)"'
+      )\n\([.updates[]? | "  proposal: \(.id | mandible_short_id)  \(.name)"] | join("\n"))\n  history: \((.history // []) | length)" , (.current.layout[]? | if .kind == "subgroup" then .members[]? else . end
+        | select(.kind == "tracked") | "  tracked \(.tracked.project_key)/\(.tracked.path)"),
+        (.tracked_proposals[]? | "  pending auth:\(.request_ref)  \(.project_key)  \(.title)")'
   fi
 }
 
@@ -293,25 +295,24 @@ cmd_group_configure() {
 }
 
 cmd_group_convert() {
-  local group_ref="" base_ref="" digest="" apply=0 json=0 response payload endpoint
+  local group_ref="" base_ref="" digest="" submit=0 json=0 response payload endpoint
   local binding
-  binding=$(mandible_bind_arguments "briefing.group.convert" '{"group_ref":{"position":0},"apply":{"option":"apply","constant":"1"},"base_ref":{"option":"expected-base"},"digest":{"option":"plan-digest"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
+  binding=$(mandible_bind_arguments "briefing.group.convert" '{"group_ref":{"position":0},"submit":{"option":"request","constant":"1"},"base_ref":{"option":"expected-base"},"digest":{"option":"plan-digest"},"json":{"option":"json","constant":"1"}}' "$@") || return $?
   eval "$binding"
   endpoint="/api/briefing-groups/$(urlencode "$group_ref")/tracking-conversion"
-  if (( apply )); then
-    [[ -n "$base_ref" && -n "$digest" ]] || die "Apply requires --expected-base and --plan-digest from the dry run." 2
+  if (( submit )); then
+    [[ -n "$base_ref" && -n "$digest" ]] || die "Request submission requires --expected-base and --plan-digest from the dry run." 2
     payload="$(jq -n --arg base "$base_ref" --arg digest "$digest" '{expected_base_bundle_ref:$base,plan_digest:$digest}')"
-    response="$(api_send POST "$endpoint" "$payload")" || die "Failed to apply Briefing group conversion." 1
+    response="$(api_send POST "$endpoint/requests" "$payload")" || die "Failed to submit Briefing group conversion for approval." 1
   else
-    [[ -z "$base_ref" && -z "$digest" ]] || die "--expected-base and --plan-digest require --apply." 2
+    [[ -z "$base_ref" && -z "$digest" ]] || die "--expected-base and --plan-digest require --request." 2
     response="$(api_get "$endpoint")" || die "Failed to plan Briefing group conversion." 1
   fi
   if (( json )); then
     printf '%s\n' "$response" | jq .
-  elif (( apply )); then
+  elif (( submit )); then
     printf '%s\n' "$response" | api_jq_human '
-      if .changed then "Converted to briefing-bundle:\(.bundle_id | mandible_short_id)\nBackup \(.backup_path)"
-      else "No members to convert" end'
+      "Requested approval auth:\(.request_id | mandible_short_id)"'
   else
     printf '%s\n' "$response" | api_jq_human '
       .plan | "Base \(.base_bundle_id | mandible_short_id)", "Plan digest \(.plan_digest)",

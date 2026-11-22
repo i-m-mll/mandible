@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { canonicalJson } from "../canonical-json.js";
 import type {
   BriefingBundle,
+  BriefingBundleLeaf,
   BriefingGroup,
   BriefingGroupDestinationChange,
   BriefingGroupDisposition,
@@ -19,10 +20,10 @@ import { tableExists } from "../db-introspection.js";
 import { resolveArtifactIdentity } from "../provider-artifacts.js";
 import { parseJsonObject } from "../row-coerce.js";
 import { BriefingStoreError } from "./briefings.js";
-import { readBriefingBundle, resolveBundleId, sameTrackedBundleLayout, trackedBundleMembers, type BriefingBundleViewer } from "./briefing-bundles.js";
+import { readBriefingBundle, readBriefingBundleWithTrackedMembers, resolveBundleId, sameTrackedBundleLayout, trackedBundleMembers, type BriefingBundleViewer } from "./briefing-bundles.js";
 import { briefingIdsForBundles, enforceActivePlacement, type PlacementOverride } from "./briefing-placement.js";
 import { resolveId } from "../entity-refs.js";
-import { trackedBriefingReader } from "./tracked-briefing-files.js";
+import { hydrateTrackedBriefingDocuments, trackedBriefingReader, type StoredTrackedBriefingDocument } from "./tracked-briefing-files.js";
 import { trackedBriefingProposals } from "./tracked-briefing-reviews.js";
 
 export function resolveGroupId(db: Db, groupRef: string): string {
@@ -197,7 +198,7 @@ function reviewBindingManifestJson(
     | "proposal_layout" | "base_layout_digest" | "proposal_layout_digest" | "destination_changes" | "items" | "tracked_documents">,
 ): string {
   return canonicalJson({
-    schema: "mandible-briefing-group-human-review@2",
+    schema: candidate.tracked_documents?.length ? "mandible-briefing-group-human-review@3" : "mandible-briefing-group-human-review@2",
     group_id: groupId,
     expected_base_bundle_id: candidate.expected_base_bundle_id,
     proposal_bundle_id: candidate.proposal_bundle_id,
@@ -346,7 +347,7 @@ function humanReviewCandidate(
     base_layout_digest: baseLayoutDigest,
     proposal_layout_digest: proposalLayoutDigest,
     destination_changes: destinationChanges,
-    tracked_documents: reader.readAll(trackedBundleMembers(db, input.expectedBaseBundleId)),
+    tracked_documents: reader.references(trackedBundleMembers(db, input.expectedBaseBundleId)),
     items,
   };
   return {
@@ -434,17 +435,34 @@ export function readBriefingGroup(db: Db, groupRef: string, viewer: BriefingBund
   };
 }
 
-function snapshotTrackedDisposition(db: Db, bundleIds: Array<string | null>,
+function trackedLayoutReferences<Tracked extends StoredTrackedBriefingDocument>(bundle: BriefingBundle<Tracked>): Tracked[] {
+  return bundle.layout.flatMap(entry => (entry.kind === "subgroup" ? entry.members : [entry])
+    .flatMap(leaf => leaf.kind === "tracked" ? [leaf.tracked] : []));
+}
+
+function snapshotTrackedDisposition(db: Db, bundleIds: Array<string | null>, viewer: BriefingBundleViewer,
   reader = trackedBriefingReader(db)): string | null {
   const ids = [...new Set(bundleIds.flatMap(id => id === null ? [] : [id]))];
   if (!ids.some(id => trackedBundleMembers(db, id).length > 0)) return null;
-  const viewer = { operator: true, userId: "" };
-  return JSON.stringify(ids.map(id => readBriefingBundle(db, id, viewer, reader)));
+  if (viewer.retainTrackedReviewRefs === false) {
+    throw new BriefingStoreError("This review needs permission to retain Git commits", 403, "tracked_review_retention_required");
+  }
+  const snapshots = ids.map(id => readBriefingBundleWithTrackedMembers(db, id, { operator: true, userId: "" }, reader.references));
+  reader.retain(snapshots.flatMap(trackedLayoutReferences));
+  return JSON.stringify(snapshots);
 }
 
 function historicalBundles(db: Db, snapshot: string | null, viewer: BriefingBundleViewer) {
-  const captured = viewer.operator && snapshot ? JSON.parse(snapshot) as BriefingBundle[] : [];
-  return (id: string) => captured.find(bundle => bundle.id === id)
+  const captured = viewer.operator && snapshot ? JSON.parse(snapshot) as BriefingBundle<StoredTrackedBriefingDocument>[] : [];
+  const hydrated = hydrateTrackedBriefingDocuments(db, captured.flatMap(trackedLayoutReferences));
+  let next = 0;
+  const hydrateLeaf = (leaf: BriefingBundleLeaf<StoredTrackedBriefingDocument>): BriefingBundleLeaf =>
+    leaf.kind === "tracked" ? { ...leaf, tracked: hydrated[next++]! } : leaf;
+  const bundles: BriefingBundle[] = captured.map(bundle => ({
+    ...bundle, layout: bundle.layout.map(entry => entry.kind === "subgroup"
+      ? { ...entry, members: entry.members.map(hydrateLeaf) } : hydrateLeaf(entry)),
+  }));
+  return (id: string) => bundles.find(bundle => bundle.id === id)
     ?? readBriefingBundle(db, id, { ...viewer, hideTracked: true });
 }
 
@@ -509,7 +527,8 @@ function readBriefingGroupHistory(
     }
     const manifest = parseJsonObject(row.manifest_json);
     if (manifest.schema !== "mandible-briefing-group-human-review@1"
-        && manifest.schema !== "mandible-briefing-group-human-review@2") {
+        && manifest.schema !== "mandible-briefing-group-human-review@2"
+        && manifest.schema !== "mandible-briefing-group-human-review@3") {
       throw new BriefingStoreError("Stored human-review manifest has an unsupported schema", 500,
         "briefing_review_receipt_corrupt");
     }
@@ -527,18 +546,18 @@ function readBriefingGroupHistory(
       throw new BriefingStoreError("Stored human-review receipt has incomplete custody anchors", 500,
         "briefing_review_receipt_corrupt");
     }
-    const baseLayout = manifest.schema === "mandible-briefing-group-human-review@2"
+    const baseLayout = manifest.schema !== "mandible-briefing-group-human-review@1"
       && Array.isArray(manifest.base_layout) ? manifest.base_layout as BriefingGroupReviewLayoutEntry[] : [];
-    const proposalLayout = manifest.schema === "mandible-briefing-group-human-review@2"
+    const proposalLayout = manifest.schema !== "mandible-briefing-group-human-review@1"
       && Array.isArray(manifest.proposal_layout) ? manifest.proposal_layout as BriefingGroupReviewLayoutEntry[] : [];
-    const destinationChanges = manifest.schema === "mandible-briefing-group-human-review@2"
+    const destinationChanges = manifest.schema !== "mandible-briefing-group-human-review@1"
       && Array.isArray(manifest.destination_changes)
       ? manifest.destination_changes as BriefingGroupDestinationChange[] : [];
     const destinationAnchors = db.prepare(`SELECT COUNT(*) AS count
       FROM briefing_group_review_destination_items WHERE disposition_id = ?`).get(row.id) as { count: number };
     if (destinationAnchors.count !== row.destination_change_count
         || row.destination_change_count !== destinationChanges.length
-        || (manifest.schema === "mandible-briefing-group-human-review@2"
+        || (manifest.schema !== "mandible-briefing-group-human-review@1"
           && (row.base_layout_digest !== manifest.base_layout_digest
             || row.proposal_layout_digest !== manifest.proposal_layout_digest))) {
       throw new BriefingStoreError("Stored human-review receipt has incomplete structural anchors", 500,
@@ -813,7 +832,7 @@ export function promoteBriefingGroupProposal(
         "promotion_proposal_drift");
     }
     requirePromotableCustodyLayout(db, expectedBaseBundleId, proposalBundleId);
-    const snapshot = snapshotTrackedDisposition(db, [expectedBaseBundleId, proposalBundleId]);
+    const snapshot = snapshotTrackedDisposition(db, [expectedBaseBundleId, proposalBundleId], viewer);
     const dispositionId = randomUUID();
     db.prepare("DELETE FROM briefing_group_updates WHERE group_id = ? AND bundle_id = ?")
       .run(groupId, proposalBundleId);
@@ -920,7 +939,7 @@ export function dispositionBriefingGroupProposalByHumanReview(
       "briefing_review_binding_drift",
     );
     const manifestJson = reviewBindingManifestJson(groupId, candidate);
-    const trackedSnapshot = snapshotTrackedDisposition(db, [expectedBaseBundleId, proposalBundleId], reader);
+    const trackedSnapshot = snapshotTrackedDisposition(db, [expectedBaseBundleId, proposalBundleId], viewer, reader);
     const dispositionId = randomUUID();
     removeActiveProposal(db, groupId, proposalBundleId);
     const resultingBaseBundleId = input.decision === "accepted" ? proposalBundleId : expectedBaseBundleId;
@@ -1106,7 +1125,7 @@ export function configureBriefingGroup(
     ) VALUES (?, ?, ?, 'dismissed', ?, ?, NULL, NULL, NULL, ?, ?)`);
     const reader = trackedBriefingReader(db);
     dismissed.forEach(bundleId => recordDismissal.run(requestOriginJson(), randomUUID(), groupId,
-      current.current_bundle_id, bundleId, now, snapshotTrackedDisposition(db, [current.current_bundle_id, bundleId], reader)));
+      current.current_bundle_id, bundleId, now, snapshotTrackedDisposition(db, [current.current_bundle_id, bundleId], viewer, reader)));
     db.prepare("DELETE FROM briefing_group_updates WHERE group_id = ?").run(groupId);
     db.prepare("UPDATE briefing_groups SET current_bundle_id = ?, updated_at = ? WHERE id = ?")
       .run(currentBundleId, now, groupId);

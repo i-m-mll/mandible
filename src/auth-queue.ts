@@ -1,5 +1,6 @@
+import { briefingConversionArguments, convertTrackedBriefingGroup } from "./feedback/convert-tracked-briefing-group.js";
 import { canonicalJson } from "./canonical-json.js";
-import { changeEditRef } from "./feedback/change-edit-git.js";
+import { changeEditRef, readChangeEditFile } from "./feedback/change-edit-git.js";
 import { collectAuthMergeReview } from "./auth-change-report.js";
 import {
   appendRequestNarrativeAnswer, ensureRequestReviewRound, readRequestReviewSource, requestNarrativeAnswerMembers,
@@ -24,7 +25,7 @@ import type { OperatorSigningAuthority } from "./operator-signing/authority.js";
 import { SignedActionRefused } from "./operator-signing/http.js";
 import { buildCommit, commitTime, defaultMergeMessage, signedCommitObject, writeCommitObject } from "./commit-object.js";
 import type { EvidenceMethod } from "./users/types.js";
-import { DOMAIN_EVENTS, OPERATOR_PROOF_WINDOW_MS, type AuthResolvedPayload } from "./contracts.js";
+import { BRIEFING_EVENTS, DOMAIN_EVENTS, OPERATOR_PROOF_WINDOW_MS, type AuthChangeReport, type AuthResolvedPayload } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { childOutput, observeChild } from "./child-observation.js";
@@ -2099,7 +2100,7 @@ export class AuthQueue {
         ? (await this.checkMergeIndependence({
             ...payload,
             request_id: predecessor?.id ?? null,
-          }))
+          }, predecessor ? payload.head_branch : undefined))
         : {
             status: "unknown",
             repo: payload.repo ?? null,
@@ -2367,8 +2368,10 @@ export class AuthQueue {
         : new Map<number, string>();
       const priorDrafts = predecessor ? requestOwnedDrafts(this.db, predecessor.id) : [];
       const priorDraftStamps = canonicalJson(priorDrafts.map(({ actor_user_id, path, generation }) => ({ actor_user_id, path, generation })));
-      const carriedDrafts = predecessor && priorDrafts.some(draft => draft.text !== null)
-        ? await carryRequestDrafts(predecessor, request, priorDrafts) : [];
+      const carriedDrafts = predecessor && (predecessor.merge_effective_head_sha || priorDrafts.some(draft => draft.text !== null))
+        ? await carryRequestDrafts(this.db, predecessor, request, priorDrafts).catch(error => {
+          throw new AuthQueueError("lifecycle_conflict", `Unable to carry review edits: ${errorMessage(error) ?? "Git evidence could not be read"}`);
+        }) : [];
       let insertionQueue: { requests: AuthRequest[]; assertCurrent(): void } | undefined;
       const insertRequest = this.db.transaction(() => {
         assertSubmission();
@@ -2495,8 +2498,9 @@ export class AuthQueue {
       const review = request.change_report && request.target_repo_root
         ? { cwd: request.target_repo_root, comparison: request.change_report.comparison }
         : null;
+      let retainedReview = false;
       if (review) {
-        try { await retainReviewRevision(review.cwd, request.id, review.comparison); }
+        try { retainedReview = await retainReviewRevision(review.cwd, request.id, review.comparison); }
         catch {
           throw new AuthQueueError("merge_check_failed", "Unable to retain the reviewed Git revision.");
         }
@@ -2516,7 +2520,7 @@ export class AuthQueue {
         request = this.requireRequest(request.id);
       } catch (error) {
         await this.dropMergeCandidate(request);
-        if (review) {
+        if (review && retainedReview) {
           try { await releaseUnpublishedReviewRevision(review.cwd, request.id, review.comparison); }
           catch (cleanupError) {
             authLog("warn", "auth_unpublished_review_retained", { auth_request_id: request.id, error: errorMessage(cleanupError) });
@@ -3287,8 +3291,8 @@ export class AuthQueue {
     return result;
   }
 
-  async checkMergeIndependence(input: AuthMergeCheckInput): Promise<AuthMergeCheckReport> {
-    return this.checkEffectiveMergeIndependence(input);
+  async checkMergeIndependence(input: AuthMergeCheckInput, proposedHead?: string): Promise<AuthMergeCheckReport> {
+    return this.checkEffectiveMergeIndependence(input, proposedHead);
   }
 
   private async checkEffectiveMergeIndependence(input: AuthMergeCheckInput, proposedEdit?: string): Promise<AuthMergeCheckReport> {
@@ -4139,6 +4143,7 @@ export class AuthQueue {
   }
 
   private async planApprovalHooks(request: AuthRequest): Promise<void> {
+    if (briefingConversionArguments(request.command)) return;
     const observed = this.observationToken(request.id, request);
     const nativeHooks: AuthHook[] = [];
     if (isAuthMergeCommand(request)) {
@@ -4428,9 +4433,15 @@ export class AuthQueue {
       if (!verification.verified || verification.user_id !== operatorId || verification.credential_id !== credentialId) {
         throw new AuthQueueError("invalid_status", `The signed commit does not verify against the approval key (${verification.reason}). Nothing was committed.`);
       }
+      const id = randomUUID();
+      const changes = { ...staged.changes, comparison: { ...staged.changes.comparison, head_sha: commitSha } };
+      await retainReviewRevision(staged.checkout, id, changes.comparison);
       const published = await publishDirectCommit(staged, commitSha, message);
-      if (!published.ok) throw new AuthQueueError("invalid_status", published.error);
-      const request = this.recordDirectCommit({ staged, message, commitSha, operatorId, caller, credentialId, signature: signed.value.signature, fingerprint: verification.fingerprint, at });
+      if (!published.ok) {
+        await releaseUnpublishedReviewRevision(staged.checkout, id, changes.comparison);
+        throw new AuthQueueError("invalid_status", published.error);
+      }
+      const request = this.recordDirectCommit({ id, changes, staged, message, commitSha, operatorId, caller, credentialId, signature: signed.value.signature, fingerprint: verification.fingerprint, at });
       this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request } });
       this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(request) });
       return { request, commitSha };
@@ -4439,20 +4450,20 @@ export class AuthQueue {
 
   /** The completed record of a published direct commit, with the same evidence chain as a signed merge. */
   private recordDirectCommit(input: {
+    id: string; changes: AuthChangeReport;
     staged: StagedCommit; message: string; commitSha: string; operatorId: string; caller: ApprovalCaller;
     credentialId: string; signature: string; fingerprint: string | null; at: number;
   }): AuthRequest {
-    const { staged, message, commitSha, operatorId, caller, credentialId, at } = input;
-    const id = randomUUID();
+    const { id, changes, staged, message, commitSha, operatorId, caller, credentialId, at } = input;
     const now = this.now();
     return this.db.transaction(() => {
       this.db.prepare(
         `INSERT INTO auth_requests (id, session_id, requested_by_user_id, requester_evidence_method, type, command, title, cwd,
-          diff_summary, commit_message, repo, base_branch, files_changed, additions, deletions, execution_mode, status,
+          change_report_json, commit_message, repo, base_branch, files_changed, additions, deletions, execution_mode, status,
           created_at, updated_at, expires_at, output, target_repo_root)
         VALUES (?, NULL, ?, ?, 'commit', 'mandible commit', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'daemon', 'pending', ?, ?, ?, '', ?)`,
-      ).run(id, operatorId, caller.evidence_method, message.split("\n", 1)[0]!, staged.checkout, staged.diff, message, staged.repo,
-        staged.branch, staged.files, staged.additions, staged.deletions, at, at, at, staged.repoRoot);
+      ).run(id, operatorId, caller.evidence_method, message.split("\n", 1)[0]!, staged.checkout, JSON.stringify(changes), message, staged.repo,
+        staged.branch, changes.totals.files, changes.totals.additions, changes.totals.deletions, at, at, at, staged.repoRoot);
       this.appendLifecycleEvent({ requestId: id, eventType: "submitted", priorStatus: null, nextStatus: "pending",
         actor: { user_id: operatorId, evidence_method: caller.evidence_method, credential_id: caller.credential_id }, occurredAt: at });
       const approval = addAttributionEvidence(this.db, {
@@ -5574,6 +5585,8 @@ export class AuthQueue {
     if (frozenHead && !root) return fail("missing_review_object_store");
     const effectiveHead = frozenHead ?? requesterHead;
     const editRef = frozenHead ? changeEditRef(request.id, frozenHead) : null;
+    const priorHead = request.merge_effective_head_sha;
+    const priorEditRef = priorHead && priorHead !== frozenHead ? changeEditRef(request.id, priorHead) : null;
     this.assertPublication(request, undefined, targetHeadSha);
     const candidate = await this.mergeTree(cwd, targetHeadSha, effectiveHead);
     if (candidate.status !== "clean" || !candidate.tree) return fail(candidate.message);
@@ -5599,12 +5612,12 @@ export class AuthQueue {
     const git = (args: string[], input?: string) => childOutput("git", args, { cwd, input, env: authGitEnv(), timeout: 5_000 });
     try {
       if (retained && root) {
-        await retainReviewRevision(root, request.id, retained);
-        retainedRevision = true;
+        retainedRevision = await retainReviewRevision(root, request.id, retained);
       }
       await git(["update-ref", "--stdin"], [
         `verify ${baseRef} ${targetHeadSha}`, `verify ${sourceRef} ${requesterHead}`,
         ...(editRef ? [`verify ${editRef} ${frozenHead}`] : []),
+        ...(priorEditRef ? [`verify ${priorEditRef} ${priorHead}`] : []),
         `update ${candidateRef} ${pinSha} ${priorPin}`,
       ].join("\n") + "\n");
       swapped = true;
@@ -5852,12 +5865,24 @@ export class AuthQueue {
     return frozen.submission.submission_id;
   }
 
+  private async assertFrozenDraftBytes(request: AuthRequest, drafts: readonly RequestReviewDraft[], editSha: string): Promise<void> {
+    if (!request.merge_effective_head_sha) return;
+    const root = request.target_repo_root!;
+    const merged = await this.mergeTree(root, request.merge_preflight_base_sha!, editSha);
+    if (merged.status !== "clean" || !merged.tree) throw new AuthQueueError("lifecycle_conflict", "The new review edits conflict with the protected base.");
+    for (const draft of drafts) {
+      if (draft.text === null) continue;
+      const file = await readChangeEditFile(root, merged.tree, draft.path);
+      if (file?.text !== draft.text) throw new AuthQueueError("lifecycle_conflict", `The new review draft for ${draft.path} overlaps the protected base.`);
+    }
+  }
+
   async freezeRequestReview(id: string, actor: AuthLifecycleActor, input: ReviewFreezeInput): Promise<AuthRequest> {
     const finishObservation = this.beginObservation();
     try {
       this.requireExternalEffects("Review change-edit preparation");
       const { request, drafts } = this.readReviewFreezeSnapshot(id, actor, input);
-      if (!isAuthMergeCommand(request) || request.execution_mode === "remote" || request.merge_effective_head_sha ||
+      if (!isAuthMergeCommand(request) || request.execution_mode === "remote" ||
           !request.cwd || !request.base_branch || !request.head_branch) {
         throw new AuthQueueError("invalid_status", "This request cannot freeze review edits.");
       }
@@ -5875,6 +5900,7 @@ export class AuthQueue {
           if (!prepared.ok) throw new AuthQueueError("lifecycle_conflict", prepared.reason);
           const edit = prepared.changeEdit;
           if (!edit) throw new AuthQueueError("invalid_status", "There are no review edits to freeze.");
+          await this.assertFrozenDraftBytes(request, drafts, edit.commit_sha);
           const report = await this.checkEffectiveMergeIndependence({
             request_id: request.id, repo: context.repo, cwd: context.cwd, base_branch, head_branch,
           }, edit.commit_sha);
@@ -5905,6 +5931,7 @@ export class AuthQueue {
     if (initial.drafts.some(draft => draft.text !== null)) this.requireExternalEffects("Review change-edit preparation");
     const prepared = await prepareRequestReviewChangeEdit(this.db, initial.request, initial.drafts);
     if (!prepared.ok) throw new AuthQueueError("lifecycle_conflict", prepared.reason);
+    if (prepared.changeEdit) await this.assertFrozenDraftBytes(initial.request, initial.drafts, prepared.changeEdit.commit_sha);
     const result = this.db.transaction(() => {
       const { request } = readSnapshot();
       const now = this.now();
@@ -6261,6 +6288,22 @@ export class AuthQueue {
     }
   }
 
+  private applyBriefingConversion(request: AuthRequest): AuthExecutionResult | null {
+    const conversion = briefingConversionArguments(request.command);
+    if (conversion === null) return null;
+    this.requireExternalEffects("Briefing group conversion");
+    if (request.type !== "config-change") {
+      throw new AuthQueueError("invalid_command", "Briefing group conversion requires a courtesy configuration request.");
+    }
+    const started_at = this.now();
+    const result = convertTrackedBriefingGroup(this.db, conversion, started_at);
+    if (result.changed) this.broadcast({ event: BRIEFING_EVENTS.groupConfigurationUpdated,
+      data: { group_id: result.plan.group_id, current_bundle_id: result.bundle_id } });
+    const output = JSON.stringify(result, null, 2);
+    this.handleOutput({ request_id: request.id, stream: "stdout", text: output, timestamp: this.now() });
+    return { exit_code: 0, signal: null, stdout: output, stderr: "", output, started_at, finished_at: this.now() };
+  }
+
   private async executeInBackground(request: AuthRequest, fromRestartQueue = false): Promise<void> {
     if (!fromRestartQueue && this.restartQueueDispatch) await this.restartQueueDispatch;
     return withLedgerMutationActor({ actor_type: "system", attribution: systemAction() },
@@ -6377,7 +6420,8 @@ export class AuthQueue {
                 this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: request.id, lifecycle: "executing", approved_by_user_id: current.approved_by_user_id } });
                 this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.requireRequest(request.id) } });
               }
-              const result = await this.executor({
+              const nativeResult = this.applyBriefingConversion(request);
+              const result = nativeResult ?? await this.executor({
                 request_id: request.id,
                 command: request.command,
                 cwd: request.cwd,
@@ -6411,7 +6455,7 @@ export class AuthQueue {
               // Bug: 4afab83 — run post-auth hooks after successful execution,
               // BEFORE reporting completion. Hook failures don't change the
               // auth result (the merge already succeeded).
-              if (result.exit_code === 0 && (await this.successfulMergeEvidenceFailure(this.requireRequest(request.id))) === null) await this.runPostSuccessHooks(request);
+              if (!nativeResult && result.exit_code === 0 && (await this.successfulMergeEvidenceFailure(this.requireRequest(request.id))) === null) await this.runPostSuccessHooks(request);
               // Store result and broadcast auth:resolved BEFORE scheduling
               // any self-rebuild exit, while the daemon is still alive.
               (await this.storeExecutionResult(request.id, result, null, execution));

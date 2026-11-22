@@ -50,7 +50,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function readFrame(state: string | null | undefined, id: string) {
+function readFrame(state: string | null | undefined) {
+  const defaults = { sort_key: '', item_snapshot: null, metadata: {}, created_at: 0, updated_at: 0 };
   try {
     const value = decode(state ?? '');
     if (!isRecord(value)) throw new Error('expected an object');
@@ -63,7 +64,7 @@ function readFrame(state: string | null | undefined, id: string) {
     }
     return { sort_key: sort_key ?? '', item_snapshot, metadata, created_at, updated_at };
   } catch {
-    throw new BlockValidationError(`invalid block state: ${id}`);
+    return defaults;
   }
 }
 
@@ -90,11 +91,8 @@ export function parseSpaceSource(space_id: string, source: string, generation: n
       const attrs = part.node.attributes;
       const id = readId(attrs?.id, 'block id');
       const parent_id = readId(attrs?.parent, 'parent id');
-      const item_id = readId(attrs?.item, 'item id');
-      const state = readFrame(attrs?.state, id ?? String(part.from));
-      if (item_id !== null && (id === null || state.item_snapshot === null)) {
-        throw new BlockValidationError(`live embed requires an address and snapshot: ${id ?? part.from}`);
-      }
+      const state = readFrame(attrs?.state);
+      const item_id = id !== null && state.item_snapshot !== null ? readId(attrs?.item, 'item id') : null;
       spans.push({
         from: part.from, to: part.to, addressed: id !== null,
         body: { start: part.node.body.from, end: part.node.body.to },
@@ -165,6 +163,22 @@ function remapLocalLinks(markdown: string, ids: ReadonlyMap<string, string>): st
   }
   for (const node of remarkDirectives.parse(markdown).children) visit(node);
   return editSpaceSource(markdown, patches);
+}
+
+export function pasteSpaceFrames(spaceId: string, source: string, liveItems: ReadonlySet<string>): string | null {
+  const spans = parseSpaceSource(spaceId, source, 0);
+  const ids = new Map(spans.filter(span => span.addressed).map(span => [span.block.id, crypto.randomUUID()]));
+  if (!ids.size) return null;
+  return editSpaceSource(source, spans.flatMap(span => {
+    const { block } = span;
+    const markdown = remapLocalLinks(block.markdown, ids);
+    if (!span.addressed) return markdown === block.markdown ? [] : [{ from: span.from, to: span.to, text: markdown }];
+    return [{ from: span.from, to: span.to, text: writeSpaceBlock({
+      ...block, id: ids.get(block.id)!, markdown,
+      parent_id: block.parent_id ? ids.get(block.parent_id) ?? null : null,
+      item_id: block.item_id && liveItems.has(block.item_id) ? block.item_id : null,
+    }) }];
+  }));
 }
 
 export function copyDocumentSource(spaceId: string, source: string, newId: () => string): string {

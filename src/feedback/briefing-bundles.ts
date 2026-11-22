@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 
 import type {
   BriefingBundle, BriefingBundleLayoutEntry, BriefingBundleLeaf,
-  BriefingBundleMember, BriefingListEntry, TrackedBriefingPath,
+  BriefingBundleMember, BriefingListEntry, TrackedBriefingPath, TrackedBriefingReference,
 } from "../contracts.js";
 import type { Db } from "../db.js";
 import { BRIEFING_HAS_ROUND_SQL, BriefingStoreError, resolveBriefingId } from "./briefings.js";
@@ -16,7 +16,7 @@ import { resolveId } from "../entity-refs.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import { isTrackedBriefingPath, trackedBriefingReader, type TrackedBriefingReader } from "./tracked-briefing-files.js";
 
-export type BriefingBundleViewer = { userId: string; operator: boolean; humanReviewOperator?: boolean; hideTracked?: boolean };
+export type BriefingBundleViewer = { userId: string; operator: boolean; humanReviewOperator?: boolean; hideTracked?: boolean; retainTrackedReviewRefs?: boolean };
 
 function untypedRef(value: string, prefix: string): string {
   const trimmed = value.trim();
@@ -81,15 +81,16 @@ function visibleLayoutRows(db: Db, bundleId: string, viewer: BriefingBundleViewe
   }));
 }
 
-function projectLayout(rows: readonly LayoutRow[], reader: TrackedBriefingReader): Pick<BriefingBundle, "layout" | "members"> {
-  const layout: BriefingBundleLayoutEntry[] = [];
+function projectLayout<Tracked extends TrackedBriefingReference>(rows: readonly LayoutRow[],
+  readTracked: (members: readonly TrackedBriefingPath[]) => Tracked[]): Pick<BriefingBundle<Tracked>, "layout" | "members"> {
+  const layout: BriefingBundleLayoutEntry<Tracked>[] = [];
   const members: BriefingBundleMember[] = [];
-  const tracked = reader.readAll(rows.flatMap(row => row.briefing === null
+  const tracked = readTracked(rows.flatMap(row => row.briefing === null
     ? [{ project_id: row.tracked_project_id!, path: row.tracked_path! }] : []));
   let trackedIndex = 0;
   for (const row of rows) {
     const position = row.entry_kind === "subgroup" ? row.subgroup_position : row.layout_position;
-    const leaf: BriefingBundleLeaf = row.briefing === null
+    const leaf: BriefingBundleLeaf<Tracked> = row.briefing === null
       ? { kind: "tracked", position, tracked: tracked[trackedIndex++]! }
       : { kind: "briefing", position, briefing: row.briefing };
     if (leaf.kind === "briefing") members.push({ position: members.length, briefing: leaf.briefing });
@@ -108,11 +109,17 @@ function projectLayout(rows: readonly LayoutRow[], reader: TrackedBriefingReader
 }
 
 export function readBriefingBundle(db: Db, bundleRef: string, viewer: BriefingBundleViewer,
-  reader = trackedBriefingReader(db)): BriefingBundle {
+  reader: TrackedBriefingReader = trackedBriefingReader(db)): BriefingBundle {
+  return readBriefingBundleWithTrackedMembers(db, bundleRef, viewer, reader.readAll);
+}
+
+export function readBriefingBundleWithTrackedMembers<Tracked extends TrackedBriefingReference>(
+  db: Db, bundleRef: string, viewer: BriefingBundleViewer, readTracked: (members: readonly TrackedBriefingPath[]) => Tracked[],
+): BriefingBundle<Tracked> {
   const id = resolveBundleId(db, bundleRef);
   const bundle = db.prepare("SELECT id, name, created_at, updated_at, request_origin_json FROM briefing_bundles WHERE id = ?")
-    .get(id) as Omit<BriefingBundle, "layout" | "members">;
-  return { ...bundle, request_origin: requestOriginFromRow(bundle), ...projectLayout(visibleLayoutRows(db, id, viewer), reader) };
+    .get(id) as Omit<BriefingBundle<Tracked>, "layout" | "members">;
+  return { ...bundle, request_origin: requestOriginFromRow(bundle), ...projectLayout(visibleLayoutRows(db, id, viewer), readTracked) };
 }
 
 export function listBriefingBundles(db: Db, viewer: BriefingBundleViewer): BriefingBundle[] {
@@ -120,7 +127,7 @@ export function listBriefingBundles(db: Db, viewer: BriefingBundleViewer): Brief
     .all() as Array<Omit<BriefingBundle, "layout" | "members">>;
   const reader = trackedBriefingReader(db);
   return bundles.map((bundle) => ({
-    ...bundle, request_origin: requestOriginFromRow(bundle), ...projectLayout(visibleLayoutRows(db, bundle.id, viewer), reader),
+    ...bundle, request_origin: requestOriginFromRow(bundle), ...projectLayout(visibleLayoutRows(db, bundle.id, viewer), reader.readAll),
   }));
 }
 

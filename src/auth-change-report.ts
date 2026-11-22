@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { childOutput } from "./child-observation.js";
+import { isMarkdownFile } from "./presentation/markdown-file.js";
 
 import {
   AUTH_CHANGE_REPORT_FILE_ROLE_PRECEDENCE,
@@ -198,6 +199,7 @@ async function collectReportFromGit(
       bytes_before: blobSize(change.oldOid, fileTypeBefore, objectSizes),
       bytes_after: blobSize(change.newOid, fileTypeAfter, objectSizes),
       language,
+      review_format: isMarkdownFile(classificationPath, language) ? "markdown" : "lines",
       file_role: classifyFileRole(classificationPath, format, language),
       generated: classifyFlag(
         attrs.get("linguist-generated"),

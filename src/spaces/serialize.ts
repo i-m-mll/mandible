@@ -28,8 +28,7 @@
  * `sort`, `type` — and the optional `item` embed pointer. Reference/embed
  * directive nodes carry a canonical resource ref (`artifact:…`,
  * `artifact-version:…`, `artifact-blob:…`, `repo://…`, `mandible://…`). The recognizer for those ref/embed directive
- * nodes is exported as {@link parseSpacesDocDirectiveRef} and wired into the C6
- * shared resource-ref parser by `ui/src/spaces-doc-refs.ts`.
+ * nodes is exported as {@link parseSpacesDocDirectiveRef}.
  *
  * Downstream consumers (C11, C14b) MUST treat the names/shapes in this module as
  * frozen: do not rename attributes, the block directive name, or the version
@@ -105,10 +104,7 @@ export interface DocTree {
 // --- frozen directive-ref grammar (the C6 extension surface) -----------------
 
 /**
- * Parsed `spaces-doc.v1` reference/embed directive node. This is the structural
- * type the C6 shared resource-ref parser consumes through the extension adapter
- * in `ui/src/spaces-doc-refs.ts`. It is intentionally DOM-free so it can be
- * shared by backend serialization and the UI parser alike.
+ * Parsed `spaces-doc.v1` reference/embed directive node.
  */
 export interface SpacesDocDirectiveRef {
   /** Original directive text matched. */

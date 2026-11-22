@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { readCommittedReviewFiles } from "../artifact-commit-source.js";
+import { CommittedSourceUnavailableError, readCommittedReviewFiles, retainReviewCommit } from "../artifact-commit-source.js";
 import { decodeArtifactUtf8 } from "../artifact-content.js";
 import { authGitEnv } from "../auth-context.js";
-import type { TrackedBriefingDocument, TrackedBriefingPath, TrackedBriefingPin } from "../contracts.js";
+import type { TrackedBriefingDocument, TrackedBriefingPath, TrackedBriefingPin, TrackedBriefingReference } from "../contracts.js";
 import type { Db } from "../db.js";
 import { isGitObjectId } from "../git-change-review.js";
 
@@ -39,6 +39,34 @@ export function trackedTreeBlob(tree: ProtectedTree, path: string): string | nul
   return entry && isGitObjectId(entry[1]) ? entry[1] : null;
 }
 
+export type StoredTrackedBriefingDocument = TrackedBriefingReference | TrackedBriefingDocument;
+
+export function hydrateTrackedBriefingDocuments(db: Db, documents: readonly StoredTrackedBriefingDocument[]): TrackedBriefingDocument[] {
+  const key = ({ project_id, commit_sha }: TrackedBriefingReference) => JSON.stringify([project_id, commit_sha]);
+  const sources = new Map<string, { project: string; commit: string; paths: Set<string> }>();
+  for (const document of documents) {
+    if ("content" in document || !document.commit_sha) continue;
+    const sourceKey = key(document);
+    let source = sources.get(sourceKey);
+    if (!source) {
+      source = { project: document.project_id, commit: document.commit_sha, paths: new Set() };
+      sources.set(sourceKey, source);
+    }
+    source.paths.add(document.path);
+  }
+  const content = new Map<string, Map<string, string | null>>();
+  for (const [sourceKey, { paths, ...source }] of sources) {
+    try {
+      const files = readCommittedReviewFiles(db, { ...source, paths: [...paths], maxFileBytes: 1024 * 1024 });
+      content.set(sourceKey, new Map(files.map(file => [file.path, decodeArtifactUtf8(file.bytes)])));
+    } catch (error) {
+      if (!(error instanceof CommittedSourceUnavailableError)) throw error;
+    }
+  }
+  return documents.map(document => "content" in document ? document
+    : { ...document, content: content.get(key(document))?.get(document.path) ?? null });
+}
+
 export function trackedBriefingReader(db: Db) {
   const trees = new Map<string, ProtectedTree>();
   const documents = new Map<string, TrackedBriefingDocument>();
@@ -50,29 +78,26 @@ export function trackedBriefingReader(db: Db) {
     }
     return pinned;
   };
+  function references(members: readonly TrackedBriefingPath[]): TrackedBriefingReference[] {
+    return members.map(member => {
+      const { project_id, project_key, commit_sha } = tree(member.project_id);
+      return { project_id, project_key, commit_sha, path: member.path };
+    });
+  }
+  function retain(members: readonly TrackedBriefingReference[]): void {
+    for (const projectId of new Set(members.flatMap(member => member.commit_sha ? [member.project_id] : []))) {
+      const pinned = tree(projectId);
+      if (!pinned.root || !pinned.commit_sha) throw new Error("A tracked review commit has no repository to retain it");
+      retainReviewCommit(pinned.root, pinned.commit_sha);
+    }
+  }
   const documentKey = ({ project_id, path }: TrackedBriefingPath) => JSON.stringify([project_id, path]);
   function readAll(members: readonly TrackedBriefingPath[]): TrackedBriefingDocument[] {
-    const pending = new Map<string, Set<string>>();
-    for (const member of members) {
-      if (documents.has(documentKey(member))) continue;
-      let paths = pending.get(member.project_id);
-      if (!paths) pending.set(member.project_id, paths = new Set());
-      paths.add(member.path);
-    }
-    for (const [project, paths] of pending) {
-      const { project_id, project_key, commit_sha } = tree(project);
-      const files = commit_sha ? readCommittedReviewFiles(db, {
-        project, commit: commit_sha, paths: [...paths], maxFileBytes: 1024 * 1024,
-      }) : [];
-      const byPath = new Map(files.map(file => [file.path, decodeArtifactUtf8(file.bytes)]));
-      for (const path of paths) {
-        const document = { project_id, project_key, commit_sha, path, content: byPath.get(path) ?? null };
-        documents.set(documentKey(document), document);
-      }
-    }
+    const pending = references(members.filter(member => !documents.has(documentKey(member))));
+    for (const document of hydrateTrackedBriefingDocuments(db, pending)) documents.set(documentKey(document), document);
     return members.map(member => documents.get(documentKey(member))!);
   }
-  return { tree, readAll };
+  return { tree, readAll, references, retain };
 }
 
 export type TrackedBriefingReader = ReturnType<typeof trackedBriefingReader>;

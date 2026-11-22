@@ -239,7 +239,7 @@ curl http://localhost:19420/api/auth/history?limit=10
 
 ### POST /api/auth/request/:id/review/freeze
 
-Freeze the operator's saved edits into a new immutable merge review revision. Send the review's `expected_revision`, `expected_custody_generation`, `round_id`, `annotation_event_ids`, and `draft_snapshot` (path and generation per saved draft). Changed membership, custody, drafts or Git inputs refuse the freeze. On success, read the new revision from `GET /api/auth/request/:id/review` and its full protected-base-to-candidate change inventory. The revision keeps the requester commit in `merge_head_sha` and the unsigned change-edit commit in `merge_effective_head_sha`.
+Freeze the operator's saved edits into a new immutable merge review revision. Send the review's `expected_revision`, `expected_custody_generation`, `round_id`, `annotation_event_ids`, and `draft_snapshot` (path and generation per saved draft). Changed membership, custody, drafts or Git inputs refuse the freeze. On success, read the new revision from `GET /api/auth/request/:id/review` and its full protected-base-to-candidate change inventory. The revision keeps the requester commit in `merge_head_sha` and the unsigned change-edit commit in `merge_effective_head_sha`. The same endpoint accepts drafts on a frozen revision and returns a new revision with a cumulative change edit. Supersession carries the latest frozen or returned edit onto the new requester head and exposes overlaps as draft conflicts.
 
 ### POST /api/auth/request/:id/approve
 

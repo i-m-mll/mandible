@@ -458,6 +458,7 @@ export type AuthChangeFile = {
   new_object?: GitFileObject | null;
   whitespace_only?: boolean;
   operator_edited?: boolean;
+  review_format?: "markdown" | "lines";
   bytes_before: number | null;
   bytes_after: number | null;
   language: string;
@@ -469,7 +470,7 @@ export type AuthChangeFile = {
 export type GitFileObject = { mode: string; oid: string };
 
 export type GitChangeFile = Pick<AuthChangeFile,
-  "old_path" | "new_path" | "change_kind" | "additions" | "deletions" | "old_object" | "new_object" | "whitespace_only" | "operator_edited"
+  "old_path" | "new_path" | "change_kind" | "additions" | "deletions" | "old_object" | "new_object" | "whitespace_only" | "operator_edited" | "review_format"
 >;
 
 export type DiffFileContents = { name: string; contents: string };
@@ -479,9 +480,8 @@ export type DiffFilePair =
   | { kind: "binary" };
 
 /**
- * Immutable server-captured inventory for one reviewed merge candidate.
- * Null on an AuthRequest means unavailable (legacy request or non-merge),
- * never an empty or freshly recomputed report.
+ * Immutable server-captured inventory for a merge candidate or direct commit.
+ * Null on an AuthRequest means no inventory was captured.
  */
 export type AuthChangeReport = {
   schema: "mandible-auth-change-report@1";
@@ -1697,16 +1697,13 @@ export type BriefingBundleMember = {
 };
 export type TrackedBriefingPath = { project_id: string; path: string };
 export type TrackedBriefingPin = { project_id: string; project_key: string; commit_sha: string | null };
-export type TrackedBriefingDocument = TrackedBriefingPath & {
-  project_key: string;
-  commit_sha: string | null;
-  content: string | null;
-};
-export type BriefingBundleLeaf =
+export type TrackedBriefingReference = TrackedBriefingPath & TrackedBriefingPin;
+export type TrackedBriefingDocument = TrackedBriefingReference & { content: string | null };
+export type BriefingBundleLeaf<Tracked extends TrackedBriefingReference = TrackedBriefingDocument> =
   | { kind: "briefing"; position: number; briefing: BriefingListEntry }
-  | { kind: "tracked"; position: number; tracked: TrackedBriefingDocument };
-export type BriefingBundleLayoutEntry = BriefingBundleLeaf
-  | { kind: "subgroup"; position: number; name: string; briefings: BriefingBundleMember[]; members: BriefingBundleLeaf[] };
+  | { kind: "tracked"; position: number; tracked: Tracked };
+export type BriefingBundleLayoutEntry<Tracked extends TrackedBriefingReference = TrackedBriefingDocument> = BriefingBundleLeaf<Tracked>
+  | { kind: "subgroup"; position: number; name: string; briefings: BriefingBundleMember[]; members: BriefingBundleLeaf<Tracked>[] };
 export type BriefingBundleLeafInput =
   | { kind: "briefing"; briefing_ref: string }
   | { kind: "tracked"; project_ref: string; path: string };
@@ -1724,15 +1721,15 @@ export type TrackedBriefingProposal = {
   members: TrackedBriefingMatch[];
   depends_on: AuthDependencyProjection[];
 };
-export type TrackedBriefingReviewGroup = {
+export type TrackedBriefingReviewGroup<Tracked extends TrackedBriefingReference = TrackedBriefingDocument> = {
   group_id: string;
   group_key: string;
   name: string;
   members: TrackedBriefingMatch[];
-  documents: TrackedBriefingDocument[];
+  documents: Tracked[];
 };
 
-export type BriefingBundle = {
+export type BriefingBundle<Tracked extends TrackedBriefingReference = TrackedBriefingDocument> = {
   request_origin_json?: string | null;
   request_origin?: import("./request-origin.js").RequestOrigin | null;
   id: string;
@@ -1741,7 +1738,7 @@ export type BriefingBundle = {
   updated_at: number;
   /** Flattened compatibility projection. `layout` is the canonical ordered representation. */
   members: BriefingBundleMember[];
-  layout: BriefingBundleLayoutEntry[];
+  layout: BriefingBundleLayoutEntry<Tracked>[];
 };
 export type BriefingGroup = {
   request_origin_json?: string | null;
@@ -1814,7 +1811,7 @@ export type BriefingGroupReviewCandidate = {
   proposal_layout: BriefingGroupReviewLayoutEntry[];
   destination_changes: BriefingGroupDestinationChange[];
   items: BriefingGroupReviewItem[];
-  tracked_documents?: TrackedBriefingDocument[];
+  tracked_documents?: TrackedBriefingReference[];
 };
 export type BriefingGroupDisposition = {
   request_origin_json?: string | null;

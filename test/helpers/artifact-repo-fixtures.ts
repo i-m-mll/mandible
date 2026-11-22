@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { testRuntimeRoot } from "./runtime-isolation.js";
+import { configureFixtureGit } from "./fixture-git-config.js";
 
 const templates = new Map<string, string>();
 
@@ -23,17 +24,7 @@ export function artifactRepo(root: string, files: Record<string, string> = {}): 
       git(template, ["commit", "-qm", "Artifact fixture"]);
     } else {
       git(template, ["init", "-q", "-b", "main", "--template="]);
-      fs.appendFileSync(path.join(template, ".git", "config"), `
-[user]
-    name = Artifact Test
-    email = artifact-test@example.invalid
-[commit]
-    gpgsign = false
-[core]
-    hooksPath = /dev/null
-[maintenance]
-    auto = false
-`);
+      configureFixtureGit(template, "Artifact Test", "artifact-test@example.invalid", true);
     }
     templates.set(key, template);
   }

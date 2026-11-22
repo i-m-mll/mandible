@@ -40,7 +40,8 @@ it("one touch commits the index onto the protected branch like git commit -m, le
   git(r.repo, ["add", "unstaged.txt"]);
   git(r.repo, ["commit", "-m", "Track a file to leave modified"]);
   const parent = r.main();
-  stage({ "staged.txt": "staged\n" });
+  const staged = "# Long review\n\n" + "A line of proposed wording.\n".repeat(4_100);
+  stage({ "staged.mdx": staged });
   fs.writeFileSync(path.join(r.repo, "unstaged.txt"), "edited but not staged\n");
   fs.writeFileSync(path.join(r.repo, "untracked.txt"), "untracked\n");
   const index = git(r.repo, ["write-tree"]);
@@ -58,7 +59,18 @@ it("one touch commits the index onto the protected branch like git commit -m, le
   expect(git(r.repo, ["status", "--porcelain"]).split("\n").map((line) => line.trim()).sort()).toEqual(["?? untracked.txt", "M unstaged.txt"]);
   const [request] = commitRequests();
   expect(request).toMatchObject({ status: "completed", exit_code: 0, base_branch: "main", commit_message: "Fix the typo\n\nWith a body.\n", files_changed: 1 });
-  expect(request!.diff_summary).toContain("staged.txt");
+  const token = harness.auth.mintApiToken(r.operatorId).token;
+  const get = (suffix = "") => fetch(`${harness.base}/api/auth/request/${request!.id}${suffix}`,
+    { headers: { Authorization: `Bearer ${token}` } });
+  const detail = await get();
+  expect(detail.status).toBe(200);
+  expect(await detail.json()).toMatchObject({ change_report: {
+    comparison: { merge_base_sha: parent, head_sha: r.main() },
+    files: [{ new_path: "staged.mdx", review_format: "markdown" }],
+  } });
+  const file = await get("/files/0");
+  expect(file.status).toBe(200);
+  expect(await file.json()).toMatchObject({ kind: "text", before: { contents: "" }, after: { contents: staged } });
 });
 
 it("a pending merge still approves after a direct commit, and the base audit stays clean", async () => {

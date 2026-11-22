@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { authGitEnv } from "./auth-context.js";
 import type { Db } from "./db.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
 
@@ -10,7 +11,7 @@ function runGit(cwd: string, args: string[]): string | null {
     return execFileSync("git", ["-C", cwd, ...args], {
       encoding: "utf8",
       timeout: 15_000,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      env: authGitEnv(),
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
   } catch {
@@ -46,6 +47,8 @@ type CommittedSourceInput = {
   unavailable?: "skip-absent" | { maxFileBytes: number };
 };
 
+export class CommittedSourceUnavailableError extends Error {}
+
 export function readCommittedReviewFiles(db: Db, input: {
   project: string; commit: string; paths: string[]; maxFileBytes: number;
 }): CommittedArtifactFile[] {
@@ -56,7 +59,7 @@ export function readCommittedReviewFiles(db: Db, input: {
 export function readCommittedReviewPath(db: Db, input: { project: string; commit: string; path: string }) {
   const source = readCommittedSource(db, { project: input.project, commit: input.commit, paths: [input.path], unavailable: "skip-absent" });
   return { commit: source.commit, blob: source.blobs.get(input.path) ?? null, bytes: source.files[0]?.bytes ?? null,
-    retain: () => retainCommit(source.root, source.commit, "review") };
+    retain: () => retainReviewCommit(source.root, source.commit) };
 }
 
 export function listCommittedBranchHeads(db: Db, projectId: string) {
@@ -78,7 +81,7 @@ function executeGitRead(command: GitRead): Promise<Buffer | null> {
   return new Promise((resolve, reject) => {
     const child = execFile('git', ['--no-optional-locks', '--no-replace-objects', '-C', command.root, ...command.args], {
       encoding: 'buffer', timeout: 15_000, maxBuffer: 128 * 1024 * 1024,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+      env: authGitEnv(),
     }, (error, stdout) => {
       if (error) { if (command.allowFailure) resolve(null); else reject(error); }
       else resolve(stdout);
@@ -106,7 +109,7 @@ function readCommittedSource(db: Db, input: CommittedSourceInput): CommittedSour
     let output: Buffer | null;
     try {
       output = execFileSync('git', ['--no-optional-locks', '--no-replace-objects', '-C', command.root, ...command.args], {
-        input: command.input, timeout: 15_000, maxBuffer: 128 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'],
+        input: command.input, timeout: 15_000, maxBuffer: 128 * 1024 * 1024, env: authGitEnv(), stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (error) { if (!command.allowFailure) throw error; output = null; }
     step = reads.next(output);
@@ -117,19 +120,19 @@ function readCommittedSource(db: Db, input: CommittedSourceInput): CommittedSour
 function* committedSourceReads(db: Db, input: CommittedSourceInput): Generator<GitRead, CommittedSource, Buffer | null> {
   if (typeof input.commit !== 'string' || !input.commit.trim()) throw new Error('A nonempty commit ref is required');
   const repo = resolveProjectRef(db, input.project ?? path.resolve(input.cwd ?? process.cwd()));
-  if (!repo.ok) throw new Error(`Committed source repository is ${repo.reason}`);
+  if (!repo.ok) throw new CommittedSourceUnavailableError(`Committed source repository is ${repo.reason}`);
+  const display = typeof input.unavailable === "object" ? input.unavailable : null;
   const roots = repo.project.checkouts.map(checkout => checkout.root);
   let root: string | undefined;
   let commit: string | null = null;
   for (const candidate of roots) {
     if (!fs.existsSync(candidate)) continue;
     commit = (yield { root: candidate, args: ['rev-parse', '--verify', '--end-of-options', `${input.commit}^{commit}`], allowFailure: true })?.toString().trim() ?? null;
-    if (commit) { root = candidate; break; }
+    if (commit && (!display || commit === input.commit)) { root = candidate; break; }
   }
-  if (!root || !commit) throw new Error('Committed source requires an available registered repository object store');
+  if (!root || !commit) throw new CommittedSourceUnavailableError('Committed source requires an available registered repository object store');
   const resolvedRoot = root;
   const resolvedCommit = commit;
-  const display = typeof input.unavailable === "object" ? input.unavailable : null;
   const paths = input.paths.map(p => {
     const relative = p;
     if (path.isAbsolute(relative)) throw new Error('Committed paths must be repository-relative');
@@ -180,12 +183,21 @@ export function retainArtifactCommit(db: Db, input: {
   return retainCommit(root, file.commit, "artifacts");
 }
 
+export function retainReviewCommit(root: string, commit: string): string {
+  return retainCommit(root, commit, "review");
+}
+
 function retainCommit(root: string, commit: string, namespace: "artifacts" | "review"): string {
   const ref = `refs/mandible/${namespace}/${commit}`;
   if (runGit(root, ['symbolic-ref', '-q', ref])) throw new Error('Retention ref must not be symbolic');
   const existing = runGit(root, ['rev-parse', '--verify', ref]);
-  if (existing && existing !== commit) throw new Error('Retention ref points to an unexpected commit');
-  execFileSync('git', ['--no-optional-locks', '-C', root, 'update-ref', '--no-deref', ref, commit,
-    existing ?? '0'.repeat(commit.length)], { timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (existing === commit) return ref;
+  if (existing) throw new Error('Retention ref points to an unexpected commit');
+  try {
+    execFileSync('git', ['--no-optional-locks', '-C', root, 'update-ref', '--no-deref', ref, commit,
+      '0'.repeat(commit.length)], { timeout: 15_000, env: authGitEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (error) {
+    if (runGit(root, ['symbolic-ref', '-q', ref]) || runGit(root, ['rev-parse', '--verify', ref]) !== commit) throw error;
+  }
   return ref;
 }

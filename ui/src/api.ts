@@ -4,6 +4,7 @@ import type { ReviewRange, StandingNote, StandingNotePresentation } from '../../
 import type { RequestReview } from '../../src/feedback/request-review';
 import type { ReviewAnnotationMutation } from '../../src/feedback/review-store';
 import type { CarriedReviewRange, ReviewDocumentReference } from "../../src/feedback/review-types";
+import { reviewRangeMatches } from "../../src/feedback/review-ranges";
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, OPERATOR_PROOF_WINDOW_MS, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
@@ -4207,6 +4208,15 @@ function briefingAnnotation(value: unknown): BriefingAnnotation | null {
   return annotation;
 }
 
+function briefingCarriedRange(value: unknown, source: string | undefined): CarriedReviewRange | null {
+  const { status, start_offset, end_offset, quote } = briefingRecord(value);
+  if (status === 'detached') return { status };
+  if ((status !== 'preserved' && status !== 'moved') || source === undefined
+    || typeof start_offset !== 'number' || typeof end_offset !== 'number' || typeof quote !== 'string') return null;
+  const range = { start_offset, end_offset, quote };
+  return reviewRangeMatches(source, range, 'text') ? { ...range, status } : null;
+}
+
 export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoundProjection {
   const root = briefingRecord(payload);
   let valid = true;
@@ -4419,20 +4429,10 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     for (const entry of Array.isArray(root.carried_annotations) ? root.carried_annotations : []) {
       const row = briefingRecord(entry);
       const annotation = briefingAnnotation(entry);
-      const anchor = briefingRecord(row.anchor);
       const actor = briefingRecord(row.actor);
       const source_round_id = briefingString(row.source_round_id);
       const source_round_ordinal = briefingOptionalNumber(row.source_round_ordinal);
-      let placement: CarriedReviewRange | null = null;
-      if (anchor.status === 'detached') placement = { status: 'detached' };
-      else if ((anchor.status === 'preserved' || anchor.status === 'moved') && annotation
-        && Number.isSafeInteger(anchor.start_offset) && Number.isSafeInteger(anchor.end_offset)
-        && (anchor.start_offset as number) >= 0 && (anchor.end_offset as number) > (anchor.start_offset as number)
-        && anchor.quote === annotation.quote
-        && document?.source.slice(anchor.start_offset as number, anchor.end_offset as number) === annotation.quote) {
-        placement = { status: anchor.status, start_offset: anchor.start_offset as number,
-          end_offset: anchor.end_offset as number, quote: annotation.quote };
-      }
+      const placement = briefingCarriedRange(row.anchor, document?.source);
       if (!annotation || !placement || !source_round_id || !source_round_ordinal || source_round_ordinal < 1
           || !briefingString(actor.slug)) { valid = false; continue; }
       carriedAnnotations.push({ ...annotation, source_round_id, source_round_ordinal, anchor: placement,
@@ -4442,19 +4442,11 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
   }
   const standingNotes = (Array.isArray(root.standing_notes) ? root.standing_notes : []).flatMap((entry): StandingNotePresentation[] => {
     const row = briefingRecord(entry);
-    const anchor = briefingRecord(row.anchor);
     const id = briefingString(row.id);
     const quote = briefingString(row.quote);
     if (!id || !quote || typeof row.author !== 'string' || typeof row.body !== 'string') return [];
-    let placement: CarriedReviewRange;
-    if (anchor.status === 'detached') placement = { status: 'detached' };
-    else if ((anchor.status === 'preserved' || anchor.status === 'moved')
-      && typeof anchor.start_offset === 'number' && typeof anchor.end_offset === 'number'
-      && Number.isSafeInteger(anchor.start_offset) && Number.isSafeInteger(anchor.end_offset)
-      && anchor.start_offset >= 0 && anchor.end_offset > anchor.start_offset
-      && document?.source.slice(anchor.start_offset, anchor.end_offset) === quote) {
-      placement = { status: anchor.status, start_offset: anchor.start_offset, end_offset: anchor.end_offset, quote };
-    } else return [];
+    const placement = briefingCarriedRange(row.anchor, document?.source);
+    if (!placement) return [];
     return [{ id, quote, body: row.body, author: row.author, anchor: placement, can_edit: false, resolved: row.resolved === true }];
   });
   if ((rawState === 'open' && latestSubmissionForActor !== null)
@@ -4968,13 +4960,18 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
       ? briefingRecord(selected.latest_frozen_membership).annotation_event_ids as string[]
       : [],
   );
+  const currentSubmissionId = briefingString(briefingRecord(latestSubmission).id);
+  const currentSubmissionActor = currentSubmissionId && Array.isArray(selected.submission_overlays)
+    ? selected.submission_overlays.map(briefingRecord).find(submission => submission.id === currentSubmissionId)?.actor ?? null
+    : null;
   const currentAnnotations = (Array.isArray(selected.annotations) ? selected.annotations : []).map((annotation) => ({
     ...briefingRecord(annotation),
     presentation: {
       source: frozenAnnotationIds.has(briefingString(briefingRecord(annotation).annotation_event_id))
         ? 'annotation_set'
         : 'current_draft',
-      actor: null,
+      actor: frozenAnnotationIds.has(briefingString(briefingRecord(annotation).annotation_event_id))
+        ? currentSubmissionActor : null,
     },
   }));
   const overlayAnnotations = Array.isArray(selectedOverlayRecord.annotations)
