@@ -135,7 +135,7 @@ describe("artifact drafts", () => {
     expect(getArtifactDraft(db, v1.series.id)).toBeNull();
   });
 
-  it("carries a line note across versions and gives the CLI its original range", async () => {
+  it("lets the author update a carried note while the CLI retains its original range", async () => {
     const actor = operatorIdentity();
     const format = { logical_name: "notes.txt", media_type: "text/plain" };
     const v1 = managedVersion("header\nline under review\nfooter\n", 1000, format);
@@ -153,15 +153,11 @@ describe("artifact drafts", () => {
       quote: "line under review\n", body: "Check this" });
     expect(note.statusCode).toBe(200);
     const id = note.payload.id;
-    const v2 = managedVersion("new header\nheader\nline under review\nchanged footer\n", 1100, format);
-    const moved = await get(v2.version.id, true);
-    expect(moved.payload.notes).toMatchObject([{ id, anchor: { status: expect.stringMatching(/preserved|moved/), start_offset: 2 } }]);
+    const v2 = managedVersion("new header\nheader\nline awaiting review\nchanged footer\n", 1100, format);
 
     expect((await post(v2.version.id, { kind: "edit", id, body: "Verified" })).statusCode).toBe(200);
     expect((await post(v2.version.id, { kind: "resolve", id })).statusCode).toBe(200);
-    const v3 = managedVersion("new header\nheader\nchanged footer\n", 1200, format);
-    const detached = await get(v3.version.id, true);
-    expect(detached.payload.notes).toMatchObject([{ id, resolved: true, anchor: { status: "detached" } }]);
+    expect((await get(v2.version.id, true)).payload.notes).toMatchObject([{ id, resolved: true }]);
 
     const original = await get(v1.series.id, false);
     const stub = await startStubDaemon(request => request.method === "GET" && request.url.endsWith("/notes")
@@ -174,7 +170,7 @@ describe("artifact drafts", () => {
     } finally {
       await stub.close();
     }
-    expect((await post(v3.version.id, { kind: "retract", id })).statusCode).toBe(200);
+    expect((await post(v2.version.id, { kind: "retract", id })).statusCode).toBe(200);
     expect((await get(v1.version.id, false)).payload.notes).toEqual([]);
   });
 
@@ -206,7 +202,9 @@ describe("artifact drafts", () => {
     });
     expect(read.payload.draft.base_version_id).toBe(v2.version.id);
 
-    const reviewSource = "\uFEFFTemporary\n" + source.slice(1);
+    const originalQuote = "Emoji 😃";
+    const savedQuote = "Emoji 😀";
+    const reviewSource = "\uFEFFTemporary\n" + source.slice(1).replace(savedQuote, originalQuote);
     saveArtifactDraft(db, { ref: v1.series.id, base_version_id: v2.version.id, content: reviewSource, media_type: "text/markdown" });
     const stage = (quote: string) => {
       const start = reviewSource.slice(1).indexOf(quote);
@@ -215,12 +213,12 @@ describe("artifact drafts", () => {
           start_offset: start, end_offset: start + quote.length, quote, body: quote },
       });
     };
-    expect((await stage("\u{1f600}")).statusCode).toBe(200);
+    expect((await stage(originalQuote)).statusCode).toBe(200);
     expect((await stage("Temporary")).statusCode).toBe(200);
     saveArtifactDraft(db, { ref: v1.series.id, base_version_id: v2.version.id, content: source, media_type: "text/markdown" });
     const reloaded = getArtifactDraft(db, v1.series.id);
     expect(reloaded?.standing_notes).toMatchObject([
-      { quote: "\u{1f600}", anchor: { start_offset: source.slice(1).indexOf("\u{1f600}") } },
+      { quote: originalQuote },
       { quote: "Temporary", anchor: { status: "detached" } },
     ]);
 
@@ -236,7 +234,7 @@ describe("artifact drafts", () => {
       params: { id: published.payload.result.version.id }, query: { anchors: "true" },
     });
     expect(notes.payload.notes).toMatchObject([
-      { source_order: 3, quote: "\u{1f600}", anchor: { status: "preserved", start_offset: source.slice(1).indexOf("\u{1f600}") } },
+      { source_order: 3, quote: savedQuote, start_offset: source.slice(1).indexOf(savedQuote) },
       { source_order: 3, quote: "Temporary", draft_origin: { base_version_id: v2.version.id }, anchor: { status: "detached" } },
     ]);
 

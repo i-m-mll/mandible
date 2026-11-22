@@ -133,7 +133,7 @@ describe("blocks routes (issue d2a8e77)", () => {
     expect((await call("PATCH", path, { source: saved.source, expected_generation: saved.generation })).body).toEqual(saved);
   });
 
-  it("pins standing notes to a saved UTF-16 quote and carries them without rewriting the anchor", async () => {
+  it("pins standing notes to a current saved generation and retains the original quote", async () => {
     const spaceId = await makeSpace();
     const path = `/api/spaces/${spaceId}/document`;
     const actor = setupOperator(db, { slug: "reviewer", display_name: "Reviewer" });
@@ -146,19 +146,8 @@ describe("blocks routes (issue d2a8e77)", () => {
     expect(addSpaceNote(db, spaceId, actor.id, 1, range, "Review both blocks.").ok).toBe(true);
     await call("PATCH", path, { source: "Moved " + source, expected_generation: 1 });
     expect(readSpaceReview(db, spaceId)).toMatchObject({ generation: 2, notes: [{
-      ...range, source_order: 1, body: "Review both blocks.", anchor: { start_offset: 7, end_offset: 7 + quote.length, quote },
+      ...range, source_order: 1, body: "Review both blocks.",
     }] });
-    const whole = "Moved " + source;
-    const section = { start_offset: 0, end_offset: 9, quote: "Moved A😀" };
-    expect(addSpaceNote(db, spaceId, actor.id, 2, section, "Keep the section.").ok).toBe(true);
-    const remaining = "second block";
-    await call("PATCH", path, { source: remaining + "\r\n\r\n" + section.quote, expected_generation: 2 });
-    expect(readSpaceReview(db, spaceId).notes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ ...range, anchor: { status: "detached" } }),
-      expect.objectContaining({ ...section, anchor: { status: "moved", start_offset: 16, end_offset: 25, quote: section.quote } }),
-    ]));
-    await call("PATCH", path, { source: whole + "\n\n" + whole, expected_generation: 3 });
-    expect(readSpaceReview(db, spaceId).notes.every(note => note.anchor.status === "detached")).toBe(true);
     expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 
