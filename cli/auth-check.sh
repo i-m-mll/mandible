@@ -115,14 +115,13 @@ if [[ "$json" == "1" ]]; then
   exit $?
 fi
 
-printf '%s' "$response" | jq -r '
+printf '%s' "$response" | jq -r -L "$MANDIBLE_COMMAND_SYNTAX_DIR" '
+  include "issue-accounting";
   .issue_accounting // empty
   | (.closing[] | "Closing: \(.issue) \(.title)"),
+    (conditional[] | "Closes when released: \(.issue) \(.title), held by \(holds)"),
     (.kept_open[] | "Kept open: \(.issue) \(.title): \(.remainder)"),
-    (.held[] | "Held: \(.issue) \(.title) by " + ([
-      (if (.open_children | length) > 0 then "open children " + (.open_children | join(", ")) else empty end),
-      (if (.unmerged_units | length) > 0 then "work the head does not contain (" + ([.unmerged_units[] | "\(.id[0:8]) on \(.branch // "no branch")"] | join(", ")) + ")" else empty end)
-    ] | join(" and ")))
+    (held_open[] | "Held: \(.issue) \(.title) by \(holds)")
 '
 if [[ "$accounting_refused" == "1" ]]; then
   printf '%s' "$response" | jq -r '.issue_accounting_refusal.message' >&2

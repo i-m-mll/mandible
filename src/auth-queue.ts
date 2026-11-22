@@ -46,7 +46,7 @@ import {
   setAuthRequestActionVeto,
   updateAuthRequestAction,
 } from "./auth-actions.js";
-import { authExecutionStatus, computeAuthRequestOutcome, isAuthDependencyReady } from "./contracts.js";
+import { authExecutionStatus, computeAuthRequestOutcome, describeHolds, isAuthDependencyReady } from "./contracts.js";
 import { assertNever } from "./exhaustive.js";
 import {
   AuthExecutionContextError,
@@ -2418,8 +2418,15 @@ export class AuthQueue {
    * accounting and staged actions, shared by submission, decision edits and
    * `auth check`. Actions keep their places; the closures fill the closure
    * places children first, and the closures the accounting derives follow.
+   * Issue 2927dd8 — the conditional closures of held issues come last,
+   * children first, marked `when_released`; only the accounting sets that mark.
    */
-  private async stageIssueDecisions(scope: IssueDecisionScope, actions: readonly AuthRequestActionInput[]): Promise<StagedIssueDecisions> {
+  private async stageIssueDecisions(scope: IssueDecisionScope, submitted: readonly AuthRequestActionInput[]): Promise<StagedIssueDecisions> {
+    const actions = submitted.map((action): AuthRequestActionInput => {
+      if (action.kind !== "issue_close" || !("when_released" in action.payload)) return action;
+      const { when_released: _, ...payload } = action.payload;
+      return { ...action, payload };
+    });
     const project = scope.repo ? resolveProjectRef(this.db, scope.repo) : null;
     const issueIdOf = (ref: string) => {
       const resolved = resolveOperationalIssueRef(this.db, ref, scope.repo ?? undefined);
@@ -2456,12 +2463,21 @@ export class AuthQueue {
     }
     const { accounting } = result;
     const closingOrder = new Map(accounting.closing.map((issue, index) => [issue.issue_id, index]));
+    const conditional = accounting.held.filter((issue) => issue.closes_by !== undefined);
+    const conditionalIds = new Set(conditional.map((issue) => issue.issue_id));
     const named = new Set([...closeActions.values()]);
     const staged: AuthRequestActionInput[] = [
-      ...actions.filter((action) => action.kind !== "issue_close" || named.has(action) || unaccountedCloses.has(action)),
+      ...actions.filter((action) => action.kind !== "issue_close" || unaccountedCloses.has(action)
+        || (named.has(action) && !conditionalIds.has(issueIdOf(action.target_issue_ref)!))),
       ...accounting.closing.filter((issue) => !closeActions.has(issue.issue_id))
         .map((issue): AuthRequestActionInput => ({ kind: "issue_close", target_issue_ref: issue.issue, payload: {} })),
     ];
+    const conditionalClosures = conditional.map((issue): AuthRequestActionInput => {
+      const action = closeActions.get(issue.issue_id);
+      return action
+        ? { ...action, payload: { ...action.payload, when_released: true } }
+        : { kind: "issue_close", target_issue_ref: issue.issue, payload: { when_released: true } };
+    });
     const closingOf = (action: AuthRequestActionInput) => {
       if (action.kind !== "issue_close") return undefined;
       const issueId = issueIdOf(action.target_issue_ref);
@@ -2473,7 +2489,7 @@ export class AuthQueue {
     return {
       ok: true,
       accounting,
-      actions: staged,
+      actions: [...staged, ...conditionalClosures],
       closures: staged.filter((action) => action.kind === "issue_close").map((action) => action.target_issue_ref),
     };
   }
@@ -2989,7 +3005,11 @@ export class AuthQueue {
     if (decidedIssue) undecided.delete(decidedIssue);
 
     // A closure the accounting derived is derived again, so it keeps its reason.
-    const derived = new Set(request.issue_accounting!.closing.filter((issue) => issue.by !== "closes_issue").map((issue) => issue.issue_id));
+    const derivedClosures = (accounting: IssueAccounting) => [
+      ...accounting.closing.map((issue) => ({ ...issue, conditional: false })),
+      ...accounting.held.flatMap((issue) => issue.closes_by ? [{ ...issue, by: issue.closes_by, conditional: true }] : []),
+    ].filter((issue) => issue.by !== "closes_issue");
+    const derived = new Set(derivedClosures(request.issue_accounting!).map((issue) => issue.issue_id));
     const derivedClosure = (entry: (typeof entries)[number]) =>
       entry.input !== decision && entry.input.kind === "issue_close" && derived.has(issueOf(entry.input.target_issue_ref));
     const custody = request.custody_work_unit_id
@@ -3001,10 +3021,10 @@ export class AuthQueue {
     }, entries.filter((entry) => !derivedClosure(entry)).map((entry) => entry.input));
     const syntax = this.decisionEditSyntax(request);
     if (!staged.ok) throw accountingRefusal(staged, syntax);
-    const stillClosing = staged.accounting.closing.filter((issue) => undecided.has(issue.issue_id));
+    const stillClosing = derivedClosures(staged.accounting).filter((issue) => undecided.has(issue.issue_id));
     if (stillClosing.length > 0) {
       throw new AuthQueueError("issue_accounting_refused", stillClosing.map((issue) =>
-        `${issue.issue} closes with this merge without a named closure, because ${issue.by === "done" ? "its worker status is done" : "a closing issue fixes it"}; to keep it open: ${syntax.decide("keep_open", issue.issue)}`).join("\n"),
+        `${issue.issue} closes ${issue.conditional ? "once released" : "with this merge"} without a named closure, because ${issue.by === "done" ? "its worker status is done" : "a closing issue fixes it"}; to keep it open: ${syntax.decide("keep_open", issue.issue)}`).join("\n"),
       undefined, { refusals: [], accounting: staged.accounting });
     }
 
@@ -3042,7 +3062,6 @@ export class AuthQueue {
         ? `mandible auth action add ${ref} --kind issue_close --issue ${issue} ${precondition}`
         : `mandible auth action add ${ref} --kind issue_keep_open --issue ${issue} --remainder '<what remains>' ${precondition}`,
       name: (decision, issue) => `${decision === "close" ? "issue_close" : "issue_keep_open"} ${issue}`,
-      dropHeld: "",
     };
   }
 
@@ -7575,6 +7594,20 @@ export class AuthQueue {
       if (action.state !== "staged") {
         return;
       }
+      if (action.kind === "issue_close" && action.payload.when_released === true) {
+        let holds: string | null;
+        try {
+          holds = this.remainingHolds(request, action);
+        } catch (error) {
+          this.recordActionOutcome(action.id, "failed", errorMessage(error) ?? String(error), null);
+          authLog("warn", "auth_deferred_action_failed", { subsystem: "auth", auth_request_id: request.id, action_id: action.id, error: errorMessage(error) });
+          return;
+        }
+        if (holds !== null) {
+          this.recordActionOutcome(action.id, "skipped_held", `Still held by ${holds}.`, null);
+          return;
+        }
+      }
       if (withholdClosures && WITHHOLD_UNTIL_CONVERGED[action.kind]) {
         withheld.push(action.target_issue_ref);
         return;
@@ -7620,6 +7653,36 @@ export class AuthQueue {
         target_issue_refs: withheld,
       });
     }
+  }
+
+  /**
+   * Issue 2927dd8 — what still holds the issue of a conditional closure open:
+   * a unit its accounting stored that is unresolved and not bound to a merged
+   * request, or an open child. Null when nothing does or the issue is closed.
+   * A unit whose request merged counts as released, so two requests whose
+   * finalizations interleave cannot both find the other still held.
+   */
+  private remainingHolds(request: AuthRequest, action: AuthRequestAction): string | null {
+    const resolved = resolveOperationalIssueRef(this.db, action.target_issue_ref, request.repo ?? request.cwd ?? request.target_repo_root ?? null);
+    if (!resolved.ok) throw new Error(`target issue ${action.target_issue_ref} could not be resolved: ${resolved.error}`);
+    if (new LedgerStore(this.db).getIssue(resolved.issue_id).status !== "open") return null;
+    const entry = request.issue_accounting?.held.find((issue) => issue.issue_id === resolved.issue_id && issue.closes_by);
+    if (!entry) throw new Error(`Conditional closure of ${action.target_issue_ref} has no held entry in the request's issue accounting.`);
+    const unitIds = entry.unmerged_units.map((unit) => unit.id);
+    const live = new Set((this.db.prepare(
+      `SELECT wu.id FROM work_units wu
+        WHERE wu.id IN (SELECT value FROM json_each(?)) AND wu.state IN ('open', 'committed')
+          AND NOT EXISTS (SELECT 1 FROM auth_requests r WHERE r.id = wu.auth_request_id AND r.status = 'completed' AND r.exit_code = 0)`,
+    ).all(JSON.stringify(unitIds)) as Array<{ id: string }>).map((row) => row.id));
+    const openChildren = (this.db.prepare(
+      `SELECT child.short_id FROM ledger_relationship_edges e
+         JOIN ledger_issues child ON child.id = e.target_issue_id AND child.deleted_at IS NULL AND child.status = 'open'
+        WHERE e.source_issue_id = ? AND e.link_type = 'parent_child' AND e.source_entity_type = 'issue'
+          AND e.target_entity_type = 'issue' AND e.deleted_at IS NULL
+        ORDER BY e.created_at, e.id`,
+    ).all(resolved.issue_id) as Array<{ short_id: string }>).map((row) => row.short_id);
+    if (live.size === 0 && openChildren.length === 0) return null;
+    return describeHolds({ ...entry, open_children: openChildren, unmerged_units: entry.unmerged_units.filter((unit) => live.has(unit.id)) });
   }
 
   private applyDeferredLedgerAction(
@@ -7853,7 +7916,7 @@ export class AuthQueue {
 
   private recordActionOutcome(
     actionId: string,
-    state: "applied" | "failed" | "skipped_stale",
+    state: "applied" | "failed" | "skipped_stale" | "skipped_held",
     detail: string | null,
     appliedAt: number | null,
   ): void {

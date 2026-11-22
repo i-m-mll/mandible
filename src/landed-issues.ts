@@ -5,7 +5,9 @@
  * whose work the merge brings is either closing, kept open with a stated
  * remainder, or held open by its structure (an open child, or work the head
  * does not contain). An issue that is none of these is undecided, and the
- * request is refused until it is decided.
+ * request is refused until it is decided. A decision is independent of the
+ * holds: a held issue decided closed closes once the merge finds it released
+ * (issue 2927dd8), and one kept open records its remainder.
  */
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -13,7 +15,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { Db } from "./db.js";
 import { authGitEnv } from "./auth-context.js";
-import { describeHolds, type AccountedIssue, type IssueAccounting } from "./contracts.js";
+import type { AccountedIssue, ClosureReason, IssueAccounting } from "./contracts.js";
 import { protectedBranchNames } from "./protected-branches.js";
 import { observeRepoIdentities, requestRepoMatcher, type RequestRepoScope } from "./repo-identity.js";
 
@@ -28,7 +30,6 @@ export interface UndecidedIssue extends AccountedIssue {
 
 export type IssueAccountingRefusal =
   | { kind: "undecided"; issues: UndecidedIssue[] }
-  | { kind: "held_closure"; issue: IssueAccounting["held"][number]; decision: IssueDecision }
   | { kind: "conflicting_decision"; issue: AccountedIssue }
   | { kind: "unkeepable"; issue: string };
 
@@ -231,6 +232,10 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
 
   // Issues another closing issue's delivery fulfils, through `fixed_by`.
   const fulfilled = new Set<string>();
+  const closureReason = (id: string): ClosureReason | undefined => input.closes.has(id) ? "closes_issue"
+    : issue(id)!.worker_status === "done" ? "done"
+      : fulfilled.has(id) ? "fixed_by"
+        : undefined;
   type Outcome = "closing" | "kept_open" | "held" | "undecided";
   const evaluate = async () => {
     const outcomes = new Map<string, Outcome>();
@@ -245,10 +250,9 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
       for (const child of openChildren(id)) {
         if (!set.has(child) || (await outcomeOf(child)) !== "closing") holds = true;
       }
-      const row = issue(id)!;
-      const outcome: Outcome = holds ? "held"
-        : input.keepsOpen.has(id) ? "kept_open"
-          : input.closes.has(id) || row.worker_status === "done" || fulfilled.has(id) ? "closing"
+      const outcome: Outcome = input.keepsOpen.has(id) ? "kept_open"
+        : holds ? "held"
+          : closureReason(id) ? "closing"
             : "undecided";
       visiting.delete(id);
       outcomes.set(id, outcome);
@@ -261,7 +265,8 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
 
   // Least fixed point: each closing issue derives the issues it fulfils and a
   // finished parent whose last open child it is. A closure only releases
-  // holds, so the closing set only grows.
+  // holds, so the closing set only grows. A conditional closure derives
+  // nothing: what it would release is not known until the merge.
   let evaluation = await evaluate();
   for (;;) {
     let grew = false;
@@ -284,13 +289,14 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
   }
 
   const { outcomes, order: evaluated } = evaluation;
+  const closes = (id: string) => outcomes.get(id) === "closing" || (outcomes.get(id) === "held" && closureReason(id) !== undefined);
   const heights = new Map<string, number>();
   const heightOf = (id: string, seen: Set<string> = new Set()): number => {
     const known = heights.get(id);
     if (known !== undefined) return known;
     if (seen.has(id)) return 0;
     seen.add(id);
-    const below = openChildren(id).filter((child) => outcomes.get(child) === "closing").map((child) => heightOf(child, seen));
+    const below = openChildren(id).filter(closes).map((child) => heightOf(child, seen));
     const height = below.length === 0 ? 0 : 1 + Math.max(...below);
     heights.set(id, height);
     return height;
@@ -311,18 +317,17 @@ export async function accountLandedIssues(db: Db, input: LandedScanInput): Promi
     const outcome = outcomes.get(id)!;
     if (input.closes.has(id) && input.keepsOpen.has(id)) refusals.push({ kind: "conflicting_decision", issue: described(id) });
     if (outcome === "closing") {
-      accounting.closing.push({ ...described(id), by: input.closes.has(id) ? "closes_issue" : issue(id)!.worker_status === "done" ? "done" : "fixed_by" });
+      accounting.closing.push({ ...described(id), by: closureReason(id)! });
     } else if (outcome === "kept_open") {
       accounting.kept_open.push({ ...described(id), remainder: input.keepsOpen.get(id)! });
     } else if (outcome === "held") {
-      const held = {
+      const by = closureReason(id);
+      accounting.held.push({
         ...described(id),
         open_children: openChildren(id).filter((child) => outcomes.get(child) !== "closing").map((child) => issue(child)!.short_id),
         unmerged_units: await readUnmergedUnits(id),
-      };
-      accounting.held.push(held);
-      if (input.closes.has(id)) refusals.push({ kind: "held_closure", issue: held, decision: "close" });
-      if (input.keepsOpen.has(id)) refusals.push({ kind: "held_closure", issue: held, decision: "keep_open" });
+        ...(by ? { closes_by: by } : {}),
+      });
     } else {
       undecided.push({ ...described(id), worker_status: issue(id)!.worker_status });
     }
@@ -340,14 +345,11 @@ export interface DecisionSyntax {
   decide(decision: IssueDecision, issue: string): string;
   /** The decision as a refusal names it. */
   name(decision: IssueDecision, issue: string): string;
-  /** What to do about a refused decision of a held issue. */
-  dropHeld: string;
 }
 
 export const SUBMISSION_DECISION_SYNTAX: DecisionSyntax = {
   decide: (decision, issue) => decision === "close" ? `--closes-issue ${issue}` : `--keeps-open ${issue}=<what remains>`,
   name: (decision, issue) => decision === "close" ? `--closes-issue ${issue}` : `--keeps-open ${issue}`,
-  dropHeld: " Drop the flag.",
 };
 
 export function describeAccountingRefusals(refusals: readonly IssueAccountingRefusal[], syntax: DecisionSyntax): string {
@@ -360,9 +362,6 @@ export function describeAccountingRefusals(refusals: readonly IssueAccountingRef
           lines.push(`  ${issue.issue} ${issue.title} (worker status ${issue.worker_status}):`);
           lines.push(`    ${syntax.decide("close", issue.issue)}   or   ${syntax.decide("keep_open", issue.issue)}`);
         }
-        break;
-      case "held_closure":
-        lines.push(`${syntax.name(refusal.decision, refusal.issue.issue)} refused: ${refusal.issue.issue} stays open after this merge, held by ${describeHolds(refusal.issue)}.${syntax.dropHeld}`);
         break;
       case "conflicting_decision":
         lines.push(`${refusal.issue.issue} is both closed and kept open; decide it once.`);

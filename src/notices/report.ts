@@ -32,7 +32,7 @@ interface RequestRow {
 interface ActionRow {
   kind: string;
   issue: string;
-  state: "staged" | "applied" | "failed" | "vetoed" | "skipped_stale";
+  state: "staged" | "applied" | "failed" | "vetoed" | "skipped_stale" | "skipped_held";
   branch: string | null;
   outcome_detail: string | null;
 }
@@ -84,7 +84,8 @@ function actionStep(row: ActionRow, status: NoticeStatus): OutcomeStep {
     case "applied": return step("done", null);
     case "failed": return step("failed", null);
     case "vetoed":
-    case "skipped_stale": return step("skipped", row.state);
+    case "skipped_stale":
+    case "skipped_held": return step("skipped", row.state);
     case "staged":
       if (status === "completed") return step("withheld", "awaiting_convergence");
       if (status === "needs_rebase") return step("withheld", "needs_rebase");
@@ -104,7 +105,8 @@ function previewTeardownStep(row: ActionRow, status: NoticeStatus, convergenceHo
     case "applied": return step("done", null);
     case "failed": return row.outcome_detail === TEARDOWN_NOT_MERGED ? step("kept", TEARDOWN_NOT_MERGED) : step("failed", firstLine(row.outcome_detail));
     case "vetoed":
-    case "skipped_stale": return step("skipped", row.state);
+    case "skipped_stale":
+    case "skipped_held": return step("skipped", row.state);
     case "staged":
       if (status === "completed") return convergenceHolds ? step("withheld", "awaiting_convergence") : step("pending", null);
       if (status === "needs_rebase") return step("withheld", "needs_rebase");
@@ -148,12 +150,15 @@ function finalizerSteps(request: RequestRow): OutcomeStep[] {
   return steps;
 }
 
-function leftOpen(accountingJson: string | null): OutcomeReport["left_open"] {
+/** The issues a completed merge left open; a held issue whose conditional closure applied is not one. */
+function leftOpen(accountingJson: string | null, actions: readonly ActionRow[]): OutcomeReport["left_open"] {
   if (accountingJson === null) return [];
   const accounting = JSON.parse(accountingJson) as IssueAccounting;
+  const closed = new Set(actions.filter((row) => row.kind === "issue_close" && row.state === "applied").map((row) => row.issue));
   return [
     ...accounting.kept_open.map((issue) => ({ issue: issue.issue, remains: issue.remainder })),
-    ...accounting.held.map((issue) => ({ issue: issue.issue, remains: `held by ${describeHolds(issue)}` })),
+    ...accounting.held.filter((issue) => !closed.has(issue.issue))
+      .map((issue) => ({ issue: issue.issue, remains: `held by ${describeHolds(issue)}` })),
   ];
 }
 
@@ -194,8 +199,9 @@ export function createOutcomeReporter(db: Db): OutcomeReporter {
     const hooks = hooksQuery.all(request.id) as HookRow[];
     const convergence = convergenceStateFromRuns(hooks.map((hook) => ({ state: hook.state, required: hook.required === 1 })));
     const convergenceHolds = convergence === "pending" || convergence === "failed";
+    const actions = actionsQuery.all(request.id) as ActionRow[];
     const steps: OutcomeStep[] = [
-      ...(actionsQuery.all(request.id) as ActionRow[]).map((row) => row.kind === "preview_teardown"
+      ...actions.map((row) => row.kind === "preview_teardown"
         ? previewTeardownStep(row, status, convergenceHolds)
         : actionStep(row, status)),
       ...(completedMerge ? finalizerSteps(request) : []),
@@ -209,7 +215,7 @@ export function createOutcomeReporter(db: Db): OutcomeReporter {
       merge_commit: completedMerge ? extractSuccessfulMergeCommitSha(request.output) : null,
       reason,
       steps,
-      left_open: completedMerge ? leftOpen(request.issue_accounting_json) : [],
+      left_open: completedMerge ? leftOpen(request.issue_accounting_json, actions) : [],
     };
   };
 }

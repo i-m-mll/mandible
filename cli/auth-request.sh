@@ -63,9 +63,10 @@
 #
 #   The daemon accounts for every issue the merge lands (relative to the
 #   target): an issue whose worker status is done closes unless kept open; an
-#   issue with an open child or work the head does not contain stays open by
-#   itself; any other landed issue needs --closes-issue or --keeps-open, and the
-#   request is refused until each has one.
+#   issue with an open child or work the head does not contain is held, and if
+#   it would close, closes once the merge finds those holds released; any other
+#   landed issue needs --closes-issue or --keeps-open, and the request is
+#   refused until each has one.
 #   --promote-briefing <group> <expected-base> <proposal>
 #                           After successful convergence, promote the exact
 #                           active proposal to this Briefing group's Base
@@ -513,14 +514,14 @@ else
     else
       echo "Files: server-captured (this daemon did not return headline counts)"
     fi
-    printf '%s' "$response" | jq -r '
+    printf '%s' "$response" | jq -r -L "$MANDIBLE_COMMAND_SYNTAX_DIR" '
+      include "issue-accounting";
+      def reason: if .by == "done" then " (done)" elif .by == "fixed_by" then " (fixed_by)" else "" end;
       .issue_accounting // empty
-      | (if (.closing | length) > 0 then "Closes with the merge:", (.closing[] | "  \(.issue) \(.title)\(if .by == "done" then " (done)" elif .by == "fixed_by" then " (fixed_by)" else "" end)") else empty end),
+      | (if (.closing | length) > 0 then "Closes with the merge:", (.closing[] | "  \(.issue) \(.title)\(reason)") else empty end),
+        (if (conditional | length) > 0 then "Closes when released:", (conditional[] | .by = .closes_by | "  \(.issue) \(.title)\(reason): held by \(holds)") else empty end),
         (if (.kept_open | length) > 0 then "Kept open:", (.kept_open[] | "  \(.issue) \(.title): \(.remainder)") else empty end),
-        (if (.held | length) > 0 then "Held open:", (.held[] | "  \(.issue) \(.title): held by " + ([
-          (if (.open_children | length) > 0 then "open children " + (.open_children | join(", ")) else empty end),
-          (if (.unmerged_units | length) > 0 then "work the head does not contain (" + ([.unmerged_units[] | "\(.id[0:8]) on \(.branch // "no branch")"] | join(", ")) + ")" else empty end)
-        ] | join(" and "))) else empty end)
+        (if (held_open | length) > 0 then "Held open:", (held_open[] | "  \(.issue) \(.title): held by \(holds)") else empty end)
     '
   fi
 fi

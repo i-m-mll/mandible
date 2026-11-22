@@ -615,6 +615,7 @@ function actionStateLabel(state: AuthRequestAction['state']): string {
     case 'applied': return 'Done';
     case 'failed': return 'Failed';
     case 'skipped_stale': return 'Skipped stale';
+    case 'skipped_held': return 'Still held';
     case 'vetoed': return 'Vetoed';
     default: return exhausted(state, String(state));
   }
@@ -673,6 +674,11 @@ function AuthActionBundle({
     ? uniqueStrings(declaredClosures.filter((ref): ref is string => typeof ref === 'string'))
     : [];
   const heldIssues = request.issue_accounting?.held ?? [];
+  const conditionalHolds = (action: AuthRequestAction) => {
+    if (action.kind !== 'issue_close' || action.payload?.when_released !== true) return null;
+    const entry = heldIssues.find((issue) => issue.issue === action.target_issue_ref || issue.issue_id === action.target_issue_ref);
+    return entry ? describeHolds(entry) : '';
+  };
 
   if (actionRows.length === 0 && unrecordedClosures.length === 0 && heldIssues.length === 0) {
     return null;
@@ -715,7 +721,9 @@ function AuthActionBundle({
           const detail = action.outcome_detail || actionPayloadSummary(action, false);
           const canExpand = Boolean(detail) && (action.kind !== 'issue_close' || action.state !== 'staged');
           const expanded = canExpand && expandedIds.has(action.id);
-          const summary = action.kind === 'issue_close' ? null : actionPayloadSummary(action);
+          const holds = conditionalHolds(action);
+          const kindLabel = holds === null ? formatActionKind(action.kind) : 'Closes when released';
+          const summary = holds !== null ? holds || null : action.kind === 'issue_close' ? null : actionPayloadSummary(action);
           return (
             <div
               key={action.id}
@@ -724,7 +732,7 @@ function AuthActionBundle({
             >
               <div className="auth-action-row__main">
                 <div className="auth-action-row__top">
-                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}</span>
+                  <span className="auth-action-row__kind">{kindLabel}</span>
                   <IssuePill issueRef={action.target_issue_ref} context={repoId} layout="compact-row" />
                   {summary && <span className="auth-action-row__summary" title={summary}>{summary}</span>}
                 </div>
@@ -739,7 +747,7 @@ function AuthActionBundle({
                     className="auth-action-row__expand"
                     aria-expanded={expanded}
                     aria-controls={`auth-action-detail-${action.id}`}
-                    aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
+                    aria-label={`${expanded ? 'Collapse' : 'Expand'} ${kindLabel} action`}
                     onClick={() => toggleExpanded(action.id)}
                   >
                     <DisclosureChevronIcon expanded={expanded} size={13} />
@@ -771,7 +779,7 @@ function AuthActionBundle({
             </div>
           );
         })}
-        {heldIssues.map((issue) => {
+        {heldIssues.filter((issue) => !issue.closes_by).map((issue) => {
           const holds = describeHolds(issue);
           return (
             <div key={issue.issue_id} className="auth-action-row auth-action-row--held">

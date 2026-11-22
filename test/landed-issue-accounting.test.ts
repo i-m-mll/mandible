@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import { setDb, type Db } from "../src/db.js";
 import { triageLandedOpen } from "../src/landed-issues.js";
+import { createOutcomeReporter } from "../src/notices/report.js";
 import { LedgerOpenChildrenError, LedgerStore } from "../src/ledger/store.js";
 import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
 import { authRequestSnapshot } from "../src/auth-request-snapshot.js";
@@ -16,7 +17,7 @@ import type { AuthLifecycleActor, AuthRequestActionInput, AuthRequestInput } fro
 import { getOperator, setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import {
-  AUTH_MERGE_REVIEW, approveFixtureRequest, awaitFixtureResolution, commitOnBranch, createAuthCheckRepo,
+  AUTH_MERGE_REVIEW, approveFixtureRequest, awaitFixtureResolution, commitOnBranch, createAuthCheckRepo, createNoopHookManager,
   createLedgerProject, createMigratedDb, git, publishFixtureExecution, recordPassingCandidateAcceptance, registerWorkRepo, waitForStatus,
 } from "./helpers/auth-queue-fixtures.js";
 import { fixtureOperatorSigning, operatorCaller } from "./helpers/operator-signing-fixtures.js";
@@ -90,6 +91,17 @@ function approveAsFixtureOperatorAt(requestId: string, revision: number) {
 const keepOpen = (target: { short_id: string }, remainder: string) =>
   ({ kind: "issue_keep_open" as const, target_issue_ref: target.short_id, payload: { remainder } });
 
+/** The request's issue closures as [issue ref, conditional, state]. */
+const closures = (requestId: string) => queue.listActions(requestId).filter((action) => action.kind === "issue_close")
+  .map((action) => [action.target_issue_ref, action.payload.when_released === true, action.state]);
+
+const resolvesLinks = (requestId: string) => db.prepare(
+  "SELECT issue_id FROM ledger_auth_issue_links WHERE auth_request_id = ? AND link_type = 'resolves'").all(requestId);
+
+const leftOpen = (requestId: string) => createOutcomeReporter(db)(requestId)!.left_open.map((entry) => entry.issue);
+
+const unitState = (id: string) => db.prepare("SELECT state, landed_commit FROM work_units WHERE id = ?").get(id);
+
 describe("landed issue accounting", () => {
   it("refuses a request that lands an undecided issue, printing the flags that decide it", async () => {
     const undecided = issue("Partly delivered", "blocked");
@@ -104,21 +116,135 @@ describe("landed issue accounting", () => {
     });
   });
 
-  it("refuses --closes-issue on an issue an open child holds, and records the hold instead", async () => {
-    const umbrella = issue("Umbrella", "done");
-    const remaining = issue("Remaining lane");
-    parent(umbrella, remaining);
-    commitOnBranch(repo, "integration/umbrella", { "umbrella.txt": "umbrella\n" });
-    unit("wu-umbrella", umbrella, "integration/umbrella");
-    const keep = keepOpen(remaining, "Waits for the operator's migration");
+  describe("a held issue decided closed closes once the merge finds it released (issue 2927dd8)", () => {
+    function twoRepositoryIssue() {
+      const multi = issue("Two-repository issue", "done");
+      commitOnBranch(repo, "feature/multi", { "multi.txt": "multi\n" });
+      unit("wu-here", multi, "feature/multi");
+      unit("wu-there", multi, "feature/multi", "committed", "other-repository");
+      return multi;
+    }
 
-    await expect(submit("integration/umbrella", { issue_closures: [umbrella.short_id], actions: [keep] }))
-      .rejects.toThrow(`--closes-issue ${umbrella.short_id} refused: ${umbrella.short_id} stays open after this merge, held by open children ${remaining.short_id}`);
-    const request = await submit("integration/umbrella", { actions: [keep] });
-    expect(request.issue_accounting!.held).toEqual([expect.objectContaining({
-      issue_id: umbrella.id, open_children: [remaining.short_id], unmerged_units: [],
-    })]);
-    expect(request.issue_closures).toEqual([]);
+    it("stages a conditional closure outside the request's closures and links, and skips it while the other unit is unmerged", async () => {
+      const multi = twoRepositoryIssue();
+      const request = await submit("feature/multi");
+      expect(request.issue_accounting!.held).toEqual([expect.objectContaining({ issue_id: multi.id, closes_by: "done" })]);
+      expect(closures(request.id)).toEqual([[multi.short_id, true, "staged"]]);
+      expect(request.issue_closures).toEqual([]);
+      expect(resolvesLinks(request.id)).toEqual([]);
+      const conditional = queue.listActions(request.id).find((action) => action.kind === "issue_close")!;
+      await expect(editDecisions(request.id, (actor, revision, generation) => queue.deleteAction(request.id, conditional.id, actor, revision, generation)))
+        .rejects.toThrow(`${multi.short_id} closes once released without a named closure`);
+
+      await land(request.id);
+      expect(closures(request.id)).toEqual([[multi.short_id, true, "skipped_held"]]);
+      expect(store.getIssue(multi.id).status).toBe("open");
+      expect(unitState("wu-there")).toEqual({ state: "committed", landed_commit: null });
+      expect(leftOpen(request.id)).toEqual([multi.short_id]);
+    });
+
+    it("closes the issue when its other unit resolved before the merge, and does not list it as left open", async () => {
+      const multi = twoRepositoryIssue();
+      const request = await submit("feature/multi");
+      db.prepare("UPDATE work_units SET state = 'resolved', resolved_at = 2 WHERE id = 'wu-there'").run();
+
+      await land(request.id);
+      expect(store.getIssue(multi.id)).toMatchObject({ status: "closed", resolution: "delivered" });
+      expect(leftOpen(request.id)).toEqual([]);
+    });
+
+    it.each([["one", "two"], ["two", "one"]])("closes an issue split over two requests with the last to merge (%s first)", async (first, second) => {
+      const split = issue("Split over two branches", "done");
+      for (const name of ["one", "two"]) {
+        commitOnBranch(repo, `feature/${name}`, { [`${name}.txt`]: `${name}\n` });
+        git(repo, ["checkout", "main"]);
+        unit(`wu-${name}`, split, `feature/${name}`);
+      }
+      const requests: Record<string, { id: string }> = {};
+      for (const name of ["one", "two"]) requests[name] = await submit(`feature/${name}`);
+      for (const name of ["one", "two"]) expect(closures(requests[name]!.id)).toEqual([[split.short_id, true, "staged"]]);
+
+      await land(requests[first]!.id);
+      expect(store.getIssue(split.id).status).toBe("open");
+      await land(requests[second]!.id);
+      expect(store.getIssue(split.id).status).toBe("closed");
+    });
+
+    it("leaves a held issue with no decision open without asking, and --closes-issue makes its closure conditional", async () => {
+      const unfinished = issue("Held, not done");
+      commitOnBranch(repo, "feature/multi", { "multi.txt": "multi\n" });
+      unit("wu-here", unfinished, "feature/multi");
+      unit("wu-there", unfinished, "feature/multi", "committed", "other-repository");
+
+      const undecided = await submit("feature/multi");
+      expect(undecided.issue_accounting!.held).toEqual([expect.not.objectContaining({ closes_by: expect.anything() })]);
+      expect(closures(undecided.id)).toEqual([]);
+      const named = await submit("feature/multi", { issue_closures: [unfinished.short_id] });
+      expect(named.issue_accounting!.held).toEqual([expect.objectContaining({ issue_id: unfinished.id, closes_by: "closes_issue" })]);
+      expect(closures(named.id)).toEqual([[unfinished.short_id, true, "staged"]]);
+      expect(named.issue_closures).toEqual([]);
+
+      await land(undecided.id);
+      expect(store.getIssue(unfinished.id).status).toBe("open");
+    });
+
+    it("keeps a held done issue open with its remainder when --keeps-open names it", async () => {
+      const multi = twoRepositoryIssue();
+      const request = await submit("feature/multi", { actions: [keepOpen(multi, "The other repository's half")] });
+      expect(request.issue_accounting).toMatchObject({ held: [], kept_open: [{ issue_id: multi.id }] });
+      expect(closures(request.id)).toEqual([]);
+
+      await land(request.id);
+      expect(store.getIssue(multi.id)).toMatchObject({ status: "open", remainder: "The other repository's half" });
+    });
+
+    it.each([true, false])("closes a parent held by an open child only once that child is closed (child closed before the merge: %s)", async (childClosed) => {
+      const umbrella = issue("Umbrella", "done");
+      const remaining = issue("Remaining lane");
+      parent(umbrella, remaining);
+      commitOnBranch(repo, "integration/umbrella", { "umbrella.txt": "umbrella\n" });
+      unit("wu-umbrella", umbrella, "integration/umbrella");
+      const request = await submit("integration/umbrella");
+      expect(request.issue_accounting!.held).toEqual([expect.objectContaining({
+        issue_id: umbrella.id, open_children: [remaining.short_id], unmerged_units: [], closes_by: "done",
+      })]);
+      if (childClosed) store.setIssueStatus(remaining.id, "closed", "delivered", SYSTEM_ACTOR);
+
+      await land(request.id);
+      expect(store.getIssue(umbrella.id).status).toBe(childClosed ? "closed" : "open");
+      expect(closures(request.id)).toEqual([[umbrella.short_id, true, childClosed ? "applied" : "skipped_held"]]);
+    });
+
+    it("closes a conditionally closing child and the parent it holds in one merge, child first", async () => {
+      const umbrella = issue("Umbrella", "done");
+      const lane = issue("Lane", "done");
+      parent(umbrella, lane);
+      commitOnBranch(repo, "integration/both", { "both.txt": "both\n" });
+      unit("wu-umbrella", umbrella, "integration/both");
+      unit("wu-lane", lane, "integration/both");
+      unit("wu-lane-there", lane, "integration/both", "committed", "other-repository");
+      const request = await submit("integration/both", { issue_closures: [umbrella.short_id] });
+      expect(closures(request.id)).toEqual([[lane.short_id, true, "staged"], [umbrella.short_id, true, "staged"]]);
+      db.prepare("UPDATE work_units SET state = 'resolved', resolved_at = 2 WHERE id = 'wu-lane-there'").run();
+
+      await land(request.id);
+      expect([store.getIssue(lane.id).status, store.getIssue(umbrella.id).status]).toEqual(["closed", "closed"]);
+    });
+
+    it("skips a still-held closure while convergence withholds closures, leaving the other unit alone", async () => {
+      await queue.dispose();
+      const hooks = createNoopHookManager();
+      hooks.convergence = () => ({ state: "pending", hooks: [] });
+      hooks.listRuns = () => [];
+      queue = new AuthQueue({ db, hookManager: hooks, executor: async (options) => publishFixtureExecution(queue, options) });
+      const multi = twoRepositoryIssue();
+      const request = await submit("feature/multi");
+
+      await land(request.id);
+      expect(closures(request.id)).toEqual([[multi.short_id, true, "skipped_held"]]);
+      expect(unitState("wu-there")).toEqual({ state: "committed", landed_commit: null });
+      expect(store.getIssue(multi.id).status).toBe("open");
+    });
   });
 
   it("closes a named child before its parent, derives the parent above and the issue it fixes, and the merge applies exactly that", async () => {

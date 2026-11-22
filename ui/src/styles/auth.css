@@ -1751,6 +1751,7 @@
 }
 
 .auth-action-row__state--skipped_stale,
+.auth-action-row__state--skipped_held,
 .auth-action-row__state--vetoed {
   background: rgba(245, 194, 92, 0.18);
   color: var(--accent-yellow);

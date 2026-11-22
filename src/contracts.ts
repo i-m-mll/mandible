@@ -505,7 +505,7 @@ export const AUTH_REQUEST_ACTION_KINDS = [
   "preview_teardown",
 ] as const;
 export type AuthRequestActionKind = (typeof AUTH_REQUEST_ACTION_KINDS)[number];
-export type AuthRequestActionState = "staged" | "applied" | "failed" | "skipped_stale" | "vetoed";
+export type AuthRequestActionState = "staged" | "applied" | "failed" | "skipped_stale" | "skipped_held" | "vetoed";
 
 /** Issue 9395f25 — an issue a merge request lands, by short ref. */
 export interface AccountedIssue {
@@ -514,14 +514,23 @@ export interface AccountedIssue {
   title: string;
 }
 
+/** Why an issue closes: named by the requester, finished by its worker, or fulfilled by a closing issue. */
+export type ClosureReason = "closes_issue" | "done" | "fixed_by";
+
 /**
  * Issue 9395f25 — what a merge request does to each issue it lands, computed
- * at submission. `closing` is in application order, children first.
+ * at submission. `closing` is in application order, children first. A held
+ * issue with `closes_by` closes when the merge finds its holds released
+ * (issue 2927dd8); `held` is in application order too.
  */
 export interface IssueAccounting {
-  closing: Array<AccountedIssue & { by: "closes_issue" | "done" | "fixed_by" }>;
+  closing: Array<AccountedIssue & { by: ClosureReason }>;
   kept_open: Array<AccountedIssue & { remainder: string }>;
-  held: Array<AccountedIssue & { open_children: string[]; unmerged_units: Array<{ id: string; branch: string | null }> }>;
+  held: Array<AccountedIssue & {
+    open_children: string[];
+    unmerged_units: Array<{ id: string; branch: string | null }>;
+    closes_by?: ClosureReason;
+  }>;
 }
 
 /** What holds a held issue open, as one phrase. */

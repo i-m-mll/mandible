@@ -41,7 +41,7 @@ export const WITHHOLD_UNTIL_CONVERGED: Record<AuthRequestActionKind, boolean> = 
 };
 
 const VALID_ACTION_KINDS: readonly AuthRequestActionKind[] = AUTH_REQUEST_ACTION_KINDS;
-const VALID_ACTION_STATES: AuthRequestActionState[] = ["staged", "applied", "failed", "skipped_stale", "vetoed"];
+const VALID_ACTION_STATES: AuthRequestActionState[] = ["staged", "applied", "failed", "skipped_stale", "skipped_held", "vetoed"];
 const VALID_WORKER_STATUSES: readonly string[] = LEDGER_STORED_WORKER_STATUSES;
 
 export class AuthActionValidationError extends Error {
@@ -343,9 +343,13 @@ function normalizePayload(kind: AuthRequestActionKind, payload: unknown): Record
     case "issue_close": {
       const reason = optionalMarkdownBody(record.reason_comment, "reason_comment");
       const onStale = record.on_stale === undefined ? undefined : requireOnStale(record.on_stale);
+      if (record.when_released !== undefined && record.when_released !== true) {
+        throw new AuthActionValidationError("issue_close when_released must be true when present");
+      }
       return {
         ...(reason == null ? {} : { reason_comment: reason }),
         ...(onStale == null ? {} : { on_stale: onStale }),
+        ...(record.when_released === true ? { when_released: true } : {}),
       };
     }
     case "issue_keep_open":
