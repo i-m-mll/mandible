@@ -3,7 +3,7 @@
  * The Send menu against the daemon's own interface-notes and issue routes:
  * notes from every page are filed by one choice and leave the toolbar, a later
  * note joins the same issue, dismissal files nothing, and Chat staging leaves
- * notes unfiled.
+ * notes unfiled. With no registered project for Mandible's code, Send offers no new issue.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,7 +11,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Annotation } from 'agentation';
 import { setDb, type Db } from '../src/db.js';
-import { INTERFACE_NOTES_PROJECT_SETTING, type InterfaceNote } from '../src/interface-notes/contract.js';
+import type { InterfaceNote } from '../src/interface-notes/contract.js';
+import type { MandibleBuild } from '../src/interface-notes/receiving-project.js';
 import { inlineLedgerReader } from '../src/ledger-reads/index.js';
 import { resolveProjectForCheckout } from '../src/ledger/projects.js';
 import { registerInterfaceNoteRoutes } from '../src/routes/interface-notes.js';
@@ -43,6 +44,14 @@ vi.mock('../ui/src/client-auth-token', async (importOriginal) => ({
 let db: Db;
 let root: string;
 
+function serve(build: MandibleBuild): void {
+  const repo = { id: 'notes', name: 'notes', root, exists: true, default_branch: 'main', excluded: false, user_modified: false, last_scanned_at: null };
+  const router = authenticatedTestRouter(setupOperator(db, { display_name: 'Operator' }));
+  registerIssueRoutes(router, { getRepos: () => [repo], getRepoById: () => repo, getBranches: () => [] } as never, undefined, inlineLedgerReader());
+  registerInterfaceNoteRoutes(router, db, { kind: 'local' }, build);
+  daemon.router = router;
+}
+
 beforeEach(() => {
   // jsdom has no hit testing; a note's element is found only in a browser (test/provisioned/interface-notes-embed.test.ts).
   document.elementsFromPoint = () => [];
@@ -50,12 +59,7 @@ beforeEach(() => {
   db = migratedMemoryDb();
   setDb(db);
   resolveProjectForCheckout(db, { root, name: 'notes', workRepoId: 'notes', defaultBranch: 'main' });
-  const repo = { id: 'notes', name: 'notes', root, exists: true, default_branch: 'main', excluded: false, user_modified: false, last_scanned_at: null };
-  const router = authenticatedTestRouter(setupOperator(db, { display_name: 'Operator' }));
-  registerIssueRoutes(router, { getRepos: () => [repo], getRepoById: () => repo, getBranches: () => [] } as never, undefined, inlineLedgerReader());
-  registerInterfaceNoteRoutes(router, db, { kind: 'local' });
-  daemon.router = router;
-  db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, 1)').run(INTERFACE_NOTES_PROJECT_SETTING, 'notes');
+  serve({ kind: 'checkout', root, remoteUrl: '' });
   vi.resetModules();
   window.localStorage.clear();
   window.localStorage.setItem('mandible.agentation.migrated:v1', 'true');
@@ -96,7 +100,7 @@ async function mount() {
   const drafts = await import('../ui/src/chat/attachmentDrafts');
   render(<>
     <AgentationToggleButton visible expandedRail={false} onToggle={() => undefined} />
-    <menu.InterfaceNotesMenu ports={mandibleNotesMenuPorts('notes')} />
+    <menu.InterfaceNotesMenu ports={mandibleNotesMenuPorts} />
   </>);
   toolbarSendButton();
   const items = () => screen.queryAllByRole('menuitem').map((item) => item.textContent);
@@ -167,4 +171,16 @@ it('files nothing when dismissed, and stages every unfiled note to Chat without 
   await expect(staged).resolves.toBeUndefined();
   expect(drafts.getConversationDraft('chat-a').attachments.map((item) => item.kind === 'annotation' && item.id)).toEqual(['a', 'b']);
   expect((await unfiledIds()).sort()).toEqual(['a', 'b']);
+});
+
+it('disables New issue, with a tip, when no registered project holds the code serving Mandible', async () => {
+  serve({ kind: 'release', repository: 'github.com/example/elsewhere' });
+  const { store, menu } = await mount();
+  store.recordAdd(annotation('a', 'Tighten the gap', '/settings'));
+  await store.reconcile();
+  void menu.openInterfaceNotesMenuFromSend().catch(() => undefined);
+  const newIssue = await screen.findByRole('menuitem', { name: 'New issue' }) as HTMLButtonElement;
+  await waitFor(() => expect(newIssue.disabled).toBe(true));
+  expect(newIssue.getAttribute('data-app-tip')).toBeTruthy();
+  expect(await unfiledIds()).toEqual(['a']);
 });

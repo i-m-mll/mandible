@@ -37,15 +37,12 @@ function MenuNotice({ children }: { children: string }): JSX.Element | null {
   return <DetailPaneNotice severity="error" density="compact">{children}</DetailPaneNotice>;
 }
 
-export function mandibleNotesMenuPorts(receivingProject: string | null): InterfaceNotesMenuPorts {
-  return {
-    transport,
-    receivingProject,
-    Notice: MenuNotice,
-    chat: chatDestination,
-    issueTitle: async (issueRef) => {
-      const detail = await getLedgerIssueInitialDetailByIssueId(issueRef);
-      return { id: detail.display_id, title: detail.title };
-    },
-  };
-}
+export const mandibleNotesMenuPorts: InterfaceNotesMenuPorts = {
+  transport,
+  Notice: MenuNotice,
+  chat: chatDestination,
+  issueTitle: async (issueRef) => {
+    const detail = await getLedgerIssueInitialDetailByIssueId(issueRef);
+    return { id: detail.display_id, title: detail.title };
+  },
+};

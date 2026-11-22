@@ -1,5 +1,5 @@
 import { parseChatStreamMaxWidthPx } from '../../../src/contracts';
-import { INTERFACE_NOTES_EMBED, INTERFACE_NOTES_PROJECT_SETTING, type EmbedGrant } from '../../../src/interface-notes/contract';
+import { INTERFACE_NOTES_EMBED, type EmbedGrant } from '../../../src/interface-notes/contract';
 import { AgentIntegrations } from '../components/AgentIntegrations';
 import { currentRoute, subscribeRouteChanges, viewHref } from '../routing';
 import { NativeSelect } from '../components/shared/NativeSelect';
@@ -31,12 +31,10 @@ import {
   updateBackupSettings,
   updateInstructionDeliverySettings,
   canPerformOperation,
-  listCanonicalProjects,
   listEmbedGrants,
   allowEmbedGrant,
   removeEmbedGrant,
   type BackupStatus,
-  type CanonicalProject,
   type DesktopDaemonLaunchMode,
   type InstructionDeliverySettings,
   type InstructionTarget,
@@ -457,55 +455,6 @@ function SelectInput(props: {
       >
         {props.options.map((opt) => (
           <option key={opt} value={opt}>{opt}</option>
-        ))}
-      </NativeSelect>
-    </div>
-  );
-}
-
-function InterfaceNotesProjectRow(props: {
-  settings: Record<string, string>;
-  onSave: (key: string, value: string) => Promise<void>;
-  allowed: boolean;
-}): JSX.Element {
-  const [projects, setProjects] = useState<CanonicalProject[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    listCanonicalProjects({ onCached: (cached) => { if (live) setProjects(cached); } })
-      .then((loaded) => { if (live) setProjects(loaded); })
-      .catch((reason: unknown) => { if (live) setError(reason instanceof Error ? reason.message : String(reason)); });
-    return () => { live = false; };
-  }, []);
-  const value = props.settings[INTERFACE_NOTES_PROJECT_SETTING]?.trim() ?? '';
-  const known = !value || projects.some((project) => project.project_key === value);
-  return (
-    <div className="settings-view__select-row" data-settings-searchable>
-      <div className="settings-view__select-info">
-        <label className="settings-view__select-label" htmlFor="settings-interface-notes-project">Interface notes project</label>
-        <span id="settings-interface-notes-project-description" className="settings-view__select-desc">
-          Project whose issues receive notes filed from the Agentation toolbar
-        </span>
-        {error && <span className="settings-view__warning" role="alert">{error}</span>}
-      </div>
-      <NativeSelect
-        id="settings-interface-notes-project"
-        className="settings-view__select"
-        aria-describedby="settings-interface-notes-project-description"
-        value={value}
-        disabled={!props.allowed}
-        onChange={async (event) => {
-          try {
-            await props.onSave(INTERFACE_NOTES_PROJECT_SETTING, (event.target as HTMLSelectElement).value);
-          } catch (reason) {
-            setError(reason instanceof Error ? reason.message : String(reason));
-          }
-        }}
-      >
-        <option value="">None</option>
-        {known ? null : <option value={value}>{value}</option>}
-        {projects.map((project) => (
-          <option key={project.id} value={project.project_key}>{project.display_name || project.project_key}</option>
         ))}
       </NativeSelect>
     </div>
@@ -1803,11 +1752,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             settings={settings}
             onSave={saveSetting}
             options={MARKDOWN_BODY_ESCAPE_POLICIES}
-          />
-          <InterfaceNotesProjectRow
-            settings={settings}
-            onSave={saveSetting}
-            allowed={canPerformOperation(instance, 'PUT', `/api/settings/${INTERFACE_NOTES_PROJECT_SETTING}`)}
           />
           <EmbedGrantRows allowed={canPerformOperation(instance, 'PUT', INTERFACE_NOTES_EMBED.grants)} />
           <div className="settings-view__text-row" data-settings-searchable>

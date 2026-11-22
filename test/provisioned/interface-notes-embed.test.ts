@@ -49,7 +49,7 @@ addEventListener('message', (event) => {
     parent.postMessage({ kind: 'test-created', note }, '*');
     return reply({ type: 'result', id: data.id, ok: true, value: note });
   }
-  const value = data.operation === 'listUnfiled' ? created : data.operation === 'listIssuesWithNotes' ? [] : null;
+  const value = data.operation === 'listUnfiled' ? created : data.operation === 'destinations' ? { project: 'studio', issues: [] } : null;
   reply({ type: 'result', id: data.id, ok: true, value });
 });
 </script>`;

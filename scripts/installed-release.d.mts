@@ -3,7 +3,7 @@ export interface InstalledRelease {
   version: string;
   target: string;
   layout: { kind: 'macos-app'; roots: Record<string, string> };
-  provenance: { commit: string; source_digest: string; summary: string; date: string; bun_revision: string };
+  provenance: { commit: string; source_digest: string; repository?: string; summary: string; date: string; bun_revision: string };
   entrypoints: Record<'daemon' | 'cli' | 'controller' | 'trustSetup' | 'service', string>;
   native: Record<'bun' | 'sqlite' | 'caddy' | 'claude' | 'trustHelper' | 'approvalHelper' | 'serviceHelper', string>;
   serviceExecutables?: Record<'backend' | 'gateway', 'bun' | 'caddy'>;

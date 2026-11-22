@@ -3,14 +3,13 @@ import { AttachmentValidationError, validatedAnnotationTarget, validatedAnnotati
 import type { AnnotationTarget } from "../conversation-control/attachments.js";
 import { commentCarriesInterfaceNotes, NOTE_COLUMNS, NOTE_FROM, noteFromRow, type NoteRow } from "./read.js";
 import { loopbackOriginPort } from "./embed-identity.js";
+import type { ReceivingProject } from "./receiving-project.js";
 import { resolveOperationalIssueRef } from "../ledger/operational-links.js";
-import { resolveProjectRef } from "../ledger/project-registry.js";
 import { LedgerStore } from "../ledger/store.js";
 import type { LedgerActorInput } from "../ledger/types.js";
 import {
   INTERFACE_NOTES_APP_PATTERN,
   MAX_INTERFACE_NOTES_APP,
-  INTERFACE_NOTES_PROJECT_SETTING,
   MANDIBLE_INTERFACE_NOTES_APP,
   renderInterfaceNotesBody,
   type FileInterfaceNotesResult,
@@ -93,7 +92,12 @@ function validatedInput(input: unknown): InterfaceNoteResult<{ id: string; app: 
 export class InterfaceNoteStore {
   private readonly ledger: LedgerStore;
 
-  constructor(private readonly db: Db, private readonly onChange: InterfaceNoteChangeListener) {
+  constructor(
+    private readonly db: Db,
+    private readonly onChange: InterfaceNoteChangeListener,
+    /** The project receiving an app's notes (`receiving-project.ts`). */
+    private readonly receiving: (app: string) => ReceivingProject | null,
+  ) {
     this.ledger = new LedgerStore(db);
   }
 
@@ -183,16 +187,21 @@ export class InterfaceNoteStore {
       ).all(...noteIds) as NoteRow[]).map(noteFromRow);
       if (notes.length === 0) return fail<FileInterfaceNotesResult>("nothing_to_file");
       if (notes.some((note) => outOfScope(scope, note.app))) return fail<FileInterfaceNotesResult>("origin_not_granted");
-      const issueId = destination.value.kind === "issue"
-        ? destination.value.issue_id
-        : this.ledger.createIssue({
+      let issueId: string;
+      if (destination.value.kind === "issue") issueId = destination.value.issue_id;
+      else {
+        const projects = new Set([...new Set(notes.map((note) => note.app))].map((app) => this.receiving(app)?.id ?? null));
+        const [projectId] = projects;
+        if (projects.size !== 1 || !projectId) return fail<FileInterfaceNotesResult>("no_receiving_project");
+        issueId = this.ledger.createIssue({
           ...actor,
-          project_id: destination.value.project_id,
+          project_id: projectId,
           title: destination.value.title,
           body: "",
           kind: "unknown",
           source: "mandible",
         }).id;
+      }
       const comment = this.ledger.addComment(issueId, { ...actor, body: renderInterfaceNotesBody(notes), source: "mandible" });
       const now = Date.now();
       const move = this.db.prepare("UPDATE interface_notes SET comment_id = ?, updated_at = ? WHERE id = ? AND comment_id IS NULL");
@@ -213,7 +222,7 @@ export class InterfaceNoteStore {
   }
 
   private resolveDestination(value: unknown): InterfaceNoteResult<
-    { kind: "issue"; issue_id: string } | { kind: "new_issue"; project_id: string; title: string }
+    { kind: "issue"; issue_id: string } | { kind: "new_issue"; title: string }
   > {
     if (isRecord(value) && typeof value.issue === "string") {
       const resolved = resolveOperationalIssueRef(this.db, value.issue);
@@ -224,15 +233,9 @@ export class InterfaceNoteStore {
     if (isRecord(value) && isRecord(value.new_issue) && typeof value.new_issue.title === "string") {
       const title = value.new_issue.title.trim();
       if (!title) return fail("invalid_note", "A new issue needs a title");
-      const given = value.new_issue.project;
-      if (given !== undefined && (typeof given !== "string" || !given.trim())) return fail("invalid_note", "A new issue's project is a project ref");
-      const setting = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(INTERFACE_NOTES_PROJECT_SETTING) as { value: string } | undefined;
-      const ref = given?.trim() ?? setting?.value.trim();
-      const project = ref ? resolveProjectRef(this.db, ref) : null;
-      if (!project?.ok) return fail("receiving_project_unset", given === undefined ? undefined : `${given} names no project`);
-      return ok({ kind: "new_issue", project_id: project.project.id, title });
+      return ok({ kind: "new_issue", title });
     }
-    return fail("invalid_note", "destination must be { issue } or { new_issue: { title, project? } }");
+    return fail("invalid_note", "destination must be { issue } or { new_issue: { title } }");
   }
 
   private regenerate(commentId: string, actor: InterfaceNoteWriteActor): void {

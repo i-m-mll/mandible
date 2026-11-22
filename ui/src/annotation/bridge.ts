@@ -6,7 +6,6 @@ import {
   type InterfaceNote,
   type InterfaceNoteChangedPayload,
 } from '../../../src/interface-notes/contract';
-import type { IssueRepoSummary } from '../../../src/types';
 import { browserSessionFetch } from '../client-auth-token';
 import { SSEClient } from '../sse-client';
 import { BRIDGE_MESSAGE, BRIDGE_OPERATIONS, isBridgeMessage, type BridgeOperation, type BridgeToEmbed, type EmbedToBridge } from './bridgeProtocol';
@@ -96,13 +95,10 @@ export function createBridge(deps: BridgeDeps): (event: BridgeEvent) => void {
         const ids = Array.isArray(request?.note_ids) ? request.note_ids.filter((id) => known.has(id)) : [];
         return transport.file({ ...request, note_ids: ids });
       }
-      case 'listIssuesWithNotes': {
-        const repos = await transport.listIssuesWithNotes('') as IssueRepoSummary[];
-        for (const repo of repos) for (const issue of repo.issues) {
-          fileable.add(issue.id);
-          if (repo.project_key) fileable.add(`${repo.project_key}/${issue.id}`);
-        }
-        return repos;
+      case 'destinations': {
+        const destinations = await transport.destinations();
+        for (const issue of destinations.issues) fileable.add(issue.ref);
+        return destinations;
       }
     }
   }
@@ -167,7 +163,7 @@ if (typeof window !== 'undefined' && window.parent !== window) {
   const handle = createBridge({
     parent: window.parent as unknown as BridgeDeps['parent'],
     access,
-    transport: (identity, origin) => apiTransport({ app: identity.app, embed: { origin, projectId: identity.project.id }, subscribe: () => () => undefined }),
+    transport: (identity, origin) => apiTransport({ app: identity.app, embed: { origin }, subscribe: () => () => undefined }),
     follow,
   });
   window.addEventListener('message', (event) => handle(event));

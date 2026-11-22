@@ -53,8 +53,8 @@ export type InterfaceNoteInput = Pick<InterfaceNote, "id" | "app" | "text" | "ta
 
 export type InterfaceNoteDestination =
   | { issue: string }
-  /** `project` is the project ref the embedding app declares; without it, the `interface_notes_project` setting. */
-  | { new_issue: { title: string; project?: string } };
+  /** Created in the notes' receiving project (`InterfaceNoteDestinations.project`). */
+  | { new_issue: { title: string } };
 
 export interface FileInterfaceNotesRequest {
   /** The unfiled notes the user saw when choosing; notes filed meanwhile are skipped. */
@@ -70,8 +70,23 @@ export interface FileInterfaceNotesResult {
   filed: string[];
 }
 
-/** Project (any project ref) whose issues receive Mandible's own filed notes. Unset: Send offers Chat only. */
-export const INTERFACE_NOTES_PROJECT_SETTING = "interface_notes_project";
+/** An issue the Send menu offers: `ref` files onto it, `id` and `title` label it. */
+export interface InterfaceNoteIssue {
+  ref: string;
+  id: string;
+  title: string;
+}
+
+/**
+ * Where one app's notes can be filed. `project` is the key of the receiving project: the
+ * project of the code that serves the app's pages; null when that code is no registered
+ * project's, and Send then offers no issue. `issues` are that project's open issues that
+ * carry notes, most recently annotated first.
+ */
+export interface InterfaceNoteDestinations {
+  project: string | null;
+  issues: InterfaceNoteIssue[];
+}
 
 /**
  * SSE event after any note write; the payload names the notes, their app and the issue, if any, they touched.
@@ -104,8 +119,8 @@ export const INTERFACE_NOTE_ROUTES = {
     `/api/interface-notes/${encodeURIComponent(id)}?comment=${encodeURIComponent(commentId)}`,
   /** POST FileInterfaceNotesRequest: one new comment carrying the notes. */
   file: "/api/interface-notes/file",
-  /** GET /api/issues with this query lists only issues that carry notes, most recently annotated first; `&project=<id>` limits it to one project. */
-  issuesWithNotesQuery: "has_notes=true",
+  /** GET `?app=<app>` (default `mandible`): InterfaceNoteDestinations. */
+  destinations: (app: string): string => `/api/interface-notes/destinations?app=${encodeURIComponent(app)}`,
 } as const;
 
 /**
@@ -127,8 +142,8 @@ export const INTERFACE_NOTE_ERRORS = {
   invalid_note: 400,
   /** POST file: the issue ref does not resolve. */
   issue_not_found: 404,
-  /** POST file with `new_issue`: neither the given project nor `interface_notes_project` resolves. */
-  receiving_project_unset: 409,
+  /** POST file with `new_issue`: the code serving the notes' app is no registered project's, or the notes are of different projects. */
+  no_receiving_project: 409,
   /** POST file: every listed note was filed or deleted meanwhile; no comment or issue is created. */
   nothing_to_file: 409,
   /** GET embed identity: the origin is not an http(s) origin on a loopback host. */

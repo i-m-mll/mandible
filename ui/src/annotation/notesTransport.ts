@@ -3,10 +3,10 @@ import type {
   FileInterfaceNotesResult,
   InterfaceNote,
   InterfaceNoteChangedPayload,
+  InterfaceNoteDestinations,
   InterfaceNoteErrorCode,
   InterfaceNoteInput,
 } from '../../../src/interface-notes/contract';
-import type { IssueRepoSummary } from '../../../src/types';
 
 /**
  * How the toolbar host reaches the daemon. Mandible's own interface calls the API
@@ -22,8 +22,8 @@ export interface InterfaceNotesTransport {
   /** Refused with `note_filed` when the note has been filed, which leaves its comment untouched. */
   deleteUnfiled(id: string): Promise<void>;
   file(request: FileInterfaceNotesRequest): Promise<FileInterfaceNotesResult>;
-  /** Open issues of the receiving project that carry notes, most recently annotated first. */
-  listIssuesWithNotes(projectRef: string): Promise<IssueRepoSummary[]>;
+  /** The app's receiving project and its open issues that carry notes. */
+  destinations(): Promise<InterfaceNoteDestinations>;
   /** Follows the daemon's `interface_note:changed` events; returns the stop function. */
   subscribe(handlers: { changed(payload: InterfaceNoteChangedPayload): void; reconnected(): void }): () => void;
 }

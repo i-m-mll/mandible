@@ -44,7 +44,7 @@ async function mount(): Promise<void> {
   });
 
   const root = createHost();
-  const ports: InterfaceNotesMenuPorts = { transport, receivingProject: identity.project.key, Notice };
+  const ports: InterfaceNotesMenuPorts = { transport, Notice };
   render(<><EmbedToolbar appName={identity.project.name} /><InterfaceNotesMenu ports={ports} /></>, root);
   startInterfaceNotes();
 }

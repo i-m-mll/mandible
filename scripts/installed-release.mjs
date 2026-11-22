@@ -93,6 +93,7 @@ function parseInstalledRelease(root, text) {
   const release = JSON.parse(text);
   if (release.schema !== RELEASE_SCHEMA || !/^[a-f0-9]{40}$/.test(release.provenance?.commit ?? '')
       || !/^[a-f0-9]{64}$/.test(release.provenance?.source_digest ?? '')
+      || (release.provenance.repository !== undefined && (typeof release.provenance.repository !== 'string' || !release.provenance.repository))
       || release.target !== `${process.platform}-${process.arch}` || typeof release.version !== 'string'
       || !release.files || !release.entrypoints || !release.native) throw new Error('Invalid or incompatible installed Mandible release.');
   for (const relative of [...Object.values(release.entrypoints), ...Object.values(release.native), ...Object.values(release.resources ?? {})]) {

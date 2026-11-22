@@ -3,8 +3,8 @@ import {
   interfaceNotePagePath,
   type InterfaceNote,
   type InterfaceNoteDestination,
+  type InterfaceNoteIssue,
 } from '../../../src/interface-notes/contract';
-import type { IssueRepoSummary } from '../../../src/types';
 import { appTip } from '../components/shared/AppHoverTips';
 import { useAnchoredMenu, type AnchoredMenuPlacement } from '../hooks/useAnchoredMenu';
 import { InterfaceNotesApiError, type InterfaceNotesTransport } from './notesTransport';
@@ -20,8 +20,6 @@ import './InterfaceNotesMenu.css';
 
 export type InterfaceNotesMenuPorts = {
   transport: InterfaceNotesTransport;
-  /** The project ref whose issues receive notes; null offers no issue destination. */
-  receivingProject: string | null;
   /** How a refusal is shown. */
   Notice(props: { children: string }): JSX.Element | null;
   /** Mandible only: the Chat destination. */
@@ -44,8 +42,6 @@ type MenuRequest = {
   resolve(): void;
   reject(error: Error): void;
 };
-
-type RecentIssue = { ref: string; id: string; title: string };
 
 let request: MenuRequest | null = null;
 let nextKey = 0;
@@ -90,18 +86,6 @@ function useMenuRequest(): MenuRequest | null {
   return current;
 }
 
-function recentIssues(repos: readonly IssueRepoSummary[]): RecentIssue[] {
-  return repos
-    .flatMap((repo) => repo.issues.map((issue) => ({
-      ref: repo.project_key ? `${repo.project_key}/${issue.id}` : issue.id,
-      id: issue.id,
-      title: issue.title,
-      lastAt: issue.interface_notes?.last_at ?? 0,
-    })))
-    .sort((a, b) => b.lastAt - a.lastAt)
-    .map(({ lastAt: _lastAt, ...issue }) => issue);
-}
-
 /** Page, then creation order: the order Chat staging delivers notes in. */
 function chatOrder(notes: readonly InterfaceNote[]): InterfaceNote[] {
   return [...notes].sort((a, b) => (
@@ -114,9 +98,11 @@ function newIssueTitle(notes: readonly InterfaceNote[]): string {
   return line.trim().slice(0, 120);
 }
 
+const NO_RECEIVING_PROJECT = 'This app’s repository is not a registered project';
+
 const FILING_REFUSALS: Partial<Record<string, string>> = {
   nothing_to_file: 'These notes were filed or deleted elsewhere.',
-  receiving_project_unset: 'Choose the project for interface notes in Settings.',
+  no_receiving_project: NO_RECEIVING_PROJECT,
   issue_not_found: 'That issue no longer exists.',
 };
 
@@ -149,7 +135,7 @@ export function InterfaceNotesMenu({ ports }: { ports: InterfaceNotesMenuPorts }
 }
 
 function OpenMenu({ request: opened, ports }: { request: MenuRequest; ports: InterfaceNotesMenuPorts }): JSX.Element {
-  const { transport, receivingProject, Notice, chat, issueTitle } = ports;
+  const { transport, Notice, chat, issueTitle } = ports;
   const { unfiled, loadedIssue } = useInterfaceNotes();
   const anchorRef = useMemo(() => ({ current: opened.anchor }), [opened]);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -157,7 +143,9 @@ function OpenMenu({ request: opened, ports }: { request: MenuRequest; ports: Int
   const [title, setTitle] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [recent, setRecent] = useState<RecentIssue[]>([]);
+  const [recent, setRecent] = useState<InterfaceNoteIssue[]>([]);
+  /** Unknown until the daemon answers, when New issue is offered as if there were one. */
+  const [project, setProject] = useState<string | null | undefined>(undefined);
   const [loadedDetail, setLoadedDetail] = useState<{ ref: string; id: string; title: string } | null>(null);
   const dismiss = () => settle({ ok: false, error: 'Nothing was sent.' });
   const style = useAnchoredMenu({
@@ -171,13 +159,16 @@ function OpenMenu({ request: opened, ports }: { request: MenuRequest; ports: Int
   const visible = style?.visibility === 'visible';
 
   useEffect(() => {
-    if (!receivingProject) return undefined;
     let live = true;
-    transport.listIssuesWithNotes(receivingProject)
-      .then((repos) => { if (live) setRecent(recentIssues(repos)); })
+    transport.destinations()
+      .then((destinations) => {
+        if (!live) return;
+        setProject(destinations.project);
+        setRecent(destinations.issues);
+      })
       .catch((reason: unknown) => { if (live) setError(filingError(reason)); });
     return () => { live = false; };
-  }, [receivingProject]);
+  }, []);
 
   const loadedId = loadedIssue?.id ?? null;
   useEffect(() => {
@@ -233,6 +224,7 @@ function OpenMenu({ request: opened, ports }: { request: MenuRequest; ports: Int
   };
 
   const inert = busy || unfiled.length === 0;
+  const unreceived = project === null;
   const loaded = loadedId
     ? (loadedDetail?.ref === loadedId ? loadedDetail : recent.find((issue) => issue.ref === loadedId) ?? { ref: loadedId, id: loadedId, title: '' })
     : null;
@@ -275,25 +267,24 @@ function OpenMenu({ request: opened, ports }: { request: MenuRequest; ports: Int
         </form>
       ) : (
         <>
-          {receivingProject && loaded ? (
+          {loaded ? (
             <button type="button" role="menuitem" className="interface-notes-menu__item" disabled={inert}
               onClick={() => void file({ issue: loaded.ref })}>
               <IssueLabel id={loaded.id} title={loaded.title} />
             </button>
           ) : null}
-          {receivingProject ? (
-            <button type="button" role="menuitem" className="interface-notes-menu__item" disabled={inert}
-              onClick={() => setTitle(newIssueTitle(unfiled))}>
-              New issue
-            </button>
-          ) : null}
-          {receivingProject ? recentShown.map((issue) => (
+          <button type="button" role="menuitem" className="interface-notes-menu__item" disabled={inert || unreceived}
+            {...(unreceived ? appTip(NO_RECEIVING_PROJECT) : {})}
+            onClick={() => setTitle(newIssueTitle(unfiled))}>
+            New issue
+          </button>
+          {recentShown.map((issue) => (
             <button key={issue.ref} type="button" role="menuitem" className="interface-notes-menu__item" disabled={inert}
               onClick={() => void file({ issue: issue.ref })}>
               <IssueLabel id={issue.id} title={issue.title} />
             </button>
-          )) : null}
-          {receivingProject && chat ? <div role="separator" className="interface-notes-menu__separator" /> : null}
+          ))}
+          {chat ? <div role="separator" className="interface-notes-menu__separator" /> : null}
           {chat ? (
             <button type="button" role="menuitem" className="interface-notes-menu__item" disabled={inert || !chatTarget}
               {...(chatTarget ? {} : appTip('Select a writable Chat first'))}

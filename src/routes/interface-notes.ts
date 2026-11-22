@@ -1,10 +1,11 @@
 import { attributionForRequest, requireIdentity, requireOperator } from "../client-auth/authz.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 import type { Db } from "../db.js";
-import { INTERFACE_NOTE_ERRORS, INTERFACE_NOTES_EMBED } from "../interface-notes/contract.js";
+import { INTERFACE_NOTE_ERRORS, INTERFACE_NOTES_EMBED, type InterfaceNoteDestinations } from "../interface-notes/contract.js";
 import { EmbedGrants } from "../interface-notes/embed-grants.js";
 import type { EmbedProcessProbe } from "../interface-notes/embed-identity.js";
-import { listIssueInterfaceNotes } from "../interface-notes/read.js";
+import { listIssueInterfaceNotes, listOpenIssuesWithInterfaceNotes } from "../interface-notes/read.js";
+import { receivingProject, type MandibleBuild } from "../interface-notes/receiving-project.js";
 import { forwardToSource, type InterfaceNotesHome } from "../interface-notes/source.js";
 import { InterfaceNoteStore, interfaceNotesApp, type EmbedWriteScope, type InterfaceNoteResult, type InterfaceNoteWriteActor } from "../interface-notes/store.js";
 import { resolveOperationalIssueRef } from "../ledger/operational-links.js";
@@ -60,8 +61,9 @@ function forwarded(db: Db, socketPath: string, access: "read" | "write"): RouteH
   };
 }
 
-export function registerInterfaceNoteRoutes(server: RouteRegistrar, db: Db, home: InterfaceNotesHome, probe?: EmbedProcessProbe): void {
-  const store = new InterfaceNoteStore(db, (payload) => broadcast(DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED, payload));
+export function registerInterfaceNoteRoutes(server: RouteRegistrar, db: Db, home: InterfaceNotesHome, build: MandibleBuild, probe?: EmbedProcessProbe): void {
+  const receiving = (app: string) => receivingProject(db, build, app);
+  const store = new InterfaceNoteStore(db, (payload) => broadcast(DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED, payload), receiving);
   const grants = new EmbedGrants(db, probe);
   const source = home.kind === "source" ? home.socketPath : null;
   const route = (access: "read" | "write", local: RouteHandler): RouteHandler => source === null ? local : forwarded(db, source, access);
@@ -83,6 +85,17 @@ export function registerInterfaceNoteRoutes(server: RouteRegistrar, db: Db, home
     if (!resolved.ok) return sendJson(res, INTERFACE_NOTE_ERRORS.issue_not_found, { error: "issue_not_found" });
     sendJson(res, 200, { notes: listIssueInterfaceNotes(db, resolved.issue_id) });
   }), { operation: { id: "get:/api/interface-notes", effects: (context) => interfaceNoteEffects(context, "ledger:read"), requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  server.get("/api/interface-notes/destinations", route("read", (req, res) => {
+    requireIdentity(req);
+    const app = interfaceNotesApp(queryString(req, "app"));
+    if (app === null) return sendJson(res, INTERFACE_NOTE_ERRORS.invalid_note, { error: "invalid_note", message: "app is mandible, or a project key followed by : and a path" });
+    const project = receiving(app);
+    const destinations: InterfaceNoteDestinations = project
+      ? { project: project.key, issues: listOpenIssuesWithInterfaceNotes(db, project) }
+      : { project: null, issues: [] };
+    sendJson(res, 200, destinations);
+  }), { operation: { id: "get:/api/interface-notes/destinations", effects: (context) => interfaceNoteEffects(context, "ledger:read"), requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/interface-notes/embed-identity", route("write", async (req, res) => {
     requireOperator(db, req);

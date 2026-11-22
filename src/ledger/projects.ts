@@ -138,6 +138,11 @@ function computeCheckoutIdentity(input: ResolveProjectInput): CheckoutIdentity {
   return { root, remoteUrl, remoteIdentity, upstreamIdentity, namespacePolicy, identity, displayName };
 }
 
+/** The repository identity a checkout's projects are keyed by (`ledger_projects.remote_identity`). */
+export function checkoutRepositoryIdentity(root: string, remoteUrl?: string): string {
+  return computeCheckoutIdentity({ root, remoteUrl }).identity;
+}
+
 export type ResolveProjectReadOnlyResult =
   | {
       status: "resolved";

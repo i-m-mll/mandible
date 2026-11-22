@@ -3,8 +3,8 @@ import {
   INTERFACE_NOTES_EMBED,
   type FileInterfaceNotesRequest,
   type InterfaceNote,
+  type InterfaceNoteDestinations,
 } from '../../../src/interface-notes/contract';
-import type { IssueRepoSummary } from '../../../src/types';
 import { browserSessionFetch } from '../client-auth-token';
 import { interfaceNotesJson as json, type InterfaceNotesTransport } from './notesTransport';
 
@@ -22,23 +22,15 @@ export async function removeInterfaceNoteFromComment(id: string, commentId: stri
   await json<void>(await write('DELETE', INTERFACE_NOTE_ROUTES.noteOnComment(id, commentId)), 'Removing the note');
 }
 
-async function listIssuesWithNotes(filter: string): Promise<IssueRepoSummary[]> {
-  return json<IssueRepoSummary[]>(
-    await browserSessionFetch(`/api/issues?${filter}&status=open&${INTERFACE_NOTE_ROUTES.issuesWithNotesQuery}`),
-    'Listing issues with notes');
-}
-
 /**
- * The API as a transport for one app's notes. Mandible's own interface gives no
- * `embed`; filing then uses `interface_notes_project` and lists the issues of the
- * project ref the menu passes. The bridge gives the embedding page's origin, which
- * each new note records, and the project id, which receives new issues and is the
- * only project whose issues are listed. Each of the bridge's writes names the
- * origin, so the daemon checks the page's grant again for every one.
+ * The API as a transport for one app's notes. The daemon resolves the app's receiving
+ * project. The bridge gives the embedding page's origin, which each new note records;
+ * each of the bridge's writes names it, so the daemon checks the page's grant again
+ * for every one.
  */
 export function apiTransport(options: {
   app: string;
-  embed?: { origin: string; projectId: string };
+  embed?: { origin: string };
   subscribe: InterfaceNotesTransport['subscribe'];
 }): InterfaceNotesTransport {
   const { app, embed } = options;
@@ -64,14 +56,11 @@ export function apiTransport(options: {
       await json<void>(await write('DELETE', scoped(INTERFACE_NOTE_ROUTES.note(id))), 'Deleting the note');
     },
     async file(request: FileInterfaceNotesRequest) {
-      const destination = 'new_issue' in request.destination && embed
-        ? { new_issue: { ...request.destination.new_issue, project: embed.projectId } }
-        : request.destination;
-      return json(await write('POST', scoped(INTERFACE_NOTE_ROUTES.file), { ...request, destination }), 'Filing the notes');
+      return json(await write('POST', scoped(INTERFACE_NOTE_ROUTES.file), request), 'Filing the notes');
     },
-    listIssuesWithNotes: (projectRef) => listIssuesWithNotes(embed
-      ? `project=${encodeURIComponent(embed.projectId)}`
-      : `repo=${encodeURIComponent(projectRef)}`),
+    async destinations() {
+      return json<InterfaceNoteDestinations>(await browserSessionFetch(INTERFACE_NOTE_ROUTES.destinations(app)), 'Listing where notes can be filed');
+    },
     subscribe: options.subscribe,
   };
 }
