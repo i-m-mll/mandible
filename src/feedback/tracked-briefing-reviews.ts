@@ -1,13 +1,13 @@
 import { authDependencies } from "../auth-dependency.js";
 import { decodeAuthDependencies, parseChangeReport } from "../auth-request-row.js";
 import type {
-  TrackedBriefingMatch, TrackedBriefingPath, TrackedBriefingProposal, TrackedBriefingReviewGroup,
+  TrackedBriefingMatch, TrackedBriefingPath, TrackedBriefingProposal, TrackedBriefingReference, TrackedBriefingReviewGroup,
 } from "../contracts.js";
 import type { Db } from "../db.js";
 import { shortRef } from "../entity-refs.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import type { AuthRequest } from "../types.js";
-import { trackedBriefingReader } from "./tracked-briefing-files.js";
+import { hydrateTrackedBriefingDocuments, trackedBriefingReader, type StoredTrackedBriefingDocument } from "./tracked-briefing-files.js";
 
 type RequestInventory = Pick<AuthRequest, "repo" | "target_repo_root" | "type" | "change_report">;
 
@@ -71,9 +71,9 @@ export function trackedBriefingProposals(db: Db, members: readonly TrackedBriefi
   });
 }
 
-export function trackedReviewGroups(db: Db, request: RequestInventory): TrackedBriefingReviewGroup[] {
+export function trackedReviewGroups(db: Db, request: RequestInventory) {
   const changed = inventory(db, request);
-  if (!changed) return [];
+  if (!changed) return null;
   const rows = db.prepare(`SELECT g.id AS group_id, g.key AS group_key, g.name, b.tracked_project_id AS project_id, b.tracked_path AS path
     FROM briefing_groups g JOIN briefing_bundle_members b ON b.bundle_id = g.current_bundle_id
     WHERE g.archived_at IS NULL AND b.tracked_project_id IS NOT NULL AND EXISTS (
@@ -92,14 +92,25 @@ export function trackedReviewGroups(db: Db, request: RequestInventory): TrackedB
     group.paths.push(member);
   }
   const reader = trackedBriefingReader(db);
-  return [...groups.values()].flatMap(({ paths, ...group }) => {
+  const references: TrackedBriefingReviewGroup<TrackedBriefingReference>[] = [...groups.values()].flatMap(({ paths, ...group }) => {
     const members = matchMembers(paths, changed);
-    return members.length ? [{ ...group, members, documents: reader.readAll(paths) }] : [];
+    return members.length ? [{ ...group, members, documents: reader.references(paths) }] : [];
+  });
+  return { references, retain: () => reader.retain(references.flatMap(group => group.documents)) };
+}
+
+export function hydrateTrackedReviewGroups(db: Db, references: TrackedBriefingReviewGroup<StoredTrackedBriefingDocument>[]): TrackedBriefingReviewGroup[] {
+  const hydrated = hydrateTrackedBriefingDocuments(db, references.flatMap(group => group.documents));
+  let offset = 0;
+  return references.map(group => {
+    const documents = hydrated.slice(offset, offset + group.documents.length);
+    offset += documents.length;
+    return { ...group, documents };
   });
 }
 
 export function storedTrackedReviewGroups(db: Db, roundId: string): TrackedBriefingReviewGroup[] | null {
   const stored = db.prepare("SELECT snapshot_json FROM briefing_request_group_snapshots WHERE round_id = ?")
     .get(roundId) as { snapshot_json: string } | undefined;
-  return stored ? JSON.parse(stored.snapshot_json) as TrackedBriefingReviewGroup[] : null;
+  return stored ? hydrateTrackedReviewGroups(db, JSON.parse(stored.snapshot_json) as TrackedBriefingReviewGroup<StoredTrackedBriefingDocument>[]) : null;
 }
