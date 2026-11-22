@@ -1,3 +1,4 @@
+import { DetailPaneNotice } from './DetailPaneNotice';
 import { useEffect, useId, useMemo, useRef, useState } from 'preact/hooks';
 import { artifactReviewSource, reviewRangeFromSelection, reviewSelectionFromRange } from '../../../../src/feedback/review-ranges';
 import type { StandingNoteMutation } from '../../../../src/feedback/standing-notes';
@@ -116,7 +117,7 @@ export function useStandingNoteReview({ scopeKey, source, rangeKind, notes, onCr
   const sidebar = <>
     <ReviewCommentsSidebar comments={comments} open={open ?? localOpen} setOpen={setOpen} selectedId={selectedId}
       onNavigate={(range, id) => { documentRef.current?.select(range); showNote(id); }} />
-    {error && !composer && <p role="alert" className="review-comments__error">{error}</p>}
+    {error && !composer && <DetailPaneNotice severity="error" density="compact">{error}</DetailPaneNotice>}
   </>;
 
   const composerChanged = composer?.kind === 'add' && composer.source !== source;
@@ -132,7 +133,7 @@ export function useStandingNoteReview({ scopeKey, source, rangeKind, notes, onCr
     }}>
       <blockquote className="review-comments__quote">{composer.kind === 'add' ? composer.range.quote : composer.note.quote}</blockquote>
       <textarea aria-label="Comment" value={body} disabled={busy} onInput={event => setBody(event.currentTarget.value)} />
-      {(error || composerChanged) && <p role="alert">{error ?? 'The text changed. Select it again to comment.'}</p>}
+      {error && <DetailPaneNotice severity="error" density="compact">{error}</DetailPaneNotice>}
       <button type="submit" className="btn btn--primary btn--sm" disabled={busy || !body.trim() || composerChanged}>Save comment</button>
     </form>}
   </DetailPaneModal>;

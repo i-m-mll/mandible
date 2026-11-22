@@ -1,3 +1,4 @@
+import { appTip } from '../../components/shared/AppHoverTips';
 import { NativeSelect } from '../../components/shared/NativeSelect';
 import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../../query/client';
@@ -85,6 +86,10 @@ function draftStorageScope(briefingId: string, round: BriefingProjection): Brief
     artifactVersionId: round.document.artifact_version_id,
     profile: round.document.profile,
   } : null;
+}
+
+function draftScopeKey(scope: BriefingDraftScope | null, userId: string | null): string | null {
+  return scope ? `${userId ?? 'memory'}:${scope.briefingId}:${scope.roundId}:${scope.artifactVersionId}:${scope.profile}` : null;
 }
 
 const occurrenceDateTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -239,9 +244,7 @@ export function BriefingDocumentRenderer({
     if (!round || !identityQuery.data) return;
     onBriefingChange?.(round);
     const storageScope = draftStorageScope(briefingId, round);
-    const nextDraftScope = storageScope
-      ? `${userId ?? 'memory'}:${storageScope.briefingId}:${storageScope.roundId}:${storageScope.artifactVersionId}:${storageScope.profile}`
-      : null;
+    const nextDraftScope = draftScopeKey(storageScope, userId);
     const nextBaseline = effectiveDraft(round.items);
     const previousBaseline = draftBaseline.current;
     draftBaseline.current = { scope: nextDraftScope, values: nextBaseline };
@@ -285,8 +288,7 @@ export function BriefingDocumentRenderer({
   useEffect(() => {
     if (!load.round || load.round.selected_submission_overlay) return;
     const scope = draftStorageScope(briefingId, load.round);
-    const expected = scope ? `${userId ?? 'memory'}:${scope.briefingId}:${scope.roundId}:${scope.artifactVersionId}:${scope.profile}` : null;
-    if (!scope || draftScope !== expected) return;
+    if (!scope || draftScope !== draftScopeKey(scope, userId)) return;
     saveBriefingDraft(storageOrNull(), userId, scope, draft);
   }, [briefingId, draft, draftScope, load.round, userId]);
 
@@ -312,6 +314,7 @@ export function BriefingDocumentRenderer({
     && (roundId ? round.selected_round_id.startsWith(roundId) : round.selected_round_id === round.latest_round_id)
     && userId
     && userKind === 'human'
+    && draftScope !== null && draftScope === draftScopeKey(draftStorageScope(briefingId, round), userId)
     && round.items.every((item) => item.responseVisible)
     && (round.state === 'open' || round.state === 'submitted')
     && !projectionQuery.isPlaceholderData
@@ -341,15 +344,14 @@ export function BriefingDocumentRenderer({
     ? (round?.directive_binding?.reason || 'Submitting is unavailable for the current identity or instance.')
     : round?.directive_binding?.status !== 'valid'
       ? (round?.directive_binding?.reason || 'The directive binding is unavailable.')
-      : contentGate === null ? 'Loading pinned document…'
-      : contentGate ? contentGate
-      : annotationEditing ? 'Save or cancel the text replacement.'
-      : clearBusy ? 'Clearing pending annotations…'
-        : busy ? 'Submitting changes…'
-        : requiredIncomplete ? 'Complete the required directives before submitting.'
+      : contentGate
+        || (annotationEditing ? 'Save or cancel the text replacement.'
+          : requiredIncomplete ? 'Complete the required directives before submitting.'
           : emptyNoChange ? 'Add an answer or annotation before submitting.'
-          : !draftDiffers && frozenMatches ? 'No answer or annotation changes since your latest submission.'
-            : null;
+            : !draftDiffers && frozenMatches ? 'No answer or annotation changes since your latest submission.'
+              : null);
+
+  const submitDisabled = contentGate === null || busy || clearBusy || Boolean(submitReason);
 
   const submit = async () => {
     if (!round || !canMutate || busy || clearBusy || annotationEditing || contentGate !== '') return;
@@ -739,11 +741,11 @@ export function BriefingDocumentRenderer({
               <button
                 type="button"
                 className="briefing-primary"
-                aria-disabled={Boolean(submitReason)}
+                aria-disabled={submitDisabled}
                 aria-busy={busy}
                 aria-describedby={submitReason ? 'briefing-submit-reason' : undefined}
-                title={submitReason ?? undefined}
-                onClick={(event) => { if (submitReason && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
+                {...appTip(submitReason ?? undefined)}
+                onClick={(event) => { if (submitDisabled && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
                 onKeyDown={(event) => {
                   if (!submitReason || !requiredIncomplete || (event.key !== 'Enter' && event.key !== ' ')) return;
                   event.preventDefault();

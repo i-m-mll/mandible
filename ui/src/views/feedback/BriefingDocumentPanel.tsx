@@ -30,7 +30,7 @@ export type BriefingDocumentPanelProps = {
   draft?: Record<string, BriefingResponseValue | null>;
   validationErrors?: Record<string, string>;
   onDirectiveValue?(itemId: string, value: BriefingResponseValue | null): void;
-  onContentGateChange?(reason: string): void;
+  onContentGateChange?(reason: string | null): void;
   onDocumentFailureChange?(message: string | null): void;
   onAnnotationEditChange?(editing: boolean): void;
 };
@@ -72,7 +72,7 @@ async function verifyDirectives(source: string, items: readonly BriefingDirectiv
 
 function annotationActor(annotation: BriefingAnnotation): string {
   return annotation.presentation?.actor?.display_name || annotation.presentation?.actor?.slug
-    || (annotation.presentation?.source === 'current_draft' ? 'You' : 'Unknown user');
+    || (annotation.presentation?.source === 'current_draft' ? 'You' : 'Reviewer');
 }
 
 export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, draftIdentity, onRefresh,
@@ -154,7 +154,7 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
   const failure = currentDocument?.documentError || currentDocument?.directiveError || currentComparison?.error
     || (round.directive_binding?.status !== 'valid' ? round.directive_binding?.reason || 'The pinned document binding is unavailable.' : null);
   const ready = currentDocument !== null && currentDocument.directiveKey === directiveKey && currentComparison !== null && !failure;
-  const contentGate = failure ?? (ready ? '' : 'Verifying pinned document…');
+  const contentGate = failure ?? (ready ? '' : null);
   const canInteract = canMutate && ready && !busy;
   useEffect(() => onContentGateChange?.(contentGate), [contentGate, onContentGateChange]);
   useEffect(() => onDocumentFailureChange?.(failure), [failure, onDocumentFailureChange]);

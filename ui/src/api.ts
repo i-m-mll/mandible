@@ -4940,13 +4940,18 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
       ? briefingRecord(selected.latest_frozen_membership).annotation_event_ids as string[]
       : [],
   );
+  const currentSubmissionId = briefingString(briefingRecord(latestSubmission).id);
+  const currentSubmissionActor = currentSubmissionId && Array.isArray(selected.submission_overlays)
+    ? selected.submission_overlays.map(briefingRecord).find(submission => submission.id === currentSubmissionId)?.actor ?? null
+    : null;
   const currentAnnotations = (Array.isArray(selected.annotations) ? selected.annotations : []).map((annotation) => ({
     ...briefingRecord(annotation),
     presentation: {
       source: frozenAnnotationIds.has(briefingString(briefingRecord(annotation).annotation_event_id))
         ? 'annotation_set'
         : 'current_draft',
-      actor: null,
+      actor: frozenAnnotationIds.has(briefingString(briefingRecord(annotation).annotation_event_id))
+        ? currentSubmissionActor : null,
     },
   }));
   const overlayAnnotations = Array.isArray(selectedOverlayRecord.annotations)

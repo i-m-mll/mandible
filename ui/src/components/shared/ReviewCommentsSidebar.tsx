@@ -1,5 +1,7 @@
+import { useLayoutEffect, useRef } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import type { MarkdownSourceRange } from '../MarkdownDocument';
+import { appTip } from './AppHoverTips';
 import { ContextualAction } from './ContextualAction';
 import { CollapsiblePanel } from './CollapsiblePanel';
 import { Icon } from '../icons/Icon';
@@ -29,19 +31,33 @@ export function ReviewCommentsSidebar({ comments, open, setOpen, onNavigate, sel
 }) {
   const entries = [...comments].sort((a, b) =>
     (a.range?.start ?? Number.MAX_SAFE_INTEGER) - (b.range?.start ?? Number.MAX_SAFE_INTEGER));
+  const selectedEntry = useRef<HTMLLIElement>(null);
+  useLayoutEffect(() => {
+    const entry = selectedEntry.current;
+    const scrollport = entry?.closest('.review-comments__scroll');
+    if (!entry || !scrollport) return;
+    const bounds = entry.getBoundingClientRect();
+    const viewport = scrollport.getBoundingClientRect();
+    if (bounds.top < viewport.top) scrollport.scrollTop += bounds.top - viewport.top;
+    else if (bounds.bottom > viewport.bottom) {
+      scrollport.scrollTop += Math.min(bounds.top - viewport.top, bounds.bottom - viewport.bottom);
+    }
+  }, [open, selectedId]);
+
   return (
     <aside className="review-comments" aria-label="Review comments">
       <CollapsiblePanel title={comments.length ? `Comments (${comments.length})` : 'Comments'}
-        expanded={open} onExpandedChange={setOpen}>
+        expanded={open} onExpandedChange={setOpen} bodyClassName="review-comments__scroll">
         <ol className="review-comments__list">
           {entries.map((entry) => (
-            <li key={entry.id} className="review-comments__entry contextual-action-owner">
+            <li key={entry.id} className="review-comments__entry contextual-action-owner"
+              ref={selectedId === entry.id ? selectedEntry : undefined}>
               <div className="review-comments__meta">
                 <strong>{entry.author}</strong>
                 {entry.status && <span>{entry.status[0].toUpperCase() + entry.status.slice(1)}</span>}
                 {entry.thread && <span>{entry.thread.resolved ? 'Resolved' : 'Open'}</span>}
                 {entry.edit && <ContextualAction aria-label={`Edit comment by ${entry.author}`}
-                  title="Edit comment" onClick={entry.edit}><Icon name="editAnnotation" /></ContextualAction>}
+                  {...appTip('Edit comment')} onClick={entry.edit}><Icon name="editAnnotation" /></ContextualAction>}
               </div>
               {entry.range
                 ? <button className="review-comments__quote btn btn--ghost" type="button"

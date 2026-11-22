@@ -48,16 +48,41 @@
   height: auto;
 }
 
-.markdown-document table {
-  border-collapse: collapse;
-  max-width: 100%;
+.markdown-document .cm-line.markdown-document__table-row {
+  display: grid;
+  grid-template-columns: repeat(var(--markdown-table-columns), minmax(0, 1fr));
+  min-block-size: 1.8em;
+  border: 1px solid var(--border-muted);
+  border-block-end: none;
 }
 
-.markdown-document td,
-.markdown-document th {
-  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+.markdown-document .cm-line.markdown-document__table-row:not(:has(+ .markdown-document__table-row)) {
+  border-block-end: 1px solid var(--border-muted);
+}
+
+.markdown-document .cm-line.markdown-document__table-header {
+  background: color-mix(in srgb, currentColor 7%, transparent);
+  font-weight: 600;
+}
+
+.markdown-document__table-cell {
+  grid-row: 1;
+  min-inline-size: 0;
   padding: 0.3em 0.55em;
-  text-align: start;
+  overflow-wrap: anywhere;
+}
+
+.markdown-document__table-cell--divided {
+  border-inline-start: 1px solid var(--border-muted);
+}
+
+.markdown-document__table-row > :is(br, .cm-widgetBuffer, span[contenteditable="false"]:empty) {
+  display: none;
+}
+
+.markdown-document .cm-line.markdown-document__table-divider {
+  height: 0;
+  overflow: hidden;
 }
 
 .markdown-document__frontmatter {
@@ -76,4 +101,33 @@
 .markdown-document__frontmatter dd {
   margin: 0;
   white-space: pre-wrap;
+}
+
+.markdown-document .cm-line.markdown-document__rule {
+  border-block-start: 1px solid var(--border-muted);
+  margin-block: 0.65em;
+  height: 0;
+  overflow: hidden;
+}
+
+.markdown-document .cm-line.markdown-document__list {
+  padding-inline-start: var(--markdown-list-indent);
+  text-indent: calc(-1 * var(--markdown-list-indent));
+}
+
+.markdown-document__ordered-marker,
+.markdown-document__footnote-label {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.markdown-document__footnote-reference {
+  color: var(--accent);
+  font-size: 0.75em;
+  vertical-align: super;
+  line-height: 0;
+}
+
+.markdown-document__footnote {
+  font-size: 0.9em;
 }
