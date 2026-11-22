@@ -107,7 +107,7 @@ it('retires once without rewriting failure, then ordinary cleanup resumes interr
     const queue = new AuthQueue({ db: f.db, backgroundMaintenance: false, hookManager: hooks, broadcast: () => {} });
     try {
       await expect(queue.retryHookConvergence(f.id)).rejects.toThrow('cannot be retried');
-      expect(queue.isRebuilding).toBe(false);
+      expect(queue.isUpdateAdmissionClosed).toBe(false);
       expect(f.hook()).toEqual({ ...failure, state: 'retired' });
     } finally { await queue.dispose(); }
     expect(await hooks.runPending(f.read())).toEqual([]);
@@ -290,7 +290,7 @@ it('enforces real request custody and generation at the AuthQueue retirement ent
     expect(f.hook().state).toBe('failed');
     expect(listAuthLifecycleEvents(f.db, f.id)).toHaveLength(2);
     expect(() => assertAcceptedReleaseAvailable(f.accepted.reference)).not.toThrow();
-    expect(queue.isRebuilding).toBe(false);
+    expect(queue.isUpdateAdmissionClosed).toBe(false);
     expect(authRequestSnapshot(f.db, f.id)).not.toBe(event.snapshot_json);
     expect(await queue.retireFailedDelivery(f.id, 'Retire settled obsolete attempt', currentActor, event.revision, 3)).toMatchObject({ state: 'retired', cleanup: 'pending' });
     expect(f.hook().state).toBe('retired');

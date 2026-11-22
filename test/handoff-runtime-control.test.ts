@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 
 let scratch: string;
-afterEach(() => { vi.restoreAllMocks(); vi.resetModules(); vi.doUnmock('../scripts/accepted-app-install.mjs'); vi.doUnmock('../scripts/bundle-services.mjs'); vi.doUnmock('../scripts/service-definitions.mjs'); vi.doUnmock('node:child_process'); if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.resetModules(); vi.doUnmock('../scripts/staged-app-install.mjs'); vi.doUnmock('../scripts/bundle-services.mjs'); vi.doUnmock('../scripts/service-definitions.mjs'); vi.doUnmock('node:child_process'); if (scratch) fs.rmSync(scratch, { recursive: true, force: true }); });
 
 it('imports direct runtime operations in a shipped helper bundle without executing CLI adapters', async () => {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'handoff-import-'));
@@ -39,7 +39,7 @@ async function fixture() {
   const release = { provenance: { commit: generation }, native: { bun: '../MacOS/mandible-bun', caddy: '../MacOS/mandible-caddy' }, serviceExecutables: { backend: 'bun', gateway: 'caddy' } };
   const prepared = {};
   const assertHeld = vi.fn();
-  vi.doMock('../scripts/accepted-app-install.mjs', async original => ({ ...await original(), preparedApplicationContext: (value, binding) => {
+  vi.doMock('../scripts/staged-app-install.mjs', async original => ({ ...await original(), preparedApplicationContext: (value) => {
     expect(value).toBe(prepared); assertHeld(); return { resources, app, release, installed: true, digest: 'digest' };
   } }));
   const batch = vi.fn((_context, _operation, roles) => Object.fromEntries(roles.map(role => [role, { status: 'enabled' }])));
@@ -73,7 +73,7 @@ async function fixture() {
   } }));
   vi.resetModules();
   const api = await import('../scripts/local-runtime.mjs');
-  const binding = { home, nativeApp: app, domain: context.domain, backendLabel: context.backendLabel, gatewayLabel: context.gatewayLabel, installationId: 'installation', publicOrigin: main.public_origin, acceptedRelease: { reference: 'approved' }, serviceConfiguration: { configuration: { environment: { MANDIBLE_DB: path.join(home, 'mandible.db') } } }, requestId: 'request', executionId: 'execution', oldProcess: { pid: 999999, startedAt: 'old' }, priorBackend: { launchMode: 'manual' } };
+  const binding = { home, nativeApp: app, domain: context.domain, backendLabel: context.backendLabel, gatewayLabel: context.gatewayLabel, installationId: 'installation', publicOrigin: main.public_origin, serviceConfiguration: { configuration: { environment: { MANDIBLE_DB: path.join(home, 'mandible.db') } } }, requestId: 'request', executionId: 'execution', oldProcess: { pid: 999999, startedAt: 'old' }, priorBackend: { launchMode: 'manual' } };
   const journal = { binding, bindingDigest: 'binding', attempt: { id: 'attempt', state: 'running' } };
   const journalFile = path.join(runtimeDir, 'handoff/request-execution/journal.json');
   fs.mkdirSync(path.dirname(journalFile), { recursive: true });
