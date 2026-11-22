@@ -346,8 +346,11 @@ describe("metadata backup coverage", () => {
         "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name",
       ).all() as Array<{ type: string; name: string; tbl_name: string; sql: string }>)
         .filter((row) => backedUp.has(row.tbl_name));
-      const rows = (target: SqliteDatabase, table: string) =>
-        target.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).all();
+      const rows = (target: SqliteDatabase, table: string) => {
+        const primaryKey = (target.prepare("SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk")
+          .all(table) as Array<{ name: string }>).map(({ name }) => `"${name.replaceAll('"', '""')}"`);
+        return target.prepare(`SELECT * FROM "${table}" ORDER BY ${primaryKey.join(", ") || "rowid"}`).all();
+      };
 
       restored.exec(buildMetadataBackupSql(db));
 

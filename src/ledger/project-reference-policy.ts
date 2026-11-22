@@ -30,6 +30,7 @@ export const PROJECT_REFERENCE_POLICIES: readonly ProjectReferencePolicy[] = [
   column("ledger_change_feed_state", "project_id", { disposition: "merge", handler: "feed" }),
   column("ledger_change_log", "project_id", { disposition: "merge", handler: "feed" }),
   pin("artifact_version", "source_project_id", "Immutable artifact custody"),
+  pin("briefing_bundle_members", "tracked_project_id", "Tracked Briefing paths bind a specific protected repository"),
   pin("conversation_spawn_requests", "project_id", "Frozen spawn request and replay identity"),
   pin("managed_tasks", "project_id", "Reminder request digest binds the owning project"),
   pin("managed_task_events", "project_id", "Immutable reminder event scope"),

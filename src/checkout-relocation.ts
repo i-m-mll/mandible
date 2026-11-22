@@ -57,7 +57,8 @@ export const CHECKOUT_PATH_POLICIES: readonly CheckoutPathPolicy[] = [
     "console_session_telemetry.transcript_path"),
   ...pin("Workflow run record", "workflow_ingest_state.file_path", "workflow_ingest_state.summary_path",
     "workflow_runs.project_path", "workflow_runs.summary_path", "workflow_runs.script_path", "workflow_workers.transcript_path"),
-  ...pin("Checkout-relative path; follows its checkout by id", "space_exports.path", "space_publications.path"),
+  ...pin("Repository-relative path; independent of checkout root",
+    "space_exports.path", "space_publications.path", "briefing_bundle_members.tracked_path", "request_review_drafts.path"),
   ...pin("Completed push record", "push_history.repo_root"),
 ];
 
