@@ -110,11 +110,8 @@ export const METADATA_BACKUP_TABLES = [
   "space_items",
   "space_occurrences",
   "space_edges",
-  // Spaces document/canvas blocks (issue d2a8e77 / umbrella de56ffa). Child of
-  // spaces + space_items (composite FKs), so it MUST follow both in this list;
-  // the metadata backup emits inline UNIQUE/composite-FK + CHECK constraints as
-  // part of the table's own DDL, so they survive backup/restore.
-  "space_blocks",
+  "space_documents",
+  "space_document_addresses",
   // Spaces document-custody tracking (issue 9041bb3 / umbrella de56ffa). The
   // MUTABLE tracking record keyed to the BACKED-UP `ledger_project_checkouts.id`
   // (in LEDGER_BACKUP_TABLES below) — NOT the excluded `work_repos.id` — so its

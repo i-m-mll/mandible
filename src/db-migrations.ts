@@ -1,3 +1,4 @@
+import { backupBeforeSpaceCutover, convertSpaceDocuments } from "./spaces/migrate-document.js";
 import { REVIEW_ROUND_MIGRATION_SQL } from "./feedback/review-schema.js";
 import { exactAgentRef } from "./ambient-provider-identity.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
@@ -2477,6 +2478,7 @@ export const MIGRATIONS: readonly Migration[] = [
   // Issue 2927dd8 — a conditional closure that finds its issue still held ends skipped_held.
   { version: 247, name: "skipped_held_action_state", statements: [...AUTH_REQUEST_ACTIONS_REBUILD_SQL], requires_foreign_keys_off: true },
   { version: 248, name: "review_round_document_bindings", statements: [...REVIEW_ROUND_MIGRATION_SQL], requires_foreign_keys_off: true },
+  { version: 249, name: "spaces_document_source", statements: [] },
 ];
 
 /**
@@ -2685,6 +2687,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
     const group = normal;
     normal = [];
     db.transaction(() => {
+      if (group.some(migration => migration.name === "spaces_document_source")) backupBeforeSpaceCutover(db);
       for (const migration of group) {
         if (migration.version !== 209 || !validateConversationIdentitySchema(db)) {
           for (const statement of migration.statements) db.exec(statement);
@@ -2692,6 +2695,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         if (migration.version === 190) loadHistoricalMigrations().preserveLegacyDocuments(db);
         if (migration.version === 223) seedLegacyAssignmentTargets(db);
         if (migration.version === 233) recoverHistoricalExactAssignments(db);
+        if (migration.name === "spaces_document_source") convertSpaceDocuments(db, "apply");
         setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
       }
     })();

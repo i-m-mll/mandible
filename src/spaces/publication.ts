@@ -11,16 +11,19 @@ import { promisify } from 'node:util';
 import type { Db } from '../db.js';
 import { resolveOperationalIssueRef } from '../ledger/operational-links.js';
 import { createSpace, getSpace } from '../ledger/spaces.js';
-import { createSpaceBlock } from '../ledger/space-blocks.js';
+import { copyDocumentSource, documentFromBlocks, type SpaceBlockRecord } from './document-source.js';
+import { captureSavedSpaceSource, getSpaceDocument, saveSpaceDocument } from './document-store.js';
+import { readNativeDocument, writeNativeDocument } from './document-file.js';
+import { legacyBlockRecord, type SpaceBlockRow } from './legacy-blocks.js';
 import { resolveArtifactIdentity, recordArtifactVersion } from '../provider-artifacts.js';
 import { artifactMaterializationTarget } from '../artifact-identity.js';
 import { readArtifactMaterial } from '../artifact-materialization.js';
 import { documentHistoryEntry } from './history.js';
-import { importDocument } from './serialize.js';
-import { ExportError, getProjectCheckout, normalizeRepoRelativePath, resolveCheckoutForSpace, serializeSpaceDocument } from './export.js';
+import { importDocument, isV1Document, orderBlocks } from './serialize.js';
+import { ExportError, getProjectCheckout, normalizeRepoRelativePath, resolveCheckoutForSpace } from './export.js';
 
 export type SpacePublication = {
-  id: string; space_id: string; source_revision: string; snapshot_ref: string; content: string;
+  id: string; space_id: string; source_revision: string; snapshot_ref: string; content: string; source_history_id: string | null;
   repo_id: string; path: string; expected_destination_sha256: string | null; expected_destination_mode: '100644' | '100755' | null; issue_id: string; message: string;
   branch: string | null; worktree: string | null; commit_sha: string | null; version_ref: string | null;
   auth_request_id: string | null; state: 'prepared' | 'committed' | 'submitted'; created_at: number;
@@ -46,7 +49,7 @@ export function getPublication(db: Db, spaceId: string, id: string): SpacePublic
   if (!value) throw new ExportError('invalid_publication','Publication not found');
   return value;
 }
-function preparePublicationValue(db: Db, input: { spaceId: string; repoId?: string | null; path: string; issue: string; message?: string }): SpacePublication {
+function preparePublicationValue(db: Db, input: { spaceId: string; repoId?: string | null; path: string; issue: string; message?: string; expectedGeneration?: number }): SpacePublication {
   const space = getSpace(db,input.spaceId);
   if (!space) throw new ExportError('space_not_found','Space not found');
   const checkout = resolveCheckoutForSpace(db,space,input.repoId);
@@ -57,16 +60,22 @@ function preparePublicationValue(db: Db, input: { spaceId: string; repoId?: stri
   const expected = destinationState(checkout.root,relative);
   const id = crypto.randomUUID();
   return mutateSpaceRecord(db, "space_publications", id, space.id, () => {
-    const content = serializeSpaceDocument(db,space.id);
+    const generation = input.expectedGeneration ?? getSpaceDocument(db, space.id).generation;
+    const capture = captureSavedSpaceSource(db, space.id, generation);
+    if (!capture.ok) throw new ExportError('stale_document', 'Space document changed since the selected generation');
+    const content = writeNativeDocument({
+      space_id: space.id, title: space.title, description: space.description, metadata: space.metadata,
+    }, capture.capture.content);
+    const digest = hash(content);
     const snapshot = recordArtifactVersion(db, {
       content, source_kind: 'managed', custody_mode: 'managed', repo_id: checkout.project_id,
       series_key: `space-publication:${space.id}`, logical_name: space.title, media_type: 'text/markdown',
-      metadata: { space_id: space.id, source_revision: hash(content) },
+      metadata: { space_id: space.id, source_revision: digest, source_history_id: capture.capture.id },
     });
     db.prepare(`INSERT INTO space_publications (id,space_id,source_revision,snapshot_ref,content,repo_id,path,
-      expected_destination_sha256,expected_destination_mode,issue_id,message,state,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'prepared',?)`)
-      .run(id,space.id,hash(content),snapshot.artifact_version.id,content,checkout.id,relative,expected.sha256,expected.mode,issue.issue_id,
-        input.message?.trim() || `Publish ${space.title}`,Date.now());
+      expected_destination_sha256,expected_destination_mode,issue_id,message,state,created_at,source_history_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?)`)
+      .run(id,space.id,digest,snapshot.artifact_version.id,content,checkout.id,relative,expected.sha256,expected.mode,issue.issue_id,
+        input.message?.trim() || `Publish ${space.title}`,Date.now(),capture.capture.id);
     return getPublication(db,space.id,id);
   }, checkout.project_id);
 }
@@ -199,34 +208,65 @@ function importManagedDocumentValue(db: Db, input: { ref: string; projectId?: st
   if (!pinned.ok) throw new ExportError('invalid_publication',pinned.error.message);
   const material = readArtifactMaterial(db,pinned.value,8*1024*1024);
   if (!material.ok) throw new ExportError('invalid_publication',material.error.message);
-  const imported = importDocument(material.value.bytes.toString('utf8'));
-  const encodedState = imported.tree.frontmatter.mandible_document_state;
-  const stateSchema=z.object({description:z.string().nullable().optional(),metadata:z.record(z.string(),z.unknown()).optional(),
-    blocks:z.record(z.string(),z.object({metadata:z.record(z.string(),z.unknown()).optional(),item_snapshot:z.record(z.string(),z.unknown()).nullable().optional()})).optional()});
-  let rawState:unknown={};
-  try {if(encodedState)rawState=JSON.parse(Buffer.from(encodedState,'base64').toString('utf8'));}
-  catch {throw new ExportError('invalid_publication','Document metadata is malformed; its immutable source is retained');}
-  const parsedState=stateSchema.safeParse(rawState);
-  if(!parsedState.success)throw new ExportError('invalid_publication','Document metadata has an invalid shape; its immutable source is retained');
-  const state=parsedState.data;
+  const source = material.value.bytes.toString('utf8');
+  if (!Buffer.from(source, 'utf8').equals(material.value.bytes)) throw new ExportError('invalid_publication', 'Document contains invalid UTF-8');
+  return importDocumentSource(db, {
+    ...input, source,
+    provenance: { imported_from: pinned.value.version_id ?? pinned.value.id, imported_sha256: hash(material.value.bytes) },
+  });
+}
 
-  if (imported.conflicts.some(conflict=>['duplicate_id','invalid_parent'].includes(conflict.kind)))
-    throw new ExportError('invalid_publication','Document contains invalid block relationships');
-  return db.transaction(()=> {
-    const space = createSpace(db,{ project_id:input.projectId,title:input.title,default_renderer:'document',description:state.description,
-      metadata:{ ...state.metadata,imported_from:pinned.value.version_id ?? pinned.value.id, imported_sha256:hash(material.value.bytes) } });
-    const ids = new Map(imported.tree.blocks.map(block=>[block.id,crypto.randomUUID()]));
-    const pending = [...imported.tree.blocks];
-    const added = new Set<string>();
-    while (pending.length) {
-      const index = pending.findIndex(block=>!block.parent_id || added.has(block.parent_id));
-      if (index < 0) throw new ExportError('invalid_publication','Document has cyclic or missing parents');
-      const [block] = pending.splice(index,1);
-      createSpaceBlock(db,space.id,{ ...block,id:ids.get(block.id)!,parent_id:block.parent_id ? ids.get(block.parent_id)! : null,
-        item_id:null,item_snapshot:state.blocks?.[block.id]?.item_snapshot ?? (block.item_id ? { item_id:block.item_id } : null),
-        metadata:{ ...state.blocks?.[block.id]?.metadata,imported_block_id:block.id, imported_item_id:block.item_id } });
-      added.add(block.id);
+const v1State = z.object({
+  description: z.string().nullable().optional(), metadata: z.record(z.string(), z.unknown()).optional(),
+  blocks: z.record(z.string(), z.object({
+    metadata: z.record(z.string(), z.unknown()).optional(),
+    item_snapshot: z.record(z.string(), z.unknown()).nullable().optional(),
+  })).optional(),
+});
+
+function readV1(source: string, rawRows: string | undefined) {
+  const imported = importDocument(source);
+  try {
+    const encoded = imported.tree.frontmatter.mandible_document_state;
+    const state = v1State.parse(encoded ? JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) : {});
+    if (rawRows !== undefined) {
+      const blocks = (JSON.parse(rawRows) as SpaceBlockRow[]).map(legacyBlockRecord);
+      const byId = new Map(blocks.map(block => [block.id, block]));
+      const ordered = orderBlocks(blocks).map(block => byId.get(block.id)!);
+      return { state, blocks: ordered };
     }
+    if (imported.conflicts.some(conflict => ['duplicate_id', 'invalid_parent'].includes(conflict.kind))) {
+      throw new Error('invalid block relationships');
+    }
+    const blocks: SpaceBlockRecord[] = imported.tree.blocks.map(block => ({
+      ...block, space_id: '', created_at: 0, updated_at: 0,
+      metadata: state.blocks?.[block.id]?.metadata ?? {},
+      item_snapshot: state.blocks?.[block.id]?.item_snapshot ?? (block.item_id ? { item_id: block.item_id } : null),
+    }));
+    const byId = new Map(blocks.map(block => [block.id, block]));
+    return { state, blocks: orderBlocks(blocks).map(block => byId.get(block.id)!) };
+  } catch {
+    throw new ExportError('invalid_publication', 'Historical document metadata or relationships are invalid');
+  }
+}
+
+function importDocumentSource(db: Db, input: {
+  projectId?: string | null; title: string; source: string; rawRows?: string;
+  provenance: Record<string, unknown>;
+}) {
+  const native = readNativeDocument(input.source);
+  const legacy = input.rawRows !== undefined || isV1Document(input.source)
+    ? readV1(input.source, input.rawRows) : null;
+  const state = native?.metadata ?? legacy?.state;
+  return db.transaction(() => {
+    const space = createSpace(db, {
+      project_id: input.projectId, title: input.title, default_renderer: 'document',
+      description: state?.description, metadata: { ...state?.metadata, ...input.provenance },
+    });
+    const source = native?.source ?? (legacy ? documentFromBlocks(legacy.blocks) : input.source);
+    const copy = copyDocumentSource(space.id, source, crypto.randomUUID);
+    const result = saveSpaceDocument(db, space.id, 0, copy);
+    if (!result.ok) throw new Error('new Space already has a saved document');
     return space;
   })();
 }
@@ -239,9 +279,14 @@ function importHistoryDocumentValue(db: Db, spaceId: string, id: string, title: 
     if (typeof entry.content !== 'string') throw new ExportError('invalid_publication','Historical content is unavailable; inspect its preserved checkout details');
     const frozen=recordArtifactVersion(db,{source_kind:'managed',custody_mode:'managed',content:entry.content,
       series_key:`space-history:${id}`,metadata:{history_id:id,space_id:spaceId}});
-    return importManagedDocumentValue(db,{ref:frozen.artifact_version.id,title,projectId:source.project_id});
+    return importDocumentSource(db, {
+      source: entry.content, rawRows: typeof entry.blocks_json === 'string' ? entry.blocks_json : undefined,
+      projectId: source.project_id, title,
+      provenance: { imported_from: frozen.artifact_version.id, imported_sha256: hash(entry.content) },
+    });
   })();
 }
+
 function importGitDocumentValue(db: Db, input: { project: string; commit: string; path: string; title: string; projectId?: string | null }) {
   return db.transaction(() => {
     const pinned=recordArtifactVersion(db,{ source_kind:'tracked_repo',custody_mode:'git',project:input.project,

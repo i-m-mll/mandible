@@ -1,3 +1,4 @@
+import { SPACE_DOCUMENT_SCHEMA_SQL } from "./spaces/document-schema.js";
 import { REVIEW_ROUND_SCHEMA_SQL, REVIEW_EVIDENCE_SCHEMA_SQL } from "./feedback/review-schema.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
@@ -36,7 +37,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 248;
+export const BASELINE_SCHEMA_VERSION = 249;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -530,7 +531,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE push_history (\n        id TEXT PRIMARY KEY,\n        repo_id TEXT NOT NULL,\n        repo_root TEXT NOT NULL,\n        scope TEXT NOT NULL,\n        status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),\n        result_json TEXT,\n        started_at INTEGER NOT NULL,\n        completed_at INTEGER\n      )",
   "CREATE TABLE sessions (\n  id            TEXT PRIMARY KEY,\n  app           TEXT NOT NULL,\n  parent_id     TEXT REFERENCES sessions(id) ON DELETE CASCADE,\n  status        TEXT NOT NULL DEFAULT 'active',\n  pid           INTEGER,\n  pid_start     TEXT,\n  cwd           TEXT,\n  branch        TEXT,\n  worktree      TEXT,\n  task          TEXT,\n  terminal      TEXT,\n  multiplexer   TEXT,\n  nav_session   TEXT,\n  nav_tab       TEXT,\n  nav_pane_id   TEXT,\n  nav_extra     TEXT,\n  agent_type    TEXT,\n  description   TEXT,\n  created_at    TEXT NOT NULL DEFAULT (datetime('now')),\n  ended_at      TEXT,\n  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))\n, nav_metadata_status TEXT NOT NULL DEFAULT 'not_applicable', nav_metadata_attempts INTEGER NOT NULL DEFAULT 0, nav_metadata_last_error TEXT, nav_metadata_last_attempt_at TEXT, nav_metadata_next_retry_at TEXT, pinned INTEGER DEFAULT 0, last_active TEXT, conversation_id TEXT, owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL, identity_mismatch_at INTEGER, identity_mismatch_json TEXT)",
   "CREATE TABLE settings (\n        key TEXT PRIMARY KEY,\n        value TEXT NOT NULL,\n        updated_at INTEGER NOT NULL\n      )",
-  "CREATE TABLE space_blocks (\n        id                 TEXT NOT NULL,\n        space_id           TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        parent_id          TEXT,\n        block_type         TEXT NOT NULL\n                             CHECK(block_type IN (\n                               'heading','paragraph','reference','artifact_embed',\n                               'issue_embed','comment_embed','todo'\n                             )),\n        item_id            TEXT,\n        item_snapshot_json TEXT\n                             CHECK(item_snapshot_json IS NULL\n                               OR (json_valid(item_snapshot_json)\n                                   AND json_type(item_snapshot_json)='object')),\n        sort_key           TEXT NOT NULL,\n        markdown           TEXT NOT NULL DEFAULT '',\n        metadata_json      TEXT NOT NULL DEFAULT '{}'\n                             CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at         INTEGER NOT NULL,\n        updated_at         INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        CHECK (item_id IS NULL OR item_snapshot_json IS NOT NULL),\n        FOREIGN KEY (space_id, parent_id)\n          REFERENCES space_blocks(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, item_id)\n          REFERENCES space_items(space_id, id) ON DELETE RESTRICT\n      )",
   "CREATE TABLE space_edges (\n        id            TEXT PRIMARY KEY,\n        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        source        TEXT NOT NULL,\n        target        TEXT NOT NULL,\n        label         TEXT,\n        style         TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        FOREIGN KEY (space_id, source)\n          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, target)\n          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE\n      )",
   "CREATE TABLE space_exports ( id TEXT PRIMARY KEY, space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE, repo_id TEXT NOT NULL REFERENCES ledger_project_checkouts(id) ON DELETE RESTRICT, branch TEXT NOT NULL, path TEXT NOT NULL, authority TEXT NOT NULL DEFAULT 'mandible' CHECK(authority IN ('mandible','repo')), status TEXT NOT NULL DEFAULT 'clean' CHECK(status IN ('clean','stale','repo_changed','worktree_dirty','conflict')), last_export_commit TEXT, last_export_blob_sha TEXT, last_export_content_sha256 TEXT, last_seen_commit TEXT, last_seen_content_sha256 TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_export_blob_id TEXT REFERENCES artifact_blob(id) ON DELETE SET NULL, pre_export_snapshot_blob_id TEXT REFERENCES artifact_blob(id) ON DELETE SET NULL, UNIQUE (repo_id, branch, path) )",
   CANONICAL_SPACE_ITEMS_SQL,
@@ -664,8 +664,6 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX idx_push_history_repo ON push_history(repo_id)",
   "CREATE INDEX idx_push_history_status ON push_history(status)",
   "CREATE INDEX idx_sessions_conversation_id\n        ON sessions(conversation_id) WHERE conversation_id IS NOT NULL",
-  "CREATE INDEX idx_space_blocks_item\n        ON space_blocks(space_id, item_id) WHERE item_id IS NOT NULL",
-  "CREATE INDEX idx_space_blocks_tree\n        ON space_blocks(space_id, parent_id, sort_key)",
   "CREATE INDEX idx_space_edges_source ON space_edges(space_id, source)",
   "CREATE INDEX idx_space_edges_target ON space_edges(space_id, target)",
   "CREATE INDEX idx_space_exports_repo\n        ON space_exports(repo_id, branch, path)",
@@ -1151,7 +1149,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
       )
       BEGIN SELECT RAISE(ABORT, 'captured auth headline counts are immutable'); END`);
     // Match forward migration order: publication binding follows all prior auth columns.
-    for (const statement of SPACE_PUBLICATION_AUTH_SCHEMA_SQL) db.exec(statement);
+    for (const statement of [...SPACE_PUBLICATION_AUTH_SCHEMA_SQL, ...SPACE_DOCUMENT_SCHEMA_SQL]) db.exec(statement);
     db.exec(AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL);
     db.exec(AUTH_PREREQUISITE_COLUMN_SQL);
     db.exec("ALTER TABLE work_units ADD COLUMN custody_generation INTEGER NOT NULL DEFAULT 0 CHECK(custody_generation >= 0)");

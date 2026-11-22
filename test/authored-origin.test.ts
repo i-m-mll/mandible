@@ -65,7 +65,7 @@ it("retains origin across authored structure changes and suppresses no-ops, fail
   })())).toThrow("abort outer operation");
   db.exec("CREATE TRIGGER reject_authored_history BEFORE INSERT ON ledger_events WHEN NEW.entity_type='space_block' BEGIN SELECT RAISE(ABORT,'history unavailable'); END");
   expect(() => createSpaceBlock(db, space.id, { block_type: "paragraph" })).toThrow("history unavailable");
-  expect(db.prepare("SELECT id FROM space_blocks").all()).toEqual([]);
+  expect(db.prepare("SELECT id FROM space_document_addresses").all()).toEqual([]);
   expect(history()).toEqual(beforeRollback);
   expect(notifications).toHaveBeenCalledTimes(published);
   withLedgerMutationActor({ actor_type: "system", attribution: systemAction() }, () => deleteSpace(db, space.id));

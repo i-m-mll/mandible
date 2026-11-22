@@ -3685,7 +3685,7 @@ export async function getSpacePublications(spaceId: string,signal?:AbortSignal):
   if (!result || !Array.isArray(result.publications) || !Array.isArray(result.history) || !Array.isArray(result.destinations)) throw new Error('The Spaces service returned invalid publication history.');
   return result;
 }
-export async function prepareSpacePublication(spaceId: string, body: { path: string; repo_id?: string; issue: string; message?: string }): Promise<SpacePublication> {
+export async function prepareSpacePublication(spaceId: string, body: { path: string; repo_id?: string; issue: string; message?: string; expected_generation?: number }): Promise<SpacePublication> {
   return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/publications`,body)) as SpacePublication;
 }
 export async function submitSpacePublication(spaceId: string,id: string): Promise<SpacePublication> {

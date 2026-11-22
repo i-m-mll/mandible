@@ -359,6 +359,8 @@ export function updateSpace(
 
 export function deleteSpace(db: Db, id: string): boolean {
   return mutateSpaceRecord(db, "spaces", id, id, () => {
+    db.prepare("DELETE FROM space_document_history WHERE space_id=? AND kind='pre-text-storage'").run(id);
+    db.prepare("DELETE FROM space_documents WHERE id=?").run(id);
     const result = db.prepare("DELETE FROM spaces WHERE id = ?").run(id);
     return result.changes > 0;
   });
