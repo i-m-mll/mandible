@@ -17,6 +17,7 @@ type ConversionMember = { briefing_id: string; title: string; project_id: string
   | { kind: "keep_custody"; reason: string }
 );
 type ConversionPlan = {
+  group_name: string;
   group_id: string;
   base_bundle_id: string;
   pending_proposal_ids: string[];
@@ -31,8 +32,8 @@ export function planTrackedBriefingGroupConversion(db: Db, groupRef: string): Co
 
 function readConversionPlan(db: Db, groupRef: string): ConversionPlan {
   const groupId = resolveGroupId(db, groupRef);
-  const group = db.prepare("SELECT current_bundle_id, archived_at FROM briefing_groups WHERE id = ?")
-    .get(groupId) as { current_bundle_id: string | null; archived_at: number | null };
+  const group = db.prepare("SELECT name, current_bundle_id, archived_at FROM briefing_groups WHERE id = ?")
+    .get(groupId) as { name: string; current_bundle_id: string | null; archived_at: number | null };
   if (!group.current_bundle_id || group.archived_at !== null) {
     throw new BriefingStoreError("Conversion requires an active group with a current bundle", 409, "conversion_group_unavailable");
   }
@@ -86,27 +87,67 @@ function readConversionPlan(db: Db, groupRef: string): ConversionPlan {
     const { briefing_id, title, project_id, old_path } = candidate;
     return { briefing_id, title, project_id, old_path, kind: "keep_custody", reason: "duplicate_tracked_path" };
   });
-  const plan = { group_id: groupId, base_bundle_id: base, pending_proposal_ids: pending.map(row => row.bundle_id),
+  const plan = { group_name: group.name, group_id: groupId, base_bundle_id: base, pending_proposal_ids: pending.map(row => row.bundle_id),
     decision_count: history.count, members };
   const plan_digest = createHash("sha256").update(canonicalJson({ plan, layout, custody: rows })).digest("hex");
   return { ...plan, plan_digest };
 }
 
-export function convertTrackedBriefingGroup(db: Db, input: {
-  groupRef: string; expectedBaseRef: string; planDigest: string;
-}, now = Date.now()) {
+type ReviewedConversion = { groupRef: string; expectedBaseRef: string; planDigest: string };
+
+function reviewedConversion(db: Db, input: ReviewedConversion): ConversionPlan {
+  const plan = readConversionPlan(db, input.groupRef);
+  if (plan.base_bundle_id !== resolveBundleId(db, input.expectedBaseRef)) {
+    throw new BriefingStoreError("The group’s current bundle changed", 409, "conversion_base_drift");
+  }
+  if (plan.pending_proposal_ids.length) {
+    throw new BriefingStoreError("Decide all custody proposals before conversion", 409, "conversion_pending_proposals",
+      { proposal_ids: plan.pending_proposal_ids });
+  }
+  if (plan.plan_digest !== input.planDigest) {
+    throw new BriefingStoreError("The group’s conversion plan changed. Review it again.", 409, "conversion_plan_drift");
+  }
+  return plan;
+}
+
+const CONVERSION_COMMAND = "mandible-native:briefing-group-convert";
+const UUID = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
+const CONVERSION_ARGUMENTS = new RegExp(`^${CONVERSION_COMMAND} (${UUID}) (${UUID}) ([a-f0-9]{64})$`);
+
+export function briefingConversionArguments(command: string): ReviewedConversion | null {
+  if (command.split(" ", 1)[0] !== CONVERSION_COMMAND) return null;
+  const match = CONVERSION_ARGUMENTS.exec(command);
+  if (!match || match[0] !== command) throw new BriefingStoreError("Invalid reviewed conversion arguments", 400, "invalid_conversion_arguments");
+  const [, groupRef, expectedBaseRef, planDigest] = match;
+  return { groupRef, expectedBaseRef, planDigest };
+}
+
+export function prepareBriefingConversionRequest(db: Db, input: ReviewedConversion) {
+  const plan = db.transaction(() => reviewedConversion(db, input)).deferred();
+  if (!plan.members.some(member => member.kind === "track")) {
+    throw new BriefingStoreError("No Briefing members to convert", 409, "conversion_empty");
+  }
+  return {
+    type: "config-change" as const,
+    command: `${CONVERSION_COMMAND} ${plan.group_id} ${plan.base_bundle_id} ${plan.plan_digest}`,
+    title: `Track files in ${plan.group_name}`,
+    commit_message: [
+      "Read these Briefing members from their projects’ protected branches. Preserve the group layout and existing review decisions.",
+      "Take a ledger backup before changing the current bundle.",
+      [
+        "```text",
+        ...plan.members.map(member => member.kind === "track"
+          ? `Track ${JSON.stringify(member.project_key + "/" + member.path)}${member.path === member.old_path ? "" : ` from ${JSON.stringify(member.old_path)}`}`
+          : `Keep ${JSON.stringify(member.title)} in custody (${member.reason.replaceAll("_", " ")}).`),
+        "```",
+      ].join("\n"),
+    ].join("\n\n"),
+  };
+}
+
+export function convertTrackedBriefingGroup(db: Db, input: ReviewedConversion, now = Date.now()) {
   return db.transaction(() => {
-    const plan = readConversionPlan(db, input.groupRef);
-    if (plan.base_bundle_id !== resolveBundleId(db, input.expectedBaseRef)) {
-      throw new BriefingStoreError("The group’s current bundle changed", 409, "conversion_base_drift");
-    }
-    if (plan.pending_proposal_ids.length) {
-      throw new BriefingStoreError("Decide all custody proposals before conversion", 409, "conversion_pending_proposals",
-        { proposal_ids: plan.pending_proposal_ids });
-    }
-    if (plan.plan_digest !== input.planDigest) {
-      throw new BriefingStoreError("The group’s conversion plan changed. Review it again.", 409, "conversion_plan_drift");
-    }
+    const plan = reviewedConversion(db, input);
     const conversions = new Map(plan.members.flatMap(member => member.kind === "track" ? [[member.briefing_id, member]] : []));
     if (!conversions.size) return { plan, bundle_id: plan.base_bundle_id, changed: false, backup_path: null };
     const directory = path.join(path.dirname(path.resolve(db.name)), "backups");
@@ -114,6 +155,8 @@ export function convertTrackedBriefingGroup(db: Db, input: {
     const stamp = new Date(now).toISOString().replaceAll(":", "-");
     const backup_path = path.join(directory, `before-briefing-conversion-${stamp}-${randomUUID()}.db`);
     db.backupBeforeMigration(backup_path);
+    // The SQLite writer excludes layout changes while the backup runs. Git refs can still advance.
+    reviewedConversion(db, input);
     const bundleId = randomUUID();
     const rows = bundleMemberRows(db, plan.base_bundle_id).map(row => {
       const member = row.briefing_id === null ? undefined : conversions.get(row.briefing_id);
