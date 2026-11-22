@@ -32,7 +32,7 @@ import type { AuthRequest, AuthLifecycleActor } from '../src/types.js';
 
 const candidate = { pin_sha: 'a'.repeat(40), tree_sha: 'b'.repeat(40), base_sha: 'c'.repeat(40), head_sha: 'd'.repeat(40) };
 const actor: AuthLifecycleActor = { ...systemAction(), authority_path: 'system' };
-async function fixture(db = createMigratedDb(), reviewed = candidate) {
+async function fixture(db = createMigratedDb(), reviewed = candidate, requesterHead?: string) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'failed-retirement-')));
   const id = randomUUID(); const execution = randomUUID(); const record = randomUUID();
   const owner = createUser(db, { slug: 'retirement-owner', display_name: 'Retirement owner', kind: 'agent' });
@@ -54,6 +54,12 @@ async function fixture(db = createMigratedDb(), reviewed = candidate) {
   db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, exit_code, merge_candidate_pin_sha, merge_candidate_tree_sha,
     merge_preflight_base_sha, merge_head_sha, merge_finalized_at, created_at, updated_at, expires_at, custody_work_unit_id, approved_by_user_id)
     VALUES (?, 'merge', 'mandible auth merge feature/x --into main', 'failed delivery', 'executing', 0, ?, ?, ?, ?, NULL, 1, 1, 100, 'unit', ?)`).run(id, ...Object.values(reviewed), owner.id);
+  if (requesterHead) {
+    const report = { schema: 'mandible-auth-change-report@1', files: [], totals: { files: 0, additions: 0, deletions: 0 },
+      comparison: { base_sha: reviewed.base_sha, merge_base_sha: reviewed.base_sha, head_sha: reviewed.pin_sha } };
+    db.prepare('UPDATE auth_requests SET merge_head_sha = ?, merge_effective_head_sha = ?, frozen_change_report_json = ? WHERE id = ?')
+      .run(requesterHead, reviewed.head_sha, JSON.stringify(report), id);
+  }
   db.prepare('UPDATE auth_requests SET depends_on_ids = ? WHERE id = ?').run(JSON.stringify([randomUUID(), randomUUID()]), id);
   db.prepare("INSERT INTO auth_candidate_acceptances (id, auth_request_id, pin_sha, tree_sha, base_sha, head_sha, status, started_at, finished_at, result_json) VALUES (?, ?, ?, ?, ?, ?, 'passed', 1, 2, ?)")
     .run(record, id, ...Object.values(reviewed), JSON.stringify({ receipt: accepted.reference }));
@@ -130,9 +136,18 @@ it('retires once without rewriting failure, then ordinary cleanup resumes interr
 });
 
 it('refuses admission, installed, unknown material and live consumers without changing failed history', async () => {
-  const f = await fixture();
+  const f = await fixture(createMigratedDb(), candidate, 'e'.repeat(40));
   try {
     const original = f.hook(); const count = listAuthLifecycleEvents(f.db, f.id).length;
+    const report = (f.db.prepare('SELECT frozen_change_report_json FROM auth_requests WHERE id = ?').get(f.id) as { frozen_change_report_json: string }).frozen_change_report_json;
+    const edit = f.db.prepare('UPDATE auth_requests SET merge_effective_head_sha = ?, frozen_change_report_json = ? WHERE id = ?');
+    for (const effective of ['f'.repeat(40), null]) {
+      edit.run(effective, effective ? report : null, f.id);
+      f.refresh();
+      await expect(f.run()).rejects.toThrow('reviewed candidate changed');
+    }
+    edit.run(candidate.head_sha, report, f.id);
+    f.refresh();
     const runtime = path.join(f.home, 'config/local-sessions'); fs.mkdirSync(f.journal, { recursive: true });
     const unknown = path.join(f.journal, 'unknown'); fs.writeFileSync(unknown, 'preserve');
     await expect(f.run()).rejects.toThrow('handoff material'); fs.unlinkSync(unknown);
@@ -208,11 +223,12 @@ it('does not block the event loop during consumer observation and rejects concur
   try {
     const entered = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
     const run = f.run({ inspect: async () => { entered.resolve(); await release.promise; return { idle: true }; } });
-    await entered.promise;
-    let progressed = false; await new Promise<void>(resolve => setImmediate(() => { progressed = true; resolve(); }));
-    expect(progressed).toBe(true);
-    new AuthHookManager(f.db).grantRetry(f.id);
-    release.resolve();
+    try {
+      await Promise.race([entered.promise, run.then(() => { throw new Error('Retirement finished before inspecting consumers.'); })]);
+      let progressed = false; await new Promise<void>(resolve => setImmediate(() => { progressed = true; resolve(); }));
+      expect(progressed).toBe(true);
+      new AuthHookManager(f.db).grantRetry(f.id);
+    } finally { release.resolve(); }
     await expect(run).rejects.toThrow('failed terminal builtin');
     expect(f.hook().state).toBe('pending');
     expect(listAuthLifecycleEvents(f.db, f.id)).toHaveLength(2);
