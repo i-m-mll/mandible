@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { waitUntil } from "./helpers/wait-until.js";
 import { ProcessGroupSupervisor, runSupervisedCommand } from '../scripts/process-group-supervisor.mjs';
+import { runUnits } from '../scripts/run-provisioned-tests.mjs';
 import { executeTestPhase, measureTestRssKiB, processTreeRss } from '../scripts/test-phase-executor.mjs';
 
 const temporaryRoots: string[] = [];
@@ -93,6 +94,21 @@ it('joins an ignoring-TERM command and descendant inside the inherited deadline,
     expect(isAlive(Number(fs.readFileSync(pidFile, 'utf8')))).toBe(false);
     expect(isAlive(Number(fs.readFileSync(childFile, 'utf8')))).toBe(false);
   }
+});
+
+it("admits only one provisioned unit at a time for the same resource", async () => {
+  const units = ["first", "second"].map(label => ({ label, resource: "launchd", args: [] }));
+  const events: string[] = [];
+  await runUnits(units, {
+    jobs: 2,
+    measureRssKiB: () => 0,
+    spawnUnit: (unit, env) => {
+      events.push(`start:${unit.label}`);
+      return spawn(process.execPath, ["-e", ""], { detached: true, stdio: "ignore", env });
+    },
+    onRun: ({ label, outcome }) => events.push(`${outcome.status}:${label}`),
+  });
+  expect(events).toEqual(["start:first", "passed:first", "start:second", "passed:second"]);
 });
 
 it.each(["signal", "watchdog"] as const)("terminates the launcher shard group through the outer %s path", async (trigger) => {

@@ -167,14 +167,17 @@ export async function runUnits(units, {
     for (;;) {
       if (queue.length === 0 || interrupted()) return null;
       const index = queue.findIndex((unit) => !unit.resource || !held.has(unit.resource));
-      if (index >= 0) return queue.splice(index, 1)[0];
+      if (index >= 0) {
+        const [unit] = queue.splice(index, 1);
+        if (unit.resource) held.add(unit.resource);
+        return unit;
+      }
       await new Promise((resolve) => released.push(resolve));
     }
   }
   try {
     await Promise.all(supervisors.map(async (supervisor) => {
       for (let unit = await next(); unit; unit = await next()) {
-        if (unit.resource) held.add(unit.resource);
         const output = [];
         const started = performance.now();
         const commandStartedAt = unit.nativeProofStartedAt ?? Date.now();
