@@ -107,7 +107,9 @@ import { ensureExactConversationFresh } from "./conversations/freshness.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { ChildRetentionScheduler } from "./conversations/retention.js";
 import { defaultCodexNativeArchiveAdapter } from "./conversation-control/codex-native-archive.js";
-import { installedResourceRoot, readInstalledRelease, verifyInstalledRelease } from "../scripts/installed-release.mjs";
+import { installedResourceRoot, readInstalledRelease } from "../scripts/installed-release.mjs";
+import SqliteDatabase from "./sqlite.js";
+import { checkSchemaCompatibility } from "./db-migrations.js";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import { startProtectedBranchGuardProjection } from "./protected-branch-guard.js";
 import { onProtectionInputsChanged } from "./protection-inputs.js";
@@ -170,8 +172,9 @@ export function startBackgroundIngestionAfterStartupWorkScan(
 }
 
 export async function startDaemon(options: StartOptions = {}): Promise<DaemonHandle> {
-  const installed = installedResourceRoot();
-  if (installed) verifyInstalledRelease(installed);
+  const startupEpoch = randomUUID();
+  const traceBoot = daemonBootTrace(startupEpoch);
+  traceBoot("daemon_entry");
   // Bug: 645f8a8 — arm the readiness gate before any startup work. Health
   // reports ready:false from the moment the listener accepts connections until
   // critical init completes below, so a page loaded mid-startup keeps the
@@ -204,6 +207,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // longest measured ingestion transaction (a 1.4 GB transcript) holds the lock
   // for about 0.9 s, within openDb's busy budget. Issue: 29e81ab.
   const db = openDb(dbPath);
+  traceBoot("ledger_opened");
   const ledgerWarm = instance.role === "main"
     ? warmLedger(db.name, (level, event, details) => logger(level, event, details))
     : null;
@@ -227,6 +231,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     persist: Boolean(operationalLogStore),
     settingsDb: db,
   });
+  traceBoot("logger_configured");
   const eventLoopDiagnostics = new EventLoopLagDiagnostics(
     (level, message, details) => logger(level, message, details),
   );
@@ -235,7 +240,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   eventLoopDiagnostics.sample();
   const sse = new SseManager();
   const version = resolveVersion();
-  const startupEpoch = randomUUID();
   let readyRestartGeneration: string | null = null;
   let closing = false;
   let startupWorkScanComplete = false;
@@ -496,6 +500,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }, instance);
 
   const actualPort = await startServer(server, port, { logger });
+  traceBoot("http_listening");
   const localServer = createLocalSocketServer(serverOptions);
   let closeLocalSocket: () => Promise<void>;
   try {
@@ -532,6 +537,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }
   writePidFile(process.pid, options.pidFilePath);
   logger("info", "server_started", { port: actualPort });
+  traceBoot("transports_ready");
   const stopNoteRelay = notesHome.kind === "source"
     ? relaySourceNoteEvents(notesHome.socketPath, (payload) => broadcast(DOMAIN_EVENTS.INTERFACE_NOTE_CHANGED, payload), (event, detail) => logger("warn", event, detail))
     : () => undefined;
@@ -577,7 +583,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // so health reports ready:true and the UI can drop the splash / re-enable
   // mutation controls. Deferred background scans (issue scan, session
   // discovery) run after this point and intentionally do NOT gate readiness.
+  traceBoot("critical_reconciliation_complete");
   await ledgerWarm;
+  traceBoot("ledger_warm_complete");
   const ledgerWarmTimer = instance.role === "main" ? startLedgerWarmTimer(db.name, logger) : null;
   startIngestion(logger, {
     dbPath,
@@ -585,6 +593,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     getBackgroundBackoffMs:()=>eventLoopDiagnostics.snapshot().backgroundBackoffMs,
   });
   setDaemonReady(true);
+  traceBoot("ready");
   readyRestartGeneration = restartAvailability?.markReady() ?? null;
   logger("info", "daemon_ready", { port: actualPort });
 
@@ -841,6 +850,40 @@ function isMain(): boolean {
   return process.argv[1] === entry;
 }
 
+function daemonBootTrace(startupEpoch: string): (phase: string) => void {
+  if (!isMain()) return () => {};
+  const observedAt = Date.now();
+  const timestamp = (value: string | undefined) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 && number <= observedAt ? number : null;
+  };
+  const launcherPhases = [
+    ["native_entry", timestamp(process.env.MANDIBLE_SERVICE_NATIVE_ENTERED_MS)],
+    ["service_entry", timestamp(process.env.MANDIBLE_SERVICE_ENTERED_MS)],
+    ["installation_verified", timestamp(process.env.MANDIBLE_INSTALLATION_VERIFIED_MS)],
+  ] as const;
+  const startedAt = timestamp(process.env.MANDIBLE_SERVICE_PROCESS_STARTED_MS)
+    ?? launcherPhases[0][1] ?? performance.timeOrigin;
+  const emit = (phase: string, time: number) => process.stderr.write(`${JSON.stringify({
+    level: "info", event: "daemon_boot_phase", phase, time: new Date(time).toISOString(),
+    elapsed_ms: time - startedAt, pid: process.pid, startup_epoch: startupEpoch,
+  })}\n`);
+  emit("process_started", startedAt);
+  for (const [phase, time] of launcherPhases) {
+    if (time !== null) emit(phase, time);
+  }
+  return (phase) => { emit(phase, Date.now()); };
+}
+
+function preflightDaemon(database: string): void {
+  if (!path.isAbsolute(database)) throw new Error("Daemon preflight requires the absolute path to an existing database.");
+  const db = new SqliteDatabase(database, { readonly: true, fileMustExist: true });
+  try {
+    const schemaVersion = checkSchemaCompatibility(db);
+    process.stdout.write(`${JSON.stringify({ schema: "mandible-daemon-preflight@1", schemaVersion })}\n`);
+  } finally { db.close(); }
+}
+
 if (isMain()) {
   // Catch unhandled promise rejections — these can silently swallow errors
   // (e.g., in async route handlers) that would otherwise go unnoticed while
@@ -854,7 +897,16 @@ if (isMain()) {
     })}\n`);
   });
 
-  startDaemon().catch((error) => {
+  const start = async () => {
+    const [command, database, ...other] = process.argv.slice(2);
+    if (command === "--preflight") {
+      if (!database || other.length) throw new Error("Usage: --preflight <absolute database path>");
+      preflightDaemon(database);
+      return;
+    }
+    await startDaemon();
+  };
+  start().catch((error) => {
     process.stderr.write(`${JSON.stringify({ level: "error", message: "fatal", error: String(error) })}\n`);
     process.exit(1);
   });

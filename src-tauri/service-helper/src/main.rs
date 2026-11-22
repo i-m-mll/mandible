@@ -5,8 +5,13 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn run() -> Result<(), String> {
+    let native_entered = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis();
     let args: Vec<_> = std::env::args().skip(1).collect();
     let operation = args.first().map(String::as_str).unwrap_or("status");
     let requested: Vec<&str> = if args.len() > 1 {
@@ -93,15 +98,42 @@ fn run() -> Result<(), String> {
                 return Err(std::io::Error::last_os_error().to_string());
             }
         }
-        let error = Command::new(resource("native", "bun")?)
+        let mut command = Command::new(resource("native", "bun")?);
+        command
             .arg(resource("entrypoints", "service")?)
             .arg(role)
             .env_clear()
             .env("HOME", &home)
             .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
             .env("MANDIBLE_RELEASE_ROOT", &resources)
-            .current_dir(&resources)
-            .exec();
+            .env(
+                "MANDIBLE_SERVICE_NATIVE_ENTERED_MS",
+                native_entered.to_string(),
+            )
+            .current_dir(&resources);
+        if role == "backend" {
+            let mut process = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+            let read = unsafe {
+                libc::proc_pidinfo(
+                    libc::getpid(),
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    process.as_mut_ptr().cast(),
+                    size,
+                )
+            };
+            if read == size {
+                let process = unsafe { process.assume_init() };
+                let process_started =
+                    process.pbi_start_tvsec * 1000 + process.pbi_start_tvusec / 1000;
+                command.env(
+                    "MANDIBLE_SERVICE_PROCESS_STARTED_MS",
+                    process_started.to_string(),
+                );
+            }
+        }
+        let error = command.exec();
         return Err(format!("Cannot execute bundled service runtime: {error}"));
     }
     if operation == "foreground"

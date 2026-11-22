@@ -32,6 +32,7 @@ export function acceptedReleaseDisposition(receipt: AcceptedReleaseReceipt): Own
 export function readImmutableAcceptedRelease(reference: string, expectedCandidate?: AcceptedReleaseCandidate): AcceptedReleaseReceipt;
 export function readAcceptedReleaseReceipt(reference: string, expectedCandidate?: AcceptedReleaseCandidate): AcceptedReleaseReceipt;
 export function readAcceptedInstalledRelease(receipt: AcceptedReleaseReceipt, resources: string): InstalledRelease;
+export function readAcceptedInstalledReleaseIdentity(receipt: AcceptedReleaseReceipt, resources: string): { release: InstalledRelease; sha256: string };
 export function resolveAcceptedRelease(reference: string, expectedCandidate?: AcceptedReleaseCandidate): { receipt: AcceptedReleaseReceipt; app: string; resources: string; release: InstalledRelease };
 export function disposeAcceptedRelease(reference: string, expectedCandidate: AcceptedReleaseCandidate, reason: string, options?: { home?: string; database?: string; assertHeld?: () => void; claim?: (mark: () => void) => void; deferCleanup?: boolean; inspect?: (root: string) => { idle: boolean; reason?: string } | Promise<{ idle: boolean; reason?: string }> }): Promise<{ action: string; reason: string; remaining?: string[] }>;
 export interface PendingRelease {

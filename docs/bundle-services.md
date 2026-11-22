@@ -90,17 +90,22 @@ relocation while previews need the shared gateway. Registration denial is
 reported without changing macOS permission preferences.
 
 `admitBundleOwner` is read-only. A duplicate location, changed authority, or
-different release is refused before setup/registration. `repair` can adopt
-a moved app only when the previous location is absent and release provenance
-matches. The inspector checks launchd's native bundle/program identity and
+different release is refused before setup/registration. First registration
+verifies the signed app and its complete resource inventory and records the
+bundle root filesystem identity, manifest digest, and package digest in the
+owner's verification receipt. Subsequent starts check the root and manifest
+against that receipt. Explicit install or repair qualifies a legacy owner.
+`repair` can adopt a moved app only when the previous location is absent and
+release provenance matches. A previously verified app must also match the
+recorded package digest. The inspector checks launchd's native bundle/program identity and
 the actual running executable path before stop/restart. It waits for captured
 process identities to disappear after asynchronous native unregister.
 
 The exact-package delivery transaction owns drain/journal/publication and
 legacy runner removal. After draining and removing legacy definitions, it
-calls `adoptBundleRelease(context, release, expectedOwner)` under its lifecycle
-lock. This compares the captured owner, requires stopped writers and absent
-legacy definitions, and binds the accepted release. The transaction then
+adopts the verified bundle under its lifecycle lock. Adoption compares the
+captured owner, requires stopped writers and absent legacy definitions, and
+publishes the installation proof atomically with the new owner. The transaction then
 invokes installed `start` and verifies exact package/generation convergence.
 First launch never silently migrates a live source runner or replaces a
 different release. Linux/Windows adapters can implement the same roles,
