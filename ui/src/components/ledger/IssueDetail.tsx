@@ -55,7 +55,6 @@ const ISSUE_DETAIL_SCROLL_OWNER_SELECTORS = [
   '.issues-detail',
   '.graph-detail-pane',
   '.space-canvas__inspector',
-  '.spaces-block-editor__inspector',
   '.ledger-issue-detail',
 ];
 type RenderTimelineEntry =

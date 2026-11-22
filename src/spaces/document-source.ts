@@ -23,6 +23,7 @@ export type SpaceSourceBlock = {
   from: number;
   to: number;
   addressed: boolean;
+  body: { start: number; end: number };
   block: SpaceBlockRecord;
 };
 
@@ -31,11 +32,18 @@ export class BlockValidationError extends Error {}
 const localId = (generation: number, ordinal: number) => `~${generation}-${ordinal}`;
 export const isLocalBlockId = (value: string) => /^~\d+-\d+$/.test(value);
 
-const encode = (value: unknown) => Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+function base64url(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+
+const encode = (value: unknown) => base64url(new TextEncoder().encode(JSON.stringify(value)));
 function decode(value: string): unknown {
-  const bytes = Buffer.from(value, 'base64url');
-  if (bytes.toString('base64url') !== value) throw new Error('noncanonical JSON encoding');
-  return JSON.parse(bytes.toString('utf8'));
+  const binary = atob(value.replaceAll('-', '+').replaceAll('_', '/'));
+  const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+  if (base64url(bytes) !== value) throw new Error('noncanonical JSON encoding');
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -89,6 +97,7 @@ export function parseSpaceSource(space_id: string, source: string, generation: n
       }
       spans.push({
         from: part.from, to: part.to, addressed: id !== null,
+        body: { start: part.node.body.from, end: part.node.body.to },
         block: {
           ...state, id: id ?? localId(generation, spans.length), space_id, parent_id, item_id,
           block_type: SPACE_DIRECTIVE_TYPES.get(part.node.name)!,
@@ -104,7 +113,7 @@ export function parseSpaceSource(space_id: string, source: string, generation: n
         while (source[from - 1] === ' ' || source[from - 1] === '\t') from--;
         while (source[to] === ' ' || source[to] === '\t') to++;
         spans.push({
-          from, to, addressed: false,
+          from, to, addressed: false, body: { start: from, end: to },
           block: {
             id: localId(generation, spans.length), space_id, parent_id: null,
             block_type: node.type === 'heading' ? 'heading' : 'paragraph',

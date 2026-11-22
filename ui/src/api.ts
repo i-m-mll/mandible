@@ -67,8 +67,6 @@ import type {
   WorkflowRunStatus as ContractWorkflowRunStatus,
   WorkflowWorkerStatus as ContractWorkflowWorkerStatus,
   WorkflowWarning as ContractWorkflowWarning,
-  SpaceBlock as ContractSpaceBlock,
-  SpaceBlockType as ContractSpaceBlockType,
   Space as ContractSpace,
   SpaceGroup as ContractSpaceGroup,
   SpaceItem as ContractSpaceItem,
@@ -465,8 +463,8 @@ async function throwOnError(response: Response, method: string, path: string): P
 
 type JsonWriteMethod = 'POST' | 'PATCH' | 'PUT';
 
-async function apiWrite(method: JsonWriteMethod, path: string, body?: unknown, fetchImpl?: typeof fetch): Promise<Response> {
-  const response = await browserSessionFetch(path, {
+function sendJsonRequest(method: JsonWriteMethod, path: string, body?: unknown, fetchImpl?: typeof fetch): Promise<Response> {
+  return browserSessionFetch(path, {
     method,
     headers: {
       ...DEFAULT_HEADERS,
@@ -474,9 +472,11 @@ async function apiWrite(method: JsonWriteMethod, path: string, body?: unknown, f
     },
     body: body ? JSON.stringify(body) : undefined,
   }, fetchImpl);
-  if (!response.ok) {
-    await throwOnError(response, method, path);
-  }
+}
+
+async function apiWrite(method: JsonWriteMethod, path: string, body?: unknown, fetchImpl?: typeof fetch): Promise<Response> {
+  const response = await sendJsonRequest(method, path, body, fetchImpl);
+  if (!response.ok) await throwOnError(response, method, path);
   return response;
 }
 
@@ -5884,49 +5884,48 @@ export async function cancelTaskDisable(commandId: string): Promise<TaskCommandM
 }
 
 /** Embed snapshot placeholder posted alongside an `item_id` (C11 invariant). */
-export type BlockItemSnapshot = Record<string, unknown>;
+export const spaceDocumentPath = (spaceId: string) => `/api/spaces/${encodeURIComponent(spaceId)}/document`;
 
-/** Create-block request body (mirrors `parseBlockCreateInput`, C11). */
-export type CreateBlockBody = {
-  block_type: ContractSpaceBlockType;
-  parent_id?: string | null;
-  item_id?: string | null;
-  item_snapshot?: BlockItemSnapshot | null;
-  sort_key?: string | null;
-  markdown?: string | null;
-  metadata?: Record<string, unknown>;
-};
+type SpaceDocument = import('../../src/spaces/document-store').SpaceDocument;
 
-/** Update-block request body (mirrors `parseBlockUpdateInput`, C11). */
-export type UpdateBlockBody = {
-  block_type?: ContractSpaceBlockType;
-  parent_id?: string | null;
-  item_id?: string | null;
-  item_snapshot?: BlockItemSnapshot | null;
-  sort_key?: string | null;
-  markdown?: string | null;
-  metadata?: Record<string, unknown>;
-};
+export async function getSpaceDocument(spaceId: string, signal?: AbortSignal, fetchImpl?: typeof fetch): Promise<SpaceDocument> {
+  return await (await apiGet(spaceDocumentPath(spaceId), { signal }, fetchImpl)).json() as SpaceDocument;
+}
 
-const spaceBlocksPath = (spaceId: string) => `/api/spaces/${encodeURIComponent(spaceId)}/blocks`;
-export async function listSpaceBlocks(spaceId: string, fetchImpl?: typeof fetch, signal?: AbortSignal): Promise<ContractSpaceBlock[]> {
-  const payload = await parseMaybeJson(await apiGet(spaceBlocksPath(spaceId), { signal }, fetchImpl)) as { blocks?: ContractSpaceBlock[] };
-  if (!Array.isArray(payload.blocks)) throw new Error('The Spaces service returned an invalid block collection.');
-  return payload.blocks;
+export async function getSpaceLegacyDraftBases(spaceId: string, signal?: AbortSignal, fetchImpl?: typeof fetch) {
+  const path = `${spaceDocumentPath(spaceId)}/legacy-draft-bases`;
+  return (await (await apiGet(path, { signal }, fetchImpl)).json() as { blocks: { id: string; markdown: string }[] }).blocks;
 }
-export async function createSpaceBlock(spaceId: string, body: CreateBlockBody, fetchImpl?: typeof fetch): Promise<ContractSpaceBlock> {
-  const payload = await parseMaybeJson(await apiWrite('POST', spaceBlocksPath(spaceId), body, fetchImpl)) as { block: ContractSpaceBlock };
-  return payload.block;
+
+export async function saveSpaceDocument(spaceId: string, source: string, expected_generation: number, fetchImpl?: typeof fetch) {
+  const path = spaceDocumentPath(spaceId);
+  const response = await sendJsonRequest('PATCH', path, { source, expected_generation }, fetchImpl);
+  if (response.status === 409) {
+    const candidate = await response.clone().json() as { code?: string; document?: SpaceDocument };
+    if (candidate.code === 'stale_document' && candidate.document) return { kind: 'conflict' as const, document: candidate.document };
+  }
+  if (!response.ok) await throwOnError(response, 'PATCH', path);
+  return { kind: 'saved' as const, document: await response.json() as SpaceDocument };
 }
-export async function updateSpaceBlock(spaceId: string, blockId: string, body: UpdateBlockBody, fetchImpl?: typeof fetch): Promise<ContractSpaceBlock> {
-  const payload = await parseMaybeJson(await apiWrite('PATCH', `${spaceBlocksPath(spaceId)}/${encodeURIComponent(blockId)}`, body, fetchImpl)) as { block: ContractSpaceBlock };
-  return payload.block;
+
+export async function addressSpaceDocumentBlock(spaceId: string, expected_generation: number, start: number, end: number,
+  fetchImpl?: typeof fetch): Promise<SpaceDocument & { id: string }> {
+  return await (await apiWrite('POST', `${spaceDocumentPath(spaceId)}/address`, { expected_generation, start, end }, fetchImpl)).json() as SpaceDocument & { id: string };
 }
-export async function deleteSpaceBlock(spaceId: string, blockId: string, fetchImpl?: typeof fetch): Promise<void> {
-  await apiDelete(`${spaceBlocksPath(spaceId)}/${encodeURIComponent(blockId)}`, fetchImpl);
+
+export async function getSpaceReview(spaceId: string, signal?: AbortSignal, fetchImpl?: typeof fetch) {
+  return await (await apiGet(`${spaceDocumentPath(spaceId)}/notes`, { signal }, fetchImpl)).json() as
+    import('../../src/feedback/space-review').SpaceReview;
 }
-export async function detachItemFromBlocks(spaceId: string, itemId: string, fetchImpl?: typeof fetch): Promise<{ detached: ContractSpaceBlock[] }> {
-  return await parseMaybeJson(await apiWrite('POST', `/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}/detach-blocks`, {}, fetchImpl)) as { detached: ContractSpaceBlock[] };
+
+export async function addSpaceNote(spaceId: string, expected_generation: number,
+  range: import('../../src/feedback/review-types').ReviewRange, body: string, fetchImpl?: typeof fetch) {
+  await apiWrite('POST', `${spaceDocumentPath(spaceId)}/notes`, { expected_generation, ...range, body }, fetchImpl);
+}
+
+export async function updateSpaceNote(spaceId: string, id: string,
+  mutation: import('../../src/feedback/standing-notes').StandingNoteMutation, fetchImpl?: typeof fetch) {
+  await apiWrite('PATCH', `${spaceDocumentPath(spaceId)}/notes/${encodeURIComponent(id)}`, mutation, fetchImpl);
 }
 
 export async function importSpaceHistory(spaceId: string,id: string,title: string): Promise<ContractSpace> {

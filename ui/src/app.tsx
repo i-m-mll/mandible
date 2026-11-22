@@ -188,8 +188,6 @@ import '@xterm/xterm/css/xterm.css';
 import '@xyflow/react/dist/style.css';
 import './components/spaces/AddToSpace.css';
 import './views/filters/issue-predicate-filter.css';
-import './views/spaces/DocumentBlockEditor.css';
-import './views/spaces/DocumentRenderer.css';
 import './views/spaces/renderers.css';
 import './views/spaces/space-board.css';
 import './views/spaces/SpaceCanvas.css';
