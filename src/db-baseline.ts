@@ -38,7 +38,15 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 254;
+export const BASELINE_SCHEMA_VERSION = 255;
+
+export const FROZEN_REQUEST_REVIEW_COLUMNS_SQL = [
+  "ALTER TABLE auth_requests ADD COLUMN merge_effective_head_sha TEXT",
+  `ALTER TABLE auth_requests ADD COLUMN frozen_change_report_json TEXT
+    CHECK ((merge_effective_head_sha IS NULL AND frozen_change_report_json IS NULL)
+      OR (merge_effective_head_sha IS NOT NULL AND frozen_change_report_json IS NOT NULL
+        AND json_valid(frozen_change_report_json)))`,
+];
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -127,7 +135,7 @@ export const CONVERSATION_SIDEBAR_INDEX_SQL: readonly string[] = [
 export const AUTH_LIFECYCLE_AUTHORITY_PATHS_V212 = ["custodian", "operator_recovery", "system", "legacy"] as const;
 export const AUTH_LIFECYCLE_AUTHORITY_PATHS = ["custodian", "operator", "system", "legacy"] as const;
 
-export function authRequestLifecycleEventsSchemaSql(authorityPaths: readonly string[], requestReviews = false): readonly string[] {
+export function authRequestLifecycleEventsSchemaSql(authorityPaths: readonly string[], requestReviews: false | "returns" | "decisions" = false): readonly string[] {
   return [
   `CREATE TABLE auth_request_lifecycle_events (
         id TEXT PRIMARY KEY,
@@ -151,7 +159,8 @@ export function authRequestLifecycleEventsSchemaSql(authorityPaths: readonly str
         authority_path TEXT CHECK(authority_path IN (${authorityPaths.map((path) => `'${path}'`).join(",")})),
         occurred_at INTEGER NOT NULL,
         ${requestReviews ? `review_submission_id TEXT REFERENCES briefing_submissions(id) ON DELETE RESTRICT,
-        CHECK((event_type = 'returned') = (review_submission_id IS NOT NULL)),` : ""}
+        ${requestReviews === "returns" ? "CHECK((event_type = 'returned') = (review_submission_id IS NOT NULL))," :
+          "CHECK(event_type <> 'returned' OR review_submission_id IS NOT NULL), CHECK(review_submission_id IS NULL OR event_type IN ('revised', 'approved', 'returned')),"}` : ""}
         UNIQUE(auth_request_id, revision)
       )`,
   "CREATE INDEX idx_auth_request_lifecycle_events_request ON auth_request_lifecycle_events(auth_request_id, revision)",
@@ -459,7 +468,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   AUTH_HOOK_EXECUTIONS_TABLE_SQL,
   AUTH_REQUEST_ACTIONS_TABLE_SQL,
   "CREATE TABLE auth_requests (\n  id            TEXT PRIMARY KEY,\n  session_id    TEXT,\n  command       TEXT NOT NULL,\n  title         TEXT NOT NULL,\n  cwd           TEXT,\n  diff_summary  TEXT,\n  spec_content  TEXT,\n  status        TEXT NOT NULL DEFAULT 'pending',\n  created_at    INTEGER NOT NULL,\n  updated_at    INTEGER NOT NULL,\n  approved_at   INTEGER,\n  resolved_at   INTEGER,\n  skipped_at    INTEGER,\n  expires_at    INTEGER NOT NULL,\n  exit_code     INTEGER,\n  output        TEXT NOT NULL DEFAULT '',\n  error         TEXT\n, repo TEXT, base_branch TEXT, head_branch TEXT, files_changed INTEGER DEFAULT 0, additions INTEGER DEFAULT 0, deletions INTEGER DEFAULT 0, execution_mode TEXT NOT NULL DEFAULT 'daemon', commit_message TEXT, last_executed_at INTEGER, post_merge_handoff TEXT, issue_ids TEXT, depends_on_id TEXT, issues TEXT, type TEXT NOT NULL DEFAULT 'merge', target_repo_root TEXT, issue_references TEXT, issue_closures TEXT, merge_preflight_base_sha TEXT, merge_preflight_queue_fingerprint TEXT, merge_head_sha TEXT, merge_finalized_at INTEGER, requested_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, approved_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, execution_evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL, merge_finalizer_state TEXT, merge_candidate_tree_sha TEXT, merge_candidate_pin_sha TEXT, merge_atomic_enabled INTEGER NOT NULL DEFAULT 0, commit_message_digest TEXT, supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT, superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT)",
-  ...authRequestLifecycleEventsSchemaSql(AUTH_LIFECYCLE_AUTHORITY_PATHS, true),
+  ...authRequestLifecycleEventsSchemaSql(AUTH_LIFECYCLE_AUTHORITY_PATHS, "decisions"),
   ...WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   "CREATE TABLE auth_request_merge_succeeded_facts (\n        auth_request_id   TEXT PRIMARY KEY,\n        project_id        TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        base_branch       TEXT NOT NULL,\n        completed_at      INTEGER NOT NULL,\n        canonical_message INTEGER NOT NULL CHECK(canonical_message IN (0,1)),\n        recorded_at       INTEGER NOT NULL\n      )",
   "CREATE TABLE branches (\n  repo_root     TEXT NOT NULL,\n  branch        TEXT NOT NULL,\n  is_current    INTEGER NOT NULL DEFAULT 0,\n  is_worktree   INTEGER DEFAULT 0,\n  worktree_path TEXT,\n  is_dirty      INTEGER DEFAULT 0,\n  ahead         INTEGER DEFAULT 0,\n  behind        INTEGER DEFAULT 0,\n  last_commit_hash    TEXT,\n  last_commit_message TEXT,\n  last_commit_author  TEXT,\n  last_commit_date    TEXT,\n  diff_stat     TEXT,\n  updated_at    TEXT NOT NULL DEFAULT (datetime('now')), ahead_default INTEGER DEFAULT 0, behind_default INTEGER DEFAULT 0, default_branch TEXT DEFAULT '', worktree_inventory_known INTEGER NOT NULL DEFAULT 0, worktree_status_known INTEGER NOT NULL DEFAULT 0, default_comparison_known INTEGER NOT NULL DEFAULT 0, has_upstream INTEGER NOT NULL DEFAULT 0, upstream TEXT,\n  PRIMARY KEY (repo_root, branch)\n)",
@@ -1176,6 +1185,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     for (const statement of EXACT_AGENT_WORK_UNIT_SCHEMA_SQL) db.exec(statement);
     for (const statement of LANDED_ISSUE_ACCOUNTING_COLUMNS_SQL) db.exec(statement);
     for (const sql of REQUEST_NARRATIVE_CUSTODY_SQL) db.exec(sql);
+    for (const statement of FROZEN_REQUEST_REVIEW_COLUMNS_SQL) db.exec(statement);
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
       .run("schema_version", String(schemaVersion));
 

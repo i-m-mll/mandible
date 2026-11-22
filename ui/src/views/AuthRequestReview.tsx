@@ -10,7 +10,8 @@ import type { ReviewRange, ReviewThreadMutation } from '../../../src/feedback/re
 import type { AuthChangeReport, DiffFilePair } from '../../../src/contracts';
 import { DOMAIN_EVENTS } from '../../../src/contracts';
 import {
-  annotateAuthReview, answerAuthReview, getAuthReview, getAuthReviewComparison, mutateAuthReviewThread, returnAuthReview, type AuthReviewProjection, type BriefingResponseValue,
+  annotateAuthReview, answerAuthReview, freezeAuthReview, getAuthReview, getAuthReviewComparison, mutateAuthReviewThread, returnAuthReview,
+  type AuthReviewProjection, type BriefingResponseValue,
 } from '../api';
 import { MarkdownDocument, type MarkdownDocumentHandle, type MarkdownSelection, type MarkdownDirectives, type MarkdownRangeDecoration } from '../components/MarkdownDocument';
 import { ReviewCommentsSidebar } from '../components/shared/ReviewCommentsSidebar';
@@ -111,6 +112,18 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
       await refresh();
     }, () => { setEditor(null); setSelection(null); setCommentsOpen(true); });
   };
+  const freeze = async (showCandidate: () => void) => {
+    if (!available || !data || drafts.hasConflicts || !drafts.hasEdits) return;
+    await act(async () => {
+      await freezeAuthReview(id, data, await drafts.flush());
+      await refresh();
+      if (onReturned) await onReturned(new AbortController().signal);
+    }, () => {
+      setNavigation(null);
+      setSelection(null);
+      showCandidate();
+    });
+  };
   const submitDecision = () => {
     if (decision === 'return' && available && data) {
       void act(async () => {
@@ -165,7 +178,7 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
   };
   return { data, navigation, setNavigation, commentsOpen, setCommentsOpen, available, against, compare, drafts,
     comparison: comparison?.against === against ? comparison.report : undefined, comparisonError,
-    openDecision, selection, lineSelection, markdownSelection, remove, busy, error, answerQuestion,
+    openDecision, freeze, selection, lineSelection, markdownSelection, remove, busy, error, answerQuestion,
     clearSelection: () => setSelection(null),
     comment: () => { setEditor(selection); setText(''); setError(null); },
     commentOnMarkdown: (binding: Binding, selection: MarkdownSelection) => {
@@ -313,9 +326,9 @@ export function authReviewSelector(review: AuthRequestReviewState, id: string, o
     selectedCopyRef: selected ? `auth:${selected.short_id}` : undefined,
     control: <div className="auth-review__versions">
       <NativeSelect aria-label="Request revision" value={id} onChange={event => onSelect(event.currentTarget.value)}>
-        {versions.map((version, index) => <option key={version.id} value={version.id}>
+        {versions.flatMap((version, index) => version.id.includes('@') ? [] : [<option key={version.id} value={version.id}>
           {index + 1} · {version.short_id} · {version.status}
-        </option>)}
+        </option>])}
       </NativeSelect>
       <NativeSelect aria-label="Compare revisions" value={review.against} onChange={event => {
         review.compare(event.currentTarget.value);

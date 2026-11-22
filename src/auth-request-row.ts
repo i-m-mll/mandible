@@ -39,6 +39,7 @@ export function mapRow(row: Record<string, unknown>): AuthRequest {
     ? (rawType as AuthRequestType)
     : "merge";
 
+  const frozenReport = parseChangeReport(row.frozen_change_report_json);
   return {
     space_publication_id: row.space_publication_id == null ? null : String(row.space_publication_id),
     id: String(row.id),
@@ -64,6 +65,7 @@ export function mapRow(row: Record<string, unknown>): AuthRequest {
     base_branch: row.base_branch == null ? undefined : String(row.base_branch),
     head_branch: row.head_branch == null ? undefined : String(row.head_branch),
     merge_head_sha: row.merge_head_sha == null ? null : String(row.merge_head_sha),
+    merge_effective_head_sha: row.merge_effective_head_sha == null ? null : String(row.merge_effective_head_sha),
     merge_candidate_tree_sha: row.merge_candidate_tree_sha == null
       ? null
       : String(row.merge_candidate_tree_sha),
@@ -79,14 +81,14 @@ export function mapRow(row: Record<string, unknown>): AuthRequest {
     // Issue 75f52ac — durable per-step finalizer state (raw JSON string); detail
     // views and crash recovery read it. Kept as a string to match the column.
     merge_finalizer_state: row.merge_finalizer_state == null ? null : String(row.merge_finalizer_state),
-    change_report: parseChangeReport(row.change_report_json),
+    change_report: frozenReport ?? parseChangeReport(row.change_report_json),
     issue_accounting: row.issue_accounting_json == null ? null : JSON.parse(String(row.issue_accounting_json)) as IssueAccounting,
     protected_root_dirty_action: row.protected_root_dirty_action_json == null
       ? null
       : JSON.parse(String(row.protected_root_dirty_action_json)) as ProtectedRootDirtyAction,
-    files_changed: row.files_changed == null ? undefined : Number(row.files_changed),
-    additions: row.additions == null ? undefined : Number(row.additions),
-    deletions: row.deletions == null ? undefined : Number(row.deletions),
+    files_changed: frozenReport?.totals.files ?? (row.files_changed == null ? undefined : Number(row.files_changed)),
+    additions: frozenReport?.totals.additions ?? (row.additions == null ? undefined : Number(row.additions)),
+    deletions: frozenReport?.totals.deletions ?? (row.deletions == null ? undefined : Number(row.deletions)),
     post_merge_handoff: row.post_merge_handoff == null ? null : String(row.post_merge_handoff),
     issue_references: issueReferences,
     issue_closures: issueClosures ?? parsedIssues,

@@ -125,21 +125,26 @@ type FrozenRequestReviewReturn = {
   comments: RequestReviewNote[];
 };
 
-function frozenRequestReviewReturn(db: Db, requestId: string): FrozenRequestReviewReturn | null {
+function requestReviewSubmissions(db: Db, requestId: string, eventType: "returned" | "revised" | "approved"): FrozenRequestReviewReturn[] {
   const returned = db.prepare(`SELECT e.review_submission_id AS submission_id, e.revision, e.reason, s.round_id,
     EXISTS(SELECT 1 FROM notifications n WHERE n.subject_kind = 'auth_request' AND n.subject_id = e.auth_request_id
       AND n.review_submission_id = e.review_submission_id AND n.delivered_at IS NOT NULL) AS delivered
     FROM auth_request_lifecycle_events e JOIN briefing_submissions s ON s.id = e.review_submission_id
-    WHERE e.auth_request_id = ? AND e.event_type = 'returned' ORDER BY e.revision DESC LIMIT 1`).get(requestId) as
-    (Pick<FrozenRequestReviewReturn, "submission_id" | "revision" | "reason"> & { round_id: string; delivered: number }) | undefined;
-  if (!returned) return null;
-  const { round_id, delivered, ...receipt } = returned;
-  const bindings = new Map((reviewDocumentBindings(db, round_id) as RequestBinding[]).map(binding => [binding.id, binding]));
-  return { ...receipt, delivered: Boolean(delivered), change_edit: submittedChangeEdit(db, receipt.submission_id), targets: reviewSubmissionTargets(db, receipt.submission_id),
-    answers: submittedNarrativeAnswers(db, receipt.submission_id),
-    comments: reviewSubmissionAnnotations(db, receipt.submission_id).map(comment => ({
-      ...comment, source: bindings.get(comment.document_binding_id)!.source,
-    })) };
+    WHERE e.auth_request_id = ? AND e.event_type = ? ORDER BY e.revision DESC`).all(requestId, eventType) as
+    Array<Pick<FrozenRequestReviewReturn, "submission_id" | "revision" | "reason"> & { round_id: string; delivered: number }>;
+  return returned.map(({ round_id, delivered, ...receipt }) => {
+    const bindings = new Map((reviewDocumentBindings(db, round_id) as RequestBinding[]).map(binding => [binding.id, binding]));
+    return { ...receipt, delivered: Boolean(delivered), change_edit: submittedChangeEdit(db, receipt.submission_id),
+      targets: reviewSubmissionTargets(db, receipt.submission_id),
+      answers: submittedNarrativeAnswers(db, receipt.submission_id),
+      comments: reviewSubmissionAnnotations(db, receipt.submission_id).map(comment => ({
+        ...comment, source: bindings.get(comment.document_binding_id)!.source,
+      })) };
+  });
+}
+
+function frozenRequestReviewReturn(db: Db, requestId: string): FrozenRequestReviewReturn | null {
+  return requestReviewSubmissions(db, requestId, "returned")[0] ?? null;
 }
 
 export function returnedRequestReview(db: Db, requestId: string) {
@@ -163,10 +168,30 @@ export function requestReviewVersions(db: Db, requestId: string): RequestReviewV
       WHERE r.supersedes_request_id IS NOT NULL),
     later(id) AS (SELECT ? UNION SELECT r.superseded_by_request_id FROM auth_requests r JOIN later l ON r.id = l.id
       WHERE r.superseded_by_request_id IS NOT NULL)
-    SELECT id, status, json_extract(change_report_json, '$.comparison.head_sha') AS head, commit_message AS description
+    SELECT id, status, json_extract(COALESCE(frozen_change_report_json, change_report_json), '$.comparison.head_sha') AS head,
+      commit_message AS description, merge_effective_head_sha
     FROM auth_requests WHERE id IN (SELECT id FROM earlier UNION SELECT id FROM later)
-    ORDER BY created_at, rowid`).all(requestId, requestId) as Array<Omit<RequestReviewVersion, "short_id">>;
-  return rows.map(version => ({ ...version, short_id: shortRef(db, "auth_request", version.id) }));
+    ORDER BY created_at, rowid`).all(requestId, requestId) as Array<Omit<RequestReviewVersion, "short_id"> & { merge_effective_head_sha: string | null }>;
+  return rows.flatMap(({ merge_effective_head_sha, ...version }) => {
+    const short_id = shortRef(db, "auth_request", version.id);
+    const shown = { ...version, short_id };
+    if (!merge_effective_head_sha) return [shown];
+    const revisions = db.prepare(`SELECT revision, json_extract(snapshot_json,
+        '$.request.frozen_change_report_json.comparison.head_sha') AS candidate,
+        json_extract(snapshot_json, '$.request.change_report_json.comparison.head_sha') AS requester,
+        json_extract(snapshot_json, '$.request.commit_message') AS description
+      FROM auth_request_lifecycle_events WHERE auth_request_id = ? AND event_type IN ('submitted', 'revised')
+      ORDER BY revision`).all(version.id) as Array<{ revision: number; candidate: string | null; requester: string | null; description: string | null }>;
+    const heads = new Set([version.head]);
+    const earlier = revisions.flatMap(revision => {
+      const head = revision.candidate ?? revision.requester;
+      if (!head || heads.has(head)) return [];
+      heads.add(head);
+      return [{ id: `${version.id}@${revision.revision}`, short_id, status: "superseded" as const, head,
+        description: revision.description }];
+    });
+    return [...earlier, shown];
+  });
 }
 
 type RequestThreadEvent = ReviewThreadEvent & { request_ref: string };
@@ -213,12 +238,19 @@ function requestReviewRoots(db: Db, request: AuthRequest, reviewerId: string | n
   const versions = requestReviewVersions(db, request.id);
   const returned = frozenRequestReviewReturn(db, request.id);
   const bindings = new Map(round.bindings.map(binding => [binding.id, binding]));
-  const notes = returned?.comments ?? (reviewerId ? effectiveReviewAnnotations(db, round.id, reviewerId)
-    .map(comment => ({ ...comment, source: bindings.get(comment.document_binding_id)!.source })) : []);
+  const active = reviewerId ? effectiveReviewAnnotations(db, round.id, reviewerId) : [];
+  const approved = request.status !== "pending" ? requestReviewSubmissions(db, request.id, "approved")[0] : undefined;
+  const notes = returned?.comments ?? approved?.comments ?? active.map(comment => ({
+    ...comment, source: bindings.get(comment.document_binding_id)!.source,
+  }));
   const currentIndex = versions.findIndex(version => version.id === request.id);
-  const prior = versions.slice(0, currentIndex).flatMap(version =>
-    (frozenRequestReviewReturn(db, version.id)?.comments ?? []).map(comment => ({ comment, origin: version.id })));
-  return { round, versions, returned, notes, prior };
+  const prior = [
+    ...versions.slice(0, currentIndex).filter(version => !version.id.includes("@")).flatMap(version =>
+      (frozenRequestReviewReturn(db, version.id)?.comments ?? []).map(comment => ({ comment, origin: version.id }))),
+    ...requestReviewSubmissions(db, request.id, "revised").flatMap(submission =>
+      submission.comments.map(comment => ({ comment, origin: `${request.id}@${submission.revision - 1}` }))),
+  ];
+  return { round, versions, returned, approved, notes, prior, active };
 }
 
 export function resolveRequestReviewComment(db: Db, request: AuthRequest, reviewerId: string | null, ref: string) {
@@ -229,7 +261,7 @@ export function resolveRequestReviewComment(db: Db, request: AuthRequest, review
 }
 
 export async function readRequestReview(db: Db, request: AuthRequest, reviewerId: string | null) {
-  const { round, versions, returned, notes, prior } = requestReviewRoots(db, request, reviewerId);
+  const { round, versions, returned, approved, notes, prior, active } = requestReviewRoots(db, request, reviewerId);
   const drafts = reviewerId ? requestDrafts(db, request.id, reviewerId) : [];
   const editable_files = canEditRequestFiles(request) ? request.change_report!.files.flatMap((file, index) =>
     canEditRequestFile(file) ? [{ index, path: file.new_path }] : []) : [];
@@ -270,13 +302,17 @@ export async function readRequestReview(db: Db, request: AuthRequest, reviewerId
       ...(candidate && anchor.status !== "detached"
         ? { document_binding_id: candidate.id, source: candidate.source } : {}) });
   }
+  const questions = requestQuestions(db, request, round, request.status === "pending" ? reviewerId : null);
+  const submitted = returned ?? approved;
   return {
-    round, versions, annotations, drafts, editable_files, narrative: request.narrative ?? null,
-    narrative_report: request.narrative ? request.change_report ?? null : null,
-    narrative_questions: requestQuestions(db, request, round, request.status === "pending" ? reviewerId : null)
-      .map(question => ({ ...question,
-        effective_response: returned?.answers.find(answer => answer.directive_key === question.directive.key) ?? question.effective_response,
-      })),
+    round, versions, annotations, drafts, editable_files,
+    narrative: request.narrative ?? null, narrative_report: request.narrative ? request.change_report ?? null : null,
+    narrative_questions: questions.map(question => ({ ...question,
+      effective_response: submitted?.answers.find(answer => answer.directive_key === question.directive.key) ?? question.effective_response,
+    })),
+    active_answer_event_ids: questions.flatMap(question => question.effective_response ? [question.effective_response.response_event_id] : []),
+    active_annotation_event_ids: active.map(note => note.annotation_event_id),
+    frozen_head: request.merge_effective_head_sha ?? null, comparison_head: request.change_report?.comparison.head_sha ?? null,
     returned: returned && { ...returned, comments: returned.comments.map(comment => ({ ...comment, thread: thread(comment) })) },
   };
 }

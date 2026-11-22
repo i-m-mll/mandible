@@ -111,9 +111,10 @@ function readPublicationState(db: Db, binding: RuntimeHookIdentity & Pick<Runtim
   const frozen = snapshot.request;
   if (frozen.type !== "merge" || frozen.id !== row.id || frozen.approved_by_user_id !== row.approved_by_user_id || !frozen.merge_preflight_base_sha || !frozen.merge_head_sha || !frozen.merge_candidate_tree_sha) fail("frozen approved candidate is unavailable");
   const base = frozen.merge_preflight_base_sha as string;
-  const head = frozen.merge_head_sha as string;
+  const head = (frozen.merge_effective_head_sha ?? frozen.merge_head_sha) as string;
   const tree = frozen.merge_candidate_tree_sha as string;
-  for (const [field, expected] of [["merge_preflight_base_sha", base], ["merge_head_sha", head],
+  for (const [field, expected] of [["merge_preflight_base_sha", base], ["merge_head_sha", frozen.merge_head_sha],
+    ["merge_effective_head_sha", frozen.merge_effective_head_sha],
     ["merge_candidate_tree_sha", tree], ["merge_candidate_pin_sha", frozen.merge_candidate_pin_sha]] as const) {
     if (row[field] && row[field] !== expected) fail("current reviewed candidate differs");
   }

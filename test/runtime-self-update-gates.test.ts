@@ -11,6 +11,7 @@ import * as childProcess from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { waitUntilPasses } from "./helpers/wait-until.js";
 import { AuthQueue } from "../src/auth-queue.js";
+import { requestReviewRound } from "../src/feedback/request-review.js";
 import { acceptedReleaseReceiptFixture } from './helpers/accepted-release-fixture.js';
 import { acceptedReleaseSelection, bindAcceptedRelease } from '../src/accepted-release-selection.js';
 import { collectAuthMergeReview } from "../src/auth-change-report.js";
@@ -30,7 +31,7 @@ import {
   advanceMainViaAuthorizedMerge, approveFixtureRequest, commitOnBranch, configureSigningCredential, createAuthCheckRepo, createLedgerIssue, createLedgerProject,
   createMigratedDb, git, publishFixtureExecution, registerWorkRepo, trackTempPath, waitForStatus,
 } from "./helpers/auth-queue-fixtures.js";
-import { approveAsFixtureOperator } from "./helpers/operator-signing-fixtures.js";
+import { approveAsFixtureOperator, fixtureOperatorSigning, operatorCaller, SoftwareOperatorSigner } from "./helpers/operator-signing-fixtures.js";
 vi.mock('node:child_process', async original => ({ ...await original<typeof import('node:child_process')>(), spawnSync: vi.fn((await original<typeof import('node:child_process')>()).spawnSync) }));
 const actualSpawnSync = (await vi.importActual<typeof import('node:child_process')>('node:child_process')).spawnSync;
 
@@ -514,6 +515,41 @@ describe("candidate acceptance gate", () => {
     await approveAsFixtureOperator(queue, request.id, operatorId);
     expect((await queue.getRequest(request.id))?.status).toBe("executing");
     expect(runs).toHaveLength(0);
+  });
+
+  it("requires fresh whole-candidate acceptance after freezing a docs edit on a runtime update", async () => {
+    const branch = "feature/runtime-with-docs";
+    const filename = "docs/release.md";
+    commitOnBranch(repo, branch, { "src/index.ts": "changed runtime\n", [filename]: "# Proposed release\n" });
+    const request = await submit(branch, { target_repo_root: fs.realpathSync(repo), change_report: await reviewedChanges(branch) });
+    await waitUntilPasses(() => expect(runs).toHaveLength(1));
+    runs[0]!.settle({ status: "passed", result: { status: "passed" }, error: null });
+    await queue.drainCandidateAcceptances();
+    expect(await acceptanceOf(request.id)).toMatchObject({ state: "passed" });
+
+    const signer = new SoftwareOperatorSigner();
+    (queue as unknown as { operatorSigning: unknown }).operatorSigning = fixtureOperatorSigning(db, signer);
+    const actor = { user_id: operatorId, evidence_method: "local_default", authority_path: "operator" as const };
+    const precondition = { expected_revision: queue.lifecycleRevision(request.id)!,
+      expected_custody_generation: queue.requestResponsibility(request).custody_generation,
+      round_id: requestReviewRound(request).id };
+    const draft = await queue.mutateRequestReviewDraft(request.id, actor, {
+      ...precondition, path: filename, expected_generation: 0,
+      mutation: { operation: "save", text: "# Reviewed release\n" },
+    });
+    const frozen = await queue.freezeRequestReview(request.id, actor, {
+      ...precondition, annotation_event_ids: [], draft_snapshot: [{ path: draft.path, generation: draft.generation }],
+    });
+    await waitUntilPasses(() => expect(runs).toHaveLength(2));
+    expect(frozen.merge_candidate_pin_sha).not.toBe(request.merge_candidate_pin_sha);
+    expect(latestCandidateAcceptance(db, request.id)).toMatchObject({
+      pin_sha: frozen.merge_candidate_pin_sha, tree_sha: frozen.merge_candidate_tree_sha,
+      base_sha: frozen.merge_preflight_base_sha, head_sha: frozen.merge_effective_head_sha,
+    });
+    await expect(queue.approveAsOperator(request.id, operatorCaller(operatorId), queue.lifecycleRevision(request.id)!, {
+      proof_digest: queue.reviewApprovalProof(frozen), round_id: requestReviewRound(frozen).id, annotation_event_ids: [],
+    })).rejects.toThrow(/in progress/);
+    expect(signer.touches).toEqual([]);
   });
 
   it.each([

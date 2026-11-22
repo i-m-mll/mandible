@@ -1040,7 +1040,7 @@ export async function getAuthDiffFile(requestId: string, index: number, signal?:
 }
 
 export type AuthReviewPrecondition = { expected_revision: number | null; expected_custody_generation: number };
-export type AuthReviewProjection = RequestReview & { precondition: AuthReviewPrecondition; status: string };
+export type AuthReviewProjection = RequestReview & { precondition: AuthReviewPrecondition; status: string; proof_digest: string };
 export async function getAuthReview(requestId: string, signal?: AbortSignal): Promise<AuthReviewProjection> {
   const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review`, { signal });
   return await response.json();
@@ -1076,13 +1076,27 @@ export async function mutateAuthReviewDraft(requestId: string, review: AuthRevie
   return await response.json();
 }
 
+export type AuthApprovalReview = {
+  proof_digest: string; round_id: string; annotation_event_ids: string[]; answer_event_ids?: string[];
+};
+
+export type ShownAuthApproval = { revision: number | null; review: AuthApprovalReview };
+
+export function authApprovalReview(review: AuthReviewProjection): AuthApprovalReview {
+  return { proof_digest: review.proof_digest, round_id: review.round.id,
+    annotation_event_ids: review.active_annotation_event_ids, answer_event_ids: review.active_answer_event_ids };
+}
+
+export async function freezeAuthReview(requestId: string, review: AuthReviewProjection, draft_snapshot: ReviewDraftStamp[]): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/freeze`, {
+    ...review.precondition, ...authApprovalReview(review), draft_snapshot,
+  });
+}
+
 export async function returnAuthReview(requestId: string, review: AuthReviewProjection, reason: string,
   draft_snapshot: ReviewDraftStamp[]): Promise<void> {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/return`, {
-    ...review.precondition, reason, round_id: review.round.id, draft_snapshot,
-    answer_event_ids: review.narrative_questions.flatMap(question => question.effective_response ? [question.effective_response.response_event_id] : []),
-    annotation_event_ids: review.annotations.filter(annotation => annotation.origin_request_id === requestId)
-      .map(annotation => annotation.annotation_event_id),
+    ...review.precondition, ...authApprovalReview(review), reason, draft_snapshot,
   });
 }
 
@@ -1135,7 +1149,7 @@ export async function cancelApprovalProof(requestId: string): Promise<void> {
 }
 
 /** Approve the request at `lifecycleRevision`, the revision that was shown; the server refuses any other. */
-export async function approveAuthRequest(requestId: string, lifecycleRevision: number | null): Promise<void> {
+export async function approveAuthRequest(requestId: string, lifecycleRevision: number | null, review?: AuthApprovalReview): Promise<void> {
   // Bug: 58d93ee — extract server error message so the dashboard can surface it
   // (e.g. invalid_command: "Auth request has no command set")
   // Bug: 737df04 — wrap in AbortController so the fetch does not hang indefinitely
@@ -1153,7 +1167,7 @@ export async function approveAuthRequest(requestId: string, lifecycleRevision: n
     response = await browserSessionFetch(path, {
       method: 'POST',
       headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lifecycle_revision: lifecycleRevision }),
+      body: JSON.stringify({ lifecycle_revision: lifecycleRevision, review }),
       signal: controller.signal,
     });
   } catch (e) {

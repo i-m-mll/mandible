@@ -397,9 +397,18 @@ cas_update_and_sync_target() {
     return 1
   }
   err "$prepared_marker"
-  if ! git update-ref -m "mandible auth merge ${MANDIBLE_AUTH_REQUEST_ID:-unknown}" \
-    "refs/heads/${target}" "$merge_sha" "$expected_sha"; then
-    err "${RED}Target ${target} moved during ref update; compare-and-swap refused. No worktree was changed.${RESET}"
+  local -a updates=("update refs/heads/${target} ${merge_sha} ${expected_sha}")
+  if [[ -n "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}" ]]; then
+    updates+=("verify refs/heads/${source} ${MANDIBLE_AUTH_EXPECTED_HEAD_SHA}")
+  fi
+  if [[ -n "${MANDIBLE_AUTH_CANDIDATE_REF:-}" ]]; then
+    updates+=("verify ${MANDIBLE_AUTH_CANDIDATE_REF} ${MANDIBLE_AUTH_CANDIDATE_PIN_SHA}")
+  fi
+  if [[ -n "${MANDIBLE_AUTH_CHANGE_EDIT_REF:-}" ]]; then
+    updates+=("verify ${MANDIBLE_AUTH_CHANGE_EDIT_REF} ${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA}")
+  fi
+  if ! printf '%s\n' "${updates[@]}" | git update-ref -m "mandible auth merge ${MANDIBLE_AUTH_REQUEST_ID:-unknown}" --stdin; then
+    err "${RED}Reviewed refs moved during ref update; compare-and-swap refused. No worktree was changed.${RESET}"
     return 1
   fi
   local sync_error
@@ -557,6 +566,7 @@ main() {
     exit 2
   fi
   local source=${sources[0]}
+  export GIT_NO_REPLACE_OBJECTS=1
 
   [[ "${MANDIBLE_AUTH_ATOMIC:-}" == "1" ]] || die "Protected merges require a reviewed signed candidate; submit an auth request. No protected state changed." 1
   [[ ! -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]] || die "Interrupted legacy merge state requires operator recovery; candidate publication cannot resume it." 1
@@ -589,22 +599,24 @@ main() {
 
   local atomic_base
   atomic_base=$(target_branch_sha "$target")
-  local source_head merge_tree merge_sha
+  local source_head effective_head merge_tree merge_sha
   source_head=$(current_branch_sha "$source")
-  # Issue 08a5f04 (review F3) — the reviewed-head context must be internally
-  # consistent: the daemon-supplied expected head and the cached candidate
-  # head describe the same reviewed commit.
-  if [[ -n "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}" && \
-        "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA}" != "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" ]]; then
-    die "Reviewed head context is inconsistent (expected ${MANDIBLE_AUTH_EXPECTED_HEAD_SHA}, candidate ${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-unset}); requeue and reapprove. No ref or worktree was changed." 1
+  effective_head=${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}
+  if [[ "$atomic_base" != "${MANDIBLE_AUTH_CANDIDATE_BASE_SHA:-}" ||
+        "$source_head" != "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-$effective_head}" ]]; then
+    die "Reviewed base or source head moved since auth submission; requeue and reapprove. No ref or worktree was changed." 1
   fi
-  if [[ "$atomic_base" != "${MANDIBLE_AUTH_CANDIDATE_BASE_SHA:-}" ]] || \
-     [[ "$source_head" != "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" ]]; then
-    die "Reviewed base or head moved since auth submission; requeue and reapprove. No ref or worktree was changed." 1
+  if [[ -n "${MANDIBLE_AUTH_CHANGE_EDIT_REF:-}" ]]; then
+    if [[ "$(git show-ref --verify --hash "$MANDIBLE_AUTH_CHANGE_EDIT_REF")" != "$effective_head" ||
+          "$(git rev-list --parents -n 1 "$effective_head")" != "$effective_head $source_head" ]]; then
+      die "The frozen edit changed since review. No ref or worktree was changed." 1
+    fi
+  elif [[ "$effective_head" != "$source_head" ]]; then
+    die "Reviewed source head and candidate head differ. No ref or worktree was changed." 1
   fi
-  merge_tree=$(require_cached_candidate_tree "$atomic_base" "$source_head") || exit 1
+  merge_tree=$(require_cached_candidate_tree "$atomic_base" "$effective_head") || exit 1
   verify_atomic_merge_not_empty "$merge_tree" "$atomic_base" || exit 1
-  merge_sha=$(require_signed_merge_commit "$merge_tree" "$atomic_base" "$source_head") || exit 1
+  merge_sha=$(require_signed_merge_commit "$merge_tree" "$atomic_base" "$effective_head") || exit 1
   auth_phase "publishing approval-signed merge commit ${merge_sha}; atomically advancing ${target}..."
   cas_update_and_sync_target "$target" "$atomic_base" "$merge_sha" "$source"
   local cas_status=$?

@@ -455,6 +455,7 @@ export type AuthChangeFile = {
   old_object?: GitFileObject | null;
   new_object?: GitFileObject | null;
   whitespace_only?: boolean;
+  operator_edited?: boolean;
   bytes_before: number | null;
   bytes_after: number | null;
   language: string;
@@ -466,7 +467,7 @@ export type AuthChangeFile = {
 export type GitFileObject = { mode: string; oid: string };
 
 export type GitChangeFile = Pick<AuthChangeFile,
-  "old_path" | "new_path" | "change_kind" | "additions" | "deletions" | "old_object" | "new_object" | "whitespace_only"
+  "old_path" | "new_path" | "change_kind" | "additions" | "deletions" | "old_object" | "new_object" | "whitespace_only" | "operator_edited"
 >;
 
 export type DiffFileContents = { name: string; contents: string };

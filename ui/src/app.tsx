@@ -16,7 +16,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import { QueryClientProvider } from '@tanstack/preact-query';
 
 import {
-  approveAuthRequest,
+  approveAuthRequest, type ShownAuthApproval,
   startProviderChat,
   getAuthHistory,
   refreshAuthQueue,
@@ -1872,10 +1872,10 @@ function App(): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [state.daemonReload?.hash]);
 
-  const handleApprove = async (requestId: string) => {
+  const handleApprove = async (requestId: string, proof?: ShownAuthApproval) => {
     try {
       const shown = state.authQueue.find((request) => request.id === requestId);
-      await approveAuthRequest(requestId, shown?.lifecycle_revision ?? null);
+      await approveAuthRequest(requestId, proof ? proof.revision : shown?.lifecycle_revision ?? null, proof?.review);
       // Set to 'approved' locally for immediate feedback; the SSE auth:resolved
       // event will update to 'completed' when the command finishes.
       authProjectionRefreshRef.current!.notePush();

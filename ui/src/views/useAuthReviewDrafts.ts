@@ -200,7 +200,7 @@ function withinReviewLimit(text: string): boolean {
 
 export function useAuthReviewDrafts(id: string, review: AuthReviewProjection | null, available: boolean) {
   const [, redraw] = useState(0);
-  const session = useMemo(() => new ReviewDraftSession(id, () => redraw(revision => revision + 1)), [id]);
+  const session = useMemo(() => new ReviewDraftSession(id, () => redraw(revision => revision + 1)), [id, review?.frozen_head]);
   const projection = review?.round.owner.auth_request_id === id ? review : null;
   session.receive(projection, available && Boolean(projection));
   useEffect(() => () => session.finish(), [session]);

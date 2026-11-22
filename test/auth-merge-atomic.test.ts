@@ -469,7 +469,7 @@ describe("atomic auth merge", () => {
     const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-atomic-sync-race-"));
     fs.writeFileSync(path.join(fakeBin, "git"), [
       "#!/usr/bin/env bash",
-      "if [[ \"$1\" == update-ref && \"$*\" == *\"refs/heads/main\"* && ! -e feature.txt ]]; then",
+      "if [[ \"$1\" == update-ref && \"$*\" == *\"--stdin\"* && ! -e feature.txt ]]; then",
       "  printf 'editor wrote this\\n' > feature.txt",
       "fi",
       "exec \"$MANDIBLE_REAL_GIT\" \"$@\"",
@@ -509,7 +509,7 @@ describe("atomic auth merge", () => {
     const wrapper = path.join(fakeBin, "git");
     fs.writeFileSync(wrapper, [
       "#!/usr/bin/env bash",
-      "if [[ \"$1\" == update-ref && \"$*\" == *\"refs/heads/main\"* && ! -e \"$MANDIBLE_RACE_MARKER\" ]]; then",
+      "if [[ \"$1\" == update-ref && \"$*\" == *\"--stdin\"* && ! -e \"$MANDIBLE_RACE_MARKER\" ]]; then",
       "  : > \"$MANDIBLE_RACE_MARKER\"",
       "  \"$MANDIBLE_REAL_GIT\" update-ref refs/heads/main \"$MANDIBLE_RACE_SHA\" \"$MANDIBLE_RACE_BASE\"",
       "fi",

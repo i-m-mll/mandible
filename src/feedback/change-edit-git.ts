@@ -10,6 +10,10 @@ import type { ReviewChangeEdit } from "./request-draft-types.js";
 
 const gitEnv = () => ({ ...authGitEnv(), GIT_NO_REPLACE_OBJECTS: "1", GIT_LITERAL_PATHSPECS: "1" });
 
+export function changeEditRef(requestId: string, sha: string): string {
+  return `refs/mandible/change-edits/${requestId}/${sha}`;
+}
+
 type FileEdit = { path: string; object: GitFileObject; text: string };
 
 async function inScratch<T>(f: (directory: string) => Promise<T>): Promise<T> {
@@ -43,7 +47,7 @@ export async function buildChangeEdit(
       tree, parents: [head], identity: { name: "Mandible Review", email: "review@mandible.local" },
       message: "Apply review edits\n", time: { seconds: Math.floor(createdAt / 1000), offset_minutes: 0 },
     }));
-    return { request_id: requestId, parent_sha: head, commit_sha, ref: `refs/mandible/change-edits/${requestId}/${commit_sha}` };
+    return { request_id: requestId, parent_sha: head, commit_sha, ref: changeEditRef(requestId, commit_sha) };
   });
 }
 
