@@ -232,6 +232,12 @@ function artifactContentFromBytes(
   return { ...base, kind, preview };
 }
 
+export function artifactReviewRangeKind(target: ArtifactMaterializationTarget): import("./feedback/review-types.js").ReviewRangeKind | null {
+  const artifact = materialDescriptor(target);
+  const kind = previewKind(artifact.media_type ?? inferMediaType(artifact), artifactFilename(artifact));
+  return kind === "binary" ? null : kind === "markdown" ? "text" : "lines";
+}
+
 function previewKind(mediaType: string, filename: string | null): Exclude<ArtifactContentKind, "unavailable"> {
   const lowerMediaType = mediaType.toLowerCase();
   const lowerName = (filename ?? "").toLowerCase();

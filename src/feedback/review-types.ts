@@ -1,4 +1,4 @@
-export type ArtifactReviewDocument = { kind: "artifact_version"; artifact_version_id: string };
+export type ArtifactReviewDocument = { kind: "artifact_version"; artifact_version_id: string; range_kind?: ReviewRangeKind };
 
 export type GitReviewDocument = {
   kind: "git_file";
@@ -20,7 +20,9 @@ export type RequestReviewFile = {
   format: "markdown" | "lines" | "binary";
 };
 
-export type ReviewDocumentReference = ArtifactReviewDocument | GitReviewDocument | RequestReviewDescription | RequestReviewFile;
+export type SpaceReviewDocument = { kind: "space_saved_source"; history_id: string; generation: number };
+
+export type ReviewDocumentReference = ArtifactReviewDocument | GitReviewDocument | RequestReviewDescription | RequestReviewFile | SpaceReviewDocument;
 
 export type ReviewDocumentBinding = {
   id: string;
@@ -64,3 +66,45 @@ export type ReviewThreadEvent = ReviewThreadMutation & {
   actor_user_id: string;
   created_at: number;
 };
+
+export type ReviewRangeKind = "text" | "lines";
+
+export type StandingDraftOrigin = {
+  base_version_id: string;
+  source_hash: string;
+  range_kind?: ReviewRangeKind;
+
+};
+
+export type StandingSourceReference = (
+  | ArtifactReviewDocument
+  | SpaceReviewDocument
+);
+
+export type StandingNote = ReviewRange & {
+  id: string;
+  source_reference: StandingSourceReference;
+  source_order: number;
+  range_kind: ReviewRangeKind;
+  body: string;
+  author: string;
+  created_at: number;
+  resolved: boolean;
+  can_edit: boolean;
+  draft_origin: StandingDraftOrigin | null;
+  anchor: CarriedReviewRange;
+};
+
+export type ArtifactDraftStandingNote = ReviewRange & {
+  id: string;
+  actor_user_id: string;
+  author: string;
+  body: string;
+  created_at: number;
+  resolved: boolean;
+  range_kind: ReviewRangeKind;
+  origin: StandingDraftOrigin;
+  anchor: CarriedReviewRange;
+};
+
+export type StandingNotePresentation = Pick<StandingNote, "id" | "quote" | "anchor" | "author" | "body" | "resolved" | "can_edit">;

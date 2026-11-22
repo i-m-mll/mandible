@@ -1,3 +1,4 @@
+import { standingNoteSidebarEntry } from '../../components/shared/StandingNoteReview';
 import { createPortal } from 'preact/compat';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
@@ -70,6 +71,7 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
   draft = EMPTY_VALUES, validationErrors = EMPTY_VALUES, onDirectiveValue, onContentGateChange, onDocumentFailureChange,
 }: BriefingDocumentPanelProps): JSX.Element | null {
   const document = round.document;
+  const standingNotes = round.standing_notes;
   const [verified, setVerified] = useState<{ documentKey: string; directiveKey: string; documentError: string | null;
     directiveError: string | null } | null>(null);
   const [comparison, setComparison] = useState<{ key: string; text: string | undefined; error: string | null } | null>(null);
@@ -173,7 +175,12 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
   const describe = (entry: BriefingAnnotation) => entry.annotation_kind === 'suggest_replacement'
     ? <><del>{entry.quote}</del> <ins>{entry.replacement_text}</ins>{entry.body && <div>{entry.body}</div>}</>
     : entry.body;
+  const standingRanges = useMemo(() => (standingNotes ?? []).map((note) => ({
+    note,
+    range: note.anchor.status === 'detached' ? null : { start: note.anchor.start_offset, end: note.anchor.end_offset },
+  })), [standingNotes]);
   const comments: ReviewSidebarComment[] = [
+    ...standingRanges.map(({ note, range }) => standingNoteSidebarEntry(note, range)),
     ...(round.annotations ?? []).map((annotation) => ({
       id: annotation.annotation_event_id, quote: annotation.quote,
       range: currentRange(annotation), author: annotationActor(annotation), content: describe(annotation),
@@ -188,13 +195,14 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
     })),
   ];
   const decorations = useMemo(() => [
+    ...standingRanges.flatMap(({ note, range }) => range ? [{ ...range, id: note.id, className: 'review-range' }] : []),
     ...(round.annotations ?? []).map((annotation) => ({
       ...currentRange(annotation), id: annotation.annotation_event_id, className: 'review-range',
     })),
     ...(round.carried_annotations ?? []).flatMap(({ annotation_event_id, anchor }) =>
       anchor.status === 'detached' ? [] : [{ start: anchor.start_offset, end: anchor.end_offset,
         id: annotation_event_id, className: 'review-range' }]),
-  ], [round.annotations, round.carried_annotations]);
+  ], [round.annotations, round.carried_annotations, standingRanges]);
   const validSelection = selection && selection.start < selection.end
     && document?.source.slice(selection.start, selection.end) === selection.quote ? selection : null;
 

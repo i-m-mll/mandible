@@ -1,3 +1,5 @@
+import type { StandingNoteMutation } from '../../src/feedback/standing-notes';
+import type { ReviewRange, StandingNote, StandingNotePresentation } from '../../src/feedback/review-types';
 import type { RequestReview } from '../../src/feedback/request-review';
 import type { ReviewAnnotationMutation } from '../../src/feedback/review-store';
 import type { CarriedReviewRange, ReviewDocumentReference } from "../../src/feedback/review-types";
@@ -3296,6 +3298,28 @@ export async function getArtifactDiff(from: string, to: string): Promise<Artifac
   return payload.diff;
 }
 
+export async function getArtifactStandingNotes(ref: string, signal?: AbortSignal): Promise<{
+  notes: StandingNote[]; can_write: boolean;
+}> {
+  const response = await apiGet(`/api/artifacts/${encodeURIComponent(ref)}/notes?anchors=true`, { signal });
+  return await parseMaybeJson(response) as { notes: StandingNote[]; can_write: boolean };
+}
+
+type ArtifactNoteAction = { kind: 'add'; range: ReviewRange; body: string } | (StandingNoteMutation & { id: string });
+
+function artifactNotePayload(action: ArtifactNoteAction) {
+  return action.kind === 'add' ? { kind: action.kind, ...action.range, body: action.body } : action;
+}
+
+export async function postArtifactStandingNote(ref: string, action: ArtifactNoteAction): Promise<void> {
+  await apiPost(`/api/artifacts/${encodeURIComponent(ref)}/notes`, artifactNotePayload(action));
+}
+
+export async function postArtifactDraftStandingNote(ref: string, action: ArtifactNoteAction, expected_source?: string): Promise<ArtifactDraftRecord> {
+  const response = await apiPost('/api/artifacts/drafts/standing-notes', { ref, expected_source, ...artifactNotePayload(action) });
+  return (await parseMaybeJson(response) as { draft: ArtifactDraftRecord }).draft;
+}
+
 export async function getArtifactDraft(ref: string, options: { signal?: AbortSignal } = {}): Promise<ArtifactDraftRecord | null> {
   const query = buildQuery({ ref });
   const response = await apiGet(`/api/artifacts/drafts${query}`, { signal: options.signal });
@@ -3353,7 +3377,8 @@ export async function getArtifactContent(id: string, options: { signal?: AbortSi
 
 export async function getArtifactText(id: string, options: { signal?: AbortSignal } = {}): Promise<string> {
   const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/text`, options);
-  const payload = (await parseMaybeJson(response)) as { text: string };
+  const payload = (await parseMaybeJson(response)) as { text?: unknown } | null;
+  if (typeof payload?.text !== "string") throw new Error("Artifact text was missing from the response.");
   return payload.text;
 }
 
@@ -3898,6 +3923,7 @@ export type BriefingRoundProjection = {
   latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[]; comparison_target?: ReviewDocumentReference | null };
   annotations?: BriefingAnnotation[];
   carried_annotations?: CarriedBriefingAnnotation[];
+  standing_notes?: StandingNotePresentation[];
   submission_overlays?: BriefingSubmissionOverlaySummary[];
   selected_submission_overlay?: BriefingSubmissionOverlaySummary | null;
   items: BriefingDirectiveItem[];
@@ -4359,6 +4385,23 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
           actor: { slug: briefingString(actor.slug), display_name: briefingOptionalString(actor.display_name) } } });
     }
   }
+  const standingNotes = (Array.isArray(root.standing_notes) ? root.standing_notes : []).flatMap((entry): StandingNotePresentation[] => {
+    const row = briefingRecord(entry);
+    const anchor = briefingRecord(row.anchor);
+    const id = briefingString(row.id);
+    const quote = briefingString(row.quote);
+    if (!id || !quote || typeof row.author !== 'string' || typeof row.body !== 'string') return [];
+    let placement: CarriedReviewRange;
+    if (anchor.status === 'detached') placement = { status: 'detached' };
+    else if ((anchor.status === 'preserved' || anchor.status === 'moved')
+      && typeof anchor.start_offset === 'number' && typeof anchor.end_offset === 'number'
+      && Number.isSafeInteger(anchor.start_offset) && Number.isSafeInteger(anchor.end_offset)
+      && anchor.start_offset >= 0 && anchor.end_offset > anchor.start_offset
+      && document?.source.slice(anchor.start_offset, anchor.end_offset) === quote) {
+      placement = { status: anchor.status, start_offset: anchor.start_offset, end_offset: anchor.end_offset, quote };
+    } else return [];
+    return [{ id, quote, body: row.body, author: row.author, anchor: placement, can_edit: false, resolved: row.resolved === true }];
+  });
   if ((rawState === 'open' && latestSubmissionForActor !== null)
       || (rawState === 'submitted' && latestSubmissionForActor === null)) valid = false;
   return {
@@ -4373,6 +4416,7 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     ...(latestFrozenMembership !== undefined ? { latest_frozen_membership: latestFrozenMembership } : {}),
     ...(annotations ? { annotations } : {}),
     carried_annotations: carriedAnnotations,
+    standing_notes: standingNotes,
     items,
     valid,
   };
@@ -4875,6 +4919,7 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
     directive_binding: selected.binding ?? null,
     latest_frozen_membership: selected.latest_frozen_membership ?? null,
     carried_annotations: selected.carried_annotations,
+    standing_notes: selected.standing_notes,
     annotations: rawSelectedOverlay == null
       ? currentAnnotations
       : [

@@ -1,3 +1,4 @@
+import { readArtifactStandingNotes } from "./artifact-standing-notes.js";
 import { BriefingStoreError } from "./briefing-errors.js";
 import {
   artifactReviewDocument, briefingComparisonBranches, defaultBriefingComparison, materializeBriefingComparison,
@@ -17,6 +18,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { FeedbackResponseType, FeedbackResponseValue } from "../contracts.js";
 import type { Db } from "../db.js";
 import {
+  getCanonicalArtifactVersion,
   recordArtifactVersion,
   resolveArtifactIdentity,
 } from "../provider-artifacts.js";
@@ -1334,6 +1336,11 @@ export function readBriefing(
     ? items.map(({ options_json, variants_json, ...item }) => ({ ...item, options: JSON.parse(options_json),
       variants: JSON.parse(variants_json) }))
     : [];
+  const standingVersion = verification.valid ? getCanonicalArtifactVersion(db, selected.artifact_version_id) : null;
+  const standingNotes = standingVersion && verification.valid ? readArtifactStandingNotes(db, {
+    documentKey: standingVersion.artifact_id, reference: artifactReviewDocument(standingVersion.id),
+    order: standingVersion.version_no, source: verification.source, rangeKind: "text",
+  }).map(({ id, author, body, quote, resolved, anchor }) => ({ id, author, body, quote, resolved, anchor, can_edit: false as const })) : [];
   return {
     briefing,
     rounds,
@@ -1352,6 +1359,7 @@ export function readBriefing(
       answers: projectionValid ? projectedAnswers.map(({ value_json: _valueJson, options_json: _optionsJson,
         variants_json: _variantsJson, ...answer }) => answer) : [],
       annotations: projectionValid ? effectiveReviewAnnotations(db, selected.id, options.actorUserId) : [],
+      standing_notes: standingNotes,
       carried_annotations: verification.valid ? carriedAnnotations(db,
         { ...selected, briefing_id: briefingId }, verification.source, options.actorUserId) : [],
       latest_submission: projectionValid ? latestSubmission ?? null : null,

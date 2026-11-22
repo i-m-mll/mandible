@@ -2931,6 +2931,16 @@
         ]
       }
     },
+    "artifact.notes": {
+      "route": ["artifact", "notes"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument", "name": "artifact-ref", "value": {"type": "string"}},
+          {"kind": "optional", "item": {"kind": "sequence", "items": [{"kind": "option", "names": ["--json"], "values": []}]}}
+        ]
+      }
+    },
     "artifact.show": {
       "route": ["artifact", "show"],
       "grammar": {

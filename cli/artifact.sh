@@ -846,6 +846,29 @@ cmd_show() {
   fi
 }
 
+cmd_notes() {
+  local ref="" json=0
+  local binding response
+  binding=$(mandible_bind_arguments "artifact.notes" '{"json":{"option":"json","constant":"1"},"ref":{"position":0}}' "$@") || return $?
+  eval "$binding"
+  require_tools
+  response="$(api_get "/api/artifacts/$(urlencode "$ref")/notes")" || die "Failed to read artifact notes." 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | api_jq_human '
+      if .notes == [] then "No artifact notes."
+      else .notes[] |
+        "\(.id[0:8]) v\(.source_order) \(.author)\(if .resolved then " (resolved)" else "" end)",
+        (if .draft_origin then "Draft origin " else "" end) +
+          (if .range_kind == "lines" and .start_offset + 1 == .end_offset then "line \(.end_offset)"
+           elif .range_kind == "lines" then "lines \(.start_offset + 1)–\(.end_offset)"
+           else "UTF-16 [\(.start_offset), \(.end_offset))" end),
+        (.quote | split("\n") | map("> " + .) | join("\n")), .body, ""
+      end'
+  fi
+}
+
 cmd_content() {
   local ref="" output="" json=0
   local binding
@@ -1374,6 +1397,7 @@ case "$cmd" in
   associate) cmd_associate "$@" ;;
   associations) cmd_associations "$@" ;;
   show) cmd_show "$@" ;;
+  notes) cmd_notes "$@" ;;
   content) cmd_content "$@" ;;
   check) cmd_check "$@" ;;
   versions) cmd_versions "$@" ;;

@@ -2,15 +2,16 @@ import type { ReviewChangeEdit } from "./request-draft-types.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
 import { canonicalJson } from "../canonical-json.js";
-import { quoteReviewLines } from "./review-ranges.js";
+import { reviewRangeMatches } from "./review-ranges.js";
 import { requestOriginJson } from "../request-origin.js";
 import type {
   ReviewAnnotation, ReviewDocumentBinding, ReviewDocumentReference, ReviewRange,
-  ReviewThreadActor, ReviewThreadEvent, ReviewThreadMutation,
+  ReviewThreadActor, ReviewThreadEvent, ReviewThreadMutation, StandingDraftOrigin,
 } from "./review-types.js";
 
 export type ReviewRoundOwner = { kind: "briefing"; briefing_id: string }
-  | { kind: "request_revision"; auth_request_id: string };
+  | { kind: "request_revision"; auth_request_id: string }
+  | { kind: "standing_document"; document_key: string };
 export type ReviewActor = { roundId: string; owner: ReviewRoundOwner; actorUserId: string };
 
 export function createBriefingReviewRound(
@@ -26,9 +27,10 @@ export function createBriefingReviewRound(
 export function createReviewRound(db: Db, roundId: string, owner: ReviewRoundOwner,
   bindings: readonly ReviewDocumentBinding[],
 ): void {
-  db.prepare(`INSERT INTO review_rounds (id, owner_kind, briefing_round_id, auth_request_id) VALUES (?, ?, ?, ?)`)
+  db.prepare(`INSERT INTO review_rounds (id, owner_kind, briefing_round_id, auth_request_id, standing_document_key) VALUES (?, ?, ?, ?, ?)`)
     .run(roundId, owner.kind, owner.kind === "briefing" ? roundId : null,
-      owner.kind === "request_revision" ? owner.auth_request_id : null);
+      owner.kind === "request_revision" ? owner.auth_request_id : null,
+      owner.kind === "standing_document" ? owner.document_key : null);
   const insert = db.prepare(`INSERT INTO review_document_bindings
     (id, round_id, position, document_key, source_json, comparison_target_json)
     VALUES (?, ?, ?, ?, ?, ?)`);
@@ -110,10 +112,13 @@ export type ReviewAnnotationMutation =
   | (ReviewRange & ({ operation: "set"; kind: "comment"; body: string }
     | { operation: "set"; kind: "suggest_replacement"; body: string | null; replacement_text: string }));
 
+export type ReviewAnnotationResult = { ok: true; id: string }
+  | { ok: false; reason: "stale_annotation" | "quote_mismatch" | "annotation_noop" };
+
 /** Append one event in the caller's write transaction, after checking owner access. */
 export function appendReviewAnnotation(db: Db, actor: ReviewActor, document: { id: string; source: string; rangeKind?: "lines" },
-  mutation: ReviewAnnotationMutation, now: number,
-): { ok: true; id: string } | { ok: false; reason: "stale_annotation" | "quote_mismatch" | "annotation_noop" } {
+  mutation: ReviewAnnotationMutation, now: number, draftOrigin?: StandingDraftOrigin,
+): ReviewAnnotationResult {
   const id = randomUUID();
   if (mutation.operation === "retract") {
     const target = db.prepare(`SELECT id FROM briefing_annotation_events e
@@ -133,24 +138,22 @@ export function appendReviewAnnotation(db: Db, actor: ReviewActor, document: { i
   }
   const { kind, start_offset: start, end_offset: end, quote, body } = mutation;
   const replacement = kind === "suggest_replacement" ? mutation.replacement_text : null;
-  const captured = document.rangeKind === "lines"
-    ? quoteReviewLines(document.source, start, end)
-    : end <= document.source.length ? document.source.slice(start, end) : undefined;
-  if (start < 0 || end <= start || captured !== quote) {
+  if (!draftOrigin && !reviewRangeMatches(document.source, mutation, document.rangeKind ?? "text")) {
     return { ok: false, reason: "quote_mismatch" };
   }
+  const origin = draftOrigin ? canonicalJson(draftOrigin) : null;
   const duplicate = db.prepare(`SELECT 1 FROM briefing_annotation_events e
     WHERE round_id = ? AND document_binding_id = ? AND actor_user_id = ? AND operation = 'set'
-      AND annotation_kind = ? AND start_offset = ? AND end_offset = ? AND quote = ? AND body IS ? AND replacement_text IS ?
+      AND annotation_kind = ? AND start_offset = ? AND end_offset = ? AND quote = ? AND body IS ? AND replacement_text IS ? AND standing_note_draft_origin IS ?
       AND NOT EXISTS (SELECT 1 FROM briefing_annotation_events r WHERE r.retracts_event_id = e.id) LIMIT 1`)
-    .get(actor.roundId, document.id, actor.actorUserId, kind, start, end, quote, body, replacement);
+    .get(actor.roundId, document.id, actor.actorUserId, kind, start, end, quote, body, replacement, origin);
   if (duplicate) return { ok: false, reason: "annotation_noop" };
   db.prepare(`INSERT INTO briefing_annotation_events
     (request_origin_json, id, round_id, briefing_id, document_binding_id, operation, annotation_kind, start_offset,
-     end_offset, quote, body, replacement_text, actor_user_id, created_at)
-    VALUES (?, ?, ?, ?, ?, 'set', ?, ?, ?, ?, ?, ?, ?, ?)`)
+     end_offset, quote, body, replacement_text, actor_user_id, created_at, standing_note_draft_origin)
+    VALUES (?, ?, ?, ?, ?, 'set', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(requestOriginJson(), id, actor.roundId, actor.owner.kind === "briefing" ? actor.owner.briefing_id : null, document.id, kind, start, end,
-      quote, body, replacement, actor.actorUserId, now);
+      quote, body, replacement, actor.actorUserId, now, origin);
   return { ok: true, id };
 }
 
@@ -193,7 +196,7 @@ export function submittedChangeEdit(db: Db, submissionId: string): ReviewChangeE
  * The owner authenticates the actor, validates answers and targets, and calls this inside its write transaction. */
 export function freezeReviewSubmission(
   db: Db,
-  actor: ReviewActor,
+  actor: ReviewActor & { owner: Exclude<ReviewRoundOwner, { kind: "standing_document" }> },
   input: {
     annotationEventIds: readonly string[];
     answers: readonly { directive_instance_id: string; response_event_id: string }[];
