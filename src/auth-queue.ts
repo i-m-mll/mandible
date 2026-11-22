@@ -5401,10 +5401,15 @@ export class AuthQueue {
     const candidate = await this.mergeTree(cwd, targetHeadSha, effectiveHead);
     if (candidate.status !== "clean" || !candidate.tree) return fail(candidate.message);
     this.assertPublication({ ...request, merge_candidate_tree_sha: candidate.tree }, undefined, targetHeadSha);
-    const pinSha = await this.createMergeCandidatePin({
-      ...request, cwd, merge_effective_head_sha: frozenHead, merge_preflight_base_sha: targetHeadSha,
-      merge_candidate_tree_sha: candidate.tree,
-    });
+    let pinSha: string;
+    try {
+      pinSha = await this.createMergeCandidatePin({
+        ...request, cwd, merge_effective_head_sha: frozenHead, merge_preflight_base_sha: targetHeadSha,
+        merge_candidate_tree_sha: candidate.tree,
+      });
+    } catch (error) {
+      return fail(errorMessage(error) ?? "pin_commit_creation_failed");
+    }
     const frozenReport = frozenHead && root
       ? await this.collectFrozenChangeReport(root, targetHeadSha, requesterHead, frozenHead, pinSha)
       : null;

@@ -205,7 +205,8 @@ it("orders terminal pin cleanup after a held ref swap and conditional compensati
   const f = await fixture();
   advanceMainViaAuthorizedMerge(f.db, f.repo, "feature/other", "private-race-predecessor");
   const ref = `refs/mandible/auth-candidates/${f.request.id}`;
-  const held = holdChild((kind, _program, args) => kind === "execFile" && args[0] === "update-ref" && args[1] === ref && args.length === 4);
+  const held = holdChild((kind, program, args) => kind === "execFile" && program === "git"
+    && args[0] === "update-ref" && args[1] === "--stdin");
   const repin = (f.queue as any).recomputeStaleCandidate(f.queue.getRequestExact(f.request.id), "private-race");
   try {
     await reached(held, repin);
