@@ -453,6 +453,13 @@ export class AuthHookManager {
     return this.hasDurableTables() && this.listRuns(requestId).some(run => this.hasRuntimeHandoff(run));
   }
 
+  async runtimeReceiptAccepted(requestId: string): Promise<boolean> {
+    const run = this.getRun(requestId, MANDIBLE_REBUILD_HOOK_ID);
+    if (!run?.runtime_delivery || run.state !== "complete") return false;
+    const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(new URL('../scripts/runtime-handoff.mjs', import.meta.url).href);
+    return runtimeObservationAcceptance(run, await this.readDeliveryJournal(runtime, run)) === "accepted";
+  }
+
   async admittedDrainIdentity(requestId: string): Promise<string | null> {
     for (const run of this.listRuns(requestId)) {
       if (!this.hasRuntimeHandoff(run)) continue;
@@ -664,6 +671,10 @@ export class AuthHookManager {
   private matchingHooksForRequest(request: AuthRequest): AuthHook[] {
     return this.findMatchingHooks(request.repo, request.type)
       .filter(hook => hook.id !== MANDIBLE_REBUILD_HOOK_ID || authRequestChangesBuildInputs(request));
+  }
+
+  configuredApprovalHooks(request: AuthRequest) {
+    return this.matchingHooksForRequest(request).map(({ id, command, required, position }) => ({ id, command, required, position }));
   }
 
   // --- Durable execution state ------------------------------------------------

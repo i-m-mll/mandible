@@ -912,8 +912,7 @@ export interface ServerOptions {
   router: Router;
   getStartupInfo: () => StartupCommitInfo | null;
   startupEpoch?: string;
-  // Bug: 4db692a — health endpoint includes rebuilding flag so the UI
-  // doesn't reload while the daemon is still alive but about to restart.
+  /** Legacy health field that reports committed shutdown for the current daemon. */
   isRebuilding?: () => boolean;
   // Issue a09b4d2 — a merged self-update whose rebuild or runtime handoff failed.
   getRebuildFailure?: () => NonNullable<HealthResponse["rebuild_failure"]> | null;
@@ -949,14 +948,10 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
     const current = await options.getCurrentDiagnostics?.();
     const startupCommit =
       getStartupInfo() ?? { hash: "unknown", summary: "unknown", date: "" };
-    // Bug: 4db692a — include rebuilding flag so the UI health poll can
-    // distinguish "daemon still alive during build" from "daemon restarted
-    // with new code". Only included when true to keep the common-case
-    // response small.
     const rebuilding = isRebuilding?.() ?? false;
     // Bug: 645f8a8 — readiness is always present so the UI can treat
-    // "ready !== true" as "keep the splash up / block mutations". A server
-    // created without a readiness source (tests) reports ready by default.
+    // "ready !== true" as unavailable for normal mutations. A server created
+    // without a readiness source reports ready by default.
     const ready = isReady?.() ?? true;
     const warm = isWarm?.() ?? true;
     const payload: HealthResponse = {

@@ -115,19 +115,14 @@ export interface HealthResponse {
   startup_commit: StartupCommitInfo;
   instance: InstanceInfo;
   file_rpc_dir?: string;
-  // Bug: 4db692a — true when daemon is about to restart after a self-merge.
-  // The UI health poll uses this to avoid reloading prematurely while the
-  // daemon is still alive but in the process of shutting down.
+  /** Legacy field for committed shutdown. Approval admission can close while health remains ready. */
   rebuilding?: boolean;
   // Issue a09b4d2 — the last merged self-update whose rebuild or runtime
   // handoff failed. Present only while it is current.
   rebuild_failure?: RebuildFailure;
   // Bug: 645f8a8 — lifecycle-owned readiness. true only once the daemon has
   // finished the critical startup work that makes normal dashboard mutations
-  // (auth approve/reject, etc.) safe — NOT merely "the HTTP listener is alive".
-  // The UI keeps the rebuild/start splash up and gates mutations while this is
-  // not strictly true, so a freshly-listening-but-still-starting process does
-  // not let users fire actions into a half-initialized daemon.
+  // (auth approve/reject, etc.) safe. A listening server can still report false.
   ready?: boolean;
   // Second readiness tier. false means the daemon is mutation-safe but its
   // first deferred startup reconciliation is still populating cached data.

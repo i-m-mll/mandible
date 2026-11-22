@@ -282,6 +282,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     backgroundMaintenance: operationalMutationsAllowed,
     allowExternalEffects: operationalMutationsAllowed,
     restartAvailability: restartAvailability ?? undefined,
+    startupEpoch,
     // Issue 7d83fe5 — the main daemon owns candidate acceptance of runtime
     // self-update requests and runs it automatically.
     candidateAcceptanceExecutor: instance.role === "main" && operationalMutationsAllowed ? runCandidateAcceptance : null,
@@ -414,8 +415,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     navEnricher.start();
   }
 
-  // Bug: 4db692a — expose auth queue's rebuilding state to the health endpoint
-  // so the UI doesn't reload while the daemon is still alive but about to restart.
   const fileRpcTransport = new FileRpcTransport({ router, logger, instance });
   const socketPath = localApiSocketPath(instance);
   const executionOutbox = new SessionExecutionOutbox(executionOutboxDir(socketPath), db, logger);
@@ -423,7 +422,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     db, sse, logger, version, router,
     startupEpoch,
     getStartupInfo: () => startupInfo,
-    isRebuilding: () => authQueue.isRebuilding,
+    isRebuilding: () => authQueue.isShuttingDown,
     getRebuildFailure: () => authQueue.rebuildFailure,
     // Bug: 645f8a8 — report lifecycle-owned readiness in health.
     isReady: () => isDaemonReady(),

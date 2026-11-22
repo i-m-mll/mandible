@@ -234,10 +234,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
     });
   }, { operation: { id: "get:/api/system/logs", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
-  // POST /api/admin/rebuilding — broadcast a mandible:rebuilding SSE event to all
-  // connected clients, then return 200. Called by the post-merge hook immediately
-  // before initiating a daemon restart so the UI can show a full-page splash.
-  // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
+  // Legacy administrative announcement. The owned exit path emits the shutdown signal.
   server.post("/api/admin/rebuilding", (_req, res) => {
     broadcast(DOMAIN_EVENTS.MANDIBLE_REBUILDING, {});
     sendJson(res, 200, { ok: true });

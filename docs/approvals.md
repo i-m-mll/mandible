@@ -30,7 +30,9 @@ Once approved, the interface labels these "Courtesy approval". A courtesy approv
 2. The Touch ID sheet appears, right after the click or the command and at no other time. It names the branches, the repository and the request's short id.
 3. The enclave signs the commit. Cancelling, any refusal from the helper, or leaving the sheet open past 60 seconds leaves the request pending with nothing changed.
 4. Mandible writes the signed commit object and the approval evidence, which names that commit. No branch refers to the commit yet.
-5. The executor moves the protected branch to that commit by compare-and-swap and runs what follows a merge. If the branch moved in the meantime, the update is refused and the request can be approved again. The request completes only if the published commit is the one the approval signed and its signature verifies against the approval key; any other commit, however signed, leaves it for recovery.
+5. The executor moves the protected branch to that commit by compare-and-swap and runs what follows a merge. During a Mandible update, an approval may be signed and queued before its executor starts. Dispatch waits for the new runtime receipt or for the old daemon to reopen admission after a failed update. It checks the stored signed commit against the current approval key and confirms the reviewed request, base, and custody still match before publishing. A changed request returns for a new approval and names the reason. The operator can withdraw a queued request before dispatch.
+
+The same queue can hold a courtesy approval. Dispatch checks the reviewed command, hook plan, and custody. The durable execution transition precedes the command, so interruption recovery can distinguish a queued approval from a command that may have run.
 
 The approval dialog follows what the approval helper reports:
 

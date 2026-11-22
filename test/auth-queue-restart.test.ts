@@ -1,4 +1,4 @@
-import { createInstalledServiceHookManager, AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
+import { configureSigningCredential, createInstalledServiceHookManager, AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
 import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-queue-fixtures.js";
 /**
@@ -7,11 +7,14 @@ import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-q
  * Self-rebuild event ordering and self-merge restart drain.
  */
 import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import type { AuthHookManager } from "../src/auth-hooks.js";
 import { collectAuthMergeReview } from "../src/auth-change-report.js";
 import type { SseEvent } from "../src/types.js";
+import { getAttributionEvidence, revokeCredential } from "../src/users/store.js";
+import { fixtureOperatorSigning, SoftwareOperatorSigner } from "./helpers/operator-signing-fixtures.js";
 import { commitOnBranch, createAuthCheckRepo, createMigratedDb, git, registerWorkRepo, waitForStatus } from "./helpers/auth-queue-fixtures.js";
 
 function admittedRebuildHooks(db: ReturnType<typeof createMigratedDb>, beforeRun?: () => void | Promise<void>): AuthHookManager {
@@ -55,8 +58,8 @@ describe("auth queue", () => {
         expect(acceptance).not.toHaveBeenCalled();
         expect(hooks.getRun(request.id, "builtin-mandible-rebuild")).toBeNull();
         expect(hooks.getRun(request.id, other.id)).toMatchObject({ state: "complete", output: "documentation-hook" });
-        expect(events.filter(event => ["mandible:rebuilding", "mandible:rebuild-failed"].includes(event.event))).toEqual([]);
-        expect(queue.isRebuilding).toBe(false);
+        expect(events.filter(event => event.event.startsWith("mandible:"))).toEqual([]);
+        expect(queue.isUpdateAdmissionClosed).toBe(false);
         expect(queue.rebuildFailure).toBeNull();
         expect(restart).not.toHaveBeenCalled();
       } finally {
@@ -66,10 +69,7 @@ describe("auth queue", () => {
       }
     });
 
-    // Bugs 645f8a8 and 03d6cb0: the splash is up (mandible:rebuilding) before
-    // the post-merge hooks run, and auth:resolved reaches subscribers before the
-    // daemon shuts down for the restart.
-    it("orders rebuilding, hooks, auth:resolved, shutdown and restart", async () => {
+    it("announces unavailability only after hooks and result publication", async () => {
       const events: SseEvent[] = [];
       const lifecycle: string[] = [];
       let resolvedBeforeShutdown = false;
@@ -81,9 +81,10 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         queue = new AuthQueue({
           db,
+          startupEpoch: "predecessor-epoch",
           hookManager: admittedRebuildHooks(db, () => {
-            events.push({ event: "test:hooks-ran", data: {} });
             lifecycle.push("hooks");
+            expect(queue!.isShuttingDown).toBe(false);
           }),
           broadcast: (event) => events.push(event),
           restartAvailability: {
@@ -118,11 +119,12 @@ describe("auth queue", () => {
         await waitUntil(() => lifecycle.includes("restart"), "the self-merge restart");
 
         const indexOf = (name: string) => events.findIndex((event) => event.event === name);
-        expect(indexOf("mandible:rebuilding")).toBeGreaterThanOrEqual(0);
-        expect(indexOf("test:hooks-ran")).toBeGreaterThan(indexOf("mandible:rebuilding"));
-        expect(indexOf("auth:resolved")).toBeGreaterThan(indexOf("mandible:rebuilding"));
+        expect(indexOf("mandible:rebuilding")).toBe(-1);
+        expect(indexOf("auth:resolved")).toBeGreaterThanOrEqual(0);
+        expect(indexOf("mandible:shutting-down")).toBeGreaterThan(indexOf("auth:resolved"));
+        expect(events[indexOf("mandible:shutting-down")]).toMatchObject({ data: { request_id: request.id, startup_epoch: "predecessor-epoch" } });
         expect(resolvedBeforeShutdown).toBe(true);
-        expect(lifecycle).toEqual([`rebuild:${request.id}`, "hooks", `shutdown:${request.id}`, "restart"]);
+        expect(lifecycle).toEqual(["hooks", `rebuild:${request.id}`, `shutdown:${request.id}`, "restart"]);
       } finally {
         (await queue?.dispose());
         db.close();
@@ -148,45 +150,52 @@ describe("auth queue", () => {
           merge_head_sha: git(repo, ['rev-parse', 'feature/build-failure']), execution_mode: 'daemon' }));
         await approveFixtureRequest(queue, request.id);
         await waitForStatus(queue, request.id, 'completed');
-        await waitUntil(() => !queue!.isRebuilding, "the rebuild window to close");
+        await waitUntil(() => !queue!.isUpdateAdmissionClosed, "update admission to reopen");
         expect(hooks.getRun(request.id, 'builtin-mandible-rebuild')).toMatchObject({ state: exitCode === 0 ? 'complete' : 'pending', exit_code: exitCode });
         expect(restart).not.toHaveBeenCalled();
         expect(db.prepare('SELECT value FROM meta WHERE key = ?').get('auth_self_merge_shutdown_at')).toBeUndefined();
       } finally { (await queue?.dispose()); db.close(); fs.rmSync(repo, { recursive: true, force: true }); }
     });
 
-    // Bug: 645f8a8 — the readiness gate relies on mandible:rebuilding being
-    // broadcast BEFORE the post-merge hooks run (so the splash is up during the
-    // build), and on auth:resolved remaining ordered after it. This locks that
-    // ordering in even as readiness wiring evolves.
-
   });
 
   describe("self-merge restart drain", () => {
-    it("parks a newly-approved execution while a self-merge restart is pending", async () => {
+    it.each(["verified receipt", "failed update", "changed base", "revoked key", "withdrawal"] as const)(
+      "holds an exact signed approval from the first self-merge instruction through %s", async outcome => {
       const repo = createAuthCheckRepo();
+      const foreignRepo = createAuthCheckRepo();
       const db = createMigratedDb();
       let queue: AuthQueue | null = null;
-      const executed: string[] = [];
+      const executed: Array<{ id: string; signedMerge: string | undefined }> = [];
       let restarted = false;
-
-      let releaseHook: (() => void) | null = null;
-      const hookGate = new Promise<void>((resolve) => {
-        releaseHook = resolve;
-      });
-      // Hold the self-merge in its hook phase, keeping admission closed while we
-      // approve a second request.
-      const hookManager = admittedRebuildHooks(db, async () => { await hookGate; });
+      let releaseSelf!: () => void;
+      let acknowledgeSelfStarted!: () => void;
+      const holdSelf = new Promise<void>(resolve => { releaseSelf = resolve; });
+      const selfStarted = new Promise<void>(resolve => { acknowledgeSelfStarted = resolve; });
+      const signer = new SoftwareOperatorSigner();
+      const authority = fixtureOperatorSigning(db, signer);
+      const hookManager = admittedRebuildHooks(db);
+      if (outcome === "failed update") {
+        db.prepare("UPDATE auth_hooks SET command = 'exit 1' WHERE id = 'builtin-mandible-rebuild'").run();
+      }
 
       try {
         commitOnBranch(repo, "feature/self-park", { "park.txt": "fix\n" });
+        commitOnBranch(foreignRepo, "feature/other", { "README.md": "# Reviewed docs\n" });
         registerWorkRepo(db, repo);
+        registerWorkRepo(db, foreignRepo);
+        const { operatorId, credentialId } = configureSigningCredential(db, repo);
+        configureSigningCredential(db, foreignRepo);
         queue = new AuthQueue({
           db,
           hookManager,
+          backgroundMaintenance: false,
+          operatorSigning: authority,
           restartFn: () => { restarted = true; },
           executor: async (options) => {
-            executed.push(options.request_id);
+            executed.push({ id: options.request_id, signedMerge: options.env?.MANDIBLE_AUTH_SIGNED_MERGE_SHA });
+            acknowledgeSelfStarted();
+            await holdSelf;
             return publishFixtureExecution(queue!, options);
           },
         });
@@ -202,31 +211,80 @@ describe("auth queue", () => {
           execution_mode: "daemon",
         }));
         await approveFixtureRequest(queue, selfMerge.id);
+        await selfStarted;
+        expect(queue.isUpdateAdmissionClosed).toBe(true);
+        expect(queue.isShuttingDown).toBe(false);
+        expect(hookManager.getRun(selfMerge.id, "builtin-mandible-rebuild")).toMatchObject({ state: "pending", attempts: 0 });
 
-        // Wait for the self-merge to enter its hook phase (admission closed).
-        await waitUntil(() => queue.isRebuilding, "the self-merge hook phase");
-
-        // A request approved during the rebuild window must be parked, not run.
-        const other = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
-          command: "echo other",
-          title: "Other",
+        const other = (await queue.submit({ ...AUTH_MERGE_REVIEW,
+          command: "mandible auth merge feature/other --into main", title: "Other",
+          repo: path.basename(foreignRepo), cwd: foreignRepo, base_branch: "main", head_branch: "feature/other",
+          merge_head_sha: git(foreignRepo, ["rev-parse", "feature/other"]),
           execution_mode: "daemon",
         }));
-        await approveFixtureRequest(queue, other.id);
-        expect((await queue.getRequest(other.id))?.status).toBe("pending");
+        const held = await approveFixtureRequest(queue, other.id);
+        expect(held).toMatchObject({ status: "approved", last_executed_at: null });
+        const exactSignedCommit = getAttributionEvidence(db, held.execution_evidence_id!)!.details.signed_commit_sha;
+        const starts = () => executed.map(run => run.id);
+        expect(starts()).toEqual([selfMerge.id]);
 
-        releaseHook?.();
+        releaseSelf();
         await waitForStatus(queue, selfMerge.id, "completed");
+        if (outcome === "failed update") {
+          await waitForStatus(queue, other.id, "completed");
+          expect(queue.isUpdateAdmissionClosed).toBe(false);
+          expect(restarted).toBe(false);
+          expect(starts()).toEqual([selfMerge.id, other.id]);
+          expect(executed[1]?.signedMerge).toBe(exactSignedCommit);
+          expect(git(foreignRepo, ["rev-parse", "main"])).toBe(exactSignedCommit);
+          return;
+        }
         await waitUntil(() => restarted, "the self-merge restart");
+        await queue.dispose();
 
-        // Through the whole window up to the restart, the parked request stayed
-        // pending and never reached the executor.
-        expect((await queue.getRequest(other.id))?.status).toBe("pending");
-        expect(executed).toEqual([selfMerge.id]);
+        const resumedHooks = createInstalledServiceHookManager(db);
+        db.prepare("UPDATE auth_hook_executions SET state = 'complete' WHERE auth_request_id = ?").run(selfMerge.id);
+        const receipt = vi.spyOn(resumedHooks, "runtimeReceiptAccepted").mockResolvedValue(false);
+        queue = new AuthQueue({ db, hookManager: resumedHooks, backgroundMaintenance: false, operatorSigning: authority,
+          executor: async options => {
+            executed.push({ id: options.request_id, signedMerge: options.env?.MANDIBLE_AUTH_SIGNED_MERGE_SHA });
+            return publishFixtureExecution(queue!, options);
+          },
+        });
+        await queue.resumeHookConvergence();
+        expect(receipt).toHaveBeenCalledWith(selfMerge.id);
+        expect((await queue.getRequest(other.id))?.status).toBe("approved");
+        expect(starts()).toEqual([selfMerge.id]);
+        const touches = signer.touches.length;
+        if (outcome === "changed base") git(foreignRepo, ["commit", "--allow-empty", "-m", "Advance protected base in fixture"]);
+        if (outcome === "revoked key") revokeCredential(db, credentialId);
+        if (outcome === "withdrawal") await queue.withdraw(other.id, "Withdraw deferred approval", { user_id: operatorId, evidence_method: "local_default", authority_path: "operator" },
+          queue.lifecycleRevision(other.id)!, queue.requestResponsibility(held).custody_generation);
+        receipt.mockResolvedValue(true);
+        await queue.resumeHookConvergence();
+
+        if (outcome === "verified receipt") {
+          await waitForStatus(queue, other.id, "completed");
+          expect(starts()).toEqual([selfMerge.id, other.id]);
+          expect(executed[1]?.signedMerge).toBe(exactSignedCommit);
+          expect(git(foreignRepo, ["rev-parse", "main"])).toBe(exactSignedCommit);
+        } else if (outcome === "changed base" || outcome === "revoked key") {
+          expect(await waitForStatus(queue, other.id, "pending")).toMatchObject({
+            approved_by_user_id: null, execution_evidence_id: null,
+            error: expect.stringContaining(outcome === "changed base" ? "reviewed merge candidate" : "merge signature"),
+          });
+          expect(starts()).toEqual([selfMerge.id]);
+        } else {
+          expect((await queue.getRequest(other.id))?.status).toBe("withdrawn");
+          expect(starts()).toEqual([selfMerge.id]);
+        }
+        expect(signer.touches).toHaveLength(touches);
       } finally {
+        releaseSelf();
         (await queue?.dispose());
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
+        fs.rmSync(foreignRepo, { recursive: true, force: true });
       }
     });
 
