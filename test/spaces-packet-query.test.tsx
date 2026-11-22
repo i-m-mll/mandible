@@ -172,13 +172,19 @@ it.each(['live', 'restart'])('preserves two consecutive Board edits while the %s
 });
 
 it('opens a document using the shell packet without a separate items read', async () => {
-  const document = packet(); document.space.default_renderer = 'document';
-  const fetch = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/blocks')
-    ? json({ blocks: [{ id: 'b1', space_id: 'sp1', parent_id: null, block_type: 'paragraph', item_id: null,
-      item_snapshot: null, sort_key: 'a', markdown: 'A coherent document', metadata: {}, created_at: 1, updated_at: 1 }] })
-    : json(document));
+  const document = packet();
+  document.space.default_renderer = 'document';
+  const fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path === '/api/spaces/sp1') return json(document);
+    if (path === '/api/spaces/sp1/document') return json({ source: 'A coherent document', generation: 1 });
+    if (path === '/api/spaces/sp1/document/notes') return json({ generation: 1, notes: [] });
+    throw new Error(`Unexpected Space request: ${path}`);
+  });
   vi.stubGlobal('fetch', fetch);
   render(<Workspace />);
   await screen.findByText('A coherent document');
-  expect(fetch.mock.calls.filter(([input]) => String(input) === '/api/spaces/sp1')).toHaveLength(1);
+  const requests = fetch.mock.calls.map(([input]) => String(input));
+  expect(requests.filter(path => path === '/api/spaces/sp1')).toHaveLength(1);
+  expect(requests).not.toContain('/api/spaces/sp1/items');
 });
