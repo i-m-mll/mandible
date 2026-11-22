@@ -12,7 +12,7 @@ When asked to work on or annotate Mandible in the in-app browser, run this from 
 bun run iab-preview -- --json
 ```
 
-Open the returned `freshUrl` in the IAB. Use `bun run iab-preview -- --help` for branch and ownership options. New integration worktrees start from the protected branch. Use `--force-new` only when the user explicitly needs a separate instance. Do not restart or replace an unrelated preview without an explicit request for that instance.
+Open the returned `freshUrl` in the IAB. Use `bun run iab-preview -- --help` for branch and ownership options. New integration worktrees start from the protected branch. Use `--force-new` only when the user explicitly needs a separate instance. Do not restart or replace an unrelated preview without an explicit request for that instance. To drive a preview from the CLI, export the result's `instanceEnv` first; without it the CLI talks to the production ledger.
 
 The in-development theme is `codex`. During IAB review, theme feedback without another named target belongs in its shared tokens and components. Ask which theme only after `codex` is declared complete or the user names another theme.
 
