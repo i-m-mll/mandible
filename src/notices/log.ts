@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { normalizeAmbientProviderIdentity, parseExactAgentRef, type AmbientProviderIdentity } from "../ambient-provider-identity.js";
+import { exactAgentRef, hookAgentIdentity, normalizeAmbientProviderIdentity, parseExactAgentRef, type AmbientProviderIdentity } from "../ambient-provider-identity.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 import type { Db } from "../db.js";
 import type { SqliteStatement } from "../sqlite.js";
 import { holdsResponsibility, type ResponsibilityHolder } from "../responsibility.js";
 import { resolveSessionAlias } from "../session-liveness.js";
 import { broadcast } from "../sse.js";
-import { NOTICE_PROVIDERS, outcomeReportDigest, type NoticeProvider, type OutcomeReporter } from "./contract.js";
+import { NOTICE_PROVIDERS, outcomeReportDigest, type NoticeCaller, type NoticeProvider, type OutcomeReporter } from "./contract.js";
 import { renderNotice } from "./render.js";
 
 /** Who answers for a request now, as `AuthQueue.requestResponsibility` gives it. */
@@ -38,12 +38,12 @@ interface LatestRow {
 
 type OwedRow =
   | { id: string; subject_kind: "auth_request"; subject_id: string; recipient_id: string; responsible_agent_ref: string; text: string | null }
-  | { id: string; subject_kind: "reminder"; subject_id: string; recipient_id: string; responsible_agent_ref: string; text: string };
+  | { id: string; subject_kind: "reminder" | "message"; subject_id: string; recipient_id: string; responsible_agent_ref: string; text: string };
 
 /**
  * The session half of the notification log: raising a notice when an approval
- * request's outcome changes, and handing every owed notice, a fired reminder's
- * included, to its session at the start of the session's next turn.
+ * request's outcome changes, and handing every owed row (a settlement notice,
+ * a fired reminder, a message) to its recipient at the recipient's next hook.
  */
 export class NoticeLog {
   private readonly owed: SqliteStatement;
@@ -55,9 +55,13 @@ export class NoticeLog {
     private readonly holder: (requestId: string) => RequestHolder | null,
     private readonly now: () => number = Date.now,
   ) {
-    this.owed = db.prepare(`SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, text FROM notifications
-      WHERE recipient_provider = ? AND recipient_id = ? AND delivered_at IS NULL AND recipient_kind = 'session'
-      ORDER BY raised_at, rowid`);
+    // Session-addressed rows by session, for the main thread only; messages by exact agent.
+    this.owed = db.prepare(`SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, text, raised_at FROM notifications
+      WHERE ?3 AND recipient_provider = ?1 AND recipient_id = ?2 AND delivered_at IS NULL AND recipient_kind = 'session' AND subject_kind <> 'message'
+      UNION ALL
+      SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, text, raised_at FROM notifications
+      WHERE responsible_agent_ref = ?4 AND delivered_at IS NULL AND subject_kind = 'message'
+      ORDER BY raised_at, id`);
     this.latest = db.prepare(`SELECT id, delivered_at, digest, recipient_provider, recipient_id, responsible_agent_ref
       FROM notifications WHERE subject_kind = 'auth_request' AND subject_id = ? ORDER BY raised_at DESC, rowid DESC LIMIT 1`);
   }
@@ -99,12 +103,18 @@ export class NoticeLog {
     this.changed(id);
   }
 
-  /** The notices owed to one session, rendered now. Nothing owed is one indexed read. */
-  collect(provider: NoticeProvider, sessionId: string): Array<{ id: string; text: string }> {
-    const rows = this.owed.all(provider, sessionId) as OwedRow[];
+  /**
+   * The rows owed to the calling hook, rendered now: the session's notices when
+   * it is the main thread, and the messages addressed to its exact agent.
+   * Nothing owed is one indexed read.
+   */
+  collect(caller: NoticeCaller): Array<{ id: string; text: string }> {
+    const ref = exactAgentRef(hookAgentIdentity(caller.provider, caller.session_id, caller.agent_id));
+    const main = caller.agent_id === undefined || caller.agent_id === caller.session_id;
+    const rows = this.owed.all(caller.provider, caller.session_id, main ? 1 : 0, ref) as OwedRow[];
     if (rows.length === 0) return [];
     return this.db.transaction(() => rows.flatMap((row) => {
-      if (row.subject_kind === "reminder") return [{ id: row.id, text: row.text }];
+      if (row.subject_kind !== "auth_request") return [{ id: row.id, text: row.text }];
       const report = this.reporter(row.subject_id);
       if (!report) return [];
       const holder = parseExactAgentRef(row.responsible_agent_ref);

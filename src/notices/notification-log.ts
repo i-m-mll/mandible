@@ -26,6 +26,7 @@ interface NotificationRow {
   recipient_provider: NoticeProvider | null;
   recipient_id: string;
   responsible_agent_ref: string | null;
+  sender_agent_ref: string | null;
   raised_at: number;
   delivered_at: number | null;
   text: string | null;
@@ -59,6 +60,7 @@ function item(row: NotificationRow): NotificationListItem {
           session_id: row.recipient_id,
           responsible_agent_ref: row.responsible_agent_ref as string,
         },
+    sender_agent_ref: row.sender_agent_ref,
     raised_at: row.raised_at,
     delivered_at: row.delivered_at,
     text: row.text,
