@@ -1,3 +1,4 @@
+import { TRACKED_BRIEFING_MEMBER_MIGRATION_SQL, TRACKED_BRIEFING_REVIEW_SCHEMA_SQL } from "./feedback/schema.js";
 import { backupBeforeSpaceCutover, convertSpaceDocuments } from "./spaces/migrate-document.js";
 import { REQUEST_REVIEW_DRAFT_SCHEMA_SQL } from "./feedback/request-draft-schema.js";
 import { STANDING_REVIEW_ROUND_MIGRATION_SQL, REQUEST_REVIEW_ROUND_MIGRATION_SQL, REVIEW_ROUND_MIGRATION_SQL, REVIEW_THREAD_SCHEMA_SQL } from "./feedback/review-schema.js";
@@ -2514,6 +2515,8 @@ export const MIGRATIONS: readonly Migration[] = [
        SELECT ${AUTH_LIFECYCLE_EVENT_COLUMNS}, review_submission_id FROM auth_request_lifecycle_events_v254`,
     "DROP TABLE auth_request_lifecycle_events_v254",
   ] },
+  { version: 256, name: "tracked_briefing_members",
+    statements: [...TRACKED_BRIEFING_MEMBER_MIGRATION_SQL, ...TRACKED_BRIEFING_REVIEW_SCHEMA_SQL] },
 ];
 
 /**

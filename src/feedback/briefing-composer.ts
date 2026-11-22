@@ -1,3 +1,4 @@
+import { bundleMemberRows, writeBundleMemberRows } from "./briefing-bundles.js";
 import { mutateBriefing } from "./mutation-history.js";
 import { requestOriginJson } from "../request-origin.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -745,21 +746,16 @@ function receiptForRun(db: Db, row: { id: string; run_id: string; quiet: number 
 }
 
 function cloneBaseBundle(db: Db, base: BaseDocument, replacements: ReadonlyMap<string, string>, now: number): string {
-  const members = db.prepare(`SELECT briefing_id, layout_position, entry_kind, subgroup_name, subgroup_position
-    FROM briefing_bundle_members WHERE bundle_id = ? ORDER BY layout_position, subgroup_position`)
-    .all(base.baseBundleId) as Array<{ briefing_id: string; layout_position: number; entry_kind: string;
-      subgroup_name: string | null; subgroup_position: number }>;
-  const briefingIds = members.map((member) => replacements.get(member.briefing_id) ?? member.briefing_id);
+  const members = bundleMemberRows(db, base.baseBundleId).map(member => member.briefing_id === null ? member : {
+    ...member, briefing_id: replacements.get(member.briefing_id) ?? member.briefing_id,
+  });
+  const briefingIds = members.flatMap(member => member.briefing_id === null ? [] : [member.briefing_id]);
   enforceActivePlacement(db, { operation: "composition_proposal", target: { kind: "group", id: base.groupId },
     briefingIds, now });
   const bundleId = randomUUID();
   db.prepare("INSERT INTO briefing_bundles (request_origin_json, id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
     .run(requestOriginJson(), bundleId, `${base.groupName} proposed update`, now, now);
-  const insert = db.prepare(`INSERT INTO briefing_bundle_members
-    (bundle_id, briefing_id, layout_position, entry_kind, subgroup_name, subgroup_position, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`);
-  members.forEach((member) => insert.run(bundleId, replacements.get(member.briefing_id) ?? member.briefing_id,
-    member.layout_position, member.entry_kind, member.subgroup_name, member.subgroup_position, now));
+  writeBundleMemberRows(db, bundleId, members, now);
   db.prepare(`INSERT INTO briefing_group_updates (request_origin_json, group_id, bundle_id, position, created_at)
     VALUES (?, ?, ?, 0, ?)`).run(requestOriginJson(), base.groupId, bundleId, now);
   db.prepare("UPDATE briefing_groups SET updated_at = ? WHERE id = ?").run(now, base.groupId);

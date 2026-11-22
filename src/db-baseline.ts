@@ -22,7 +22,7 @@ import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.j
 import { PROTECTED_BASE_AUDIT_SCHEMA_SQL } from "./protected-base-audit-schema.js";
 import { OPERATOR_TRUST_CHANGES_SCHEMA_SQL, USER_CREDENTIALS_INDEX_SQL, USER_CREDENTIALS_TABLE_SQL } from "./operator-signing/schema.js";
 import { ISSUE_SEARCH_SCHEMA_SQL } from "./ledger/issue-search.js";
-import { CURRENT_BRIEFING_OWNER_SCHEMA_SQL, REQUEST_NARRATIVE_CUSTODY_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
+import { CURRENT_BRIEFING_OWNER_SCHEMA_SQL, TRACKED_BRIEFING_REVIEW_SCHEMA_SQL, REQUEST_NARRATIVE_CUSTODY_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
 import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
@@ -38,7 +38,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 255;
+export const BASELINE_SCHEMA_VERSION = 256;
 
 export const FROZEN_REQUEST_REVIEW_COLUMNS_SQL = [
   "ALTER TABLE auth_requests ADD COLUMN merge_effective_head_sha TEXT",
@@ -1186,6 +1186,7 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     for (const statement of LANDED_ISSUE_ACCOUNTING_COLUMNS_SQL) db.exec(statement);
     for (const sql of REQUEST_NARRATIVE_CUSTODY_SQL) db.exec(sql);
     for (const statement of FROZEN_REQUEST_REVIEW_COLUMNS_SQL) db.exec(statement);
+    for (const statement of TRACKED_BRIEFING_REVIEW_SCHEMA_SQL) db.exec(statement);
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
       .run("schema_version", String(schemaVersion));
 

@@ -729,13 +729,13 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     try {
       sendJson(res, 200, { groups: listBriefingGroups(db, briefingLayoutViewer(db, req)) });
     } catch (error) { handleError(res, error); }
-  }, { operation: { id: "get:/api/briefing-groups", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-groups", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefing-groups/:groupId", (req, res) => {
     try {
       sendJson(res, 200, { group: readBriefingGroup(db, req.params.groupId, briefingLayoutViewer(db, req)) });
     } catch (error) { handleError(res, error); }
-  }, { operation: { id: "get:/api/briefing-groups/:groupId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-groups/:groupId", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefing-bundles", (req, res) => {
     try {
@@ -878,7 +878,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/briefing-bundles", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-bundles", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefing-bundles/:bundleId", (req, res) => {
     try {
@@ -886,7 +886,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/briefing-bundles/:bundleId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-bundles/:bundleId", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefings", (req, res) => {
     try {
