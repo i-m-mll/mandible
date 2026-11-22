@@ -696,8 +696,8 @@ describe("rebuild failure", () => {
     await waitUntilPasses(() => expect(events.some((event) => event.event === "mandible:rebuild-failed")).toBe(true));
     const event = events.find((candidate) => candidate.event === "mandible:rebuild-failed")!;
     expect(event.data).toMatchObject({ request_id: request.id, message: "The merge landed, but Mandible did not update: its rebuild hook exited 1." });
-    expect(events.findIndex((candidate) => candidate.event === "mandible:rebuilding")).toBeLessThan(events.indexOf(event));
-    expect(queue.isRebuilding).toBe(false);
+    expect(events.some(candidate => candidate.event === "mandible:shutting-down")).toBe(false);
+    expect(queue.isUpdateAdmissionClosed).toBe(false);
     expect(queue.rebuildFailure).toMatchObject({ request_id: request.id });
     expect(failed).toEqual([request.id]);
     expect(restart).not.toHaveBeenCalled();

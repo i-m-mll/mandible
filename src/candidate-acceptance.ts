@@ -165,6 +165,7 @@ export class CandidateAcceptanceRuns {
   private readonly waiting = new Map<string, { candidate: CandidateAcceptanceCandidate; input: () => Omit<CandidateAcceptanceInput, "signal"> }>();
   private active: { requestId: string; pinSha: string; recordId: string; controller: AbortController; phases: Map<string, { status: string; started_at: number; elapsed_ms: number | null }> } | null = null;
   private stopped = false;
+  private paused = false;
 
   constructor(
     private readonly db: Db,
@@ -187,6 +188,11 @@ export class CandidateAcceptanceRuns {
     const now = this.now();
     return [...this.active.phases].map(([name, phase]) => ({ name, status: phase.status,
       elapsed_ms: phase.elapsed_ms ?? now - phase.started_at, expected_ms: ACCEPTANCE_STAGES[name as AcceptancePhaseName]?.expectedMs ?? null }));
+  }
+
+  running() {
+    const active = this.active;
+    return active && { request_id: active.requestId, acceptance_id: active.recordId, phases: this.livePhases(active.requestId) };
   }
 
   private phase(requestId: string, event: AcceptancePhaseEvent): void {
@@ -218,7 +224,14 @@ export class CandidateAcceptanceRuns {
 
   /** Schedule waiting isolated runs after the current run. */
   resume(): void {
+    this.paused = false;
     for (const requestId of this.waiting.keys()) this.schedule(requestId);
+  }
+
+  pauseForRestart(): Promise<void> {
+    this.paused = true;
+    this.active?.controller.abort();
+    return this.chain;
   }
 
   private schedule(requestId: string): void {
@@ -252,7 +265,7 @@ export class CandidateAcceptanceRuns {
 
   private async next(requestId: string): Promise<void> {
     const job = this.waiting.get(requestId);
-    if (!job || this.stopped) return;
+    if (!job || this.stopped || this.paused) return;
     this.waiting.delete(requestId);
     const { candidate } = job;
     const recordId = randomUUID();
@@ -277,7 +290,9 @@ export class CandidateAcceptanceRuns {
     })
       .catch((error: unknown): CandidateAcceptanceOutcome => ({ status: "failed", result: subprocessFailureEvidence(error) ? { subprocess: subprocessFailureEvidence(error) } : null, error: error instanceof Error ? error.message : String(error) }));
     this.active = null;
-    this.finish(requestId, recordId, withTotalWarning(outcome, this.now() - startedAt), finalize);
+    this.finish(requestId, recordId, this.paused && controller.signal.aborted
+      ? { status: "failed", result: null, error: CANDIDATE_ACCEPTANCE_INTERRUPTED }
+      : withTotalWarning(outcome, this.now() - startedAt), finalize);
   }
 
   private finish(requestId: string, recordId: string, outcome: CandidateAcceptanceOutcome, finalize?: (recordId: string) => void): void {

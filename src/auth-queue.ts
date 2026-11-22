@@ -283,11 +283,11 @@ type FinalizerState = Partial<Record<FinalizerStepName, FinalizerStepState>>;
 class FinalizerQueue {
   private readonly ids: string[] = [];
   private readonly queued = new Set<string>();
-  private processing = false;
+  private active: { request_id: string; step: FinalizerStepName | "verify_merge" } | null = null;
   private drainWaiters: Array<() => void> = [];
 
   constructor(
-    private readonly process: (id: string) => Promise<void>,
+    private readonly process: (id: string, markStep: (step: FinalizerStepName) => void) => Promise<void>,
     private readonly maxQueued: number = FINALIZER_MAX_QUEUED,
   ) {}
 
@@ -306,7 +306,11 @@ class FinalizerQueue {
   }
 
   get idle(): boolean {
-    return !this.processing && this.ids.length === 0;
+    return this.active === null && this.ids.length === 0;
+  }
+
+  pending() {
+    return { active: this.active, queued_request_ids: [...this.ids] };
   }
 
   async drain(): Promise<void> {
@@ -317,23 +321,21 @@ class FinalizerQueue {
   }
 
   private async run(): Promise<void> {
-    if (this.processing) {
-      return;
-    }
-    this.processing = true;
+    if (this.active) return;
     try {
       while (this.ids.length > 0) {
         const id = this.ids.shift()!;
         this.queued.delete(id);
+        this.active = { request_id: id, step: "verify_merge" };
         try {
-          await this.process(id);
+          await this.process(id, step => { this.active = { request_id: id, step }; });
         } catch {
           // process() is written to never throw; guard defensively so one bad
           // request cannot wedge the queue.
         }
       }
     } finally {
-      this.processing = false;
+      this.active = null;
       const waiters = this.drainWaiters;
       this.drainWaiters = [];
       for (const waiter of waiters) {
@@ -519,6 +521,7 @@ export interface AuthQueueOptions {
   // Issue ded17e6 — injectable process-restart hook so the self-merge drain
   // can be exercised without exiting the test runner. Defaults to process.exit.
   restartFn?: () => void;
+  startupEpoch?: string;
   // Issue ff784d8 — local, DB-independent self-merge availability receipt.
   restartAvailability?: RestartAvailabilityLifecycle;
   // Issue a09b4d2 — runs candidate acceptance of an exact retained candidate.
@@ -739,6 +742,7 @@ export class AuthQueue {
   private readonly observations = new Set<Promise<void>>();
   // Issue ded17e6 — injectable restart hook for the self-merge drain.
   private readonly restartFn: () => void;
+  private readonly startupEpoch?: string;
   private readonly restartAvailability?: RestartAvailabilityLifecycle;
   // Issue 75f52ac — bounded, idempotent, crash-safe queue that runs the heavy
   // post-merge finalizers (Stage 3) off the event loop after auth:resolved.
@@ -748,17 +752,11 @@ export class AuthQueue {
   private handoffCompletionPending = false;
   private handoffCompletionWakeupUntil = 0;
   private disposed = false;
-  // Bug: 4db692a — tracks whether the daemon is about to restart after a
-  // self-merge. Exposed via isRebuilding so the health endpoint can include
-  // it in the response, preventing the UI from reloading prematurely.
-  //
-  // Bug: 681739e — while true, admission is closed: executeInBackground parks
-  // any new execution (reverts it to pending) instead of starting a merge that
-  // the imminent process.exit would kill mid-flight.
-  private _rebuilding = false;
-  // Issue a09b4d2 — the self-update request whose rebuild window is open, and
-  // the last rebuild that ended without an admitted runtime handoff.
-  private rebuildWindowRequestId: string | null = null;
+  private restartAdmissionOwner: string | null = null;
+  private readonly reopenedRestartAdmissions = new Set<string>();
+  private restartQueueDispatch: Promise<void> | null = null;
+  private restartQueueDispatchPending = false;
+  private shuttingDown = false;
   private _rebuildFailure: RebuildFailure | null = null;
   private readonly acceptanceRuns: CandidateAcceptanceRuns | null;
   private readonly generatedStorage: GeneratedStorageMaintenance | null;
@@ -805,6 +803,7 @@ export class AuthQueue {
     this.workUnitAbandonedScanRetentionMs =
       options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
     this.restartFn = options.restartFn ?? (() => process.exit(0));
+    this.startupEpoch = options.startupEpoch;
     this.restartAvailability = options.restartAvailability;
     this.acceptanceRuns = options.candidateAcceptanceExecutor
       ? new CandidateAcceptanceRuns(this.db, options.candidateAcceptanceExecutor, this.now, (requestId) => this.candidateAcceptanceChanged(requestId),
@@ -814,7 +813,7 @@ export class AuthQueue {
     this.acceptanceRuns?.start();
     // Issue 75f52ac — construct the finalizer queue before any recovery pass:
     // recovery re-runs finalizeSuccessfulMerge, which enqueues Stage 3 work.
-    this.finalizerQueue = new FinalizerQueue((id) => this.runBackgroundFinalizers(id));
+    this.finalizerQueue = new FinalizerQueue((id, markStep) => this.runBackgroundFinalizers(id, markStep));
     // Bug: 681739e — fast-recover executions orphaned by a self-merge restart
     // before the generic (threshold-based) stuck-request recovery runs.
     if (this.backgroundMaintenance) {
@@ -931,9 +930,12 @@ export class AuthQueue {
     };
   }
 
-  /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */
-  get isRebuilding(): boolean {
-    return this._rebuilding;
+  get isUpdateAdmissionClosed(): boolean {
+    return this.restartAdmissionOwner !== null;
+  }
+
+  get isShuttingDown(): boolean {
+    return this.shuttingDown;
   }
 
   /** Issue a09b4d2 — the last merged self-update whose rebuild or runtime handoff failed. */
@@ -1117,7 +1119,7 @@ export class AuthQueue {
   async refreshPendingCandidates(startup = false): Promise<void> {
     const finishObservation = this.beginObservation();
     try {
-      if (!this.acceptanceRuns) return;
+      if (!this.acceptanceRuns || this.isUpdateAdmissionClosed) return;
       this.acceptanceRuns.resume();
       const rows = this.db.prepare("SELECT id FROM auth_requests WHERE status = 'pending' ORDER BY created_at").all() as Array<{ id: string }>;
       for (const { id } of rows) {
@@ -1225,17 +1227,33 @@ export class AuthQueue {
     } finally { finishObservation(); }
   }
 
-  /** Open the rebuild window that the UI splash and restart-availability track. */
-  private beginRebuildWindow(requestId: string): void {
-    this._rebuilding = true;
-    this.rebuildWindowRequestId = requestId;
+  private closeRestartAdmission(requestId: string): boolean {
+    if (this.restartAdmissionOwner) return this.restartAdmissionOwner === requestId;
+    this.restartAdmissionOwner = requestId;
     this._rebuildFailure = null;
-    this.restartAvailability?.markRebuildStarted(requestId);
+    return true;
+  }
+
+  private reopenRestartAdmission(requestId: string): void {
+    if (this.restartAdmissionOwner !== requestId || this.activeConvergenceDrain) return;
+    this.restartAdmissionOwner = null;
+    this.failedConvergenceDrain = null;
+    this.reopenedRestartAdmissions.add(requestId);
+    void this.dispatchRestartQueue();
+    if (this.acceptanceRuns && !this.disposed) {
+      void this.refreshPendingCandidates(true).catch(error => {
+        if (!this.disposed) authLog("warn", "auth_candidate_acceptance_resume_failed", { subsystem: "auth", error: errorMessage(error) ?? String(error) });
+      });
+    }
   }
 
   /** The merge landed but Mandible did not update: report why, and close the rebuild window. */
   private failRebuild(request: AuthRequest, reason: string): void {
-    this.rebuildWindowRequestId = null;
+    this.reopenRestartAdmission(request.id);
+    this.reportRebuildFailure(request, reason);
+  }
+
+  private reportRebuildFailure(request: AuthRequest, reason: string): void {
     const message = `The merge landed, but Mandible did not update: ${reason.trim().replace(/\.+$/, "")}.`;
     this._rebuildFailure = { request_id: request.id, message, failed_at: this.now() };
     this.restartAvailability?.markRebuildFailed(request.id);
@@ -1360,7 +1378,7 @@ export class AuthQueue {
     this.stopExpiryTimer();
     this.handoffCompletionWatcher?.close(); this.handoffCompletionWatcher = null;
     await Promise.allSettled([
-      this.startupRecovery, this.expiryReconciliation, ...this.phaseRuns, ...this.observations, ...this.queuedAdmissions,
+      this.startupRecovery, this.expiryReconciliation, this.restartQueueDispatch, ...this.phaseRuns, ...this.observations, ...this.queuedAdmissions,
       this.finalizerQueue.drain(), this.acceptanceRuns?.stop(), this.generatedStorage?.stop(), ...this.previewTeardowns.values(),
     ]);
   }
@@ -1560,11 +1578,12 @@ export class AuthQueue {
           // and use to run full finalization. A parked row must carry no approval
           // evidence until it is genuinely re-approved against the rebuilt code.
           `UPDATE auth_requests SET ${RETURN_TO_PENDING_ASSIGNMENTS}
-           WHERE id = ? AND status = 'executing' AND exit_code IS NULL`
-        ).run(now + this.ttlMs, now, request.id);
+           WHERE id = ? AND status = ? AND exit_code IS NULL`
+        ).run(now + this.ttlMs, now, request.id, request.status);
         if (changed.changes === 1) {
+          if (request.status === "approved") this.db.prepare("UPDATE auth_requests SET error = ? WHERE id = ?").run(reason, request.id);
           this.appendLifecycleEvent({
-            requestId: request.id, eventType: "revised", priorStatus: "executing",
+            requestId: request.id, eventType: "revised", priorStatus: request.status,
             nextStatus: "pending", actor: systemAction(),
             reason, occurredAt: now,
           });
@@ -1587,6 +1606,87 @@ export class AuthQueue {
       auth_request_id: request.id,
       reason,
     });
+  }
+
+  private restartQueuedApproval(request: AuthRequest): AuthRequestLifecycleEvent | null {
+    if (request.status !== "approved" || !request.execution_evidence_id || request.execution_mode === "remote") return null;
+    return (this.db.prepare(`SELECT * FROM auth_request_lifecycle_events
+      WHERE auth_request_id = ? AND evidence_id = ? AND next_status = 'approved'
+        AND related_request_id IS NOT NULL AND (event_type = 'approved' OR
+          (event_type = 'revised' AND prior_status IN ('approved', 'executing')))
+      ORDER BY revision DESC LIMIT 1`).get(request.id, request.execution_evidence_id) as AuthRequestLifecycleEvent | undefined) ?? null;
+  }
+
+  private queueUnstartedApproval(request: AuthRequest, owner: string): void {
+    const queued = this.restartQueuedApproval(request);
+    if (queued && (queued.related_request_id === owner || this.lifecycleRevision(request.id) !== queued.revision)) return;
+    const evidence = request.execution_evidence_id ? getAttributionEvidence(this.db, request.execution_evidence_id) : null;
+    if ((!queued && request.status !== "executing") || !request.approved_by_user_id || !evidence || typeof evidence.details.restart_queue_context !== "string") {
+      void this.parkExecutionForRestart(request);
+      return;
+    }
+    const now = this.now();
+    this.db.transaction(() => {
+      const changed = this.db.prepare(`UPDATE auth_requests SET status = 'approved', updated_at = ?
+        WHERE id = ? AND status = ? AND execution_evidence_id = ? AND exit_code IS NULL`).run(now, request.id, request.status, evidence.id);
+      if (changed.changes !== 1) return;
+      this.appendLifecycleEvent({
+        requestId: request.id, eventType: "revised", priorStatus: request.status, nextStatus: "approved", relatedRequestId: owner,
+        actor: { user_id: request.approved_by_user_id!, evidence_method: evidence.evidence_method, evidence_id: evidence.id, credential_id: evidence.credential_id },
+        reason: "Queued for the Mandible update.", occurredAt: now,
+      });
+    })();
+    this.executionEnvs.delete(request.id);
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.requireRequest(request.id) } });
+  }
+
+  private dispatchRestartQueue(): Promise<void> {
+    if (this.disposed || this.isUpdateAdmissionClosed) return Promise.resolve();
+    this.restartQueueDispatchPending = true;
+    if (this.restartQueueDispatch) return this.restartQueueDispatch;
+    const dispatch = async () => {
+      do {
+        this.restartQueueDispatchPending = false;
+        await this.dispatchRestartQueueInApprovalOrder();
+      } while (this.restartQueueDispatchPending && !this.disposed && !this.isUpdateAdmissionClosed);
+    };
+    this.restartQueueDispatch = dispatch().catch(error => {
+      authLog("error", "auth_restart_queue_dispatch_failed", { subsystem: "auth", error: errorMessage(error) ?? String(error) });
+    }).finally(() => { this.restartQueueDispatch = null; });
+    return this.restartQueueDispatch;
+  }
+
+  private async dispatchRestartQueueInApprovalOrder(): Promise<void> {
+    const rows = this.db.prepare(`SELECT r.* FROM auth_requests r WHERE r.status = 'approved' AND r.exit_code IS NULL
+      ORDER BY (SELECT e.rowid FROM auth_request_lifecycle_events e
+        WHERE e.auth_request_id = r.id AND e.event_type = 'approved' AND e.evidence_id = r.execution_evidence_id
+        ORDER BY e.revision DESC LIMIT 1)`)
+      .all() as Record<string, unknown>[];
+    const predecessors = new Map<string, "released" | "waiting" | "needs_approval">();
+    for (const row of rows) {
+      if (this.disposed || this.isUpdateAdmissionClosed) return;
+      const request = mapRow(row);
+      const queued = this.restartQueuedApproval(request);
+      if (!queued || !queued.related_request_id || this.inFlight.has(request.id)) continue;
+      const owner = queued.related_request_id;
+      let release = predecessors.get(owner);
+      if (release === undefined) {
+        if (this.reopenedRestartAdmissions.has(owner) || await this.hookManager.runtimeReceiptAccepted?.(owner) === true) {
+          release = "released";
+        } else {
+          const predecessor = this.getRequestById(owner);
+          const run = this.hookManager.getRun?.(owner, MANDIBLE_REBUILD_HOOK_ID);
+          release = predecessor?.status === "failed" || run?.state === "failed" || run?.state === "retired"
+            ? "needs_approval" : "waiting";
+        }
+        predecessors.set(owner, release);
+      }
+      if (this.disposed || this.isUpdateAdmissionClosed) return;
+      const current = this.getRequestById(request.id);
+      if (current?.status !== "approved") continue;
+      if (release === "released") await this.executeInBackground(current, true);
+      if (release === "needs_approval") await this.parkExecutionForRestart(current, "Queued approval needs a new review. The Mandible update ended without a verified receipt.");
+    }
   }
 
   private async recoverStaleExecutions(
@@ -1637,6 +1737,7 @@ export class AuthQueue {
       if (excludeInFlight && this.inFlight.has(initial.id)) continue;
       const request = this.requireRequest(initial.id);
       if (!["approved", "executing"].includes(request.status) || request.exit_code !== null || request.approved_at === null || request.approved_at >= cutoff) continue;
+      if (this.restartQueuedApproval(request)) continue;
       const observed = this.observationToken(request.id, request);
       if (this.hookManager.runtimeHandoffOwnsRequest(request.id)) continue;
       if (excludeInFlight && this.inFlight.has(request.id)) {
@@ -3916,7 +4017,7 @@ export class AuthQueue {
     try {
       await this.expireStale();
       const request = this.requireRequest(id);
-      if (request.status !== "pending") {
+      if (request.status !== "pending" && !this.restartQueuedApproval(request)) {
         throw new AuthQueueError(
           "invalid_status",
           `Request is ${request.status}, cannot withdraw.`,
@@ -3936,9 +4037,10 @@ export class AuthQueue {
          WHERE auth_request_id = ? AND state = 'staged'`,
         ).run(`Vetoed by withdrawal: ${reason.trim()}`, now, request.id);
         const result = this.db.prepare(
-          `UPDATE auth_requests SET status = 'withdrawn', resolved_at = ?, updated_at = ?, error = ?
-         WHERE id = ? AND status = 'pending'`,
-        ).run(now, now, reason.trim(), request.id);
+          `UPDATE auth_requests SET status = 'withdrawn', resolved_at = ?, updated_at = ?, error = ?,
+             approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL
+         WHERE id = ? AND status = ?`,
+        ).run(now, now, reason.trim(), request.id, request.status);
         if (result.changes !== 1) {
           throw new AuthQueueError("invalid_status", "Request changed before withdrawal completed.");
         }
@@ -3955,7 +4057,7 @@ export class AuthQueue {
         this.appendLifecycleEvent({
           requestId: request.id,
           eventType: "withdrawn",
-          priorStatus: "pending",
+          priorStatus: request.status,
           nextStatus: "withdrawn",
           actor,
           reason,
@@ -4017,8 +4119,23 @@ export class AuthQueue {
 
   private approvalDigest(request: AuthRequest, review: ApprovalReview, revision: number): string {
     const custody = this.custodyAuthority(request);
-    const hooks = this.hookManager.listRuns?.(request.id)?.map(({ hook_id, command_digest, command, required, position }) => ({ hook_id, command_digest, command, required, position })) ?? [];
+    const hooks = this.frozenApprovalHooks(request.id);
     return createHash("sha256").update(JSON.stringify({ request: authRequestSnapshot(this.db, request.id), hooks, custody, review, revision })).digest("hex");
+  }
+
+  private frozenApprovalHooks(requestId: string) {
+    return this.hookManager.listRuns?.(requestId)?.map(({ hook_id, command_digest, command, required, position }) => (
+      { hook_id, command_digest, command, required, position }
+    )) ?? [];
+  }
+
+  private restartQueueContext(request: AuthRequest): string {
+    return authSnapshotDigest(JSON.stringify({
+      hooks: this.frozenApprovalHooks(request.id),
+      configuredHooks: this.hookManager.configuredApprovalHooks?.(request),
+      custody: this.custodyAuthority(request),
+      responsibility: this.requestResponsibility(request),
+    }));
   }
 
   private async planApprovalHooks(request: AuthRequest): Promise<void> {
@@ -4246,6 +4363,7 @@ export class AuthQueue {
             evidence_method: "credential_signature", credential_id: signed.value.credential_id,
             details: { auth_request_id: request.id, signer_user_id: operatorId, authorizer_user_id: operatorId, verified: true,
               signed_commit_sha: commitSha, signature: signed.value.signature, action_digest: digest,
+              restart_queue_context: this.restartQueueContext(request),
               reviewed_revision: reviewedRevision, reviewed_proof_digest: review.proof_digest },
           }, this.now());
           this.operatorProofs.set(request.id, { digest, evidenceId: evidence.id, evidenceMethod: "credential_signature", credentialId: signed.value.credential_id, userId: operatorId, expiresAt, review, revision, mergeSha: commitSha });
@@ -4253,6 +4371,7 @@ export class AuthQueue {
           const evidence = addAttributionEvidence(this.db, {
             evidence_method: caller.evidence_method, credential_id: caller.credential_id,
             details: { auth_request_id: request.id, authorizer_user_id: operatorId, verified: false, action_digest: digest,
+              restart_queue_context: this.restartQueueContext(request),
               caller: { user_id: caller.user_id, method: caller.identity_method, source: caller.source, credential_id: caller.credential_id } },
           }, this.now());
           this.operatorProofs.set(request.id, { digest, evidenceId: evidence.id, evidenceMethod: caller.evidence_method, credentialId: null, userId: operatorId, expiresAt, review, revision });
@@ -4384,7 +4503,6 @@ export class AuthQueue {
         operatorProof.digest !== this.approvalDigest(request, operatorProof.review, operatorProof.revision))) {
         throw new AuthQueueError("invalid_status", "A fresh operator approval is required.");
       }
-      const now = this.now();
       const approverUserId = this.resolveApproverUserId(approvedByUserId);
       const exactCredentialId = operatorProof!.credentialId;
       const signerLines = authorizedMergeSignerLines(this.db, approverUserId, exactCredentialId);
@@ -4417,13 +4535,15 @@ export class AuthQueue {
       this.assertObservation(request.id, observed);
       if ((this.now() >= operatorProof!.expiresAt || operatorProof!.digest !== this.approvalDigest(request, operatorProof!.review, operatorProof!.revision))) throw new AuthQueueError("invalid_status", "Operator proof expired or the reviewed request changed.");
       if (signerLines.join("\n") !== authorizedMergeSignerLines(this.db, approverUserId, exactCredentialId).join("\n")) throw new AuthQueueError("invalid_status", "Signing authority changed during approval.");
+      const now = this.now();
+      const queuedFor = request.execution_mode === "remote" ? null : this.restartAdmissionOwner;
       this.db.transaction(() => {
         this.enforceDependencyReadiness(request);
         this.assertReviewApproval(request, approverUserId, operatorProof!.review);
         const reviewSubmissionId = this.freezeRequestSubmission(request, approverUserId, operatorProof!.review);
         this.writeResolvedRequest(
           request,
-          "UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?, approved_by_user_id = ?, execution_evidence_id = NULL, merge_atomic_enabled = ? WHERE id = ?",
+          "UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ?, approved_by_user_id = ?, execution_evidence_id = NULL, merge_atomic_enabled = ?, error = NULL WHERE id = ?",
           [
             now,
             now,
@@ -4440,8 +4560,10 @@ export class AuthQueue {
         };
         this.appendLifecycleEvent({
           requestId: request.id, eventType: "approved", priorStatus: "pending",
-          nextStatus: "approved", actor: approvalActor, reviewSubmissionId, occurredAt: now,
+          nextStatus: "approved", actor: approvalActor, reviewSubmissionId, relatedRequestId: queuedFor ?? undefined,
+          reason: queuedFor ? "Queued for the Mandible update." : undefined, occurredAt: now,
         });
+        if (queuedFor) return;
         this.db.prepare(
           "UPDATE auth_requests SET status = 'executing', updated_at = ? WHERE id = ? AND status = 'approved'",
         ).run(now, request.id);
@@ -4451,17 +4573,18 @@ export class AuthQueue {
         });
       })();
 
-      const executing = this.requireRequest(request.id);
+      const approved = this.requireRequest(request.id);
       this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: {
-        request_id: executing.id, lifecycle: "executing", approved_by_user_id: approverUserId,
+        request_id: approved.id, lifecycle: approved.status, approved_by_user_id: approverUserId,
       } });
-      if (executing.type === "custody-transfer") throw new AuthQueueError("invalid_command", "Custody-transfer approval is retired; explicitly assume responsibility instead.");
+      this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: approved } });
+      if (queuedFor) return approved;
       if (Object.keys(executionEnv).length > 0) {
-        this.executionEnvs.set(executing.id, executionEnv);
+        this.executionEnvs.set(approved.id, executionEnv);
       }
-      this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: executing } });
-      (await this.executeInBackground(executing));
-      return executing;
+      await this.executeInBackground(approved);
+      const current = this.getRequestById(approved.id);
+      return current && (current.status === "approved" || current.status === "pending") ? current : approved;
     } finally { finishObservation(); }
   }
 
@@ -4609,6 +4732,60 @@ export class AuthQueue {
       }
     }
     return env;
+  }
+
+  private assertRestartApproval(request: AuthRequest, queued: AuthRequestLifecycleEvent) {
+    if (queued.revision !== this.lifecycleRevision(request.id) || queued.snapshot_sha256 !== authSnapshotDigest(authRequestSnapshot(this.db, request.id))) {
+      throw new AuthQueueError("lifecycle_conflict", "The request or its reviewed revision changed.");
+    }
+    const evidence = request.execution_evidence_id ? getAttributionEvidence(this.db, request.execution_evidence_id) : null;
+    if (!request.approved_by_user_id || !evidence || evidence.details.auth_request_id !== request.id
+        || evidence.details.authorizer_user_id !== request.approved_by_user_id || queued.actor_user_id !== request.approved_by_user_id) {
+      throw new AuthQueueError("invalid_status", "The recorded approval is unavailable.");
+    }
+    this.resolveApproverUserId(request.approved_by_user_id);
+    if (evidence.details.restart_queue_context !== this.restartQueueContext(request)) {
+      throw new AuthQueueError("lifecycle_conflict", "The reviewed hook plan or request custody changed.");
+    }
+    this.assertPublication(request);
+    this.enforceDependencyReadiness(request);
+    return evidence;
+  }
+
+  private async restoreRestartApproval(request: AuthRequest, queued: AuthRequestLifecycleEvent): Promise<NodeJS.ProcessEnv> {
+    const evidence = this.assertRestartApproval(request, queued);
+    if (!isAuthMergeCommand(request)) return {};
+    const signed = evidence.details.signed_commit_sha;
+    if (!request.merge_atomic_enabled || evidence.evidence_method !== "credential_signature" ||
+        !evidence.credential_id || !isValidCommitSha(signed)) {
+      throw new AuthQueueError("invalid_status", "The exact signed merge is unavailable.");
+    }
+    if (!await this.mergeCandidateExact(request) || await this.hasNativeMergeHooks(request.cwd)) {
+      throw new AuthQueueError("merge_check_failed", "The reviewed merge candidate or native hooks changed.");
+    }
+    const checkout = await this.checkMergeWorktreeReady(request.target_repo_root ?? request.cwd!, {
+      baseBranch: request.base_branch!, base: request.merge_preflight_base_sha!, target: request.merge_candidate_tree_sha!,
+    });
+    if (checkout.status === "error") throw new AuthQueueError("merge_check_failed", checkout.message);
+    const signature = await verifyApprovedMerge(this.db, request.cwd, request, signed);
+    if (!signature.verified || signature.credential_id !== evidence.credential_id) {
+      throw new AuthQueueError("merge_check_failed", "The approval's exact merge signature is no longer valid.");
+    }
+    const acceptance = this.candidateAcceptanceForRequest(request);
+    const refusal = acceptance && candidateAcceptanceRefusal(acceptance, request.id);
+    if (refusal) throw new AuthQueueError("merge_check_failed", refusal);
+    if (acceptance) acceptedReleaseSelection(this.db, request, listAuthRequestActions(this.db, request.id), false);
+    const env = await this.approveTimePreflightEnv(request);
+    await this.assertReviewedCandidateCurrent(request);
+    this.assertRestartApproval(request, queued);
+    const signers = authorizedMergeSignerLines(this.db, request.approved_by_user_id!, evidence.credential_id);
+    if (!signers.length) throw new AuthQueueError("merge_check_failed", "The approval credential is no longer authorized.");
+    return {
+      ...env,
+      MANDIBLE_AUTH_ATOMIC: "1",
+      MANDIBLE_AUTH_ALLOWED_SIGNERS: signers.join("\n"),
+      MANDIBLE_AUTH_SIGNED_MERGE_SHA: signed,
+    };
   }
 
   private localMergeArguments(request: AuthRequest): string[] | undefined {
@@ -6084,7 +6261,8 @@ export class AuthQueue {
     }
   }
 
-  private executeInBackground(request: AuthRequest): Promise<void> {
+  private async executeInBackground(request: AuthRequest, fromRestartQueue = false): Promise<void> {
+    if (!fromRestartQueue && this.restartQueueDispatch) await this.restartQueueDispatch;
     return withLedgerMutationActor({ actor_type: "system", attribution: systemAction() },
       () => withRequestOrigin(authRequestInitiatingOrigin(this.db, request.id),
         () => this.admitOriginBoundRequest(request)));
@@ -6101,9 +6279,10 @@ export class AuthQueue {
       return;
     }
 
-    // Bug: 681739e — admission is closed while a self-merge restart is pending.
-    // Park the request now rather than chaining an execution that the imminent
-    // process.exit would kill mid-merge.
+    if (this.restartAdmissionOwner) {
+      this.queueUnstartedApproval(request, this.restartAdmissionOwner);
+      return;
+    }
     const admitted = this.executionToken(request.id);
     const predecessor = isAuthMergeCommand(request) && this.hookManager.selfUpdatesRuntime(request.repo)
       ? await this.hookManager.prepareRuntimePublication({ kind: 'successor_execution', requestId: request.id, pid: process.pid }) : null;
@@ -6111,7 +6290,11 @@ export class AuthQueue {
     if (!this.executionIsCurrent(request.id, admitted)) {
       return;
     }
-    if (this._rebuilding || publicationBlocker) {
+    if (this.restartAdmissionOwner) {
+      this.queueUnstartedApproval(this.requireRequest(request.id), this.restartAdmissionOwner);
+      return;
+    }
+    if (publicationBlocker) {
       (await this.parkExecutionForRestart(request, publicationBlocker?.message));
       return;
     }
@@ -6145,26 +6328,61 @@ export class AuthQueue {
                 ? await this.hookManager.prepareRuntimePublication({ kind: 'successor_execution', requestId: request.id, pid: process.pid }) : null;
               const queuedPublicationBlocker = predecessor ?? await this.publicationBlockerForRequest(request);
               if (!this.executionIsCurrent(request.id, admitted)) return;
-              if (this._rebuilding || queuedPublicationBlocker) {
+              if (this.restartAdmissionOwner) {
+                this.queueUnstartedApproval(this.requireRequest(request.id), this.restartAdmissionOwner);
+                return;
+              }
+              if (queuedPublicationBlocker) {
                 (await this.parkExecutionForRestart(request, queuedPublicationBlocker?.message));
                 return;
               }
               executionEnv = this.executionEnvs.get(request.id);
               if (!this.executionIsCurrent(request.id, execution)) return;
+              const current = this.requireRequest(request.id);
+              const queued = this.restartQueuedApproval(current);
+              if (queued) {
+                try {
+                  executionEnv = await this.restoreRestartApproval(current, queued);
+                  if (!this.executionIsCurrent(request.id, execution)) return;
+                  const evidence = this.assertRestartApproval(current, queued);
+                  if (isAuthMergeCommand(current) && executionEnv.MANDIBLE_AUTH_ALLOWED_SIGNERS !==
+                      authorizedMergeSignerLines(this.db, current.approved_by_user_id!, evidence.credential_id).join("\n")) {
+                    throw new AuthQueueError("merge_check_failed", "The approval credential is no longer authorized.");
+                  }
+                } catch (error) {
+                  if (this.executionIsCurrent(request.id, execution)) {
+                    await this.parkExecutionForRestart(current, `Queued approval needs a new review. ${errorMessage(error) ?? String(error)}`);
+                  }
+                  return;
+                }
+                if (this.restartAdmissionOwner) {
+                  this.queueUnstartedApproval(current, this.restartAdmissionOwner);
+                  return;
+                }
+              }
+              if (this.hasPlannedRuntimeRebuild(request)) this.closeRestartAdmission(request.id);
               const executedAt = Date.now();
-              this.db
-                .prepare(
-                  "UPDATE auth_requests SET last_executed_at = ?, updated_at = ? WHERE id = ?"
-                )
-                .run(executedAt, executedAt, request.id);
+              this.db.transaction(() => {
+                this.db.prepare("UPDATE auth_requests SET status = 'executing', last_executed_at = ?, updated_at = ? WHERE id = ?")
+                  .run(executedAt, executedAt, request.id);
+                if (queued) this.appendLifecycleEvent({
+                  requestId: request.id, eventType: "executing", priorStatus: "approved", nextStatus: "executing",
+                  actor: { user_id: queued.actor_user_id!, evidence_method: queued.evidence_method!, evidence_id: queued.evidence_id!, credential_id: queued.credential_id },
+                  occurredAt: executedAt,
+                });
+              })();
               execution = this.executionToken(request.id);
               this.queuedAdmissions.delete(runPromise);
+              if (queued) {
+                this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: request.id, lifecycle: "executing", approved_by_user_id: current.approved_by_user_id } });
+                this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request: this.requireRequest(request.id) } });
+              }
               const result = await this.executor({
                 request_id: request.id,
                 command: request.command,
                 cwd: request.cwd,
                 onOutput: (chunk) => { if (execution && this.executionIsCurrent(request.id, execution)) this.handleOutput(chunk); },
-                env: this.executionEnvs.get(request.id),
+                env: executionEnv,
                 mandibleArgs: this.localMergeArguments(request),
               });
               executionResult = result;
@@ -6229,6 +6447,8 @@ export class AuthQueue {
                 (await this.storeExecutionResult(request.id, null, message, execution));
               }
             } finally {
+              if (this.restartAdmissionOwner === request.id && !this.activeConvergenceDrain && !this.failedConvergenceDrain
+                  && !this.hookManager.runtimeHandoffOwnsRequest(request.id)) this.reopenRestartAdmission(request.id);
               // No terminal-proof handle exists; the unresolved run keeps the repository fenced.
               if (!settlementSafe) await new Promise<never>(() => undefined);
               this.queuedAdmissions.delete(runPromise);
@@ -6431,12 +6651,7 @@ export class AuthQueue {
       const evidenceFailure = (await this.successfulMergeEvidenceFailure(mergedRequest));
       this.assertExecution(request.id, execution);
       if (evidenceFailure) throw new AuthQueueError("invalid_status", evidenceFailure);
-      if (this.hasPlannedRuntimeRebuild(mergedRequest)) {
-        // Issue ff784d8 — the full blocked/splash window begins before
-        // post-merge hooks, at the same boundary that closes admission.
-        this.beginRebuildWindow(request.id);
-        this.broadcast({ event: DOMAIN_EVENTS.MANDIBLE_REBUILDING, data: {} });
-      }
+      if (this.hasPlannedRuntimeRebuild(mergedRequest) && !this.closeRestartAdmission(request.id)) return;
       try {
         const hookResults = await this.hookManager.executeHooks(mergedRequest, (hookLabel, text) => {
           if (!this.executionIsCurrent(request.id, execution)) return;
@@ -6707,6 +6922,7 @@ export class AuthQueue {
           await this.runConvergenceSweep(limit);
           await this.resumeDeferredLedgerActions();
         } while (this.handoffCompletionPending && !this.disposed && this.isDbOpen());
+        await this.dispatchRestartQueue();
       } finally {
         this.convergenceSweepInFlight = false;
       }
@@ -6746,7 +6962,7 @@ export class AuthQueue {
       if (this.disposed || !this.isDbOpen()) return;
       const request = this.getRequestById(id);
       if (!request || request.status !== "completed" || request.exit_code !== 0 || (await this.successfulMergeEvidenceFailure(request))) continue;
-      if (this.hasPlannedRuntimeRebuild(request)) this.beginRebuildWindow(request.id);
+      if (this.hasPlannedRuntimeRebuild(request) && !this.closeRestartAdmission(request.id)) continue;
       try {
         const results = await this.hookManager.runPending(request, (hookLabel, text) => {
           this.handleOutput({
@@ -6829,7 +7045,9 @@ export class AuthQueue {
         await this.finalizerQueue.drain();
         return { ...await this.afterConvergenceHook(this.requireRequest(request.id)), verification };
       }
-      if (this.hasPlannedRuntimeRebuild(request)) this.beginRebuildWindow(request.id);
+      if (this.hasPlannedRuntimeRebuild(request) && !this.closeRestartAdmission(request.id)) {
+        throw new AuthQueueError("invalid_status", "Another Mandible update owns restart admission.");
+      }
       this.hookManager.grantRetry(request.id, hookId);
       await this.hookManager.runPending(request, (hookLabel, text) => {
         this.handleOutput({
@@ -6869,12 +7087,12 @@ export class AuthQueue {
     const admitted = await this.hookManager.admittedDrainIdentity?.(request.id);
     const key = admitted;
     if (!key) {
-      if (!this.activeConvergenceDrain && !this.failedConvergenceDrain) this._rebuilding = false;
-      if (this.rebuildWindowRequestId === request.id) {
+      if (this.restartAdmissionOwner === request.id && !this.activeConvergenceDrain) {
         // Issue 54a0b88 — a pending rebuild owned by an independent runtime
         // handoff will converge or fail in that handoff; it has not failed.
-        if (convergence.state === "pending" && this.hookManager.runtimeHandoffOwnsRequest(request.id)) this.rebuildWindowRequestId = null;
-        else {
+        if (convergence.state === "complete" && await this.hookManager.runtimeReceiptAccepted?.(request.id)) {
+          this.reopenRestartAdmission(request.id);
+        } else if (convergence.state !== "pending" || !this.hookManager.runtimeHandoffOwnsRequest(request.id)) {
           const run = this.hookManager.getRun(request.id, MANDIBLE_REBUILD_HOOK_ID);
           this.failRebuild(request, !run ? "its rebuild hook did not run"
             : run.state === "complete" ? "its rebuild hook completed without a runtime handoff"
@@ -6886,19 +7104,16 @@ export class AuthQueue {
     }
     if (this.scheduledConvergenceDrains.has(key)) return convergence;
     if (this.activeConvergenceDrain && this.activeConvergenceDrain !== key) return convergence;
+    if (!this.closeRestartAdmission(request.id)) return convergence;
     this.scheduledConvergenceDrains.add(key);
     this.activeConvergenceDrain = key;
-    if (this.rebuildWindowRequestId === request.id) this.rebuildWindowRequestId = null;
-    this._rebuilding = true;
-    this.recordSelfMergeShutdown(this.now());
     authLog('info', 'auth_self_merge_restart_scheduled', { subsystem: 'auth', auth_request_id: request.id, drain_identity: key, drain_cap_ms: AuthQueue.SELF_MERGE_DRAIN_CAP_MS });
     void this.drainAndRestart(request.id, admitted || undefined).catch(error => {
       if (this.activeConvergenceDrain === key) {
         this.activeConvergenceDrain = null;
         this.failedConvergenceDrain = key;
         this.scheduledConvergenceDrains.delete(key);
-        this._rebuilding = true;
-        this.failRebuild(request, `restart remains draining because authority shutdown failed: ${errorMessage(error) ?? String(error)}`);
+        this.reportRebuildFailure(request, `restart remains draining because authority shutdown failed: ${errorMessage(error) ?? String(error)}`);
       }
       authLog('error', 'auth_convergence_drain_failed', { subsystem: 'auth', auth_request_id: request.id, error: errorMessage(error) });
     });
@@ -6913,40 +7128,71 @@ export class AuthQueue {
    * drain times out.
    */
   private async drainAndRestart(selfRequestId: string, admitted?: string): Promise<void> {
+    const started = performance.now();
+    const unsettled = new Map<string, () => object>();
+    const waitFor = (name: string, promise: Promise<unknown>, describe: () => object) => {
+      unsettled.set(name, describe);
+      return promise.finally(() => unsettled.delete(name));
+    };
     const foreign = [...this.inFlight.entries()]
       .filter(([id]) => id !== selfRequestId)
-      .map(([, promise]) => promise);
+      .map(([id, promise]) => waitFor(id, promise, () => ({
+        kind: "execution", request_id: id, phase: this.queuedAdmissions.has(promise) ? "admission" : "executing",
+      })));
     // Issue 75f52ac — also let the background finalizer queue drain within the
     // same drain cap so in-flight Stage 3 work is not killed by the exit. The
     // durable merge_finalized_at IS NULL marker plus the startup sweep is the
     // backstop for anything still running when the cap is hit.
     // Issue 7d83fe5 — an acceptance run cannot survive the restart; stop it so
     // it cleans up its owned processes. Startup records it as interrupted and runs it again.
-    const drainTargets: Array<Promise<unknown>> = [...foreign, this.finalizerQueue.drain(), ...(this.acceptanceRuns ? [this.acceptanceRuns.stop()] : [])];
-    if (drainTargets.length > 0) {
-      let deadline: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          Promise.allSettled(drainTargets),
-          new Promise<void>((resolve) => {
-            deadline = setTimeout(resolve, AuthQueue.SELF_MERGE_DRAIN_CAP_MS);
-          }),
-        ]);
-      } finally {
-        clearTimeout(deadline);
-      }
+    const drainTargets = [...foreign, waitFor("finalizers", this.finalizerQueue.drain(), () => ({
+      kind: "finalizers", ...this.finalizerQueue.pending(),
+    }))];
+    const acceptance = this.acceptanceRuns;
+    if (acceptance) drainTargets.push(waitFor("acceptance", acceptance.pauseForRestart(), () => ({
+      kind: "acceptance", ...acceptance.running(),
+    })));
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled(drainTargets),
+        new Promise<void>((resolve) => {
+          deadline = setTimeout(resolve, AuthQueue.SELF_MERGE_DRAIN_CAP_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(deadline);
     }
+    authLog(unsettled.size > 0 ? "warn" : "info", unsettled.size > 0 ? "auth_self_merge_drain_capped" : "auth_self_merge_drain_settled", {
+      subsystem: "auth", auth_request_id: selfRequestId, elapsed_ms: Math.round(performance.now() - started),
+      unsettled: [...unsettled.values()].map(describe => describe()),
+    });
     // Issue ff784d8 — the exact restart tail starts immediately before exit,
     // after durable result publication and drain.
     if (admitted && await this.hookManager.admittedDrainIdentity(selfRequestId) !== admitted) {
       this.activeConvergenceDrain = null;
-      if (!this.failedConvergenceDrain) this._rebuilding = false;
+      this.scheduledConvergenceDrains.delete(admitted);
+      if (!this.hookManager.runtimeHandoffOwnsRequest(selfRequestId) || this.convergenceForRequest(selfRequestId).state !== "pending") {
+        this.reopenRestartAdmission(selfRequestId);
+      }
       authLog("warn", "auth_handoff_drain_ownership_changed", { subsystem: "auth", auth_request_id: selfRequestId });
       return;
     }
+    if (this.disposed) return;
+    this.recordSelfMergeShutdown(this.now());
+    this.restartAvailability?.markRebuildStarted(selfRequestId);
     this.restartAvailability?.markShutdownStarted(selfRequestId);
+    this.shuttingDown = true;
     this.failedConvergenceDrain = null;
     this._rebuildFailure = null;
+    authLog("info", "auth_daemon_shutdown_started", { subsystem: "auth", auth_request_id: selfRequestId });
+    try {
+      this.broadcast({ event: DOMAIN_EVENTS.MANDIBLE_SHUTTING_DOWN, data: {
+        request_id: selfRequestId, ...(this.startupEpoch ? { startup_epoch: this.startupEpoch } : {}),
+      } });
+    } catch (error) {
+      authLog("warn", "auth_daemon_shutdown_signal_failed", { subsystem: "auth", auth_request_id: selfRequestId, error: errorMessage(error) ?? String(error) });
+    }
     this.restartFn();
   }
 
@@ -7150,7 +7396,7 @@ export class AuthQueue {
    * after that it is marked failed (surfaced in auth:finalized) so the request
    * still finalizes. Never throws.
    */
-  private async runBackgroundFinalizers(requestId: string): Promise<void> {
+  private async runBackgroundFinalizers(requestId: string, markStep: (step: FinalizerStepName) => void): Promise<void> {
     // Issue 75f52ac — bail cleanly if the queue was disposed or its DB closed
     // between enqueue and processing (common in tests that dispose right after a
     // successful setResult). Anything left unfinalized is picked up by the
@@ -7245,6 +7491,7 @@ export class AuthQueue {
         continue;
       }
       try {
+        markStep(step.name);
         const output = await step.run();
         // Persist the step's output into its durable state entry so the terminal
         // payload survives later passes that skip this (now done) step and

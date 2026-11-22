@@ -81,6 +81,7 @@ export const DOMAIN_EVENTS = Object.freeze({
   INTERFACE_NOTE_CHANGED: INTERFACE_NOTE_CHANGED_EVENT,
   MANDIBLE_REBUILDING: "mandible:rebuilding",
   MANDIBLE_REBUILD_FAILED: "mandible:rebuild-failed",
+  MANDIBLE_SHUTTING_DOWN: "mandible:shutting-down",
   NOTIFICATION_CHANGED: "notification:changed",
   PUSH_AUTH_COMPLETE: "push:auth:complete",
   PUSH_AUTH_PENDING: "push:auth:pending",
@@ -149,6 +150,7 @@ export type NotificationChanged = z.infer<typeof NOTIFICATION_CHANGED_PAYLOAD>;
 
 export type EventPayload<E extends MandibleEventType> =
   E extends typeof DOMAIN_EVENTS.AUTH_RESOLVED ? AuthResolvedPayload
+  : E extends typeof DOMAIN_EVENTS.MANDIBLE_SHUTTING_DOWN ? { request_id: string; startup_epoch?: string }
   : E extends typeof DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED ? { provider: SessionExecutionProvider; provider_session_id: string; observation: SessionExecutionObservation }
   : E extends typeof DOMAIN_EVENTS.SESSION_REGISTERED | typeof DOMAIN_EVENTS.SESSION_UPDATED
     | typeof DOMAIN_EVENTS.SESSION_ENDED ? import("./types.js").Session
@@ -2624,6 +2626,7 @@ export function isDomainEventType(value: unknown): value is MandibleEventType {
 const scopedChange = (key: string) => z.object({ [key]: z.string().min(1) }).passthrough();
 const eventPayloadSchemas = new Map<MandibleEventType, z.ZodType>([
   [DOMAIN_EVENTS.AUTH_RESOLVED, AUTH_RESOLVED_PAYLOAD],
+  [DOMAIN_EVENTS.MANDIBLE_SHUTTING_DOWN, z.object({ request_id: z.string().min(1), startup_epoch: z.string().min(1).optional() }).strict()],
   [DOMAIN_EVENTS.HEARTBEAT, z.object({ timestamp: z.number() })],
   [DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED, z.object({ provider: z.enum(["claude", "codex"]), provider_session_id: z.string().min(1), observation: SESSION_EXECUTION_OBSERVATION_SCHEMA })],
   [DOMAIN_EVENTS.CONSOLE_STATUS, z.object({ console_session_id: z.string().min(1), kind: z.enum(["started", "stopped", "exit"]), status: z.enum(["running", "stopped", "crashed"]), exitCode: z.number().optional(), signal: z.union([z.string(), z.number()]).nullable().optional(), started_at: z.number().nullable().optional(), stopped_at: z.number().nullable().optional() })],

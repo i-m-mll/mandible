@@ -125,7 +125,8 @@ exist.
 
 | Event | Description | Data |
 |---|---|---|
-| `mandible:rebuilding` | Daemon rebuild triggered | `{}` |
+| `mandible:shutting-down` | The daemon is exiting for an approved update | `{ request_id, startup_epoch }` |
+| `mandible:rebuilding` | Legacy administrative announcement | `{}` |
 | `mandible:rebuild-failed` | The merge landed, but its rebuild or runtime handoff failed, so Mandible did not update | `{ request_id, message, failed_at }` |
 
 ## The heartbeat
