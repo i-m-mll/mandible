@@ -130,6 +130,7 @@ type Action =
   | { type: 'setSelectedAuthId'; id: string | null }
   | { type: 'upsertAuth'; request: AuthRequest }
   | { type: 'authOutput'; requestId: string; chunk: string }
+  | { type: 'authAccepted'; requestId: string; status: 'approved' | 'executing' }
   | {
       type: 'authResolved';
       requestId: string;
@@ -291,6 +292,13 @@ function appReducer(state: AppState, action: AppAction): AppState {
           [action.requestId]: combined,
         },
       };
+    }
+    case 'authAccepted': {
+      const authQueue = state.authQueue.map(request =>
+        getAuthId(request) === action.requestId && request.status === 'pending'
+          ? { ...request, status: action.status }
+          : request);
+      return { ...state, authQueue };
     }
     case 'authResolved': {
       const updated = state.authQueue.map((request) => {

@@ -130,6 +130,14 @@ afterEach(() => {
 });
 
 describe('AuthQueueView daemon readiness gate', () => {
+  it('shows an accepted approval as queued while leaving other approvals actionable', () => {
+    const waiting = { ...pendingRequest, id: 'req-2', title: 'Queued update', status: 'approved' };
+    render(<AuthQueueView queue={[pendingRequest, waiting]} historyQueue={[]} outputs={{}} selectedAuthId="req-1"
+      daemonReady instance={authMainInstance} onApprove={vi.fn()} onReject={vi.fn()} onRetry={vi.fn()} />);
+    expect(screen.getByText('Queued')).toBeTruthy();
+    expect((screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('rechecks a transient checkout blocker and restores Approve without an error action', async () => {
     vi.useFakeTimers();
     const refresh = vi.fn();

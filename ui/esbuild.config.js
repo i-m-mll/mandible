@@ -1,8 +1,10 @@
 import fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, context } from 'esbuild';
-import { frontendBuildOutput } from '../scripts/desktop-build-layout.mjs';
+import { frontendBuildOutput, uiStaticFiles } from '../scripts/desktop-build-layout.mjs';
+import { injectStartupFrame } from '../src/startup-frame.ts';
 import { embedBuildOptions } from './embed-build.mjs';
 
 const isWatch = process.argv.includes('--watch');
@@ -55,6 +57,24 @@ function collectStaticImports(outputs, outputPath, collected = new Set()) {
   return collected;
 }
 
+async function dashboardRevision(outputPaths) {
+  const hash = createHash('sha256');
+  const add = (name, bytes) => {
+    hash.update(JSON.stringify([name, Buffer.byteLength(bytes)]));
+    hash.update(bytes);
+  };
+  for (const file of uiStaticFiles) {
+    const bytes = file === 'ui/index.html'
+      ? injectStartupFrame(await fs.readFile(file, 'utf8'))
+      : await fs.readFile(file);
+    add(file, bytes);
+  }
+  for (const file of outputPaths.filter(file => !file.endsWith('.map')).sort()) {
+    add(outputUrl(file), await fs.readFile(file));
+  }
+  return hash.digest('hex');
+}
+
 const assetManifestPlugin = {
   name: 'mandible-asset-manifest',
   setup(buildApi) {
@@ -78,6 +98,7 @@ const assetManifestPlugin = {
         .sort();
       const manifest = {
         version: 1,
+        ui_asset_revision: await dashboardRevision(Object.keys(outputs)),
         entry: outputUrl(appEntry),
         entryPreloads,
         routes,

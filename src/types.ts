@@ -112,6 +112,8 @@ export interface HealthResponse {
   version: string;
   /** Unique per daemon process/start, independent of the checked-out commit. */
   startup_epoch?: string;
+  /** Content revision of the browser assets served by this daemon. */
+  ui_asset_revision?: string;
   startup_commit: StartupCommitInfo;
   instance: InstanceInfo;
   file_rpc_dir?: string;

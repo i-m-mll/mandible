@@ -8,7 +8,8 @@ export PATH="$(dirname "$runtime"):$PATH"
 "$runtime" scripts/generate-canonical-origin.mjs --check
 bootstrap_output="${MANDIBLE_DESKTOP_BOOTSTRAP_DIR:-src-tauri/dist}"
 mkdir -p "$bootstrap_output"
-for name in index.html bootstrap.css bootstrap.js canonical-origin.js; do
+"$runtime" "$(dirname "$0")/render-desktop-bootstrap.mjs" "$bootstrap_output"
+for name in bootstrap.css bootstrap.js canonical-origin.js; do
   if ! cmp -s "src-tauri/bootstrap/$name" "$bootstrap_output/$name"; then
     cp "src-tauri/bootstrap/$name" "$bootstrap_output/$name"
   fi

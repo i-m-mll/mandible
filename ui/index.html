@@ -10,10 +10,11 @@
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
-    <style>html, body { background: #0b0f14; }</style>
-    <link rel="stylesheet" href="/dist/app.css" />
+    <!-- mandible-startup-frame-style -->
+    <link id="mandible-dashboard-css" rel="stylesheet" href="/dist/app.css" media="print" onload="this.media=&quot;all&quot;" />
   </head>
   <body>
+    <!-- mandible-startup-frame -->
     <div id="app"></div>
     <script id="mandible-bootstrap" type="application/json"></script>
     <script>if ('__TAURI__' in window || '__TAURI_INTERNALS__' in window) document.body.classList.add('tauri-window');</script>

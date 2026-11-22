@@ -24,6 +24,7 @@ import { INTERFACE_NOTES_EMBED } from "./interface-notes/contract.js";
 import { ClientAuthzError } from "./client-auth/authz.js";
 import { requestOriginForRequest, withRequestOrigin } from "./request-origin.js";
 import { ENTITY_TAB, parseAppPath } from "./app-routes.js";
+import { injectStartupFrame } from "./startup-frame.js";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -53,6 +54,7 @@ const MIME_TYPES: Record<string, string> = {
 
 type UiAssetManifest = {
   version: 1;
+  ui_asset_revision?: string;
   entryPreloads: string[];
   routes: Record<string, string>;
 };
@@ -945,7 +947,10 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
 
   if (transport === "http") {
   router.get("/api/health", async (_req, res) => {
-    const current = await options.getCurrentDiagnostics?.();
+    const [current, manifest] = await Promise.all([
+      options.getCurrentDiagnostics?.(),
+      readUiAssetManifest(uiDistDir),
+    ]);
     const startupCommit =
       getStartupInfo() ?? { hash: "unknown", summary: "unknown", date: "" };
     const rebuilding = isRebuilding?.() ?? false;
@@ -960,6 +965,7 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
       uptime: process.uptime(),
       version,
       ...(options.startupEpoch ? { startup_epoch: options.startupEpoch } : {}),
+      ...(manifest?.ui_asset_revision ? { ui_asset_revision: manifest.ui_asset_revision } : {}),
       startup_commit: startupCommit,
       instance,
       ...(options.fileRpcDir ? { file_rpc_dir: options.fileRpcDir } : {}),
@@ -1122,7 +1128,7 @@ export function createServer(options: ServerOptions, transport: "http" | "local-
       const handled = await router.handle(req, res, transport);
       if (!handled) {
         if (transport === "http" && !isApi && (method === "GET" || method === "HEAD")) {
-          const served = await handleStaticRequest(method, pathname, req, res, instance, uiDistDir);
+          const served = await handleStaticRequest(method, pathname, req, res, instance, uiDistDir, options.startupEpoch);
           if (served) {
             return;
           }
@@ -1282,12 +1288,13 @@ async function handleStaticRequest(
   res: http.ServerResponse,
   instance: InstanceInfo,
   distDir: string,
+  startupEpoch?: string,
 ): Promise<boolean> {
   const target = resolveStaticPath(pathname, distDir);
   if (!target) {
     return false;
   }
-  return sendFile(req, res, target, method, instance, distDir);
+  return sendFile(req, res, target, method, instance, distDir, startupEpoch);
 }
 
 const PWA_FILES = new Set([
@@ -1341,6 +1348,7 @@ async function sendFile(
   method: string,
   instance: InstanceInfo,
   distDir: string,
+  startupEpoch?: string,
 ): Promise<boolean> {
   const filePath = target.kind === "shell" ? UI_INDEX_PATH : target.path;
   try {
@@ -1351,7 +1359,9 @@ async function sendFile(
     if (target.kind === "shell") {
       const raw = await fs.promises.readFile(filePath, "utf8");
       const manifest = await readUiAssetManifest(distDir);
-      const body = injectBootstrapData(injectAssetPreloads(raw, manifest), instance);
+      const revision = manifest?.ui_asset_revision;
+      const html = injectAssetPreloads(injectStartupFrame(raw), manifest);
+      const body = stampDashboardEntryUrls(injectBootstrapData(html, instance, revision, startupEpoch), revision);
       res.writeHead(target.status, {
         "Content-Type": getContentType(filePath),
         "Content-Length": Buffer.byteLength(body),
@@ -1413,7 +1423,9 @@ async function readUiAssetManifest(distDir: string): Promise<UiAssetManifest | n
     const routes = Object.fromEntries(
       Object.entries(parsed.routes).filter((entry): entry is [string, string] => isSafeDistAssetUrl(entry[1])),
     );
-    return { version: 1, entryPreloads, routes };
+    const ui_asset_revision = typeof parsed.ui_asset_revision === "string" && /^[0-9a-f]{64}$/.test(parsed.ui_asset_revision)
+      ? parsed.ui_asset_revision : undefined;
+    return { version: 1, ui_asset_revision, entryPreloads, routes };
   } catch (error) {
     if (isNotFound(error) || error instanceof SyntaxError) return null;
     throw error;
@@ -1455,10 +1467,15 @@ function isNotModified(header: string | string[] | undefined, mtime: Date): bool
   return fileSeconds <= sinceSeconds;
 }
 
-function injectBootstrapData(html: string, instance: InstanceInfo): string {
+function stampDashboardEntryUrls(html: string, revision: string | undefined): string {
+  if (!revision) return html;
+  return html.replace(/(href|src)="(\/dist\/app\.(?:js|css))"/g, (_match, attribute, url) => `${attribute}="${url}?v=${revision}"`);
+}
+
+function injectBootstrapData(html: string, instance: InstanceInfo, uiAssetRevision?: string, startupEpoch?: string): string {
   // The served HTML carries no client-auth credential. This bootstrap
-  // contains public instance registration metadata only.
-  const json = JSON.stringify({ instance }).replace(/[<>&]/g, (char) => {
+  // contains public instance registration metadata and asset identity.
+  const json = JSON.stringify({ instance, ui_asset_revision: uiAssetRevision, startup_epoch: startupEpoch }).replace(/[<>&]/g, (char) => {
     switch (char) {
       case "<":
         return "\\u003c";
