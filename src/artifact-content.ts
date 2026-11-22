@@ -336,6 +336,15 @@ function isSourceLikeFilename(lowerName: string): boolean {
   return SOURCE_TEXT_EXTENSIONS.has(path.extname(basename));
 }
 
+export function decodeArtifactUtf8(bytes: Buffer): string | null {
+  if (bytes.includes(0)) return null;
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
 function decodeUtf8Preview(bytes: Buffer, allowTrim = false): string | null {
   if (bytes.includes(0)) return null;
   const minEnd = allowTrim ? Math.max(0, bytes.byteLength - 3) : bytes.byteLength;

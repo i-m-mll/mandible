@@ -29,9 +29,7 @@
 // C6 shared resource-ref parser. It is the foundation for the C14b renderer
 // view, which it intentionally does NOT implement.
 
-import { unified } from 'unified';
-import remarkParse from 'remark-parse';
-import remarkDirective from 'remark-directive';
+import { remarkDirectives } from '../lib/remarkDirectives';
 import { renderMarkdown } from '../lib/markdown';
 import {
   SPACES_DOC_VERSION,
@@ -132,13 +130,6 @@ interface MdastNode {
   children?: MdastNode[];
   position?: { start?: { offset?: number }; end?: { offset?: number } };
 }
-
-// --- the processor (no executable extensions) --------------------------------
-
-// A single shared processor. `remark-directive` is the ONLY non-core plugin:
-// it adds directive *syntax* recognition that yields inert data nodes. There is
-// deliberately no MDX/evaluate plugin in this chain.
-const processor = unified().use(remarkParse).use(remarkDirective);
 
 // Ensure the C6 shared parser recognizes `spaces-doc.v1` directive refs so
 // `parseResourceRef` can classify the directive text we extract. Idempotent.
@@ -336,7 +327,7 @@ function blockBodyMarkdown(node: MdastNode, source: string): string {
  */
 export function parseSpacesDoc(text: string): ParsedDoc {
   const { frontmatter, body } = splitFrontmatter(text);
-  const tree = processor.parse(body) as unknown as MdastNode;
+  const tree = remarkDirectives.parse(body) as unknown as MdastNode;
 
   const diagnostics: DocPipelineDiagnostic[] = [];
   const format = frontmatter[FORMAT_KEY] ?? null;

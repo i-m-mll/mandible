@@ -12,7 +12,9 @@ import {
 } from "../knowledge-backrefs.js";
 import { scanRepoArtifacts, type RepoArtifactRoot } from "../repo-artifact-scanner.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
-import { checkArtifactMaterialization, diffArtifacts, getArtifactContentAsync } from "../artifact-content.js";
+import {
+  checkArtifactMaterialization, decodeArtifactUtf8, diffArtifacts, getArtifactContentAsync, readArtifactBytesFullAsync,
+} from "../artifact-content.js";
 import { openArtifactExternally } from "../artifact-open.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import {
@@ -798,6 +800,31 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     }
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { content }));
   }, { operation: { id: "get:/api/artifacts/:id/content", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  app.get("/api/artifacts/:id/text", async (req, res) => {
+    const db = getDb();
+    const resolution = resolveArtifactIdentity(db, req.params.id, "strict-read");
+    if (resolution.status !== "resolved" || resolution.kind === "logical") {
+      sendJson(res, 404, { error: "An immutable artifact version or blob is required" });
+      return;
+    }
+    const target = artifactMaterializationTarget(resolution);
+    if (!target.ok) {
+      sendJson(res, 422, { error: target.error.message });
+      return;
+    }
+    const read = await readArtifactBytesFullAsync(db, target.value, Number.MAX_SAFE_INTEGER);
+    if (!read.ok) {
+      sendJson(res, 422, { error: read.reason });
+      return;
+    }
+    const text = decodeArtifactUtf8(read.bytes);
+    if (text === null) {
+      sendJson(res, 415, { error: "Artifact is not UTF-8 text" });
+      return;
+    }
+    sendJson(res, 200, { text });
+  }, { operation: { id: "get:/api/artifacts/:id/text", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/artifacts/:id/open-externally", globalCapabilityRoute("open_path", async (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
