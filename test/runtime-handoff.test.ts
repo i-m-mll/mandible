@@ -3,9 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { activateStagedRuntime, bindingDigest, COMMITTED_OBSERVATION_WINDOW_MS, completePaintedRuntimeHandoff, handoffDirectory, previewPaintedRuntimeHandoff, runRuntimeHandoffWorker, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, cleanupRuntimeHandoff, scheduleRuntimeHandoffCleanup, runtimeHandoffCleanupWake, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
+import { activateStagedRuntime, bindingDigest, COMMITTED_OBSERVATION_WINDOW_MS, completePaintedRuntimeHandoff, handoffDirectory,
+  previewPaintedRuntimeHandoff, runRuntimeHandoffWorker, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff,
+  runtimeHandoffNeedsAcknowledgment, cleanupRuntimeHandoff, reconcileTerminalRuntimeBundles, retireFailedRuntimeHandoff,
+  scheduleRuntimeHandoffCleanup, runtimeHandoffCleanupWake, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
 import { acceptedInstallPaths, applicationRootIdentity } from '../scripts/accepted-app-install.mjs';
-import { assertInstalledApplicationVerification, installedFileIdentity, verifyApplicationRelease } from '../scripts/installed-release.mjs';
+import { assertInstalledApplicationVerification, installedApplicationVerification, installedFileIdentity, verifyApplicationRelease } from '../scripts/installed-release.mjs';
 import { stagedInstallPaths, prepareStagedApplication, installStagedApplication } from '../scripts/staged-app-install.mjs';
 import { serviceInstallationContext } from '../scripts/service-definitions.mjs';
 import { adoptBundleRelease, readBundleOwner } from '../scripts/bundle-services.mjs';
@@ -496,25 +499,49 @@ it('runs historical cleanup with current installed code and reports only the rea
   await expect(scheduleRuntimeHandoffCleanup(journal)).rejects.toThrow();
 });
 
+function verifiedCleanupInstallation(f: ReturnType<typeof fixture>) {
+  const resources = path.join(f.binding.nativeApp, 'Contents/Resources');
+  const runtimeDir = path.join(f.home, 'config/local-sessions');
+  const authorityDir = path.join(f.home, 'config/client-auth');
+  fs.mkdirSync(resources, { recursive: true });
+  fs.mkdirSync(authorityDir, { recursive: true });
+  fs.writeFileSync(path.join(authorityDir, 'authority-id'), 'installation');
+  const generation = 'a'.repeat(40);
+  const sourceDigest = 'b'.repeat(64);
+  const packageSha256 = 'c'.repeat(64);
+  fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify({ schema: 'mandible-installed-release@1', version: '1',
+    target: `${process.platform}-${process.arch}`, provenance: { commit: generation, source_digest: sourceDigest },
+    layout: { kind: 'macos-app', roots: { resources: '.' } }, entrypoints: {}, native: {}, files: {} }));
+  const verification = installedApplicationVerification(f.binding.nativeApp, packageSha256);
+  fs.writeFileSync(path.join(runtimeDir, 'bundle-owner.json'), JSON.stringify({ schema: 'mandible-bundle-owner@1', installationId: 'installation',
+    bundleRoot: f.binding.nativeApp, generation, sourceDigest, verification }));
+  return { runtimeDir, verification, packageSha256 };
+}
+
 it.each([false, true])('settles cleanup independently while a process holds the previous app (retained desktop: %s)', async retained => {
   const f = fixture();
+  const { packageSha256 } = verifiedCleanupInstallation(f);
   const database = path.join(f.home, 'acceptance.db');
   const db = new SqliteDatabase(database);
   db.exec('CREATE TABLE auth_hook_executions (id TEXT, auth_request_id TEXT, hook_id TEXT, state TEXT, output TEXT, command_digest TEXT)');
-  const previous = acceptedInstallPaths(f.binding).previous;
+  const { previous, staging } = acceptedInstallPaths(f.binding);
   fs.mkdirSync(path.join(previous, 'Contents'), { recursive: true });
+  fs.mkdirSync(staging);
   const bridge = path.join(f.home, 'bridge.mjs'); fs.writeFileSync(bridge, 'bridge');
-  const binding = { ...f.binding, hookId: 'hook', commandDigest: 'command', domain: `gui/${process.getuid!()}`, priorAppIdentity: applicationRootIdentity(previous),
+  const binding = { ...f.binding, hookId: 'hook', commandDigest: 'command', domain: `gui/${process.getuid!()}`, installationId: 'installation', priorAppIdentity: applicationRootIdentity(previous),
     priorBackend: { argv: ['/runtime', bridge] }, legacyBridgeSha256: createHash('sha256').update('bridge').digest('hex') };
   const digest = bindingDigest(binding);
   const holder = childProcess.spawn('/bin/sleep', ['30'], { cwd: previous, stdio: 'ignore' });
   try {
     await waitUntil(() => originalSpawn('lsof', ['-F', 'p', '+D', previous], { encoding: 'utf8' }).stdout.includes(`p${holder.pid}`), 'holder opened the previous app');
     const startedAt = originalSpawn('/bin/ps', ['-p', String(holder.pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim();
+    const prepare = { stagePath: staging, stageIdentity: applicationRootIdentity(staging) };
     const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: digest, attemptId: 'attempt',
+      installed: { root: binding.nativeApp, identity: prepare.stageIdentity }, approved: { reference: binding.acceptedRelease.reference, packageSha256 },
       ...(retained ? { desktop: { kind: 'retained', identity: { pid: holder.pid, startedAt } } } : {}) };
-    const journal = { ...f.journal, binding, bindingDigest: digest, database, helperLabel: 'fixture-helper',
-      attempt: { id: 'attempt', state: 'complete', effects: {}, receipt, receiptDigest: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'),
+    const journal = { ...f.journal, binding, bindingDigest: digest, database, phase: 'complete', helperLabel: 'fixture-helper',
+      attempt: { id: 'attempt', state: 'complete', effects: { prepare, replace: { completedAt: 1, previous, packageSha256 } },
+        receipt, receiptDigest: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'),
         fence: { reason: 'terminal-completion' } }, cleanup: { state: 'pending' } };
     db.prepare('INSERT INTO auth_hook_executions VALUES (?,?,?,?,?,?)').run(binding.executionId, binding.requestId, binding.hookId, 'complete', runtimeReceiptAcceptanceMarker(journal), binding.commandDigest);
     db.close();
@@ -526,6 +553,7 @@ it.each([false, true])('settles cleanup independently while a process holds the 
     expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'pending' });
     const blocked = readRuntimeHandoff(f.home, binding.requestId, binding.executionId)!;
     expect(fs.existsSync(bridge)).toBe(false);
+    expect(fs.existsSync(staging)).toBe(false);
     expect(blocked.helperFencedAt).toEqual(expect.any(Number));
     expect(blocked.cleanup).toMatchObject({ state: 'pending', blockers: [{ obligation: 'previous-app',
       processes: [{ pid: holder.pid, command: expect.stringContaining('sleep 30'), owner: { pid: process.pid } }] }] });
@@ -543,6 +571,98 @@ it.each([false, true])('settles cleanup independently while a process holds the 
     expect(await cleanupRuntimeHandoff(f.file)).toEqual({ cleanup: 'complete' });
     expect(fs.existsSync(previous)).toBe(false);
   } finally { holder.kill(); }
+});
+
+it('previews terminal bundle cleanup, preserves a held installation, and reclaims retired stages without adopting historical hooks', async () => {
+  const f = fixture();
+  const { runtimeDir, verification, packageSha256 } = verifiedCleanupInstallation(f);
+  const { previous } = stagedInstallPaths(f.binding);
+  fs.mkdirSync(previous);
+  const binding = { ...f.binding, installationId: 'installation', priorAppIdentity: applicationRootIdentity(previous) };
+  const installed = { root: binding.nativeApp, identity: { dev: 1, ino: 2 } };
+  const receipt = { schema: 'mandible-runtime-receipt@2', bindingDigest: bindingDigest(binding), attemptId: 'completed', installed,
+    approved: { reference: binding.acceptedRelease.reference, packageSha256 } };
+  const completed = { ...f.journal, binding, bindingDigest: receipt.bindingDigest, phase: 'complete',
+    attempt: { id: 'completed', state: 'complete', receipt, receiptDigest: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'),
+      fence: { reason: 'terminal-completion' }, effects: { prepare: { stageIdentity: installed.identity },
+        replace: { completedAt: 1, previous, packageSha256 } } } };
+  const completedBytes = JSON.stringify(completed);
+  fs.writeFileSync(f.file, completedBytes);
+
+  const retiredBinding = { ...binding, requestId: 'retired-request' };
+  const retiredDir = handoffDirectory(f.home, retiredBinding.requestId, retiredBinding.executionId);
+  const retiredFile = path.join(retiredDir, 'journal.json');
+  const { staging } = stagedInstallPaths(retiredBinding);
+  fs.mkdirSync(retiredDir, { recursive: true });
+  fs.mkdirSync(staging);
+  fs.writeFileSync(path.join(staging, 'partial'), 'incomplete copy');
+  const retiredDigest = bindingDigest(retiredBinding);
+  const retiredBytes = JSON.stringify({ ...f.journal, binding: retiredBinding, bindingDigest: retiredDigest,
+    attempt: { id: 'abandoned-stage', state: 'failed', effects: { prepare: { stagePath: staging, stageIdentity: applicationRootIdentity(staging) } } } });
+  fs.writeFileSync(retiredFile, retiredBytes);
+  fs.writeFileSync(path.join(retiredDir, 'retirement.json'), JSON.stringify({ schema: 'mandible-runtime-handoff-retirement@1', bindingDigest: retiredDigest,
+    requestId: retiredBinding.requestId, executionId: retiredBinding.executionId, helperBootedOut: true,
+    journalSha256: createHash('sha256').update(retiredBytes).digest('hex') }));
+  fs.writeFileSync(path.join(retiredDir, 'retired-active.json'), JSON.stringify({ journal: retiredFile, bindingDigest: retiredDigest }));
+  const orphan = path.join(f.home, '.Mandible-orphaned-stage.staging.app');
+  fs.mkdirSync(orphan);
+
+  const activeFile = path.join(runtimeDir, 'handoff-active.json');
+  const failedBinding = { ...binding, requestId: 'active-request' };
+  const failedDigest = bindingDigest(failedBinding);
+  const failedDir = handoffDirectory(f.home, failedBinding.requestId, failedBinding.executionId);
+  const failedFile = path.join(failedDir, 'journal.json');
+  fs.mkdirSync(failedDir, { recursive: true });
+  fs.writeFileSync(failedFile, JSON.stringify({ ...f.journal, binding: failedBinding, bindingDigest: failedDigest }));
+  fs.writeFileSync(activeFile, JSON.stringify({ journal: failedFile, bindingDigest: failedDigest }));
+
+  const plan = await reconcileTerminalRuntimeBundles(f.home);
+  expect(plan.active).toMatchObject({ requestId: failedBinding.requestId });
+  expect(plan.results).toEqual(expect.arrayContaining([
+    expect.objectContaining({ path: previous, status: 'eligible' }),
+    expect.objectContaining({ path: staging, status: 'eligible' }),
+    expect.objectContaining({ path: orphan, status: 'blocked' }),
+  ]));
+  const held = await reconcileTerminalRuntimeBundles(f.home, { apply: true });
+  expect(held.results.filter(result => result.reason?.includes('still owns installation mutation'))).toHaveLength(2);
+  for (const bundle of [previous, staging, orphan]) expect(fs.existsSync(bundle)).toBe(true);
+  fs.unlinkSync(activeFile);
+  fs.renameSync(staging, `${staging}.owned`);
+  fs.mkdirSync(staging);
+  expect((await reconcileTerminalRuntimeBundles(f.home)).results).toContainEqual(expect.objectContaining({
+    path: staging, status: 'blocked', reason: 'The staging app root differs from its recorded custody.',
+  }));
+  fs.rmdirSync(staging);
+  fs.renameSync(`${staging}.owned`, staging);
+  const settled = await reconcileTerminalRuntimeBundles(f.home, { apply: true });
+  expect(settled.results.filter(result => result.status === 'removed').map(result => result.path).sort()).toEqual([previous, staging].sort());
+  expect(fs.existsSync(orphan)).toBe(true);
+  expect(fs.readFileSync(f.file, 'utf8')).toBe(completedBytes);
+  expect(fs.readFileSync(retiredFile, 'utf8')).toBe(retiredBytes);
+  expect(applicationRootIdentity(f.binding.nativeApp)).toEqual(verification.identity);
+});
+
+it('reclaims a failed attempt’s owned stage after archiving its retirement', async () => {
+  const f = fixture();
+  const { runtimeDir } = verifiedCleanupInstallation(f);
+  const binding = { ...f.binding, installationId: 'installation', domain: `gui/${process.getuid!()}` };
+  const { staging } = stagedInstallPaths(binding);
+  fs.mkdirSync(staging);
+  const digest = bindingDigest(binding);
+  const bytes = JSON.stringify({ ...f.journal, binding, bindingDigest: digest, helperLabel: 'fixture-activation',
+    attempt: { id: 'failed-attempt', state: 'failed',
+      effects: { prepare: { stagePath: staging, stageIdentity: applicationRootIdentity(staging) } } } });
+  fs.writeFileSync(f.file, bytes);
+  fs.writeFileSync(path.join(runtimeDir, 'handoff-active.json'), JSON.stringify({ journal: f.file, bindingDigest: digest }));
+  vi.mocked(childProcess.spawnSync).mockImplementation((program, args, options) => {
+    if (program === '/bin/launchctl') return { status: 113, stdout: '', stderr: 'Could not find service' } as any;
+    return originalSpawn(program, args, options);
+  });
+  const retired = await retireFailedRuntimeHandoff(f.home, { bindingDigest: digest, actor: { user_id: 'fixture' }, reason: 'Replaced by a newer approved update' });
+  expect(retired).toMatchObject({ stageCleanup: { state: 'complete' } });
+  expect(fs.existsSync(staging)).toBe(false);
+  expect(fs.readFileSync(f.file, 'utf8')).toBe(bytes);
+  expect(readRuntimeHandoff(f.home, binding.requestId, binding.executionId)?.phase).toBe('retired');
 });
 
 it('preserves obsolete caches when historical completion lacks current trusted runtime proof', async () => {
