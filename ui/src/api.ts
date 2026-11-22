@@ -10,6 +10,9 @@ import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResourc
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import { INTERFACE_NOTE_CHANGED_EVENT } from "../../src/interface-notes/contract";
 import type { ResolveRefResponse, SessionDescendant, SessionSummary } from '../../src/contracts';
+import type { DiffFilePair, GitChangeFile } from '../../src/contracts';
+import type { WorkCompareResult } from '../../src/work-scanner';
+export type { WorkCompareResult } from '../../src/work-scanner';
 import type { EntityKind } from '../../src/app-routes';
 export type { SessionDescendant, SessionSummary } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
@@ -310,16 +313,6 @@ export type WorkCommitPage = {
 };
 
 export type WorkCompareMode = 'merge-base' | 'range';
-
-export type WorkCompareResult = {
-  repo_root: string;
-  from: string;
-  to: string;
-  mode: WorkCompareMode;
-  range: string;
-  raw: string;
-  stat: string;
-};
 
 export type WorkAuditClassification =
   | 'safe_candidate'
@@ -1032,6 +1025,11 @@ export async function getAuthRequestDetail(requestId: string): Promise<Record<st
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
 }
 
+export async function getAuthDiffFile(requestId: string, index: number, signal?: AbortSignal): Promise<DiffFilePair> {
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/files/${index}`, { signal });
+  return await response.json() as DiffFilePair;
+}
+
 export type RequestResponsibilitySnapshot = {
   owner_user_id: string | null; responsibility_session_id: string | null; custody_generation: number;
 };
@@ -1204,6 +1202,15 @@ export async function getWorkCompare(
     `/api/work/repos/${encodeURIComponent(repoId)}/compare${buildQuery(params)}`,
   );
   return (await response.json()) as WorkCompareResult;
+}
+
+export async function getWorkDiffFile(repoId: string, comparison: WorkCompareResult['comparison'], file: Pick<GitChangeFile, 'old_path' | 'new_path'>, signal?: AbortSignal): Promise<DiffFilePair> {
+  const query = buildQuery({
+    before: comparison.merge_base_sha, after: comparison.head_sha,
+    oldPath: file.old_path ?? undefined, newPath: file.new_path ?? undefined,
+  });
+  const response = await apiGet(`/api/work/repos/${encodeURIComponent(repoId)}/compare/file${query}`, { signal });
+  return await response.json() as DiffFilePair;
 }
 
 /** Read a repository's branch audit; `refresh` makes the daemon rescan instead of serving a fresh stored scan. */
@@ -3131,6 +3138,7 @@ export type ArtifactDiffResult = {
   kind: string;
   unified: string | null;
   stats: { added: number; removed: number } | null;
+  contents?: Extract<DiffFilePair, { kind: 'text' }>;
   reason?: string;
 };
 
@@ -3238,7 +3246,7 @@ export async function getArtifactVersions(
 }
 
 export async function getArtifactDiff(from: string, to: string): Promise<ArtifactDiffResult> {
-  const query = buildQuery({ a: from, b: to });
+  const query = buildQuery({ a: from, b: to, format: 'contents' });
   const response = await apiGet(`/api/artifacts/diff${query}`);
   const payload = (await parseMaybeJson(response)) as { diff: ArtifactDiffResult };
   return payload.diff;

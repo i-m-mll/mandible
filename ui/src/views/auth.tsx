@@ -2,12 +2,7 @@ import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
 import type { RefObject } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import {
-  DiffView,
-  type DiffViewClassNames,
-  type DiffViewMode,
-  type DiffTargetReady,
-} from '../components/DiffView';
+import { ChangeList, type DiffTargetReady } from '../components/ChangeList';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { IssuePill } from '../components/shared/IssuePill';
@@ -40,6 +35,7 @@ import {
   canPerformOperation,
   getAuthRequestActions,
   getAuthRequestDetail,
+  getAuthDiffFile,
   changeAuthResponsibility,
   isApiErrorStatus,
   createAuthHook,
@@ -305,20 +301,6 @@ const COURTESY_APPROVER_BADGE = {
   title: 'Courtesy approval: recorded as an interface action, not operator-verified',
 } as const;
 
-
-const AUTH_DIFF_VIEW_CLASS_NAMES: DiffViewClassNames = {
-  toolbar: 'auth-detail__diff-toolbar',
-  modeGroup: 'auth-detail__diff-mode',
-  modeButton: 'auth-detail__diff-mode-button',
-  modeButtonActive: 'auth-detail__diff-mode-button--active',
-  empty: 'auth-detail__diff-empty',
-  file: 'auth-diff-file',
-  fileHeader: 'auth-diff-file__header',
-  filePath: 'auth-diff-file__path',
-  fileBody: 'auth-diff-file__body',
-  fileHtml: 'auth-diff-file__html',
-  fileFallback: 'auth-diff-file__fallback',
-};
 
 /** Returns true when the request type has meaningful diff stats to display. */
 function typeHasDiffStats(type: AuthRequestType): boolean {
@@ -977,7 +959,6 @@ function AuthRequestDetail({
     observer.observe(node);
     return () => { observer.disconnect(); node.style.removeProperty('--auth-diff-target-scroll-space'); };
   }, [targetToken, viewMode]);
-  const [diffMode, setDiffMode] = useState<DiffViewMode>('split');
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
@@ -1246,7 +1227,7 @@ function AuthRequestDetail({
             {runtimeVerification.reason}
           </DetailPaneNotice>
         )}
-        {viewMode === 'diff' && request.diff_summary !== undefined && targetToken && unmatchedTarget === targetToken && (
+        {viewMode === 'diff' && targetToken && unmatchedTarget === targetToken && (
           <DetailPaneNotice severity="warning" density="compact">
             This request has no captured change matching the selected before/after paths.
           </DetailPaneNotice>
@@ -1485,22 +1466,22 @@ function AuthRequestDetail({
 
         {viewMode === 'diff' ? (
           <div id="auth-detail-panel-diff" role="tabpanel" aria-labelledby="auth-detail-tab-diff" style={targetToken ? { paddingBottom: 'var(--auth-diff-target-scroll-space, 0px)' } : undefined}>
-          <DiffView
-            diffText={diffRaw}
+          <ChangeList
+            files={request.change_report?.files}
+            patch={authType === 'merge' ? undefined : diffRaw}
+            emptyLabel={authType === 'merge' && request.change_report === null ? 'Change inventory unavailable' : undefined}
+            scope={`auth:${getAuthId(request)}`}
+            revision={request.change_report?.comparison.head_sha}
+            loadFile={(_file, index, signal) => getAuthDiffFile(getAuthId(request), index, signal)}
             target={navigation.file && targetToken ? { ...navigation.file, navigationToken: targetToken } : undefined}
-            contentReady={request.diff_summary !== undefined}
+            contentReady={authType === 'merge' ? request.change_report !== undefined : request.diff_summary !== undefined}
             onTargetReady={(token, result) => {
               if (token !== targetToken) return;
               targetReady.current = { token, result };
               setUnmatchedTarget(result.kind === 'unavailable' ? token : null);
               scrollRestoring.resolveTarget();
             }}
-            mode={diffMode}
-            onModeChange={setDiffMode}
             ariaLabel="Approval request changes"
-            emptyMessage={request.diff_summary === undefined ? null : "No diff available for this request."}
-            className="auth-detail__diff-view"
-            classNames={AUTH_DIFF_VIEW_CLASS_NAMES}
           />
           </div>
         ) : viewMode === 'console' ? (

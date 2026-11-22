@@ -187,9 +187,6 @@ describe("auth change reports", () => {
     );
     if (!hostile.ok) throw hostile.error;
     expect(JSON.stringify(hostile.value)).toBe(JSON.stringify(baseline));
-    expect(hostile.value.diffSummary).toContain("+export const generated = false;");
-    expect(hostile.value.diffSummary).not.toContain("AmbientOverride");
-    expect(hostile.value.diffSummary).toContain("[truncated: diff preview exceeded 102400 bytes]");
     expect(captured.files.map((file) => file.new_path ?? file.old_path)).not.toContain("unrelated-after-branch.txt");
     expect(captured.totals.files).toBe(captured.files.length);
     expect(captured.totals.additions).toBe(
@@ -461,10 +458,18 @@ describe("auth change reports", () => {
     }
   });
 
-  it("ignores caller-supplied counts and returns the server-captured headline", async () => {
+  it("retains a full immutable review after a replacement and object pruning", async () => {
     const { db, queue, router, token, project } = authenticatedRoute();
 
     try {
+      git(["checkout", "feature/report"]);
+      const count = 360;
+      const text = "line included in the old review\n".repeat(16);
+      for (let index = 0; index < count; index++) write(`bulk/file-${index}.txt`, text);
+      git(["add", "-A"]);
+      git(["commit", "-m", "Add complete inventory fixture\n\nMandible-Issue: d5edbb9"]);
+      git(["checkout", "main"]);
+
       const response = await withEnvironment(ambientGitOverrides(), () => router.invoke({
         method: "POST",
         url: "/api/auth/v2/request",
@@ -490,8 +495,11 @@ describe("auth change reports", () => {
       const body = response.body as { request_id: string; files_changed: number; additions: number; deletions: number };
       expect(body.files_changed).not.toBe(999);
       const request = (await queue.getRequest(body.request_id));
-      expect(request?.diff_summary).not.toContain("caller supplied content");
-      expect(request?.diff_summary).toContain("diff --git a/src/app.ts b/src/app.ts");
+      expect(request?.diff_summary).toBeNull();
+      const files = request?.change_report?.files ?? [];
+      expect(files.filter(file => file.new_path?.startsWith("bulk/"))).toHaveLength(count);
+      const index = files.findIndex(file => file.new_path === "bulk/file-359.txt");
+      expect(files[index]?.new_object).toMatchObject({ mode: "100644", oid: git(["rev-parse", "feature/report:bulk/file-359.txt"]) });
       expect(request?.change_report?.totals).toMatchObject({
         files: body.files_changed,
         additions: body.additions,
@@ -504,6 +512,7 @@ describe("auth change reports", () => {
       const firstReport = revised.change_report;
 
       git(["checkout", "feature/report"]);
+      git(["reset", "--hard", "main"]);
       write("src/superseding.ts", "export const replacement = true;\n");
       git(["add", "src/superseding.ts"]);
       git(["commit", "-m", "extend candidate\n\nMandible-Issue: d5edbb9"]);
@@ -540,6 +549,18 @@ describe("auth change reports", () => {
       expect((await queue.getRequest(body.request_id))).toMatchObject({
         status: "superseded",
         change_report: firstReport,
+      });
+      git(["update-ref", "-d", `refs/mandible/auth-candidates/${body.request_id}`]);
+      git(["reflog", "expire", "--expire=now", "--all"]);
+      git(["gc", "--prune=now"]);
+      const historical = await router.invoke({
+        method: "GET", url: `/api/auth/request/${body.request_id}/files/${index}`, credential: token, transport: "http",
+      });
+      expect(historical.status, JSON.stringify(historical.body)).toBe(200);
+      expect(historical.body).toMatchObject({
+        kind: "text",
+        before: { contents: "" },
+        after: { name: "bulk/file-359.txt", contents: text },
       });
     } finally {
       (await queue.dispose());

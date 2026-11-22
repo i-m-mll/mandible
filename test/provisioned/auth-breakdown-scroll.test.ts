@@ -67,7 +67,8 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     .auth-detail__body>*{flex:none}.additional-context{height:1100px}
   </style><div id="root"></div><script>${bundled.outputFiles[0]!.text.replaceAll('</script', '<\\/script')}</script>`);
   const navigationBundle = buildSync({ entryPoints: [resolve('test/provisioned/fixtures/auth-file-navigation-fixture.tsx')], outdir: join(directory, 'navigation-assets'),
-    bundle: true, write: false, format: 'iife', platform: 'browser', target: 'es2020', jsx: 'automatic', jsxImportSource: 'preact' });
+    bundle: true, write: false, format: 'iife', platform: 'browser', target: 'es2020', jsx: 'automatic', jsxImportSource: 'preact',
+    external: ['@pierre/diffs/worker/worker-portable.js?url'] });
   const navigationStyles = buildSync({ entryPoints: [resolve('ui/src/style.css')], bundle: true, write: false, loader: { '.woff': 'empty', '.woff2': 'empty', '.ttf': 'empty' } }).outputFiles[0]!.text.replace(/@import[^;]+;/g, '');
   const navigationHtml = join(directory, 'navigation.html');
   writeFileSync(navigationHtml, `<!doctype html><style>${navigationStyles}${navigationBundle.outputFiles.filter(file => file.path.endsWith('.css')).map(file => file.text).join('\n')}
@@ -265,11 +266,11 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
           disclosures:[...document.querySelectorAll('#auth-detail-panel-abstract button[aria-expanded]')].map(node=>[node.textContent,node.getAttribute('aria-expanded')])};})()`);
       await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
       await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-      await waitFor("document.querySelector('#auth-detail-panel-diff .diff-viewer__file-header')"); await frames();
+      await waitFor("document.querySelector('#auth-detail-panel-diff .change-list__file-toggle')"); await frames();
       const destination = await session.evaluate('window.location.href');
       const alignment = () => session!.evaluate(`(() => {
         const params=new URLSearchParams(location.search);const path=params.get('diff_new')??params.get('diff_old');
-        const title=[...document.querySelectorAll('.diff-viewer__file-path')].find(node=>node.title===path);
+        const title=[...document.querySelectorAll('.change-list__path')].find(node=>node.title===path);
         const heading=title.closest('button'),body=document.querySelector('.auth-detail__body'),header=document.querySelector('.detail-pane-shell__header');
         return {visible:heading.getBoundingClientRect().top>=body.getBoundingClientRect().top-1
             &&heading.getBoundingClientRect().bottom<=body.getBoundingClientRect().bottom+1,expanded:heading.getAttribute('aria-expanded'),
@@ -287,10 +288,10 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
         disclosures:[...document.querySelectorAll('#auth-detail-panel-abstract button[aria-expanded]')].map(node=>[node.textContent,node.getAttribute('aria-expanded')])})`);
       expect(restored.outer).toBe(origin.outer); expect(restored.items).toEqual(origin.items); expect(restored.disclosures).toEqual(origin.disclosures);
       await session.evaluate('history.forward();true');
-      await waitFor("document.querySelector('#auth-detail-panel-diff .diff-viewer__file-header')"); await frames();
+      await waitFor("document.querySelector('#auth-detail-panel-diff .change-list__file-toggle')"); await frames();
       expect(await alignment()).toMatchObject({ visible: true, anchored: true, expanded: 'true' });
       await session.evaluate(`localStorage.setItem('auth-review-tab:file-navigation-request',JSON.stringify('console'));true`);
-      await session.navigate(destination, true); await waitFor("document.querySelector('#auth-detail-panel-diff .diff-viewer__file-header')"); await frames();
+      await session.navigate(destination, true); await waitFor("document.querySelector('#auth-detail-panel-diff .change-list__file-toggle')"); await frames();
       expect(await alignment()).toMatchObject({ visible: true, anchored: true, expanded: 'true' });
     }
     await session.send('Emulation.setDeviceMetricsOverride', { width: 877, height: 1128, deviceScaleFactor: 1, mobile: false });
@@ -300,10 +301,10 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
         detailCalls:window.scrollDiagnostic.detailCalls};})()`);
     await session.navigate(deferredUrl); await frames();
     const pending = await scrollState();
-    expect(pending.top).toBe(0); expect(Number(pending.saved)).toBe(6758.5);
+    expect(pending.top).toBe(0); expect(Number(pending.saved)).toBe(400.5);
     await session.evaluate('window.scrollDiagnostic.hydrate();true'); await frames();
     const hydrated = await scrollState();
-    expect(Math.abs(hydrated.top - 6758.5)).toBeLessThanOrEqual(1);
+    expect(Math.abs(hydrated.top - 400.5)).toBeLessThanOrEqual(1);
     expect(Number(hydrated.saved)).toBe(hydrated.top);
     await session.navigate(deferredUrl, true); await frames();
     await session.evaluate('window.scrollDiagnostic.hydrate();true'); await frames();
@@ -314,31 +315,10 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     await session.evaluate('window.scrollDiagnostic.hydrate();true'); await frames();
     const remounted = await scrollState();
     expect(remounted.top).toBe(hydrated.top); expect(Number(remounted.saved)).toBe(hydrated.top);
-    await session.navigate(`${fixtureOrigin}/` + '?partial=1&small=1'); await frames();
-    await session.evaluate("document.querySelector('.auth-change-group__row').click();true"); await frames();
-    const partialOrigin = await session.evaluate(`(() => {
-      const body=document.querySelector('.auth-detail__body'); body.scrollTop=601.5;
-      const link=document.querySelector('.auth-change-breakdown__items a');link.focus({preventScroll:true});
-      return {top:body.scrollTop,href:link.getAttribute('href')};})()`);
-    expect(partialOrigin.top).toBeGreaterThan(0);
-    await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-    await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }); await frames();
-    await session.evaluate(`new Promise(resolve => {
-      const ready=()=>{if(document.querySelector('[role=status][data-severity=warning]')){observer.disconnect();resolve(true)}};
-      const observer=new MutationObserver(ready);observer.observe(document,{subtree:true,childList:true});ready();})`);
-    const missing = await session.evaluate(`(() => {
-      const notice=document.querySelector('[role=status][data-severity=warning]');const body=document.querySelector('.auth-detail__body');
-      const header=document.querySelector('.detail-pane-shell__header');const rect=notice.getBoundingClientRect();
-      return {href:location.pathname+location.search,visible:rect.height>0&&rect.top>=header.getBoundingClientRect().bottom-1
-        &&rect.bottom<=body.getBoundingClientRect().top+1&&rect.bottom<=innerHeight};})()`);
-    expect(missing.href).toBe(partialOrigin.href);
-    expect(missing.visible).toBe(true);
-    await session.evaluate('history.back();true'); await frames();
-    expect(await session.evaluate("document.querySelector('.auth-detail__body').scrollTop")).toBe(partialOrigin.top);
     await session.navigate(`${fixtureOrigin}/` + '?canonical=1&small=1'); await frames();
     await session.evaluate('window.scrollDiagnostic.resolveDetail();true'); await frames();
     const canonical = await scrollState();
-    expect(Math.abs(canonical.top - 6758.5)).toBeLessThanOrEqual(1);
+    expect(Math.abs(canonical.top - 400.5)).toBeLessThanOrEqual(1);
     expect(canonical.detailCalls).toBe(1);
     expect(Number(canonical.saved)).toBe(canonical.top);
   } finally {

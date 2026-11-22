@@ -67,6 +67,7 @@ import {
   baseTree,
   type CommitRefReader,
 } from "./auth-context.js";
+import { releaseUnpublishedReviewRevision, retainReviewRevision } from "./git-change-review.js";
 import { readGitCommitFacts } from "./git-object-facts.js";
 import {
   canonicalizeChangeMessage,
@@ -2351,10 +2352,19 @@ export class AuthQueue {
         this.assertPublication(request, payload.space_publication_id);
         request.space_publication_id = payload.space_publication_id;
       }
-      request.merge_candidate_pin_sha = this.allowExternalEffects
-        ? (await this.cacheMergeCandidate(request))
+      const review = request.change_report && request.target_repo_root
+        ? { cwd: request.target_repo_root, comparison: request.change_report.comparison }
         : null;
+      if (review) {
+        try { await retainReviewRevision(review.cwd, request.id, review.comparison); }
+        catch {
+          throw new AuthQueueError("merge_check_failed", "Unable to retain the reviewed Git revision.");
+        }
+      }
       try {
+        request.merge_candidate_pin_sha = this.allowExternalEffects
+          ? await this.cacheMergeCandidate(request)
+          : null;
         for (let attempt = 0; ; attempt++) {
           if (mergeCheck.status === "clean" && payload.base_branch) insertionQueue = await this.observePendingMergeQueue({ repo: payload.repo ?? null, baseBranch: payload.base_branch, excludeId: predecessor?.id ?? null });
           try { insertRequest(); break; }
@@ -2365,7 +2375,13 @@ export class AuthQueue {
         }
         request = this.requireRequest(request.id);
       } catch (error) {
-        (await this.dropMergeCandidate(request));
+        await this.dropMergeCandidate(request);
+        if (review) {
+          try { await releaseUnpublishedReviewRevision(review.cwd, request.id, review.comparison); }
+          catch (cleanupError) {
+            authLog("warn", "auth_unpublished_review_retained", { auth_request_id: request.id, error: errorMessage(cleanupError) });
+          }
+        }
         throw error;
       }
       const baseAudit = (await this.refreshBaseAudit(request, false));

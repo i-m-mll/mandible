@@ -448,6 +448,9 @@ export type AuthChangeFile = {
   file_type_after: AuthChangeFileType;
   additions: number | null;
   deletions: number | null;
+  old_object?: GitFileObject | null;
+  new_object?: GitFileObject | null;
+  whitespace_only?: boolean;
   bytes_before: number | null;
   bytes_after: number | null;
   language: string;
@@ -455,6 +458,18 @@ export type AuthChangeFile = {
   generated: boolean;
   vendor: boolean;
 };
+
+export type GitFileObject = { mode: string; oid: string };
+
+export type GitChangeFile = Pick<AuthChangeFile,
+  "old_path" | "new_path" | "change_kind" | "additions" | "deletions" | "old_object" | "new_object" | "whitespace_only"
+>;
+
+export type DiffFileContents = { name: string; contents: string };
+
+export type DiffFilePair =
+  | { kind: "text"; before: DiffFileContents; after: DiffFileContents }
+  | { kind: "binary" };
 
 /**
  * Immutable server-captured inventory for one reviewed merge candidate.

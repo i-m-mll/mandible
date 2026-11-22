@@ -84,7 +84,7 @@ afterEach(() => {
 });
 
 describe("auth review diff range", () => {
-  it("the daemon records the three-dot counts and preview, never another lane's work", async () => {
+  it("the daemon records the three-dot counts and inventory, never another lane's work", async () => {
     // Guard the guard: the scenario must separate the ranges, or every
     // assertion here would pass against two-dot code.
     const twoDot = shortstatFor("main..feature/small");
@@ -96,20 +96,18 @@ describe("auth review diff range", () => {
       repoDir,
       "main",
       "feature/small",
-      { counts: true, diffSummary: true },
     );
     expect({
       filesChanged: metadata.filesChanged,
       additions: metadata.additions,
       deletions: metadata.deletions,
     }).toEqual(threeDot);
-    expect(metadata.diffSummary).toContain("shared.txt");
-    expect(metadata.diffSummary).not.toContain("other-lane.txt");
+    expect(metadata.changeReport.files.map(file => file.new_path)).toEqual(["shared.txt"]);
   });
 
   it("the recorded counts do not change when the base advances again", async () => {
     const before = await computeAuthMergeReviewMetadata(
-      repoDir, "main", "feature/small", { counts: true, diffSummary: false },
+      repoDir, "main", "feature/small",
     );
 
     write("yet-another-lane.txt", 120, "yet another lane");
@@ -117,7 +115,7 @@ describe("auth review diff range", () => {
     git(["commit", "-m", "a third lane lands on main"]);
 
     const after = await computeAuthMergeReviewMetadata(
-      repoDir, "main", "feature/small", { counts: true, diffSummary: false },
+      repoDir, "main", "feature/small",
     );
 
     // The branch did not change, so its recorded size must not change either.

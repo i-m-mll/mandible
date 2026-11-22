@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { childOutput } from "./child-observation.js";
 
 import {
   AUTH_CHANGE_REPORT_FILE_ROLE_PRECEDENCE,
@@ -15,8 +16,6 @@ import {
 const GIT_TIMEOUT_MS = 15_000;
 const GIT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 const MAX_REPORT_FILES = 10_000;
-const MAX_DIFF_PREVIEW_BYTES = 102_400;
-const MAX_DIFF_PREVIEW_READ_BYTES = MAX_DIFF_PREVIEW_BYTES + 1;
 const RENAME_SIMILARITY_PERCENT = 50 as const;
 const RENAME_LIMIT = 10_000;
 const ZERO_OID = /^0+$/;
@@ -42,12 +41,10 @@ type Attributes = Map<string, Map<string, string>>;
 type IsolatedGit = {
   cwd: string;
   env: NodeJS.ProcessEnv;
-  gitDir: string;
 };
 
 export type AuthMergeReviewCollection = {
-  report?: AuthChangeReport;
-  diffSummary?: string;
+  report: AuthChangeReport;
 };
 
 export type AuthMergeReviewCollectionResult =
@@ -59,11 +56,6 @@ export type AuthMergeReviewCollectionError =
   | { kind: "invalid_git_output"; message: string }
   | { kind: "limit_exceeded"; files: number; limit: number; message: string }
   | { kind: "environment_failed"; message: string };
-
-export type AuthMergeReviewCollectionOptions = {
-  report?: boolean;
-  diffSummary?: boolean;
-};
 
 class AuthChangeReportCollectionError extends Error {
   readonly result: AuthMergeReviewCollectionError;
@@ -81,7 +73,6 @@ class AuthChangeReportCollectionError extends Error {
 export async function collectAuthMergeReview(
   repoRoot: string,
   comparison: AuthChangeReport["comparison"],
-  options: AuthMergeReviewCollectionOptions = { report: true, diffSummary: true },
 ): Promise<AuthMergeReviewCollectionResult> {
   let gitDir: string | null = null;
   let value: AuthMergeReviewCollection | null = null;
@@ -90,11 +81,7 @@ export async function collectAuthMergeReview(
     gitDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-report-git-"));
     const git = createIsolatedGit(repoRoot, gitDir);
     const diffArgs = pinnedDiffArgs(comparison);
-    value = {};
-    if (options.report !== false) value.report = await collectReportFromGit(git, comparison, diffArgs);
-    if (options.diffSummary !== false) {
-      value.diffSummary = await readBoundedDiffPreview(git, comparison.head_sha, diffArgs);
-    }
+    value = { report: await collectReportFromGit(git, comparison, diffArgs) };
   } catch (error) {
     failure = error;
   }
@@ -116,7 +103,8 @@ export async function collectAuthMergeReview(
         },
     };
   }
-  return { ok: true, value: value ?? {} };
+  if (!value) throw new Error("Git inventory collection did not produce a result.");
+  return { ok: true, value };
 }
 
 function pinnedDiffArgs(comparison: AuthChangeReport["comparison"]): string[] {
@@ -140,7 +128,7 @@ async function collectReportFromGit(
   diffArgs: string[],
 ): Promise<AuthChangeReport> {
   const gitPrefix = [`--attr-source=${comparison.head_sha}`];
-  const raw = parseRawChanges(runGit(git, [...gitPrefix, "diff", "--raw", "--no-abbrev", "-z", ...diffArgs]));
+  const raw = parseRawChanges(await runGit(git, [...gitPrefix, "diff", "--raw", "--no-abbrev", "-z", ...diffArgs]));
   if (raw.length > MAX_REPORT_FILES) {
     throw new AuthChangeReportCollectionError({
       kind: "limit_exceeded",
@@ -149,7 +137,12 @@ async function collectReportFromGit(
       message: `Auth change report has ${raw.length} files; the v1 limit is ${MAX_REPORT_FILES}. Split the candidate before submission.`,
     });
   }
-  const numstats = parseNumstats(runGit(git, [...gitPrefix, "diff", "--numstat", "-z", ...diffArgs]));
+  const [countOutput, nonWhitespaceOutput] = await Promise.all([
+    runGit(git, [...gitPrefix, "diff", "--numstat", "-z", ...diffArgs]),
+    runGit(git, [...gitPrefix, "diff", "--numstat", "-z", "--ignore-all-space", "--ignore-blank-lines", ...diffArgs]),
+  ]);
+  const numstats = parseNumstats(countOutput);
+  const nonWhitespacePaths = new Set(parseNumstats(nonWhitespaceOutput).map(stat => pathPairKey(stat.oldPath, stat.newPath)));
   const statsByPath = new Map(numstats.map((stat) => [pathPairKey(stat.oldPath, stat.newPath), stat]));
   if (statsByPath.size !== numstats.length || numstats.length !== raw.length) {
     throw new AuthChangeReportCollectionError(
@@ -163,11 +156,12 @@ async function collectReportFromGit(
     if (change.newPath !== null && !ZERO_OID.test(change.newOid)) headPaths.push(change.newPath);
     else if (change.oldPath !== null) basePaths.push(change.oldPath);
   }
-  const attributes = mergeAttributes(
+  const [headAttributes, baseAttributes, objectSizes] = await Promise.all([
     readCommittedAttributes(git, comparison.head_sha, headPaths),
     readCommittedAttributes(git, comparison.merge_base_sha, basePaths),
-  );
-  const objectSizes = readBlobSizes(git, raw);
+    readBlobSizes(git, raw),
+  ]);
+  const attributes = mergeAttributes(headAttributes, baseAttributes);
   const scriptLanguages = await readScriptLanguages(git, raw, objectSizes);
 
   const files = raw.map((change): AuthChangeFile => {
@@ -197,6 +191,10 @@ async function collectReportFromGit(
       file_type_after: fileTypeAfter,
       additions: gitlink ? null : stat.additions,
       deletions: gitlink ? null : stat.deletions,
+      old_object: fileTypeBefore === "absent" ? null : { mode: change.oldMode, oid: change.oldOid },
+      new_object: fileTypeAfter === "absent" ? null : { mode: change.newMode, oid: change.newOid },
+      whitespace_only: change.status === "M" && stat.additions !== null && stat.deletions !== null
+        && stat.additions + stat.deletions > 0 && !nonWhitespacePaths.has(rawPathPairKey(change)),
       bytes_before: blobSize(change.oldOid, fileTypeBefore, objectSizes),
       bytes_after: blobSize(change.newOid, fileTypeAfter, objectSizes),
       language,
@@ -268,7 +266,6 @@ function createIsolatedGit(repoRoot: string, gitDir: string): IsolatedGit {
   );
   return {
     cwd: repoRoot,
-    gitDir,
     env: { ...probeEnv, GIT_DIR: gitDir },
   };
 }
@@ -298,93 +295,20 @@ function isolatedGitEnvironment(environmentRoot: string): NodeJS.ProcessEnv {
   };
 }
 
-function runGit(git: IsolatedGit, args: string[], input?: Buffer): Buffer {
-  const result = spawnSync("git", args, {
-    cwd: git.cwd,
-    env: git.env,
-    input,
-    encoding: null,
-    timeout: GIT_TIMEOUT_MS,
-    maxBuffer: GIT_MAX_OUTPUT_BYTES,
-  });
-  const stderr = Buffer.isBuffer(result.stderr) ? result.stderr.toString("utf8").trim() : "";
-  if (result.error || result.status !== 0 || stderr) {
-    const detail = result.error?.message ?? (stderr || `exit status ${result.status ?? "unknown"}`);
+async function runGit(git: IsolatedGit, args: string[], input?: Buffer): Promise<Buffer> {
+  try {
+    return await childOutput("git", args, {
+      cwd: git.cwd, env: git.env, input, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_OUTPUT_BYTES,
+    });
+  } catch (error) {
+    const stderr = (error as { stderr?: Buffer }).stderr;
+    const detail = stderr?.toString("utf8").trim() || (error instanceof Error ? error.message : String(error));
     throw new AuthChangeReportCollectionError({
       kind: "git_failed",
       operation: args.slice(0, 2).join(" "),
       message: `Unable to capture auth change report (${args.slice(0, 2).join(" ")}): ${detail}`,
     });
   }
-  return Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.alloc(0);
-}
-
-function readBoundedDiffPreview(git: IsolatedGit, attributeSource: string, diffArgs: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    let bytesRead = 0;
-    let truncated = false;
-    let timedOut = false;
-    const child = spawn(
-      "git",
-      [`--attr-source=${attributeSource}`, "diff", "--patch", ...diffArgs],
-      { cwd: git.cwd, env: git.env, stdio: ["ignore", "pipe", "pipe"] },
-    );
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    }, GIT_TIMEOUT_MS);
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      if (truncated) return;
-      const remaining = MAX_DIFF_PREVIEW_READ_BYTES - bytesRead;
-      if (chunk.length > remaining) {
-        chunks.push(chunk.subarray(0, Math.max(remaining, 0)));
-        bytesRead += remaining;
-        truncated = true;
-        child.kill("SIGTERM");
-        return;
-      }
-      chunks.push(chunk);
-      bytesRead += chunk.length;
-      if (bytesRead >= MAX_DIFF_PREVIEW_READ_BYTES) {
-        truncated = true;
-        child.kill("SIGTERM");
-      }
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      if (Buffer.concat(stderrChunks).length < 4096) stderrChunks.push(chunk);
-    });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (timedOut) {
-        reject(new AuthChangeReportCollectionError({
-          kind: "git_failed",
-          operation: "diff preview",
-          message: "Timed out while collecting auth merge diff preview.",
-        }));
-        return;
-      }
-      if (code !== 0 && !truncated) {
-        const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
-        reject(new AuthChangeReportCollectionError({
-          kind: "git_failed",
-          operation: "diff preview",
-          message: stderr ? `Unable to collect auth merge diff preview: ${stderr}` : "Unable to collect auth merge diff preview.",
-        }));
-        return;
-      }
-      const preview = Buffer.concat(chunks).subarray(0, MAX_DIFF_PREVIEW_BYTES).toString("utf8");
-      resolve(truncated
-        ? `${preview}\n... [truncated: diff preview exceeded ${MAX_DIFF_PREVIEW_BYTES} bytes]`
-        : preview);
-    });
-  });
 }
 
 function nulFields(value: Buffer): Buffer[] {
@@ -509,13 +433,13 @@ function changeKind(status: string): AuthChangeKind {
   }
 }
 
-function readBlobSizes(git: IsolatedGit, changes: RawChange[]): Map<string, number> {
+async function readBlobSizes(git: IsolatedGit, changes: RawChange[]): Promise<Map<string, number>> {
   const oids = [...new Set(changes.flatMap((change) => [
     fileType(change.oldMode) === "gitlink" || ZERO_OID.test(change.oldOid) ? null : change.oldOid,
     fileType(change.newMode) === "gitlink" || ZERO_OID.test(change.newOid) ? null : change.newOid,
   ]).filter((oid): oid is string => oid !== null))].sort();
   if (oids.length === 0) return new Map();
-  const output = runGit(git, ["cat-file", "--batch-check"], Buffer.from(`${oids.join("\n")}\n`, "ascii"));
+  const output = await runGit(git, ["cat-file", "--batch-check"], Buffer.from(`${oids.join("\n")}\n`, "ascii"));
   const lines = output.toString("utf8").trimEnd().split("\n");
   if (lines.length !== oids.length) throw new AuthChangeReportCollectionError("Git object-size inventory was incomplete.");
   const sizes = new Map<string, number>();
@@ -653,10 +577,10 @@ function shebangLanguage(line: string): string | undefined {
   return undefined;
 }
 
-function readCommittedAttributes(git: IsolatedGit, source: string, paths: string[]): Attributes {
+async function readCommittedAttributes(git: IsolatedGit, source: string, paths: string[]): Promise<Attributes> {
   if (paths.length === 0) return new Map();
   const uniquePaths = [...new Set(paths)].sort(compareUtf8);
-  const output = runGit(
+  const output = await runGit(
     git,
     ["check-attr", `--source=${source}`, "-z", "--stdin", "linguist-language", "linguist-generated", "linguist-vendored"],
     Buffer.concat(uniquePaths.flatMap((file) => [Buffer.from(file, "utf8"), Buffer.from([0])])),
