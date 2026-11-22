@@ -2,7 +2,6 @@
 import { linkifyResourceRefs } from '../ui/src/resource-refs';
 import { describe, expect, it } from 'vitest';
 import { renderMarkdown } from '../ui/src/lib/markdown';
-import { renderUnifiedDiffFallbackHtml } from '../ui/src/components/DiffView';
 
 describe('shared UI Markdown rendering', () => {
   it('uses DOMPurify for dangerous tags, attributes, and URL schemes', () => {
@@ -18,12 +17,6 @@ describe('shared UI Markdown rendering', () => {
     expect(html).toContain('Proceed with the repair.');
   });
 
-  it('escapes diff text in the plain fallback', () => {
-    const html = renderUnifiedDiffFallbackHtml('@@ -1 +1 @@\n-<old>\n+<img src=x onerror="alert(1)">');
-    expect(html).toContain('-&lt;old&gt;');
-    expect(html).not.toContain('<old>');
-    expect(html).not.toContain('<img');
-  });
 });
 
 function mathDocument(source: string): HTMLDivElement {

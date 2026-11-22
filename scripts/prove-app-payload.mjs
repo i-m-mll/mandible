@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
+import { proveDiff } from './pierre-proof-local.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -34,7 +35,7 @@ const port = listener.address().port;
 await new Promise(resolve => listener.close(resolve));
 const environment = installedRuntimeEnvironment(stage.resources, { HOME: home, PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
   TMPDIR: scratch, MANDIBLE_HOME: path.join(home, '.mandible'), MANDIBLE_PORT: String(port),
-  MANDIBLE_INSTALLATION_ID: 'installed-payload-proof', MANDIBLE_BACKEND_GENERATION: release.provenance.commit,
+  MANDIBLE_PUBLIC_ORIGIN: `https://payload-proof.mandible.localhost:${port}`, MANDIBLE_INSTALLATION_ID: 'installed-payload-proof', MANDIBLE_BACKEND_GENERATION: release.provenance.commit,
   MANDIBLE_ALLOWED_EFFECTS: '["ledger:read"]', MANDIBLE_SOCKET: path.join(scratch, 'api.sock') });
 const sourceCheckout = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8', timeout: 5000 }).stdout.trim();
 const profile = installedExecutionProfile({ checkout: root, commonDirectory: sourceCheckout, app: path.resolve(stage.resources, '../..') });
@@ -61,6 +62,7 @@ try {
   const ui = await fetch(`http://127.0.0.1:${port}/`);
   assert.equal(ui.status, 200);
   assert.match(await ui.text(), /<html/);
+  if (process.env.DIFF_PROOF === "1") await proveDiff(stage.resources, port);
   const setup = sandbox('/usr/bin/curl', ['--fail-with-body', '--silent', '--unix-socket', environment.MANDIBLE_SOCKET,
     '-H', 'content-type: application/json', '-d', '{"slug":"payload-proof","display_name":"Payload proof"}', 'http://localhost/api/users/setup']);
   assert.equal(setup.status, 0, setup.stdout + setup.stderr);

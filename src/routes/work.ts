@@ -5,6 +5,7 @@ import type { RouteRegistrar } from "../server.js";
 import { queryString, sendJson } from "./http.js";
 import { parseCheckoutRelocation } from "../checkout-relocation.js";
 import { ClientAuthzError, requireIdentity } from "../client-auth/authz.js";
+import { isGitObjectId, readGitFilePair } from "../git-change-review.js";
 
 type BranchSort = "recency" | "name" | "activity";
 type CompareMode = "merge-base" | "range";
@@ -219,8 +220,29 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       return;
     }
     const mode = parseCompareMode(queryString(req, "mode"));
-    sendJson(res, 200, await workScanner.compareRefs(repo.root, from, to, mode));
+    try { sendJson(res, 200, await workScanner.compareRefs(repo.root, from, to, mode)); }
+    catch (error) { sendJson(res, 400, { error: error instanceof Error ? error.message : "Unable to compare commits." }); }
   }, { operation: { id: "get:/api/work/repos/:id/compare", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  server.get("/api/work/repos/:id/compare/file", async (req, res) => {
+    const repo = resolveRepo(req.params.id);
+    if (!repo) {
+      sendJson(res, 404, { error: "repo not found" });
+      return;
+    }
+    const before = queryString(req, "before") ?? "";
+    const after = queryString(req, "after") ?? "";
+    const old_path = queryString(req, "oldPath") ?? null;
+    const new_path = queryString(req, "newPath") ?? null;
+    if (!isGitObjectId(before) || !isGitObjectId(after) || (!old_path && !new_path)
+      || old_path?.includes("\0") || new_path?.includes("\0")) {
+      sendJson(res, 400, { error: "Invalid pinned file comparison." });
+      return;
+    }
+    const result = await readGitFilePair(repo.root, { merge_base_sha: before, head_sha: after }, { old_path, new_path });
+    if (result.ok) sendJson(res, 200, result.file);
+    else sendJson(res, result.status, { error: result.error });
+  }, { operation: { id: "get:/api/work/repos/:id/compare/file", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/worktrees", (req, res) => {
     const repoId = req.params.id;

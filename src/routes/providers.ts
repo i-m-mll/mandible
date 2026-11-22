@@ -557,7 +557,11 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         return;
       }
 
-      sendJson(res, 200, projectArtifactPublicValue(getDb(), { diff: await diffArtifacts(getDb(), refA, refB) }));
+      const format = queryString(req, "format") === "contents" ? "contents" : "patch";
+      const db = getDb();
+      const { contents, ...diff } = await diffArtifacts(db, refA, refB, format);
+      const projected = projectArtifactPublicValue(db, diff) as typeof diff;
+      sendJson(res, 200, { diff: contents ? { ...projected, contents } : projected });
     } catch (error) {
       handleError(res, error);
     }

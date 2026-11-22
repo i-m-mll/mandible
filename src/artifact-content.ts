@@ -14,7 +14,7 @@ import {
 import {
   readArtifactMaterial, readArtifactMaterialAsync
 } from "./artifact-materialization.js";
-import type { ArtifactMaterializationTarget, ArtifactMaterializationResult } from "./contracts.js";
+import type { ArtifactMaterializationTarget, ArtifactMaterializationResult, DiffFilePair } from "./contracts.js";
 import type { ArtifactMaterializationCheck, ArtifactRecord } from "./types.js";
 
 const DEFAULT_PREVIEW_BYTES = 128 * 1024;
@@ -398,6 +398,7 @@ export interface ArtifactDiffResult {
   kind: ArtifactContentKind;
   unified: string | null;
   stats: { added: number; removed: number } | null;
+  contents?: Extract<DiffFilePair, { kind: "text" }>;
   reason?: string;
 }
 
@@ -424,7 +425,7 @@ function resolveDiffArtifact(db: Db, ref: string) {
   return target.ok ? { target: target.value, artifact: materialDescriptor(target.value) } : null;
 }
 
-export async function diffArtifacts(db: Db, refA: string, refB: string): Promise<ArtifactDiffResult> {
+export async function diffArtifacts(db: Db, refA: string, refB: string, format: "patch" | "contents" = "patch"): Promise<ArtifactDiffResult> {
   const resolvedA = resolveDiffArtifact(db, refA);
   const artifactA = resolvedA?.artifact ?? null;
   const resolvedB = resolveDiffArtifact(db, refB);
@@ -464,8 +465,6 @@ export async function diffArtifacts(db: Db, refA: string, refB: string): Promise
   }
 
   const isJson = kindA === "json" || kindB === "json";
-  const textA = normalizeDiffText(bytesA.bytes.toString("utf8"), isJson);
-  const textB = normalizeDiffText(bytesB.bytes.toString("utf8"), isJson);
   const kind: ArtifactContentKind = isJson
     ? "json"
     : (kindA === "markdown" || kindB === "markdown")
@@ -473,6 +472,17 @@ export async function diffArtifacts(db: Db, refA: string, refB: string): Promise
       : (kindA === "html" || kindB === "html")
         ? "html"
         : "text";
+
+  if (format === "contents") {
+    const textA = decodeArtifactUtf8(bytesA.bytes);
+    const textB = decodeArtifactUtf8(bytesB.bytes);
+    if (textA === null || textB === null) return fail("artifact content is not UTF-8 text", "binary");
+    const before = { name: artifactFilename(artifactA) ?? "Artifact", contents: textA };
+    const after = { name: artifactFilename(artifactB) ?? "Artifact", contents: textB };
+    return { a: sideA, b: sideB, diffable: true, identical, kind, unified: null, stats: null, contents: { kind: "text", before, after } };
+  }
+  const textA = normalizeDiffText(bytesA.bytes.toString("utf8"), isJson);
+  const textB = normalizeDiffText(bytesB.bytes.toString("utf8"), isJson);
 
   if (identical || textA === textB) {
     return { a: sideA, b: sideB, diffable: true, identical: true, kind, unified: "", stats: { added: 0, removed: 0 } };

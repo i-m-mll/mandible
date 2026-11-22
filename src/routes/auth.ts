@@ -5,6 +5,7 @@ import type { LedgerReader } from "../ledger-reads/index.js";
 import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-action.js";
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
 import { AuthQueue, AuthQueueError, publicationBlockerFor } from "../auth-queue.js";
+import { readGitFilePair } from "../git-change-review.js";
 import { runtimeHandoffLockRefusal } from "../../scripts/runtime-handoff-lock.mjs";
 import { AuthActionValidationError, normalizeAuthActionInputs } from "../auth-actions.js";
 import { listAuthExecutionAttempts } from "../auth-lifecycle.js";
@@ -191,19 +192,12 @@ export function registerAuthRoutes(
           resolved.targetRepoRoot,
           resolved.baseSha,
           resolved.headSha,
-          {
-            counts: true,
-            diffSummary: true,
-          }
         );
-        if (!metadata.changeReport) {
-          throw new Error("Auth change report collection returned no report.");
-        }
         payload.change_report = metadata.changeReport;
         payload.files_changed = metadata.changeReport.totals.files;
         payload.additions = metadata.changeReport.totals.additions;
         payload.deletions = metadata.changeReport.totals.deletions;
-        payload.diff_summary = metadata.diffSummary;
+        payload.diff_summary = null;
       } catch (error) {
         res.status(400).json({
           error: error instanceof Error ? error.message : "Invalid auth merge execution context."
@@ -353,6 +347,24 @@ export function registerAuthRoutes(
       outcome_report: outcomeReport(request.id),
     });
   }, { operation: { id: "get:/api/auth/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  app.get("/api/auth/request/:id/files/:index", async (req, res) => {
+    const request = await authQueue.getRequest(req.params.id);
+    const report = request?.change_report;
+    const index = req.params.index;
+    const file = report && /^(?:0|[1-9]\d*)$/.test(index) ? report.files[Number(index)] : undefined;
+    if (!request?.target_repo_root || !report || !file) {
+      res.status(404).json({ error: "Reviewed file not found." });
+      return;
+    }
+    if (file.additions === null || file.deletions === null) {
+      res.json({ kind: "binary" });
+      return;
+    }
+    const result = await readGitFilePair(request.target_repo_root, report.comparison, file);
+    if (result.ok) res.json(result.file);
+    else res.status(result.status).json({ error: result.error });
+  }, { operation: { id: "get:/api/auth/request/:id/files/:index", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.get("/api/auth/request/:id/actions", (req, res) => {
     try {

@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { build, context } from 'esbuild';
 import { frontendBuildOutput } from '../scripts/desktop-build-layout.mjs';
 import { embedBuildOptions } from './embed-build.mjs';
@@ -89,11 +90,27 @@ const assetManifestPlugin = {
   },
 };
 
+const diffWorkerAssetPlugin = {
+  name: 'mandible-diff-worker',
+  setup(buildApi) {
+    buildApi.onResolve({ filter: /^@pierre\/diffs\/worker\/worker-portable\.js\?url$/ }, () => ({
+      path: fileURLToPath(import.meta.resolve('@pierre/diffs/worker/worker-portable.js')),
+      namespace: 'diff-worker-asset',
+    }));
+    buildApi.onLoad({ filter: /.*/, namespace: 'diff-worker-asset' }, async ({ path: workerPath }) => ({
+      contents: await fs.readFile(workerPath),
+      loader: 'file',
+      watchFiles: [workerPath],
+    }));
+  },
+};
+
 const buildOptions = {
   entryPoints: ['ui/src/app.tsx'],
   bundle: true,
   outdir,
   entryNames: 'app',
+  ...(Bun.env.DIFF_PROOF ? { entryPoints: { app: 'ui/src/app.tsx', 'diff-proof': 'scripts/pierre-proof-fixture.tsx' }, entryNames: '[name]' } : {}),
   chunkNames: 'chunks/[name]-[hash]',
   assetNames: 'assets/[name]-[hash]',
   format: 'esm',
@@ -116,7 +133,7 @@ const buildOptions = {
   minify: !isWatch,
   logLevel: 'info',
   metafile: true,
-  plugins: [assetManifestPlugin],
+  plugins: [assetManifestPlugin, diffWorkerAssetPlugin],
 };
 
 const embedOptions = embedBuildOptions({ outdir, isWatch, alias: buildOptions.alias });

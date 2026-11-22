@@ -54,7 +54,7 @@ import {
   type ArtifactVersionRecord,
   type KnowledgeBackrefRecord,
 } from '../api';
-import { DiffView } from '../components/DiffView';
+import { ChangeList } from '../components/ChangeList';
 import {
   artifactDetailHref,
   compactArtifactBlobRef,
@@ -1305,12 +1305,16 @@ export function ArtifactDetail({
                 <h3>Diff v{previousVersion.version_no} → v{selectedVersion.version_no}</h3>
                 <button type="button" className="artifact-detail__inline-button" onClick={() => setDiffOpen(false)}>Hide</button>
               </div>
-              {diffLoading && <div className="artifacts-empty" role="status">Loading diff...</div>}
               {!diffLoading && diffError && <div className="artifacts-empty">Diff unavailable.</div>}
-              {!diffLoading && !diffError && versionDiff?.unified && (
-                <DiffView diffText={versionDiff.unified} ariaLabel="Artifact version diff" />
+              {!diffLoading && !diffError && versionDiff?.contents && (
+                <ChangeList
+                  contents={versionDiff.contents}
+                  scope={`artifact:${artifact.id}`}
+                  revision={`${previousVersion.id}:${selectedVersion.id}`}
+                  ariaLabel="Artifact version changes"
+                />
               )}
-              {!diffLoading && !diffError && versionDiff && !versionDiff.unified && (
+              {!diffLoading && !diffError && versionDiff && !versionDiff.contents && (
                 <div className="artifacts-empty">{versionDiff.reason || 'No textual diff is available.'}</div>
               )}
             </section>
