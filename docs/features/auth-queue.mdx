@@ -28,6 +28,7 @@ pending → executing → completed (exit_code 0)
 pending → executing → failed (non-zero exit_code; nothing was merged unless the output says otherwise)
 pending → needs_rebase (post-merge revalidation found a new conflict)
 pending → rejected
+pending → returned → superseded (requester submits an exact successor)
 pending → withdrawn (current responsible actor)
 pending → superseded (one explicit atomic replacement)
 pending → expired (TTL exceeded, default 7 days)
@@ -44,6 +45,7 @@ needs_rebase → pending (via retry after rebasing or integration)
 - **completed** — Execution succeeded (`exit_code` 0). Completed requests are immutable history; a new attempt requires a new request.
 - **failed** — Execution exited non-zero. `failure_reason` says why in one line, for example `signing failed: user presence not confirmed; no ref changed`. Retry returns the request to `pending` for a new approval. Every execution stays in the request's lifecycle revisions, and `execution_attempts` on the request lists them, so a failure remains visible after a successful retry.
 - **rejected** — The user explicitly declined the request.
+- **returned** — The operator froze a round for the requester to answer. It stays readable, with any comments or change-edit ref, while the requester prepares and submits a successor.
 - **expired** — The request sat in `pending` for longer than the TTL (7 days by default) without action. Expiry is checked every 30 seconds.
 - **withdrawn** — The current responsible actor withdrew a still-pending request with a reason.
 - **superseded** — An explicit replacement atomically made this request inert, or a successful request proved an exact sibling obsolete.
@@ -52,7 +54,7 @@ Every transition appends an immutable revision containing the resulting request/
 
 ## Submitting Requests
 
-Requests are typically submitted via the `mandible auth request` CLI command, which carries authored messages, issue IDs and specs to the API. The daemon captures merge counts and the diff. When an agent needs to check whether a request already exists and does not know the request ID, it should run `mandible auth list --repo <repo> --head <branch> --base <branch>` first. When it needs to check whether a branch is independent from the queued merge work, it should run `mandible auth check --branch <branch> --repo <repo>`. The raw submission API endpoint is:
+Requests are typically submitted via `mandible auth request`, which carries authored messages and issue IDs to the API. The daemon captures the immutable change inventory and counts. Use `mandible auth list --repo <repo> --head <branch> --base <branch>` to find an existing request and `mandible auth check --branch <branch> --repo <repo>` to check independence. The submission API endpoint is:
 
 ```
 POST /api/auth/v2/request
@@ -70,6 +72,7 @@ Key optional fields:
 - `commit_message` — The proposed merge commit message. Its prose does not establish issue links or closure intent.
 - `canonical_message` — Declares `commit_message` to be the agent-authored canonical change message. The daemon validates the machine-owned envelope (a `Verification:` section matching the `verification` field, no `#`-leading lines), canonicalizes the bytes, stores them back, and records the SHA-256 of those exact bytes in `commit_message_digest`; `mandible auth merge` then commits exactly those bytes. Both are immutable once the request leaves `pending`; an explicit `canonical_message: false` demotes the message back to free-form review text while still pending.
 - `verification` — The `Verification:` section text. Required whenever `canonical_message` is true.
+- `narrative` — Optional authored Markdown for a merge review. Change directives resolve unique proposed quotations in files from the inventory. See [Approval Description](../approval-description.md).
 
 Merge requests, including supersessions, require `canonical_message: true`
 with a non-empty `commit_message` and `verification`; the submission route
@@ -163,11 +166,15 @@ The dashboard and `mandible auth list` display the auth queue with all active re
 
 ### Available Actions
 
+Select text in Description, the narrative, or a changed file to comment on the exact revision. Comments retain their original anchor through later versions. Open an editable file to draft new wording. Draft and freeze actions are courtesy actions.
+
 **Freeze edits** creates a new review revision for a merge. Its Changes view compares the protected base with the complete merged candidate and marks the files the operator edited. The requester commit stays in the record for verification, custody and branch cleanup. You can edit and freeze again, then review the new candidate before approving. If the requester submits a replacement, frozen and returned edits carry over as drafts. Overlapping changes appear as conflicts. If package/runtime acceptance applies, it runs again for the entire frozen candidate.
 
 **Approve** (`POST /api/auth/request/:id/approve`) — For a protected merge, the approval key signs the exact merge commit with one Touch ID match; that signature is the published commit's signature. The request remains pending on a failed, cancelled, or expired signature, or when it changed while the sheet was up. **Cancel signing** stops the pending signature without rejecting the request. Any other request is a courtesy approval: the button reads **Approve as courtesy**, it takes one click, and it is recorded as an interface action, never as operator-verified. Output streams after execution starts. See [Approvals and the Touch ID gate](../approvals.md) for what Touch ID does and does not prove.
 
 **Reject** (`POST /api/auth/request/:id/reject`) — Declines the request with an optional reason. The submitting session is notified.
+
+**Return** (`POST /api/auth/request/:id/return`) — Saves the operator's review round, optionally with a reason and frozen edits. This courtesy action takes no Touch ID. The responsible agent can use `mandible auth review show <request>` to read the static round, answer comments, and prepare a guarded successor. If it contains a change-edit ref, the requester can fetch it and incorporate it. A successor retains review history and carries the operator's changes into its drafts.
 
 **Skip** (`POST /api/auth/request/:id/skip`) — Moves the request to the back of the queue without rejecting it. Useful when you want to approve a different request first.
 

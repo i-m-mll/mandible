@@ -6,9 +6,17 @@ Every new approval carries one authored Description explaining the action being 
 
 A merge uses the same document as its exact reviewed Git message. The CLI composes the merge subject and structured Verification section, then the daemon canonicalizes and hashes those exact bytes. Description is the sole review display of that document. Other actions do not receive an inferred Git message.
 
-The browser displays Description read-only. The Description disclosure choice persists as browser-local view state per canonical request, independently of backend refreshes and selection changes. Revision requires the current responsible actor and the applicable lifecycle and responsibility preconditions. The browser does not infer recovery authority.
+A merge author can attach a separate Markdown narrative with `--narrative <file>`. Put each reason before a change directive. The directive names a file in the revision's inventory and quotes the exact proposed text on the next line. The quote must occur exactly once in that file for the directive to open the editable change. Mandible derives the current text from the pinned comparison. The narrative and file list share the same drafts.
 
-The API and database retain the historical `commit_message` key as the single Description authority. `commit_message_digest` retains its existing meaning for canonical Git bytes. No additional authored explanation, derived database column or backfill exists. `diff_summary` remains diff content and cannot substitute for Description. Command, working directory, action type and execution context remain separate exact approval evidence.
+```markdown
+:::change{path="instructions.md"}
+The exact proposed wording.
+:::
+```
+
+The browser displays the Description as selectable Markdown. A revision to its canonical bytes requires the current responsible actor and the lifecycle and responsibility preconditions. Its disclosure choice persists as browser-local view state per request. The narrative, comment ranges, and draft wording are review data and do not change the canonical merge message.
+
+The API and database retain `commit_message` as the Description authority. `commit_message_digest` identifies canonical Git bytes, and the separate narrative is bound to its reviewed revision. Command, working directory, action type, and execution context remain separate approval evidence.
 
 Historical requests retain their original text, null values, snapshot keys and signed evidence. Reading a historical request never creates or normalizes Description. The approval view explicitly identifies missing historical text. Existing pending or approved requests remain under their original authorization contract; the new requirement applies to new submissions and newly authored Description revisions.
 

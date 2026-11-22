@@ -20,13 +20,15 @@ One click opens one sheet. Mandible runs one signed action at a time: while a sh
 
 ## Courtesy actions
 
-Every other approval and operator action is a courtesy action: review dispositions, rejecting a request, approving a request that publishes no merge, hooks, users, tokens, and the remaining settings. It keeps its route's identity and capability checks, and its evidence records the caller as client authentication resolved it, with `verified: false`.
+Every other approval and operator action is a courtesy action. Examples include drafting and freezing edits, submitting or returning a review round, rejecting a request, approving a briefing-group conversion, and changing unsigned settings. Each action keeps its identity and capability checks. Its evidence records the authenticated caller with `verified: false`.
 
 Once approved, the interface labels these "Courtesy approval". A courtesy approval is never shown as operator-verified: any process running as the operator can perform one through Mandible's local API, the socket, or the CLI. None of these actions lets such a process do anything it could not already do directly.
 
 ## One-touch merge approval
 
-1. The operator clicks Approve, or runs `mandible auth approve <request> --revision <n>` in their own terminal (see [Approving from a terminal](#approving-from-a-terminal)). The approval carries the request revision the operator was shown; if the request has changed since, the approval is refused before any sheet. Mandible validates the request and builds the exact merge commit from the merge tree retained at submission, authored as the operator's name and email from Mandible's user record. Nothing is written.
+Pending requests accept selected-text comments and full-file drafts. Freeze edits to review the whole candidate against its protected base. Mandible builds an unsigned edit commit directly on the requester's head and uses it as the second parent of the ordinary signed merge. If you revise your wording again, re-freeze and review the new candidate. Each freeze creates a new immutable review revision and reruns applicable package acceptance.
+
+1. The operator clicks Approve or uses their own terminal (see [Approving from a terminal](#approving-from-a-terminal)). Approval names the shown lifecycle revision and exact review proof, including the identities of submitted comments and directive answers. Mandible refuses stale input before raising the sheet and builds the exact merge commit using the reviewed tree.
 2. The Touch ID sheet appears, right after the click or the command and at no other time. It names the branches, the repository and the request's short id.
 3. The enclave signs the commit. Cancelling, any refusal from the helper, or leaving the sheet open past 60 seconds leaves the request pending with nothing changed.
 4. Mandible writes the signed commit object and the approval evidence, which names that commit. No branch refers to the commit yet.
@@ -45,7 +47,7 @@ The approval dialog follows what the approval helper reports:
 
 ## Approving from a terminal
 
-`mandible auth approve <request> --revision <n>` is the operator's own approval from a terminal. It approves exactly what the button approves, protected merges and courtesy approvals alike. `<n>` is the revision `mandible auth show <request>` prints; the command never approves whatever the request has become since. A protected merge raises the same single Touch ID sheet, then the command waits for the request to settle and prints its result: exit 0 when it completed, 1 otherwise, 2 for a usage error. Interrupting it cancels the sheet and leaves the request pending.
+`mandible auth approve <request> --revision <n>` is the operator's terminal approval for a clean merge or courtesy request. Use the observed revision from `mandible auth show <request>`. For a round with operator comments or directive answers, or with frozen edits, capture its exact review using `mandible auth review approval <request> > review.json`. Review that receipt with its pinned Git comparison and approve it using `mandible auth approve <request> --review review.json`. Mandible refuses an outdated proof and raises a single Touch ID sheet for a valid protected merge. The command waits for settlement and exits 0 for completion, 1 for refusal or execution failure, and 2 for usage errors. Interrupting it cancels the sheet and leaves the request pending.
 
 `mandible auth deliver <branch> --title <text> --message <text> --verification <text>` is the operator's whole delivery of a branch from its checkout: it uses `--issue`, or the open issue with exactly that title, or files one (kind `feature` unless `--kind` says otherwise); activates the work unit; withdraws a pending request for the same branches; submits a request that closes the issue; and approves it with one touch. It ends merged, or with no pending request left and the issue open for a rerun.
 
@@ -62,7 +64,7 @@ Both commands refuse agent and managed sessions before they contact Mandible, an
 
 It refuses, with nothing committed and no sheet, when nothing is staged, when the branch is not protected (plain `git commit` works there), or when the checkout is not on a branch; and with nothing committed after the sheet when the touch is cancelled or the branch or HEAD moved in the meantime. Interrupting the command cancels the sheet. Commit hooks do not run, and nothing that follows a merge, such as approval hooks or a runtime rebuild, runs after it.
 
-A published commit is recorded as a completed `commit` request with just its message, diff summary and resulting commit; it needs no issue, work unit, branch or verification text. Its signature evidence has the same shape as a signed merge's, so the protected-base audit and the base-transition check of pending merges count it as recorded protected history: a merge request pending when the operator commits directly can still be approved without being requeued. Like `auth approve`, the command refuses agent and managed sessions before it contacts Mandible, and Mandible refuses any caller but the operator.
+A published commit is recorded as a completed `commit` request with its message, pinned change inventory, and resulting commit. The operator opens its changed files from the same Changes view used for merges. Its signature evidence lets the protected-base audit and pending merges recognize the direct commit as recorded protected history. Like `auth approve`, the command is for the operator's own terminal.
 
 ## What the gate proves, and what it does not
 

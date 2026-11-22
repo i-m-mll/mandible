@@ -17,14 +17,14 @@ Mandible is an operations manager for AI agents. It consists of:
 
 ## Feature highlights
 
-- **Approval-gated merges**: agents submit merge requests with a change message; you approve with one Touch ID match, which signs the merge commit with your Secure Enclave approval key, and issue closures and post-merge hooks follow.
+- **Approval-gated merges**: select text to comment, edit the proposal, return a round, or approve the exact reviewed candidate with one Touch ID match. Agents can attach a narrative that displays the reason beside each change.
 - **Structured issues**: kinds, priorities, typed relationships, checkpoints outside the comment stream, working notes, full revision history, and keyword search.
 - **Umbrella issues** for coordinating lanes of agent work, with a delegation manifest that reports what changed since the coordinator last looked.
 - **Work units** join an issue, a branch, and the agent on it; a stopped agent's work can be taken over, a live agent's never.
 - **Every conversation indexed** as it is written, across Claude Code, Codex, and Gemini: search, star, tag, annotate, export; parent and child sessions linked.
 - **Sessions without registration**, with live, stopped, or unknown liveness, and terminal navigation when a process is attached.
-- **Briefings**: present a document for annotation in the app, submit the annotations as a round, and promote a proposed update to the base when its merge is approved.
-- **Artifacts**: versioned files with Git or managed custody, cited from issues.
+- **Briefings**: review artifact versions in rounds and read project files directly from protected branches in shared groups.
+- **Artifacts**: versioned files with Git or managed custody, cited from issues, with standing notes on selected text.
 - **Chat**: run and follow Claude Code and Codex conversations from the app, with permission prompts, usage, attachments, resume, and fork.
 - **Reminders** that notify you at a time, when an issue closes, or when a merge count is reached.
 - **Spaces, Timeline, and Graph** to organize, chronologize, and relate ledger entities.
@@ -118,7 +118,7 @@ mandible artifact show artifact:<id>
 
 ### Briefings
 
-A briefing presents one artifact version for review. The operator annotates it in the app and submits the annotations as a round; agents read the submission and act. Briefings are grouped into ordered bundles, and a group pairs a base bundle with proposed updates: a proposal becomes the base through a promotion staged on the merge request that lands its bytes (`--promote-briefing`), or through the operator's own accept. Recurring reports publish through authenticated routes rather than proposals.
+A briefing presents one artifact version for review. The operator selects text, comments or proposes a replacement in the document, and submits the round for the agent to read. Standing notes on the same version appear alongside the round. An ordered bundle can mix custody briefings and tracked paths from different projects. A custody proposal becomes Base through `--promote-briefing` after merge and convergence, or through the operator's guarded accept. A tracked member follows its project's protected branch, with pending merge requests shown on the group. Recurring reports publish through authenticated routes.
 
 ### Conversations and sessions
 

@@ -51,17 +51,21 @@ mandible issue markdown <audit|normalize|export> [opts]
 mandible auth list [--json] [--repo R] [--head B] [--base B] [--status S] [--type T]
 mandible auth check [--branch B] [--repo R] [--target B] [--cwd P] [--closes-issue <id>]... [--keeps-open <id>=<what remains>]... [--json]
 mandible auth request <branch> --title <text> [--issue <id>]... [--closes-issue <id>]... [--keeps-open <id>=<what remains>]...
-  (--message T | --message-file F) --verification T
+  (--message T | --message-file F) --verification T [--narrative F]
 mandible auth request --type <type> --command <command> --cwd <path> --repo <ref> --title <text> --issue <id>
   [--type merge|force-push|branch-delete|config-change|data-delete]
   [--promote-briefing GROUP EXPECTED-BASE PROPOSAL]
   [--teardown-preview BRANCH]...
   [--diff-summary T] [--handoff T] [--repo R]
   [--cwd P] [--target B] [--depends-on ID] [--dirty-policy block|allow-untracked|stash|branch-off]
-  [--supersedes ID] [--drop-superseded-action ORDINAL:REASON]...
+  [--supersedes ID --expected-revision N --expected-custody-generation N] [--drop-superseded-action ORDINAL:REASON]...
   [--timeout N] [--no-watch] [--force|-f]
 mandible auth withdraw <request-id> --reason <text> --expected-revision <n> --expected-custody-generation <n> [--json]
-mandible auth approve <request> --revision <n>    # operator only; refuses agent sessions
+mandible auth review show <returned-request> [--json]
+mandible auth review reply <request> <comment> --message <text> [--json]
+mandible auth review address <request> <comment> [--json]
+mandible auth review approval <request> > review.json    # operator only
+mandible auth approve <request> (--revision <n> | --review <file>)    # operator only
 mandible auth deliver <branch> --title <text> (--message T | --message-file F) --verification T
   [--issue <id>] [--kind <kind>] [--dirty-policy block|allow-untracked|stash|branch-off]    # operator only
 mandible auth merge <branch> [opts]    # executes the merge; invoked by daemon
@@ -109,6 +113,7 @@ mandible artifact resolve <ref> [--json]
 mandible artifact check <ref...> [--json]
 mandible artifact link <ref> --issue <id> [--role R] [--relation references|output|evidence|handoff] [--json]
 mandible artifact content <ref> [--output <path>] [--json]
+mandible artifact notes <artifact-ref> [--json]
 mandible artifact snapshot <path...> [--issue <id>] [--role R] [--upload] [--dry-run] [--json]
 mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role R] [--upload] [--json]
 mandible artifact scan-repos [--repo R] [--max-depth N] [--register] [--dry-run] [--json]
@@ -116,6 +121,11 @@ mandible artifact bundle create --name N [--manifest F] [--issue <id>] [--role R
 mandible artifact bundle add <bundle-ref> <path-or-ref...> [--allow-local-only] [--allow-dirty-link] [--json]
 mandible artifact bundle show <bundle-ref> [--json]
 mandible artifact bundle check <bundle-ref> [--json]
+
+## BRIEFINGS
+mandible briefing group show <group-ref> [--json]
+mandible briefing group convert <group-ref> [--json]
+mandible briefing group convert <group-ref> --request --expected-base <bundle-ref> --plan-digest <sha256> [--json]
 
 ## INSTRUCTIONS
 mandible instructions diff [--target <file>]
@@ -132,6 +142,8 @@ mandible task "<description>" | --clear
 mandible help | -h | --help
 mandible auth help | -h | --help | ""   → shows auth subcommand list (does NOT error)
 ```
+
+A group conversion preview returns the expected Base, the plan digest, and any unresolved custody proposals. An agent can submit the reviewed plan with `--request`. The operator approves it in Approvals. The daemon revalidates the plan and takes an online backup before converting the group.
 
 ## Umbrella Coordination
 
