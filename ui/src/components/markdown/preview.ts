@@ -15,10 +15,19 @@ export type MarkdownDirective = MarkdownSelection & {
   attributes: Readonly<Record<string, string | null | undefined>>;
 };
 
-export type MarkdownDirectiveRenderer = (directive: MarkdownDirective, document: Document) => HTMLElement;
+type MarkdownDirectiveMount = HTMLElement | { element: HTMLElement; destroy: () => void };
+export type MarkdownDirectiveRenderer = (directive: MarkdownDirective, document: Document) => MarkdownDirectiveMount;
 export type MarkdownDirectives = ReadonlyMap<string, MarkdownDirectiveRenderer>;
 export const markdownDirectives = Facet.define<MarkdownDirectives, MarkdownDirectives | undefined>({
   combine: ([directives]) => directives,
+});
+
+export type MarkdownPreviewPolicy = {
+  images?: 'omit';
+  directivePreview?: 'on-changed-text';
+};
+export const markdownPreviewPolicy = Facet.define<MarkdownPreviewPolicy, MarkdownPreviewPolicy | undefined>({
+  combine: ([policy]) => policy,
 });
 
 type Span = { from: number; to: number };
@@ -125,7 +134,10 @@ class PreviewWidget extends WidgetType {
   ignoreEvent() { return false; }
 }
 
+const directiveDisposers = new WeakMap<HTMLElement, () => void>();
+
 class DirectiveWidget extends WidgetType {
+
   constructor(readonly directive: MarkdownDirective, readonly renderer: MarkdownDirectiveRenderer) { super(); }
 
   eq(other: DirectiveWidget) {
@@ -134,7 +146,17 @@ class DirectiveWidget extends WidgetType {
   }
 
   toDOM(view: EditorView) {
-    return this.renderer(this.directive, view.dom.ownerDocument);
+    const mount = this.renderer(this.directive, view.dom.ownerDocument);
+    if ('element' in mount) {
+      directiveDisposers.set(mount.element, mount.destroy);
+      return mount.element;
+    }
+    return mount;
+  }
+
+  destroy(dom: HTMLElement) {
+    directiveDisposers.get(dom)?.();
+    directiveDisposers.delete(dom);
   }
 }
 
@@ -207,9 +229,11 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
     if (hidden(range) && frontmatter.entries.length > 0) replace(range, { kind: 'frontmatter', entries: frontmatter.entries }, true);
   }
   const allowlist = state.facet(markdownDirectives);
+  const policy = state.facet(markdownPreviewPolicy);
   for (const directive of directives) {
     const render = allowlist?.get(directive.name);
-    if (!render || !hidden(directive)) continue;
+    if (!render || selected(state, focused, directive)
+        || (policy?.directivePreview !== 'on-changed-text' && changed(state, directive))) continue;
     const block = directive.kind !== 'inline';
     const widget = new DirectiveWidget({
       ...markdownSourceRange(state, directive),
@@ -303,7 +327,8 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
           const target = url ? text(url) : delimiters.length === 2 && isResourceRef(text(range)) ? text(range) : '';
           const href = safeUrl(target, name === 'Image');
           if (!href) return;
-          if (name === 'Image') replace(node, { kind: 'image', url: href, alt: text(range) });
+          if (name === 'Image' && policy?.images === 'omit') hide(node);
+          else if (name === 'Image') replace(node, { kind: 'image', url: href, alt: text(range) });
           else if (range !== node) {
             link(range, href);
             hide({ from: node.from, to: range.from });
@@ -347,6 +372,7 @@ const liveMarkdown = StateField.define<{ focused: boolean; decorations: Decorati
       || syntaxTree(state) !== syntaxTree(startState) || focused !== previous.focused
       || getChunks(state)?.chunks !== getChunks(startState)?.chunks
       || state.facet(markdownDirectives) !== startState.facet(markdownDirectives)
+      || state.facet(markdownPreviewPolicy) !== startState.facet(markdownPreviewPolicy)
       ? { focused, decorations: previewDecorations(state, focused) } : previous;
   },
   provide: (field) => EditorView.decorations.from(field, (state) => state.decorations),

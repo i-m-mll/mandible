@@ -2,6 +2,7 @@
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { UiRoundTripGate, createCopiedPreviewDatabase, exactTestInstanceEnv, installStorage, operatorSessionResponse } from './helpers/briefing-preview-fixtures';
 import { testRuntimeRoot } from './helpers/runtime-isolation';
+import { installReadingBrowserFixture } from './helpers/reading-browser-fixture';
 
 import { queryClient } from '../ui/src/query/client';
 
@@ -12,7 +13,7 @@ import path from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getArtifactContent } from '../src/artifact-content';
+import { getArtifactContent, readArtifactBytesFull } from '../src/artifact-content';
 import { setSetting } from '../src/client-auth/settings-kv';
 
 import { resolveInstanceInfo } from '../src/instance-policy';
@@ -30,8 +31,17 @@ import { BriefingDocumentRenderer } from '../ui/src/views/feedback/BriefingDocum
 import { seedRichBriefingDemo } from '../src/feedback/rich-briefing-demo';
 
 let noticeHost: HTMLElement;
+let restoreLayout: () => void;
 beforeEach(async () => {
   queryClient.clear();
+  vi.stubGlobal('innerHeight', 4096);
+  const elementRect = HTMLElement.prototype.getBoundingClientRect;
+  restoreLayout = installReadingBrowserFixture();
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    if (this.classList.contains('cm-content')) return new DOMRect(0, 0, 900, 4096);
+    if (this.classList.contains('cm-line')) return new DOMRect(0, 0, 800, 16);
+    return elementRect.call(this);
+  });
   installStorage();
   clearApiGetCache();
   __resetBrowserSessionForTests();
@@ -43,6 +53,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await queryClient.cancelQueries();
   cleanup(); queryClient.clear(); noticeHost.remove();
+  restoreLayout();
   __resetBrowserSessionForTests(); vi.unstubAllGlobals(); vi.restoreAllMocks();
 });
 
@@ -79,6 +90,13 @@ describe('copied-preview Briefing publication boundary', () => {
         status: 200,
         body: { briefing: { id: briefingId }, selected_round: { id: selectedRoundId, answers: [], annotations: [] } },
       });
+      const artifactVersionId = manifest.rounds[1].artifact_version_id;
+      const readPinnedBytes = () => {
+        const content = readArtifactBytesFull(privateDb, artifactVersionId);
+        if (!content.ok) throw new Error(content.reason);
+        return content.bytes;
+      };
+      const pinnedBytes = readPinnedBytes();
       const roundOneSnapshot = () => ({
         responses: privateDb.prepare('SELECT * FROM briefing_response_events WHERE round_id = ? ORDER BY rowid').all(roundOneId),
         annotations: privateDb.prepare('SELECT * FROM briefing_annotation_events WHERE round_id = ? ORDER BY rowid').all(roundOneId),
@@ -130,14 +148,12 @@ describe('copied-preview Briefing publication boundary', () => {
       fireEvent.click(rating);
       expect(rating.checked).toBe(true);
 
-      fireEvent.click(screen.getAllByRole('button', { name: 'Comment' })[0]);
+      fireEvent.click(screen.getAllByRole('button', { name: 'Comment on directive' })[0]);
       const annotationDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
       fireEvent.input(within(annotationDialog).getByLabelText('Comment'), { target: { value: 'Final IAB acceptance annotation.' } });
       fireEvent.click(within(annotationDialog).getByRole('button', { name: 'Save' }));
       await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add annotation' })).toBeNull());
-      fireEvent.click(await screen.findByTitle('Comment · 1'));
-      expect(within(screen.getByRole('dialog')).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
-      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close annotation editor' }));
+      expect(await within(screen.getByRole('complementary', { name: 'Review comments' })).findByText(/Final IAB acceptance annotation/)).toBeTruthy();
 
       const submit = screen.getByRole('button', { name: 'Submit' });
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
@@ -164,7 +180,7 @@ describe('copied-preview Briefing publication boundary', () => {
       ]);
       expect(selectedRound.annotations).toMatchObject([{ body: 'Final IAB acceptance annotation.' }]);
       expect(selectedRound.latest_submission.actor_user_id).toBe(operatorId);
-      expect(selectedRound.latest_frozen_membership).toEqual({
+      expect(selectedRound.latest_frozen_membership).toMatchObject({
         answer_event_ids: selectedRound.answers.map((answer: any) => answer.response_event_id),
         annotation_event_ids: selectedRound.annotations.map((annotation: any) => annotation.annotation_event_id),
       });
@@ -184,11 +200,13 @@ describe('copied-preview Briefing publication boundary', () => {
       view.unmount();
       clearApiGetCache();
       const reloadedView = render(shell());
-      fireEvent.click(await screen.findByTitle('Comment · 1'));
-      expect(within(screen.getByRole('dialog')).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
+      const sidebar = await screen.findByRole('complementary', { name: 'Review comments' });
+      fireEvent.click(await within(sidebar).findByRole('button', { name: /Comments/ }));
+      expect(within(sidebar).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
       await waitFor(() => expect((screen.getByRole('radio', { name: '4' }) as HTMLInputElement).checked).toBe(true));
       expect(screen.getByRole('button', { name: 'Submit' })).toBeTruthy();
       expect(roundOneSnapshot()).toEqual(roundOneBefore);
+      expect(readPinnedBytes()).toEqual(pinnedBytes);
       reloadedView.unmount();
 
       expect(await preview.invoke({

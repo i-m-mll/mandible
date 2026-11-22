@@ -156,6 +156,16 @@ export function BriefingDocumentRenderer({
   const [exportError, setExportError] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
+  const comparisonPreferenceKey = `mandible:briefing-comparison:${briefingId}:${roundId ?? 'latest'}`;
+  const [comparisonPreference, setComparisonPreference] = useState<{ scope: string; value: string } | null>(null);
+  const comparisonChoice = comparisonPreference?.scope === comparisonPreferenceKey
+    ? comparisonPreference.value : storageOrNull()?.getItem(comparisonPreferenceKey) ?? '';
+  const [comparisonBranch, comparisonCommit = null] = comparisonChoice.split(' ');
+  const chooseComparison = (value: string) => {
+    setComparisonPreference({ scope: comparisonPreferenceKey, value });
+    if (value) storageOrNull()?.setItem(comparisonPreferenceKey, value);
+    else storageOrNull()?.removeItem(comparisonPreferenceKey);
+  };
   const [hideSubmittedAnnotations, setHideSubmittedAnnotations] = useState(false);
   const [resultId, setResultId] = useState<string | null>(null);
   const [resultCopied, setResultCopied] = useState(false);
@@ -177,11 +187,11 @@ export function BriefingDocumentRenderer({
   const currentSelection = useRef(selectionKey(selectedOverlayId));
   currentSelection.current = selectionKey(selectedOverlayId);
 
-  const projectionKey = browserResourceKeys.briefingProjection(briefingId, roundId, selectedOverlayId, displayContext);
+  const projectionKey = browserResourceKeys.briefingProjection(briefingId, roundId, selectedOverlayId, displayContext, comparisonCommit);
   const projectionQuery = useQuery({
     queryKey: projectionKey,
     queryFn: async ({ signal }) => {
-      const round = await getBriefing(briefingId, roundId, selectedOverlayId, signal, displayContext);
+      const round = await getBriefing(briefingId, roundId, selectedOverlayId, signal, displayContext, comparisonCommit);
       if (round.briefing_id !== briefingId || (roundId && !round.selected_round_id.startsWith(roundId))) {
         throw new Error('The Briefing service returned a mismatched immutable round.');
       }
@@ -206,22 +216,22 @@ export function BriefingDocumentRenderer({
     error: projectionQuery.error?.message ?? identityQuery.error?.message ?? null,
   };
   const reconcile = useCallback(async (overlayId: string | null = selectedOverlayId) => {
-    const key = browserResourceKeys.briefingProjection(briefingId, roundId, overlayId, displayContext);
+    const key = browserResourceKeys.briefingProjection(briefingId, roundId, overlayId, displayContext, comparisonCommit);
     await queryClient.cancelQueries({ queryKey: key, exact: true });
     try {
       return await queryClient.fetchQuery({
         queryKey: key,
-        queryFn: ({ signal }) => getBriefing(briefingId, roundId, overlayId, signal, displayContext),
+        queryFn: ({ signal }) => getBriefing(briefingId, roundId, overlayId, signal, displayContext, comparisonCommit),
         staleTime: 0,
       });
     } catch {
       return null;
     }
-  }, [briefingId, roundId, selectedOverlayId, displayContext?.groupId, displayContext?.proposalBundleId]);
+  }, [briefingId, roundId, selectedOverlayId, displayContext?.groupId, displayContext?.proposalBundleId, comparisonCommit]);
 
   useRouteLoad((register) => {
     if (projectionQuery.isStale) register(projectionQuery.refetch({ cancelRefetch: false }));
-  }, [briefingId, roundId, selectedOverlayId, displayContext?.groupId, displayContext?.proposalBundleId]);
+  }, [briefingId, roundId, selectedOverlayId, displayContext?.groupId, displayContext?.proposalBundleId, comparisonCommit]);
 
   useEffect(() => {
     const round = projectionQuery.data;
@@ -303,6 +313,8 @@ export function BriefingDocumentRenderer({
     && userKind === 'human'
     && round.items.every((item) => item.responseVisible)
     && (round.state === 'open' || round.state === 'submitted')
+    && !projectionQuery.isPlaceholderData
+    && !projectionQuery.isError
     && round.directive_binding?.status === 'valid'
     && instance?.allowed_effects?.includes('ledger:write') === true,
   );
@@ -315,7 +327,10 @@ export function BriefingDocumentRenderer({
   const pendingAnnotations = (round?.annotations ?? []).filter(
     (annotation) => !frozenAnnotationIds.has(annotation.annotation_event_id),
   );
+  const comparisonTarget = round?.document?.comparison_base?.target ?? null;
+  const frozenComparisonTarget = round?.latest_frozen_membership?.comparison_target;
   const frozenMatches = Boolean(round?.latest_frozen_membership
+    && (frozenComparisonTarget === undefined || JSON.stringify(frozenComparisonTarget) === JSON.stringify(comparisonTarget))
     && currentAnswerIds.length === round.latest_frozen_membership.answer_event_ids.length
     && currentAnnotationIds.length === round.latest_frozen_membership.annotation_event_ids.length
     && currentAnswerIds.every((id) => round.latest_frozen_membership!.answer_event_ids.includes(id))
@@ -409,6 +424,7 @@ export function BriefingDocumentRenderer({
           ? { supersedes_submission_id: round.latest_submission_for_actor.id }
           : {}),
         answers: submissionAnswers,
+        comparison_target: comparisonTarget,
         annotations: (round.annotations ?? []).map((annotation) => ({
           annotation_event_id: annotation.annotation_event_id,
         })),
@@ -598,6 +614,20 @@ export function BriefingDocumentRenderer({
               {Object.keys(validationErrors).length > 0 ? (
                 <div className="briefing-document__validation" role="alert">
                   Complete {Object.keys(validationErrors).length} required answer{Object.keys(validationErrors).length === 1 ? '' : 's'}.
+                </div>
+              ) : null}
+              {round.document?.comparison_branches?.length ? (
+                <div className="briefing-document__comparison">
+                  <NativeSelect aria-label="Compare with" value={comparisonChoice}
+                    onChange={(event) => chooseComparison(event.currentTarget.value)}>
+                    <option value="">Pinned comparison</option>
+                    {comparisonChoice && !round.document.comparison_branches.some((branch) =>
+                      branch.name === comparisonBranch && branch.commit === comparisonCommit) && (
+                      <option value={comparisonChoice}>{comparisonBranch} ({comparisonCommit?.slice(0, 8)})</option>
+                    )}
+                    {round.document.comparison_branches.map((branch) =>
+                      <option key={branch.name} value={`${branch.name} ${branch.commit}`}>{branch.name}</option>)}
+                  </NativeSelect>
                 </div>
               ) : null}
               {round.document ? (

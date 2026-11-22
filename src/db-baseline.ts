@@ -1,3 +1,4 @@
+import { REVIEW_ROUND_SCHEMA_SQL, REVIEW_EVIDENCE_SCHEMA_SQL } from "./feedback/review-schema.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
 import { INTERFACE_NOTES_SCHEMA_SQL } from "./interface-notes/schema.js";
@@ -19,7 +20,7 @@ import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.j
 import { PROTECTED_BASE_AUDIT_SCHEMA_SQL } from "./protected-base-audit-schema.js";
 import { OPERATOR_TRUST_CHANGES_SCHEMA_SQL, USER_CREDENTIALS_INDEX_SQL, USER_CREDENTIALS_TABLE_SQL } from "./operator-signing/schema.js";
 import { ISSUE_SEARCH_SCHEMA_SQL } from "./ledger/issue-search.js";
-import { BRIEFING_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
+import { BRIEFING_OWNER_SCHEMA_SQL, CANONICAL_AGENT_DISPATCH_SQL, CANONICAL_SPACE_ITEMS_SQL } from "./feedback/schema.js";
 import { CONVERSATION_CONTROL_SCHEMA_SQL } from "./conversation-control/schema.js";
 import { CONVERSATION_SPAWN_SCHEMA_SQL } from "./conversation-spawn/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
@@ -35,7 +36,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 247;
+export const BASELINE_SCHEMA_VERSION = 248;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -934,7 +935,9 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   TASK_COMMAND_V2_INDEX_SQL[0],
   TASK_COMMAND_EVENTS_V2_SQL,
   ...TASK_COMMAND_V2_INDEX_SQL.slice(1),
-  ...BRIEFING_SCHEMA_SQL,
+  ...BRIEFING_OWNER_SCHEMA_SQL,
+  ...REVIEW_ROUND_SCHEMA_SQL,
+  ...REVIEW_EVIDENCE_SCHEMA_SQL,
   ...CONVERSATION_SOURCE_SCHEMA_SQL,
   ...ARTIFACT_SOURCE_SCHEMA_SQL,
   ...HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL,
@@ -1153,7 +1156,11 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     db.exec(AUTH_PREREQUISITE_COLUMN_SQL);
     db.exec("ALTER TABLE work_units ADD COLUMN custody_generation INTEGER NOT NULL DEFAULT 0 CHECK(custody_generation >= 0)");
     for (const statement of WORKER_THREAD_ARCHIVES_SCHEMA_SQL) db.exec(statement);
-    for (const statement of LEDGER_ORIGIN_SCHEMA_SQL) db.exec(statement);
+    for (const statement of LEDGER_ORIGIN_SCHEMA_SQL) {
+      if (statement.startsWith("ALTER TABLE briefing_annotation_events ")
+          || statement.startsWith("ALTER TABLE briefing_submissions ")) continue;
+      db.exec(statement);
+    }
     db.exec(MANAGED_SESSION_ORIGIN_INDEX_SQL);
     for (const statement of CHILD_RETENTION_SCHEMA_SQL) db.exec(statement);
     for (const statement of WORK_UNIT_ASSIGNMENT_SCHEMA_SQL) db.exec(statement);

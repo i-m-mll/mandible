@@ -1029,7 +1029,9 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
   server.get("/api/briefings/:briefingId", (req, res) => {
     try {
       const viewer = briefingReadViewer(db, req);
-      const values = new URL(req.url, "http://localhost").searchParams.getAll("round");
+      const search = new URL(req.url, "http://localhost").searchParams;
+      const values = search.getAll("round");
+      const comparisonValues = search.getAll("comparison_commit");
       const submissionValues = new URL(req.url, "http://localhost").searchParams.getAll("submission");
       const groupValues = new URL(req.url, "http://localhost").searchParams.getAll("group");
       const proposalValues = new URL(req.url, "http://localhost").searchParams.getAll("proposal");
@@ -1045,12 +1047,16 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       if (proposalValues.length > 1 || (proposalValues.length === 1 && !proposalValues[0])) {
         throw new BriefingStoreError("proposal must be one nonblank Briefing bundle id");
       }
+      if (comparisonValues.length > 1 || (comparisonValues.length === 1 && !comparisonValues[0])) {
+        throw new BriefingStoreError("comparison_commit must be one full object id");
+      }
       if (proposalValues.length > 0 && groupValues.length === 0) {
         throw new BriefingStoreError("proposal display context requires group");
       }
       const briefingId = resolveBriefingId(db, req.params.briefingId, viewer);
       const projection = readBriefing(db, briefingId, {
         ...(values[0] ? { roundId: values[0] } : {}),
+        ...(comparisonValues[0] ? { comparisonCommit: comparisonValues[0] } : {}),
         ...(submissionValues[0] ? { submissionId: submissionValues[0] } : {}),
         ...(groupValues[0] ? { displayGroup: {
           groupRef: groupValues[0],

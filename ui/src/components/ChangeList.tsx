@@ -111,7 +111,8 @@ function ChangeBody({ name, inputKey, load, mode, wrap, wholeFile, onLineSelecti
     {whitespaceOnly && <span class="change-list__badge">Whitespace only</span>}
     <Suspense fallback={null}>
       {input.kind === 'contents' && /\.(?:md|markdown)$/i.test(name) ? (
-        <MarkdownDiff value={input.after.contents} comparison={input.before.contents} readOnly ariaLabel={name} />
+        <MarkdownDiff value={input.after.contents} comparison={input.before.contents}
+          comparisonLayout={wholeFile ? 'full-document' : undefined} readOnly ariaLabel={name} />
       ) : (
         <PierreDiff input={input} mode={mode} wrap={wrap} wholeFile={wholeFile}
           ariaLabel={name} onLineSelection={onLineSelection} />

@@ -845,6 +845,7 @@ function verifyGitCandidate(db: Db, candidate: RepoCandidate, expectedHash: stri
 function contentDependencyClass(table: string): { dependency_class: DependencyClass; unique_user_content: boolean } {
   const contentTables = new Set([
     "briefings", "briefing_rounds", "briefing_submissions", "briefing_submission_answers",
+    "review_document_bindings", "review_submission_targets",
     "briefing_submission_annotations", "briefing_response_events", "briefing_annotation_events",
     "briefing_directive_definitions", "briefing_directive_instances", "briefing_runs",
     "briefing_composition_runs", "briefing_composition_inputs", "briefing_composition_contributions",

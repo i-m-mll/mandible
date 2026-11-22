@@ -1,3 +1,4 @@
+import { REVIEW_ROUND_MIGRATION_SQL } from "./feedback/review-schema.js";
 import { exactAgentRef } from "./ambient-provider-identity.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { INTERFACE_NOTE_EMBED_GRANTS_SQL } from "./interface-notes/schema.js";
@@ -2475,6 +2476,7 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   // Issue 2927dd8 — a conditional closure that finds its issue still held ends skipped_held.
   { version: 247, name: "skipped_held_action_state", statements: [...AUTH_REQUEST_ACTIONS_REBUILD_SQL], requires_foreign_keys_off: true },
+  { version: 248, name: "review_round_document_bindings", statements: [...REVIEW_ROUND_MIGRATION_SQL], requires_foreign_keys_off: true },
 ];
 
 /**

@@ -34,11 +34,39 @@ export function readCommittedArtifactFiles(db: Db, input: {
 }
 
 interface GitRead { root: string; args: string[]; input?: string; allowFailure?: boolean }
-type CommittedSource = { root: string; files: CommittedArtifactFile[] };
+type GitBlob = { oid: string; mode: "100644" | "100755" };
+type CommittedSource = {
+  root: string;
+  commit: string;
+  files: CommittedArtifactFile[];
+  blobs: Map<string, GitBlob>;
+};
+type CommittedSourceInput = { project?: string; cwd?: string; commit: string; paths: string[]; allowAbsent?: boolean };
+
+export function readCommittedReviewPath(db: Db, input: { project: string; commit: string; path: string }) {
+  const source = readCommittedSource(db, { project: input.project, commit: input.commit, paths: [input.path], allowAbsent: true });
+  return { commit: source.commit, blob: source.blobs.get(input.path) ?? null, bytes: source.files[0]?.bytes ?? null,
+    retain: () => retainCommit(source.root, source.commit, "review") };
+}
+
+export function listCommittedBranchHeads(db: Db, projectId: string) {
+  const resolution = resolveProjectRef(db, projectId);
+  if (!resolution.ok) throw new Error(`Committed source repository is ${resolution.reason}`);
+  for (const { root, default_branch: defaultBranch } of resolution.project.checkouts) {
+    if (!fs.existsSync(root)) continue;
+    const heads = runGit(root, ["for-each-ref", "--format=%(refname:strip=2) %(objectname)", "refs/heads"]);
+    if (heads === null) continue;
+    return { defaultBranch, branches: heads.split("\n").filter(Boolean).map((line) => {
+      const separator = line.indexOf(" ");
+      return { name: line.slice(0, separator), commit: line.slice(separator + 1) };
+    }) };
+  }
+  throw new Error("Project has no available registered repository checkout");
+}
 
 function executeGitRead(command: GitRead): Promise<Buffer | null> {
   return new Promise((resolve, reject) => {
-    const child = execFile('git', ['--no-optional-locks', '-C', command.root, ...command.args], {
+    const child = execFile('git', ['--no-optional-locks', '--no-replace-objects', '-C', command.root, ...command.args], {
       encoding: 'buffer', timeout: 15_000, maxBuffer: 128 * 1024 * 1024,
       env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
     }, (error, stdout) => {
@@ -60,16 +88,14 @@ export async function readCommittedArtifactFilesAsync(db: Db, input: {
   return step.value.files;
 }
 
-function readCommittedSource(db: Db, input: {
-  project?: string; cwd?: string; commit: string; paths: string[];
-}): CommittedSource {
+function readCommittedSource(db: Db, input: CommittedSourceInput): CommittedSource {
   const reads = committedSourceReads(db, input);
   let step = reads.next();
   while (!step.done) {
     const command = step.value;
     let output: Buffer | null;
     try {
-      output = execFileSync('git', ['--no-optional-locks', '-C', command.root, ...command.args], {
+      output = execFileSync('git', ['--no-optional-locks', '--no-replace-objects', '-C', command.root, ...command.args], {
         input: command.input, timeout: 15_000, maxBuffer: 128 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (error) { if (!command.allowFailure) throw error; output = null; }
@@ -78,9 +104,7 @@ function readCommittedSource(db: Db, input: {
   return step.value;
 }
 
-function* committedSourceReads(db: Db, input: {
-  project?: string; cwd?: string; commit: string; paths: string[];
-}): Generator<GitRead, CommittedSource, Buffer | null> {
+function* committedSourceReads(db: Db, input: CommittedSourceInput): Generator<GitRead, CommittedSource, Buffer | null> {
   if (typeof input.commit !== 'string' || !input.commit.trim()) throw new Error('A nonempty commit ref is required');
   const repo = resolveProjectRef(db, input.project ?? path.resolve(input.cwd ?? process.cwd()));
   if (!repo.ok) throw new Error(`Committed source repository is ${repo.reason}`);
@@ -107,14 +131,21 @@ function* committedSourceReads(db: Db, input: {
     const match = /^(\d+) (\w+) ([a-f0-9]+)\t([\s\S]+)$/.exec(entry)!;
     return [match[4], { mode: match[1], type: match[2], oid: match[3] }];
   }));
-  const ids = paths.map(p => {
+  const blobs = new Map<string, GitBlob>();
+  for (const p of paths) {
     const entry = entries.get(p);
-    if (!entry || entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode)) throw new Error(`Not a tracked regular file at ${resolvedCommit}: ${p}`);
-    return entry.oid;
-  });
+    if (input.allowAbsent && !entry) continue;
+    if (!entry || entry.type !== 'blob' || (entry.mode !== '100644' && entry.mode !== '100755')) {
+      throw new Error(`Not a tracked regular file at ${resolvedCommit}: ${p}`);
+    }
+    blobs.set(p, { oid: entry.oid, mode: entry.mode });
+  }
+  const present = paths.filter((p) => blobs.has(p));
+  if (present.length === 0) return { root: resolvedRoot, commit: resolvedCommit, files: [], blobs };
+  const ids = present.map((p) => blobs.get(p)!.oid);
   const output = (yield { root: resolvedRoot, args: ['cat-file', '--batch'], input: ids.join('\n') + '\n' })!;
   let offset = 0;
-  const files = paths.map((p, i) => {
+  const files = present.map((p, i) => {
     const end = output.indexOf(10, offset);
     const header = output.subarray(offset, end).toString().split(' ');
     const size = Number(header[2]);
@@ -124,7 +155,7 @@ function* committedSourceReads(db: Db, input: {
     offset = end + size + 2;
     return { project_id: repo.project.id, project_key: repo.project.project_key, commit: resolvedCommit, path: p, bytes };
   });
-  return { root: resolvedRoot, files };
+  return { root: resolvedRoot, commit: resolvedCommit, files, blobs };
 }
 
 /** Pin a verified committed source against branch removal and ordinary Git GC. */
@@ -133,10 +164,15 @@ export function retainArtifactCommit(db: Db, input: {
 }): string {
   const { root, files: [file] } = readCommittedSource(db, {project:input.project,commit:input.commit,paths:[input.path]});
   if (createHash('sha256').update(file.bytes).digest('hex') !== input.sha256) throw new Error('Git artifact bytes do not match registered sha256');
-  const ref = `refs/mandible/artifacts/${file.commit}`;
-  if (runGit(root,['symbolic-ref','-q',ref])) throw new Error('Artifact retention ref must not be symbolic');
-  const existing=runGit(root,['rev-parse','--verify',ref]);
-  if (existing && existing !== file.commit) throw new Error('Artifact retention ref points to an unexpected commit');
-  execFileSync('git',['--no-optional-locks','-C',root,'update-ref','--no-deref',ref,file.commit,existing ?? '0'.repeat(file.commit.length)],{timeout:15000,stdio:['ignore','pipe','pipe']});
+  return retainCommit(root, file.commit, "artifacts");
+}
+
+function retainCommit(root: string, commit: string, namespace: "artifacts" | "review"): string {
+  const ref = `refs/mandible/${namespace}/${commit}`;
+  if (runGit(root, ['symbolic-ref', '-q', ref])) throw new Error('Retention ref must not be symbolic');
+  const existing = runGit(root, ['rev-parse', '--verify', ref]);
+  if (existing && existing !== commit) throw new Error('Retention ref points to an unexpected commit');
+  execFileSync('git', ['--no-optional-locks', '-C', root, 'update-ref', '--no-deref', ref, commit,
+    existing ?? '0'.repeat(commit.length)], { timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
   return ref;
 }

@@ -464,7 +464,93 @@ export const BRIEFING_DESTINATION_MUTATION_SCHEMA_SQL: readonly string[] = [
   )`,
 ];
 
-export const BRIEFING_SCHEMA_SQL: readonly string[] = [
+
+const LEGACY_BRIEFING_EVIDENCE_SQL = [
+  `CREATE TABLE IF NOT EXISTS briefing_annotation_events (
+    id TEXT PRIMARY KEY,
+    round_id TEXT NOT NULL,
+    briefing_id TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK(operation IN ('set','retract')),
+    annotation_kind TEXT CHECK(annotation_kind IS NULL OR annotation_kind IN ('comment','suggest_replacement')),
+    start_offset INTEGER,
+    end_offset INTEGER,
+    quote TEXT,
+    body TEXT,
+    replacement_text TEXT,
+    retracts_event_id TEXT REFERENCES briefing_annotation_events(id) ON DELETE RESTRICT,
+    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(id, round_id, actor_user_id),
+    FOREIGN KEY(round_id, briefing_id) REFERENCES briefing_rounds(id, briefing_id) ON DELETE RESTRICT,
+    FOREIGN KEY(briefing_id, actor_user_id) REFERENCES briefing_members(briefing_id, user_id) ON DELETE RESTRICT,
+    FOREIGN KEY(retracts_event_id, round_id, actor_user_id)
+      REFERENCES briefing_annotation_events(id, round_id, actor_user_id) ON DELETE RESTRICT,
+    CHECK((operation = 'set' AND annotation_kind IS NOT NULL AND start_offset IS NOT NULL AND start_offset >= 0
+      AND end_offset IS NOT NULL AND end_offset > start_offset AND quote IS NOT NULL AND quote != ''
+      AND retracts_event_id IS NULL)
+      OR (operation = 'retract' AND annotation_kind IS NULL AND start_offset IS NULL AND end_offset IS NULL
+      AND quote IS NULL AND body IS NULL AND replacement_text IS NULL AND retracts_event_id IS NOT NULL)),
+    CHECK(operation != 'set'
+      OR (annotation_kind = 'comment' AND body IS NOT NULL AND trim(body) != '' AND replacement_text IS NULL)
+      OR (annotation_kind = 'suggest_replacement' AND replacement_text IS NOT NULL AND (body IS NULL OR trim(body) != '')))
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_briefing_annotation_retraction
+    ON briefing_annotation_events(retracts_event_id) WHERE operation = 'retract'`,
+  `CREATE TRIGGER IF NOT EXISTS trg_briefing_annotation_retraction_identity
+    BEFORE INSERT ON briefing_annotation_events WHEN NEW.operation = 'retract'
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM briefing_annotation_events target
+         WHERE target.id = NEW.retracts_event_id AND target.operation = 'set'
+           AND target.round_id = NEW.round_id AND target.actor_user_id = NEW.actor_user_id
+      ) THEN RAISE(ABORT, 'briefing annotation retraction target mismatch') END;
+    END`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_annotation_events_round_actor
+    ON briefing_annotation_events(round_id, actor_user_id, created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS briefing_submissions (
+    id TEXT PRIMARY KEY,
+    round_id TEXT NOT NULL,
+    briefing_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK(ordinal > 0),
+    supersedes_submission_id TEXT REFERENCES briefing_submissions(id) ON DELETE RESTRICT,
+    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(round_id, ordinal),
+    UNIQUE(id, round_id, actor_user_id),
+    FOREIGN KEY(round_id, briefing_id) REFERENCES briefing_rounds(id, briefing_id) ON DELETE RESTRICT,
+    FOREIGN KEY(briefing_id, actor_user_id) REFERENCES briefing_members(briefing_id, user_id) ON DELETE RESTRICT,
+    FOREIGN KEY(supersedes_submission_id, round_id, actor_user_id)
+      REFERENCES briefing_submissions(id, round_id, actor_user_id) ON DELETE RESTRICT
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS uq_briefing_submission_superseded_once_actor
+    ON briefing_submissions(supersedes_submission_id, actor_user_id)
+    WHERE supersedes_submission_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_briefing_submissions_round_actor
+    ON briefing_submissions(round_id, actor_user_id, ordinal DESC)`,
+  `CREATE TABLE IF NOT EXISTS briefing_submission_annotations (
+    submission_id TEXT NOT NULL,
+    round_id TEXT NOT NULL,
+    actor_user_id TEXT NOT NULL,
+    annotation_event_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK(position >= 0),
+    PRIMARY KEY(submission_id, annotation_event_id),
+    FOREIGN KEY(submission_id, round_id, actor_user_id)
+      REFERENCES briefing_submissions(id, round_id, actor_user_id) ON DELETE RESTRICT,
+    FOREIGN KEY(annotation_event_id, round_id, actor_user_id)
+      REFERENCES briefing_annotation_events(id, round_id, actor_user_id) ON DELETE RESTRICT
+  )`,
+  `CREATE TRIGGER IF NOT EXISTS trg_briefing_submission_annotation_set_only
+    BEFORE INSERT ON briefing_submission_annotations
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM briefing_annotation_events event
+         WHERE event.id = NEW.annotation_event_id AND event.operation = 'set'
+           AND event.round_id = NEW.round_id AND event.actor_user_id = NEW.actor_user_id
+      ) THEN RAISE(ABORT, 'briefing frozen annotation must reference matching set event') END;
+    END`,
+];
+
+export const BRIEFING_OWNER_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS briefings (
     id TEXT PRIMARY KEY,
     briefing_key TEXT NOT NULL UNIQUE CHECK(trim(briefing_key) != ''),
@@ -643,67 +729,6 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
     END`,
   `CREATE INDEX IF NOT EXISTS idx_briefing_response_events_round_actor
     ON briefing_response_events(round_id, actor_user_id, created_at DESC)`,
-  `CREATE TABLE IF NOT EXISTS briefing_annotation_events (
-    id TEXT PRIMARY KEY,
-    round_id TEXT NOT NULL,
-    briefing_id TEXT NOT NULL,
-    operation TEXT NOT NULL CHECK(operation IN ('set','retract')),
-    annotation_kind TEXT CHECK(annotation_kind IS NULL OR annotation_kind IN ('comment','suggest_replacement')),
-    start_offset INTEGER,
-    end_offset INTEGER,
-    quote TEXT,
-    body TEXT,
-    replacement_text TEXT,
-    retracts_event_id TEXT REFERENCES briefing_annotation_events(id) ON DELETE RESTRICT,
-    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    created_at INTEGER NOT NULL,
-    UNIQUE(id, round_id, actor_user_id),
-    FOREIGN KEY(round_id, briefing_id) REFERENCES briefing_rounds(id, briefing_id) ON DELETE RESTRICT,
-    FOREIGN KEY(briefing_id, actor_user_id) REFERENCES briefing_members(briefing_id, user_id) ON DELETE RESTRICT,
-    FOREIGN KEY(retracts_event_id, round_id, actor_user_id)
-      REFERENCES briefing_annotation_events(id, round_id, actor_user_id) ON DELETE RESTRICT,
-    CHECK((operation = 'set' AND annotation_kind IS NOT NULL AND start_offset IS NOT NULL AND start_offset >= 0
-      AND end_offset IS NOT NULL AND end_offset > start_offset AND quote IS NOT NULL AND quote != ''
-      AND retracts_event_id IS NULL)
-      OR (operation = 'retract' AND annotation_kind IS NULL AND start_offset IS NULL AND end_offset IS NULL
-      AND quote IS NULL AND body IS NULL AND replacement_text IS NULL AND retracts_event_id IS NOT NULL)),
-    CHECK(operation != 'set'
-      OR (annotation_kind = 'comment' AND body IS NOT NULL AND trim(body) != '' AND replacement_text IS NULL)
-      OR (annotation_kind = 'suggest_replacement' AND replacement_text IS NOT NULL AND (body IS NULL OR trim(body) != '')))
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS uq_briefing_annotation_retraction
-    ON briefing_annotation_events(retracts_event_id) WHERE operation = 'retract'`,
-  `CREATE TRIGGER IF NOT EXISTS trg_briefing_annotation_retraction_identity
-    BEFORE INSERT ON briefing_annotation_events WHEN NEW.operation = 'retract'
-    BEGIN
-      SELECT CASE WHEN NOT EXISTS (
-        SELECT 1 FROM briefing_annotation_events target
-         WHERE target.id = NEW.retracts_event_id AND target.operation = 'set'
-           AND target.round_id = NEW.round_id AND target.actor_user_id = NEW.actor_user_id
-      ) THEN RAISE(ABORT, 'briefing annotation retraction target mismatch') END;
-    END`,
-  `CREATE INDEX IF NOT EXISTS idx_briefing_annotation_events_round_actor
-    ON briefing_annotation_events(round_id, actor_user_id, created_at DESC)`,
-  `CREATE TABLE IF NOT EXISTS briefing_submissions (
-    id TEXT PRIMARY KEY,
-    round_id TEXT NOT NULL,
-    briefing_id TEXT NOT NULL,
-    ordinal INTEGER NOT NULL CHECK(ordinal > 0),
-    supersedes_submission_id TEXT REFERENCES briefing_submissions(id) ON DELETE RESTRICT,
-    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    created_at INTEGER NOT NULL,
-    UNIQUE(round_id, ordinal),
-    UNIQUE(id, round_id, actor_user_id),
-    FOREIGN KEY(round_id, briefing_id) REFERENCES briefing_rounds(id, briefing_id) ON DELETE RESTRICT,
-    FOREIGN KEY(briefing_id, actor_user_id) REFERENCES briefing_members(briefing_id, user_id) ON DELETE RESTRICT,
-    FOREIGN KEY(supersedes_submission_id, round_id, actor_user_id)
-      REFERENCES briefing_submissions(id, round_id, actor_user_id) ON DELETE RESTRICT
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS uq_briefing_submission_superseded_once_actor
-    ON briefing_submissions(supersedes_submission_id, actor_user_id)
-    WHERE supersedes_submission_id IS NOT NULL`,
-  `CREATE INDEX IF NOT EXISTS idx_briefing_submissions_round_actor
-    ON briefing_submissions(round_id, actor_user_id, ordinal DESC)`,
   `CREATE TABLE IF NOT EXISTS briefing_submission_answers (
     submission_id TEXT NOT NULL,
     round_id TEXT NOT NULL,
@@ -718,18 +743,6 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
     FOREIGN KEY(response_event_id, round_id, directive_instance_id, actor_user_id)
       REFERENCES briefing_response_events(id, round_id, directive_instance_id, actor_user_id) ON DELETE RESTRICT
   )`,
-  `CREATE TABLE IF NOT EXISTS briefing_submission_annotations (
-    submission_id TEXT NOT NULL,
-    round_id TEXT NOT NULL,
-    actor_user_id TEXT NOT NULL,
-    annotation_event_id TEXT NOT NULL,
-    position INTEGER NOT NULL CHECK(position >= 0),
-    PRIMARY KEY(submission_id, annotation_event_id),
-    FOREIGN KEY(submission_id, round_id, actor_user_id)
-      REFERENCES briefing_submissions(id, round_id, actor_user_id) ON DELETE RESTRICT,
-    FOREIGN KEY(annotation_event_id, round_id, actor_user_id)
-      REFERENCES briefing_annotation_events(id, round_id, actor_user_id) ON DELETE RESTRICT
-  )`,
   `CREATE TRIGGER IF NOT EXISTS trg_briefing_submission_answer_set_only
     BEFORE INSERT ON briefing_submission_answers
     BEGIN
@@ -740,15 +753,6 @@ export const BRIEFING_SCHEMA_SQL: readonly string[] = [
            AND event.directive_instance_id = NEW.directive_instance_id
            AND event.actor_user_id = NEW.actor_user_id
       ) THEN RAISE(ABORT, 'briefing frozen answer must reference matching set event') END;
-    END`,
-  `CREATE TRIGGER IF NOT EXISTS trg_briefing_submission_annotation_set_only
-    BEFORE INSERT ON briefing_submission_annotations
-    BEGIN
-      SELECT CASE WHEN NOT EXISTS (
-        SELECT 1 FROM briefing_annotation_events event
-         WHERE event.id = NEW.annotation_event_id AND event.operation = 'set'
-           AND event.round_id = NEW.round_id AND event.actor_user_id = NEW.actor_user_id
-      ) THEN RAISE(ABORT, 'briefing frozen annotation must reference matching set event') END;
     END`,
   `CREATE TABLE IF NOT EXISTS briefing_legacy_audit (
     id TEXT PRIMARY KEY,
@@ -801,6 +805,8 @@ export const CANONICAL_SPACE_ITEMS_SQL = `CREATE TABLE space_items (
   PRIMARY KEY(id), UNIQUE(space_id,id), UNIQUE(space_id,ref_type,ref_id),
   CHECK(ref_type != 'external_ref' OR ref_uri IS NOT NULL)
 )`;
+
+export const BRIEFING_SCHEMA_SQL = [...BRIEFING_OWNER_SCHEMA_SQL, ...LEGACY_BRIEFING_EVIDENCE_SQL];
 
 export const BRIEFING_SCHEMA_TABLES: readonly string[] = [
   "briefings", "briefing_members", "briefing_rounds", "briefing_directive_definitions",
