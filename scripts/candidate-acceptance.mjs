@@ -662,7 +662,7 @@ async function main(startedAt) {
       const preflight = daemonPreflightCommand(resources, shipped, env.MANDIBLE_DB);
       const startedAt = performance.now();
       const output = await runSupervisedCommand('/usr/bin/sandbox-exec', ['-p', executionProfile, preflight.binary, ...preflight.args], {
-        cwd: run, env, watch: readiness.watch, graceMs: 1000, ...superviseCheck,
+        cwd: run, env, capture: true, watch: readiness.watch, graceMs: 1000, ...superviseCheck,
       });
       result.checks.daemon_preflight = { ...readDaemonPreflight(output.stdout), elapsed_ms: performance.now() - startedAt };
       readiness.watch.advance('the staged daemon opened the active ledger read-only');
