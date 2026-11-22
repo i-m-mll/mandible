@@ -30,6 +30,7 @@ import { queryClient } from "../query/client";
 import { detailKeys } from "../query/detailKeys";
 import { artifactListOptions, artifactResolutionOptions, artifactVersionsOptions, artifactRecordOptions, artifactContentOptions, artifactTextOptions, artifactBackrefsOptions, queryErrorMessage } from "../query/details";
 import { useArtifactDetail } from "../hooks/useArtifactDetail";
+import { useProjectionQuery } from "../query/useProjectionQuery";
 import { entityHref, navigateTo, routeWithParams, shortRouteId, viewHref } from '../routing';
 import { useEntityRoute, type EntityRouteResolution } from '../hooks/useEntityRoute';
 import { EntityRouteState, isUnopenedEntityRoute } from '../components/shared/EntityRouteState';
@@ -665,11 +666,6 @@ export function ArtifactDetail({
   const [lineSourceOpen, setLineSourceOpen] = useState(false);
   const markdownArtifact = content?.status === 'available' && content.kind === 'markdown';
   const active = useViewActive();
-  const markdownText = useQuery({
-    ...artifactTextOptions(markdownArtifact ? selectedArtifactRef : null),
-    enabled: active && markdownArtifact,
-  }, queryClient);
-  const editableState = artifactEditableState(artifact, content, markdownText.data);
   const baseVersion = selectedVersion ?? versions[0] ?? null;
   const previousVersion = selectedVersion
     ? versions
@@ -692,11 +688,10 @@ export function ArtifactDetail({
   const showLineSource = lineArtifact && (content.kind === 'text' || content.kind === 'json' && jsonView === 'raw'
     || lineSourceOpen) && Boolean(selectedVersion);
   const reviewVersionRef = editing ? draft.base_version_id : selectedVersion?.id ?? null;
-  const reviewSource = useQuery({ ...artifactTextOptions(reviewVersionRef),
-    enabled: active && (showLineSource || editing),
-  }, queryClient);
-  const readReviewSource = editing ? reviewSource.data
-    : markdownArtifact ? markdownText.data : reviewSource.data;
+  const sourceRef = editing ? draft.base_version_id : selectedArtifactRef;
+  const sourceQuery = useProjectionQuery(artifactTextOptions(sourceRef), active && (markdownArtifact || showLineSource || editing));
+  const readReviewSource = sourceQuery.data;
+  const editableState = artifactEditableState(artifact, content, readReviewSource);
   const visibleReviewSource = editing ? draftValue : readReviewSource ?? '';
   const noteQuery = useArtifactStandingNotes(active && (markdownArtifact || showLineSource || editing) ? reviewVersionRef : null);
   const visibleNotes = useMemo(() => {
@@ -711,10 +706,8 @@ export function ArtifactDetail({
     return [...standing, ...staged];
   }, [noteQuery.data, editMode, draft, readReviewSource, draftValue, rangeKind]);
   const [diffOpen, setDiffOpen] = useState(false);
-  const markdownComparison = useQuery({
-    ...artifactTextOptions(previousVersion?.id ?? null),
-    enabled: active && markdownArtifact && diffOpen && Boolean(previousVersion),
-  }, queryClient);
+  const markdownComparison = useProjectionQuery(artifactTextOptions(previousVersion?.id ?? null),
+    active && markdownArtifact && diffOpen && Boolean(previousVersion));
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
@@ -1098,7 +1091,7 @@ export function ArtifactDetail({
     </>
   );
 
-  const sourceError = markdownText.error?.message ?? contentError;
+  const sourceError = (markdownArtifact ? sourceQuery.error?.message : undefined) ?? contentError;
   const comparisonError = markdownArtifact ? markdownComparison.error?.message : diffError;
   const detailFailures = [
     detailError && `Artifact detail: ${detailError}`,
@@ -1117,7 +1110,7 @@ export function ArtifactDetail({
       headerClassName="artifact-detail__header"
       bodyClassName={`artifact-detail__pane${metadataOpen ? ' artifact-detail__pane--metadata-open' : ''}`}
       headerRef={headerRef}
-      ariaBusy={contentLoading || (markdownArtifact && markdownText.isPending)}
+      ariaBusy={contentLoading || (markdownArtifact && sourceQuery.isPending)}
       notice={detailFailures.length > 0 ? (
         <DetailPaneNotice severity="error" density="compact" title="Artifact needs attention">
           {detailFailures.map((message) => <div key={message}>{message}</div>)}
@@ -2313,10 +2306,14 @@ function linkedEntityHref(type: string, id: string, repoId: string | null): stri
   return viewHref('graph', { focus: id });
 }
 
-async function warmArtifactDetail(artifactId: string): Promise<void> {
+async function warmArtifactDetail(artifactId: string, versionId: string): Promise<void> {
   await Promise.all([
     queryClient.fetchQuery(artifactRecordOptions(artifactId)),
-    queryClient.fetchQuery(artifactContentOptions(artifactId)),
+    queryClient.fetchQuery(artifactContentOptions(artifactId)).then(content => {
+      if (content.preview?.truncated === false && (content.kind === 'markdown' || content.kind === 'text')) {
+        return queryClient.fetchQuery(artifactTextOptions(versionId));
+      }
+    }),
     queryClient.fetchQuery(artifactBackrefsOptions(artifactId)),
   ]);
 }
@@ -2341,14 +2338,11 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
 
   const selectedSeriesRef = viewState.selectedSeriesRef ?? (ordered[0] ? seriesRef(ordered[0]) : null);
   const selectedVersionNo = viewState.selectedSeriesRef ? viewState.selectedVersionNo : null;
-  let selectedArtifactId: string | null = null;
   if (selectedSeriesRef) {
     const loadedHistory = await queryClient.fetchQuery(artifactVersionsOptions(selectedSeriesRef));
     const selectedVersion = selectedVersionNo === null
       ? loadedHistory.versions[0] ?? null
       : loadedHistory.versions.find((version) => version.version_no === selectedVersionNo) ?? null;
-    selectedArtifactId = selectedVersion?.artifact_id ?? null;
+    if (selectedVersion) await warmArtifactDetail(selectedVersion.artifact_id, selectedVersion.id);
   }
-
-  if (selectedArtifactId) await warmArtifactDetail(selectedArtifactId);
 }

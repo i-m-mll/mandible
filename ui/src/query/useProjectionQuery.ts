@@ -1,10 +1,10 @@
-import { hashKey, useQuery, type UseQueryOptions } from '@tanstack/preact-query';
+import { hashKey, useQuery, type QueryKey, type UseQueryOptions } from '@tanstack/preact-query';
 import { useLayoutEffect, useMemo } from 'preact/hooks';
 import { useRegisterInitialRouteLoad } from '../app-shell';
 import { queryClient } from './client';
 
 /** Observe a projection and release an abandoned read only when no enabled observer remains. */
-export function useProjectionQuery<T>(options: UseQueryOptions<T>, active: boolean) {
+export function useProjectionQuery<T, Key extends QueryKey = QueryKey>(options: UseQueryOptions<T, Error, T, Key>, active: boolean) {
   const hash = hashKey(options.queryKey);
   const live = useMemo(() => ({ active }), [hash]);
   live.active = active;

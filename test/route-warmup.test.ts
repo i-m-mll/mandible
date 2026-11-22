@@ -132,6 +132,8 @@ const FIXTURES: Array<[string, RegExp, Fixture]> = [
       source: null, preview: { encoding: 'utf-8', text: 'Warm artifact body', truncated: false },
     },
   })],
+  ['GET', /^\/api\/artifacts\/[^/]+\/text$/, () => ({ text: 'Warm artifact body' })],
+  ['GET', /^\/api\/artifacts\/[^/]+\/notes$/, () => ({ notes: [], can_write: false })],
   ['GET', /^\/api\/artifacts\/[^/]+\/knowledge-backrefs$/, () => ({ backrefs: [] })],
   ['GET', /^\/api\/artifacts\/[^/]+$/, () => ({ artifact: WARM_ARTIFACT })],
   ['GET', /^\/api\/spaces$/, () => ({
