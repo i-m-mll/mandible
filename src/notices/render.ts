@@ -38,6 +38,7 @@ function status(report: OutcomeReport): string {
   const why = (prefix: string) => report.reason ? `${prefix}: ${brief(report.reason)}` : prefix;
   switch (report.status) {
     case "completed": return report.merge_commit ? `merged as ${short(report.merge_commit)}` : "completed";
+    case "returned": return why("returned for revision");
     case "rejected": return why("rejected");
     case "failed": return why("failed");
     case "superseded": return report.reason ? `superseded by ${short(report.reason)}` : "superseded";
@@ -111,6 +112,7 @@ export function renderNotice(report: OutcomeReport, responsibleAgent: AmbientPro
     const more = report.left_open.length > MAX_MEMBERS ? ` +${report.left_open.length - MAX_MEMBERS} more` : "";
     lines.push(`Left open (${report.left_open.length}): ${shown}${more}`);
   }
+  if (report.review_submission_id) lines.push(`Review: mandible auth review show ${short(report.request_id)}`);
   if (groups.size) lines.push(`More: mandible auth show ${short(report.request_id)}`);
   return lines.join("\n");
 }

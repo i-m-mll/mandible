@@ -28,6 +28,7 @@ type PierreFileDiffProps = {
   wrap?: boolean;
   wholeFile: boolean;
   ariaLabel: string;
+  lineTarget?: DiffLineRange & { token: string };
   onLineSelection?: (range: DiffLineRange | null) => void;
 };
 
@@ -60,10 +61,11 @@ function toFileRange(range: SelectedLineRange | null): DiffLineRange | null {
   };
 }
 
-export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel, onLineSelection }: PierreFileDiffProps) {
+export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel, onLineSelection, lineTarget }: PierreFileDiffProps) {
   const scroll = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const [workerError, setWorkerError] = useState(false);
+  const [rendered, setRendered] = useState<PierreDiffInput>();
   const instance = useRef<VirtualizedFileDiff>();
   const options = useRef<FileDiffOptions<undefined, undefined>>({});
   const selection = useRef(onLineSelection);
@@ -74,7 +76,7 @@ export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel,
     lineDiffType: "word",
     diffStyle: mode,
     themeType: document.documentElement.dataset.theme === "light" ? "light" : "dark",
-    expandUnchanged: wholeFile,
+    expandUnchanged: wholeFile || Boolean(lineTarget),
     disableFileHeader: true,
     enableLineSelection: true,
     onLineSelected: (range) => selection.current?.(toFileRange(range)),
@@ -107,6 +109,7 @@ export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel,
           : { fileDiff: input.file }),
       });
       theme();
+      setRendered(input);
     }).catch(() => { if (!disposed) setWorkerError(true); });
 
     return () => {
@@ -121,7 +124,16 @@ export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel,
 
   useLayoutEffect(() => {
     instance.current?.setOptions(options.current);
-  }, [mode, wrap, wholeFile]);
+  }, [mode, wrap, wholeFile, Boolean(lineTarget)]);
+
+  useLayoutEffect(() => {
+    if (!lineTarget || rendered !== input || !instance.current || !scroll.current) return;
+    const renderer = instance.current;
+    const side = lineTarget.side === "before" ? "deletions" : "additions";
+    renderer.setSelectedLines({ side, start: lineTarget.startLine, end: lineTarget.endLine }, { notify: false });
+    const position = renderer.getLinePosition(lineTarget.startLine, side);
+    if (position) scroll.current.scrollTop = position.top;
+  }, [lineTarget?.token, rendered, input]);
 
   return (
     <div class="pierre-file-diff" ref={scroll} role="region" aria-label={ariaLabel} tabIndex={0} style={{ overflow: "auto", maxHeight: "65vh" }}>

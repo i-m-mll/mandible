@@ -112,7 +112,8 @@ export class NoticeLog {
       const base = (this.db.prepare("SELECT base_branch FROM auth_requests WHERE id = ?").get(row.subject_id) as
         { base_branch: string | null } | undefined)?.base_branch ?? "base";
       const text = renderNotice(report, { ...holder, session_id: row.recipient_id }, base);
-      this.db.prepare("UPDATE notifications SET digest = ?, text = ? WHERE id = ?").run(outcomeReportDigest(report), text, row.id);
+      this.db.prepare("UPDATE notifications SET digest = ?, text = ?, review_submission_id = ? WHERE id = ?")
+        .run(outcomeReportDigest(report), text, report.review_submission_id ?? null, row.id);
       this.changed(row.id);
       return [{ id: row.id, text }];
     })).immediate();

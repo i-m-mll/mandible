@@ -49,7 +49,7 @@
 #   --cwd <path>            Merge: protected worktree override. Other types: required execution directory
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
 #   --depends-on <id>       Repeat for each prerequisite that must finish before approval
-#   --supersedes <id>       Atomically replace this exact pending request
+#   --supersedes <id>       Atomically replace this exact pending or returned request
 #   --expected-revision <n> Required with --supersedes
 #   --expected-custody-generation <n> Required with --supersedes
 #   --drop-superseded-action <ordinal>:<reason>

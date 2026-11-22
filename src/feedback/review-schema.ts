@@ -1,12 +1,32 @@
 import { ledgerOriginColumnSql } from "../ledger-origin-schema.js";
 
-export const REVIEW_ROUND_SCHEMA_SQL = [
-  `CREATE TABLE review_rounds (
-    id TEXT NOT NULL PRIMARY KEY,
+const briefingOwner = `
     owner_kind TEXT NOT NULL CHECK(owner_kind IN ('briefing')),
     briefing_round_id TEXT UNIQUE REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
     CHECK(owner_kind = 'briefing' AND briefing_round_id IS id)
-  )`,
+`;
+
+const reviewRoundTable = (owner: string) => `CREATE TABLE review_rounds (
+    id TEXT NOT NULL PRIMARY KEY,
+    ${owner}
+  )`;
+
+const requestAwareOwner = `
+    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('briefing', 'request_revision')),
+    briefing_round_id TEXT UNIQUE REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
+    auth_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT,
+    CHECK((owner_kind = 'briefing' AND briefing_round_id IS id AND auth_request_id IS NULL)
+      OR (owner_kind = 'request_revision' AND briefing_round_id IS NULL AND auth_request_id IS NOT NULL))
+`;
+
+const roundTriggers = ['UPDATE', 'DELETE'].map((operation) => `CREATE TRIGGER review_rounds_immutable_${operation.toLowerCase()}
+      BEFORE ${operation} ON review_rounds BEGIN
+        SELECT RAISE(ABORT, 'Review round bindings are immutable');
+      END`);
+
+const REVIEW_ROUND_V248 = [
+  reviewRoundTable(briefingOwner),
+  ...roundTriggers,
   `CREATE TABLE review_document_bindings (
     id TEXT NOT NULL PRIMARY KEY,
     round_id TEXT NOT NULL REFERENCES review_rounds(id) ON DELETE RESTRICT,
@@ -31,7 +51,7 @@ export const REVIEW_ROUND_SCHEMA_SQL = [
     ON review_document_bindings(artifact_version_id)`,
   `CREATE INDEX idx_review_document_bindings_comparison
     ON review_document_bindings(comparison_artifact_version_id)`,
-  ...['review_rounds', 'review_document_bindings'].flatMap((table) =>
+  ...['review_document_bindings'].flatMap((table) =>
     ['UPDATE', 'DELETE'].map((operation) => `CREATE TRIGGER ${table}_immutable_${operation.toLowerCase()}
       BEFORE ${operation} ON ${table} BEGIN
         SELECT RAISE(ABORT, 'Review round bindings are immutable');
@@ -161,7 +181,7 @@ export const REVIEW_EVIDENCE_SCHEMA_SQL = [
 ] as const;
 
 export const REVIEW_ROUND_MIGRATION_SQL = [
-  ...REVIEW_ROUND_SCHEMA_SQL,
+  ...REVIEW_ROUND_V248,
   `INSERT INTO review_rounds (id, owner_kind, briefing_round_id) SELECT id, 'briefing', id FROM briefing_rounds`,
   `INSERT INTO review_document_bindings (id, round_id, position, document_key, source_json, comparison_target_json)
     SELECT r.id, r.id, 0, r.briefing_id,
@@ -197,3 +217,22 @@ export const REVIEW_ROUND_MIGRATION_SQL = [
   `DROP TABLE old_review_submissions`,
   `DROP TABLE old_review_membership`,
 ] as const;
+
+const requestRoundIndex = "CREATE INDEX idx_review_rounds_auth_request ON review_rounds(auth_request_id)";
+
+export const REVIEW_ROUND_SCHEMA_SQL = [
+  reviewRoundTable(requestAwareOwner),
+  ...REVIEW_ROUND_V248.slice(1),
+  requestRoundIndex,
+];
+
+export const REQUEST_REVIEW_ROUND_MIGRATION_SQL = [
+  "CREATE TEMP TABLE old_review_rounds AS SELECT id, owner_kind, briefing_round_id FROM review_rounds",
+  "DROP TABLE review_rounds",
+  reviewRoundTable(requestAwareOwner),
+  `INSERT INTO review_rounds (id, owner_kind, briefing_round_id)
+    SELECT id, owner_kind, briefing_round_id FROM old_review_rounds`,
+  "DROP TABLE old_review_rounds",
+  ...roundTriggers,
+  requestRoundIndex,
+];

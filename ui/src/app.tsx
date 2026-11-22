@@ -1891,15 +1891,10 @@ function App(): JSX.Element {
     }
   };
 
-  const handleReject = async (requestId: string) => {
-    try {
-      await rejectAuthRequest(requestId);
-      authProjectionRefreshRef.current!.notePush();
-      dispatch({ type: 'authResolved', requestId, status: 'rejected' });
-    } catch {
-      // Do not set a local error status — the server state is unchanged.
-      // The action simply failed; inFlight cleanup in runAction is sufficient.
-    }
+  const handleReject = async (requestId: string, reason?: string) => {
+    await rejectAuthRequest(requestId, reason);
+    authProjectionRefreshRef.current!.notePush();
+    dispatch({ type: 'authResolved', requestId, status: 'rejected' });
   };
 
   const handleRetry = async (requestId: string) => {

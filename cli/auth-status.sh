@@ -15,6 +15,8 @@ mandible_auth_report() {
       detail=$(printf '%s' "$response" | jq -r '.failure_reason // .error // "no reason recorded"')
       if [[ "$request_status" == needs_rebase ]]; then
         printf 'Auth request %s: needs_rebase -- rebase the source branch and retry the request. %s\n' "$request_id" "$detail"
+      elif [[ "$request_status" == returned ]]; then
+        printf 'Auth request %s returned for revision. Review with: mandible auth review show %s\n' "$request_id" "$request_id"
       elif [[ "$request_status" == failed ]]; then
         exit_code=$(printf '%s' "$response" | jq -r '.exit_code // "null"')
         printf 'Auth request %s: failed (exit %s) -- %s\n' "$request_id" "$exit_code" "$detail"

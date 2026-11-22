@@ -1,3 +1,6 @@
+import * as z from "zod";
+import { collectAuthMergeReview, type AuthMergeReviewCollectionResult } from "../auth-change-report.js";
+import { requestReviewVersions, readRequestReview, returnedRequestReview } from "../feedback/request-review.js";
 import { exactAgentRef } from "../ambient-provider-identity.js";
 import { responsibilityActor, sessionResponsibilityActor } from "../responsibility.js";
 import { describeCustodyHolder } from "../work-unit-custody.js";
@@ -58,6 +61,42 @@ export function registerAuthRoutes(
 ): AuthQueue {
   const db = authQueue.db;
   const outcomeReport = createOutcomeReporter(db);
+  const comparisons = new Map<string, Promise<AuthMergeReviewCollectionResult>>();
+  async function comparisonReport(request: AuthRequest, against: string) {
+    const root = request.target_repo_root;
+    const head = request.change_report?.comparison.head_sha;
+    const versions = requestReviewVersions(db, request.id);
+    const target = versions.find(version => version.id === against || version.short_id === against);
+    if (!root || !head || !target?.head || target.id === request.id) return null;
+    const base = target.head;
+    const key = JSON.stringify([root, base, head]);
+    let pending = comparisons.get(key);
+    if (!pending) {
+      pending = collectAuthMergeReview(root, { base_sha: base, merge_base_sha: base, head_sha: head });
+      comparisons.set(key, pending);
+      if (comparisons.size > 8) comparisons.delete(comparisons.keys().next().value!);
+    }
+    const result = await pending;
+    if (!result.ok) comparisons.delete(key);
+    return result;
+  }
+  const reviewPrecondition = z.object({
+    expected_revision: z.number().int().positive(),
+    expected_custody_generation: z.number().int().nonnegative(),
+  });
+  const reviewAnnotation = reviewPrecondition.extend({
+    document_binding_id: z.string().min(1),
+    mutation: z.discriminatedUnion("operation", [
+      z.object({ operation: z.literal("retract"), annotation_event_id: z.string().min(1) }),
+      z.object({ operation: z.literal("set"), kind: z.literal("comment"), start_offset: z.number().int().nonnegative(),
+        end_offset: z.number().int().positive(), quote: z.string().min(1), body: z.string().trim().min(1) }),
+    ]),
+  });
+  const reviewReturn = reviewPrecondition.extend({
+    round_id: z.string().min(1),
+    annotation_event_ids: z.array(z.string().min(1)),
+    reason: z.string().optional(),
+  });
   app.post("/api/auth/check", async (req, res) => {
     if (!authQueue.externalEffectsAllowed) {
       res.status(403).json({
@@ -350,7 +389,9 @@ export function registerAuthRoutes(
 
   app.get("/api/auth/request/:id/files/:index", async (req, res) => {
     const request = await authQueue.getRequest(req.params.id);
-    const report = request?.change_report;
+    const against = req.query?.against;
+    const comparison = request && typeof against === "string" ? await comparisonReport(request, against) : null;
+    const report = typeof against === "string" ? comparison?.ok ? comparison.value.report : null : request?.change_report;
     const index = req.params.index;
     const file = report && /^(?:0|[1-9]\d*)$/.test(index) ? report.files[Number(index)] : undefined;
     if (!request?.target_repo_root || !report || !file) {
@@ -365,6 +406,54 @@ export function registerAuthRoutes(
     if (result.ok) res.json(result.file);
     else res.status(result.status).json({ error: result.error });
   }, { operation: { id: "get:/api/auth/request/:id/files/:index", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  app.get("/api/auth/request/:id/review", async (req, res) => {
+    try {
+      const request = await authQueue.getRequest(req.params.id);
+      if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
+      const precondition = { expected_revision: authQueue.lifecycleRevision(request.id),
+        expected_custody_generation: authQueue.requestResponsibility(request).custody_generation };
+      res.json({ ...await readRequestReview(db, request, requireAttribution(db, req).user_id), precondition, status: request.status });
+    } catch (error) { handleQueueError(error, res); }
+  }, { operation: { id: "get:/api/auth/request/:id/review", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  app.get("/api/auth/request/:id/review/returned", async (req, res) => {
+    const resolved = resolveId(db, "auth_request", req.params.id);
+    if (!resolved.ok) { res.status(resolved.error === "ambiguous" ? 409 : 404).json({ error: "Use an unambiguous request reference." }); return; }
+    const submission = returnedRequestReview(db, resolved.id);
+    if (!submission) { res.status(404).json({ error: "This request has no returned review." }); return; }
+    const request = authQueue.getRequestExact(resolved.id)!;
+    res.json({ ...submission, request_id: resolved.id, status: request.status,
+      lifecycle_revision: authQueue.lifecycleRevision(resolved.id), responsibility: authQueue.requestResponsibility(request) });
+  }, { operation: { id: "get:/api/auth/request/:id/review/returned", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  app.get("/api/auth/request/:id/review/changes", async (req, res) => {
+    const request = await authQueue.getRequest(req.params.id);
+    const against = req.query?.against;
+    const comparison = request && typeof against === "string" ? await comparisonReport(request, against) : null;
+    if (!comparison) { res.status(404).json({ error: "Reviewed comparison not found." }); return; }
+    if (!comparison.ok) { res.status(422).json({ error: comparison.error.message }); return; }
+    res.json(comparison.value.report);
+  }, { operation: { id: "get:/api/auth/request/:id/review/changes", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/review/annotations", globalCapabilityRoute("approve_auth", async (req, res) => {
+    try {
+      const input = reviewAnnotation.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid review annotation." }); return; }
+      const actor = authReviewOperator(db, req);
+      const id = await authQueue.annotateRequestReview(req.params.id, actor, input.data);
+      res.status(201).json({ annotation_event_id: id });
+    } catch (error) { handleQueueError(error, res); }
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/annotations", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/return", globalCapabilityRoute("approve_auth", (req, res) => {
+    try {
+      const input = reviewReturn.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid review return." }); return; }
+      const { request, submission_id } = authQueue.returnRequestReview(req.params.id, authReviewOperator(db, req), input.data);
+      res.json({ request_id: request.id, status: request.status, submission_id });
+    } catch (error) { handleQueueError(error, res); }
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/return", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.get("/api/auth/request/:id/actions", (req, res) => {
     try {
@@ -1346,6 +1435,12 @@ function isHttpError(error: unknown): error is { status: number; message: string
     "message" in error &&
     typeof (error as { message?: unknown }).message === "string"
   );
+}
+
+function authReviewOperator(db: Db, req: RequestLike): AuthLifecycleActor {
+  const identity = requireOperator(db, req);
+  return { user_id: identity.user_id, evidence_method: identity.method, credential_id: identity.credential_id,
+    authority_path: "operator" };
 }
 
 function handleQueueError(error: unknown, res: ResponseLike): void {

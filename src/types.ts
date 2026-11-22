@@ -316,7 +316,7 @@ export interface AuthRequest {
 
 export type AuthRequestLifecycleEventType =
   | "legacy_snapshot" | "submitted" | "revised" | "approved" | "executing"
-  | "rejected" | "withdrawn" | "superseded" | "needs_rebase" | "expired" | "completed" | "failed";
+  | "rejected" | "returned" | "withdrawn" | "superseded" | "needs_rebase" | "expired" | "completed" | "failed";
 
 export interface AuthLifecycleActor {
   user_id: string;
@@ -348,6 +348,7 @@ export interface AuthRequestLifecycleEvent {
   credential_id: string | null;
   reason: string | null;
   related_request_id: string | null;
+  review_submission_id?: string | null;
   custody_work_unit_id: string | null;
   custody_generation: number | null;
   authority_path: string | null;

@@ -1,9 +1,9 @@
-import { REVIEW_ROUND_MIGRATION_SQL } from "./feedback/review-schema.js";
+import { REQUEST_REVIEW_ROUND_MIGRATION_SQL, REVIEW_ROUND_MIGRATION_SQL } from "./feedback/review-schema.js";
 import { exactAgentRef } from "./ambient-provider-identity.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { INTERFACE_NOTE_EMBED_GRANTS_SQL } from "./interface-notes/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
-import { NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
+import { NOTICE_REVIEW_SUBMISSION_SQL, NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL, recoverHistoricalExactAssignments } from "./work-unit-assignment-schema.js";
@@ -20,6 +20,7 @@ import { ARTIFACT_CUSTODY_MIGRATION_SQL, ARTIFACT_CUSTODY_TRIGGERS_SQL } from '.
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
   AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
+  AUTH_LIFECYCLE_AUTHORITY_PATHS,
   AUTH_LIFECYCLE_AUTHORITY_PATHS_V212,
   AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
   authRequestLifecycleEventsSchemaSql,
@@ -2477,6 +2478,21 @@ export const MIGRATIONS: readonly Migration[] = [
   // Issue 2927dd8 — a conditional closure that finds its issue still held ends skipped_held.
   { version: 247, name: "skipped_held_action_state", statements: [...AUTH_REQUEST_ACTIONS_REBUILD_SQL], requires_foreign_keys_off: true },
   { version: 248, name: "review_round_document_bindings", statements: [...REVIEW_ROUND_MIGRATION_SQL], requires_foreign_keys_off: true },
+  { version: 249, name: "request_review_rounds", requires_foreign_keys_off: true, statements: [
+    ...REQUEST_REVIEW_ROUND_MIGRATION_SQL,
+    NOTICE_REVIEW_SUBMISSION_SQL,
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_update",
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_delete",
+    "DROP INDEX idx_auth_request_lifecycle_events_request",
+    "ALTER TABLE auth_request_lifecycle_events RENAME TO auth_request_lifecycle_events_v248",
+    ...authRequestLifecycleEventsSchemaSql(AUTH_LIFECYCLE_AUTHORITY_PATHS, true),
+    `ALTER TABLE auth_request_lifecycle_events ADD COLUMN ${ledgerOriginColumnSql}`,
+    `INSERT INTO auth_request_lifecycle_events (${AUTH_LIFECYCLE_EVENT_COLUMNS})
+       SELECT ${AUTH_LIFECYCLE_EVENT_COLUMNS} FROM auth_request_lifecycle_events_v248`,
+    "DROP TABLE auth_request_lifecycle_events_v248",
+    "DROP INDEX idx_auth_requests_history",
+    AUTH_REQUEST_HISTORY_INDEX_SQL,
+  ] },
 ];
 
 /**

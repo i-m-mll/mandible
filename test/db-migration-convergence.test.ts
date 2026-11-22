@@ -120,7 +120,7 @@ describe("floor to head", () => {
       const event = db.prepare("SELECT * FROM ledger_events WHERE id = 'identity-event'").get();
       migrate(db);
       expect(authRequestSnapshot(db, "identity-review")).toBe(reviewed);
-      expect(db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE id = 'identity-receipt'").get()).toEqual(receipt);
+      expect(db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE id = 'identity-receipt'").get()).toEqual({ ...receipt as object, review_submission_id: null });
       expect(db.prepare("SELECT * FROM ledger_events WHERE id = 'identity-event'").get()).toEqual(event);
       const row = db.prepare("SELECT legacy_assignment_target_json, assignment_target_json, execution_identity_json, responsibility_session_id, custody_generation FROM work_units WHERE id = 'legacy-claude'").get() as Record<string, unknown>;
       expect(row).toEqual({ legacy_assignment_target_json: assignment, assignment_target_json: null,
@@ -1510,7 +1510,7 @@ describe("v242 operator authority path", () => {
 
       migrate(db);
 
-      expect(rows()).toEqual(before);
+      expect(rows()).toEqual(before.map(row => ({ ...row as object, review_submission_id: null })));
       appendAuthLifecycleEvent(db, { requestId: "held-request", eventType: "withdrawn", priorStatus: "pending", nextStatus: "withdrawn", occurredAt: 4,
         actor: { user_id: agent.id, evidence_method: "local_socket", authority_path: "operator" } });
       expect(() => db.prepare(`INSERT INTO auth_request_lifecycle_events (id, auth_request_id, revision, event_type, next_status, snapshot_json,

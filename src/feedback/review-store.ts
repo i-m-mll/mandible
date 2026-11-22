@@ -1,22 +1,34 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
 import { canonicalJson } from "../canonical-json.js";
+import { quoteReviewLines } from "./review-ranges.js";
 import { requestOriginJson } from "../request-origin.js";
 import type { ReviewAnnotation, ReviewDocumentBinding, ReviewDocumentReference, ReviewRange } from "./review-types.js";
 
-export type ReviewRoundOwner = { kind: "briefing"; briefing_id: string };
-type ReviewActor = { roundId: string; owner: ReviewRoundOwner; actorUserId: string };
+export type ReviewRoundOwner = { kind: "briefing"; briefing_id: string }
+  | { kind: "request_revision"; auth_request_id: string };
+export type ReviewActor = { roundId: string; owner: ReviewRoundOwner; actorUserId: string };
 
 export function createBriefingReviewRound(
   db: Db,
   roundId: string,
   binding: Omit<ReviewDocumentBinding, "round_id" | "id" | "position">,
 ): void {
-  db.prepare("INSERT INTO review_rounds (id, owner_kind, briefing_round_id) VALUES (?, 'briefing', ?)")
-    .run(roundId, roundId);
-  db.prepare(`INSERT INTO review_document_bindings
+  createReviewRound(db, roundId, { kind: "briefing", briefing_id: binding.document_key }, [
+    { ...binding, id: roundId, round_id: roundId, position: 0 },
+  ]);
+}
+
+export function createReviewRound(db: Db, roundId: string, owner: ReviewRoundOwner,
+  bindings: readonly ReviewDocumentBinding[],
+): void {
+  db.prepare(`INSERT INTO review_rounds (id, owner_kind, briefing_round_id, auth_request_id) VALUES (?, ?, ?, ?)`)
+    .run(roundId, owner.kind, owner.kind === "briefing" ? roundId : null,
+      owner.kind === "request_revision" ? owner.auth_request_id : null);
+  const insert = db.prepare(`INSERT INTO review_document_bindings
     (id, round_id, position, document_key, source_json, comparison_target_json)
-    VALUES (?, ?, 0, ?, ?, ?)`).run(roundId, roundId, binding.document_key, canonicalJson(binding.source),
+    VALUES (?, ?, ?, ?, ?, ?)`);
+  for (const binding of bindings) insert.run(binding.id, roundId, binding.position, binding.document_key, canonicalJson(binding.source),
     binding.comparison_target === null ? null : canonicalJson(binding.comparison_target));
 }
 
@@ -44,13 +56,20 @@ export function effectiveReviewAnnotations(db: Db, roundId: string, actorUserId:
   ).all(roundId, actorUserId) as ReviewAnnotation[];
 }
 
+export function reviewSubmissionAnnotations(db: Db, submissionId: string): ReviewAnnotation[] {
+  return db.prepare(`SELECT e.id AS annotation_event_id, e.document_binding_id, e.annotation_kind,
+    e.start_offset, e.end_offset, e.quote, e.body, e.replacement_text, e.created_at
+    FROM briefing_submission_annotations a JOIN briefing_annotation_events e ON e.id = a.annotation_event_id
+    WHERE a.submission_id = ? ORDER BY e.created_at, e.rowid`).all(submissionId) as ReviewAnnotation[];
+}
+
 export type ReviewAnnotationMutation =
   | { operation: "retract"; annotation_event_id: string }
   | (ReviewRange & ({ operation: "set"; kind: "comment"; body: string }
     | { operation: "set"; kind: "suggest_replacement"; body: string | null; replacement_text: string }));
 
 /** Append one event in the caller's write transaction, after checking owner access. */
-export function appendReviewAnnotation(db: Db, actor: ReviewActor, document: { id: string; source: string },
+export function appendReviewAnnotation(db: Db, actor: ReviewActor, document: { id: string; source: string; rangeKind?: "lines" },
   mutation: ReviewAnnotationMutation, now: number,
 ): { ok: true; id: string } | { ok: false; reason: "stale_annotation" | "quote_mismatch" | "annotation_noop" } {
   const id = randomUUID();
@@ -63,13 +82,16 @@ export function appendReviewAnnotation(db: Db, actor: ReviewActor, document: { i
     db.prepare(`INSERT INTO briefing_annotation_events
       (request_origin_json, id, round_id, briefing_id, document_binding_id, operation, retracts_event_id, actor_user_id, created_at)
       VALUES (?, ?, ?, ?, ?, 'retract', ?, ?, ?)`)
-      .run(requestOriginJson(), id, actor.roundId, actor.owner.briefing_id, document.id,
+      .run(requestOriginJson(), id, actor.roundId, actor.owner.kind === "briefing" ? actor.owner.briefing_id : null, document.id,
         mutation.annotation_event_id, actor.actorUserId, now);
     return { ok: true, id };
   }
   const { kind, start_offset: start, end_offset: end, quote, body } = mutation;
   const replacement = kind === "suggest_replacement" ? mutation.replacement_text : null;
-  if (end > document.source.length || document.source.slice(start, end) !== quote) {
+  const captured = document.rangeKind === "lines"
+    ? quoteReviewLines(document.source, start, end)
+    : end <= document.source.length ? document.source.slice(start, end) : undefined;
+  if (start < 0 || end <= start || captured !== quote) {
     return { ok: false, reason: "quote_mismatch" };
   }
   const duplicate = db.prepare(`SELECT 1 FROM briefing_annotation_events e
@@ -82,7 +104,7 @@ export function appendReviewAnnotation(db: Db, actor: ReviewActor, document: { i
     (request_origin_json, id, round_id, briefing_id, document_binding_id, operation, annotation_kind, start_offset,
      end_offset, quote, body, replacement_text, actor_user_id, created_at)
     VALUES (?, ?, ?, ?, ?, 'set', ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(requestOriginJson(), id, actor.roundId, actor.owner.briefing_id, document.id, kind, start, end,
+    .run(requestOriginJson(), id, actor.roundId, actor.owner.kind === "briefing" ? actor.owner.briefing_id : null, document.id, kind, start, end,
       quote, body, replacement, actor.actorUserId, now);
   return { ok: true, id };
 }
@@ -165,7 +187,7 @@ export function freezeReviewSubmission(
   const submissionId = randomUUID();
   db.prepare(`INSERT INTO briefing_submissions
     (request_origin_json, id, round_id, briefing_id, ordinal, supersedes_submission_id, actor_user_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(requestOriginJson(), submissionId, roundId, owner.briefing_id,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(requestOriginJson(), submissionId, roundId, owner.kind === "briefing" ? owner.briefing_id : null,
     ordinal, input.supersedesSubmissionId, actorUserId, now);
   const addAnswer = db.prepare(`INSERT INTO briefing_submission_answers
     (submission_id, round_id, actor_user_id, directive_instance_id, response_event_id, position)

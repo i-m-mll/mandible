@@ -9,6 +9,7 @@ mandible_auth_classify() {
     rejected) return 1 ;;
     withdrawn) return 1 ;;
     superseded) return 1 ;;
+    returned) return 1 ;;
     expired) return 1 ;;
     completed) return 0 ;;
     failed) return 1 ;;

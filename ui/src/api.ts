@@ -1,3 +1,5 @@
+import type { RequestReview } from '../../src/feedback/request-review';
+import type { ReviewAnnotationMutation } from '../../src/feedback/review-store';
 import type { CarriedReviewRange, ReviewDocumentReference } from "../../src/feedback/review-types";
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, OPERATOR_PROOF_WINDOW_MS, type DashboardBadgeCounts } from '../../src/contracts';
@@ -1026,9 +1028,35 @@ export async function getAuthRequestDetail(requestId: string): Promise<Record<st
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
 }
 
-export async function getAuthDiffFile(requestId: string, index: number, signal?: AbortSignal): Promise<DiffFilePair> {
-  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/files/${index}`, { signal });
+export async function getAuthDiffFile(requestId: string, index: number, signal?: AbortSignal, against?: string): Promise<DiffFilePair> {
+  const query = against ? `?against=${encodeURIComponent(against)}` : '';
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/files/${index}${query}`, { signal });
   return await response.json() as DiffFilePair;
+}
+
+export type AuthReviewPrecondition = { expected_revision: number | null; expected_custody_generation: number };
+export type AuthReviewProjection = RequestReview & { precondition: AuthReviewPrecondition; status: string };
+export async function getAuthReview(requestId: string, signal?: AbortSignal): Promise<AuthReviewProjection> {
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review`, { signal });
+  return await response.json();
+}
+
+export async function getAuthReviewComparison(requestId: string, against: string, signal: AbortSignal) {
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review/changes?against=${encodeURIComponent(against)}`, { signal });
+  return await response.json() as import('../../src/contracts').AuthChangeReport;
+}
+
+export async function annotateAuthReview(requestId: string, precondition: AuthReviewPrecondition,
+  document_binding_id: string, mutation: ReviewAnnotationMutation): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/annotations`, { ...precondition, document_binding_id, mutation });
+}
+
+export async function returnAuthReview(requestId: string, review: AuthReviewProjection, reason: string): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/return`, {
+    ...review.precondition, reason, round_id: review.round.id,
+    annotation_event_ids: review.annotations.filter(annotation => annotation.origin_request_id === requestId)
+      .map(annotation => annotation.annotation_event_id),
+  });
 }
 
 export type RequestResponsibilitySnapshot = {
@@ -1126,8 +1154,8 @@ export async function approveAuthRequest(requestId: string, lifecycleRevision: n
   }
 }
 
-export async function rejectAuthRequest(requestId: string): Promise<void> {
-  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/reject`);
+export async function rejectAuthRequest(requestId: string, reason?: string): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/reject`, { reason });
 }
 
 export async function retryAuthRequest(requestId: string): Promise<void> {

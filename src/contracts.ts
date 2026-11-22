@@ -223,7 +223,7 @@ export type SidebarOrderPreference = {
 
 export const AUTH_REQUEST_STATUSES = [
   "pending", "executing", "approved", "needs_rebase", "rejected", "withdrawn",
-  "superseded", "expired", "completed", "failed", "dismissed",
+  "superseded", "returned", "expired", "completed", "failed", "dismissed",
 ] as const;
 export type AuthRequestStatus = (typeof AUTH_REQUEST_STATUSES)[number];
 
@@ -234,6 +234,7 @@ export type AuthRequestOutcome =
   | "rejected"
   | "withdrawn"
   | "superseded"
+  | "returned"
   | "dismissed"
   | "expired"
   | null;
@@ -301,6 +302,8 @@ export function computeAuthRequestOutcome(status: AuthRequestStatus): AuthReques
       return "withdrawn";
     case "superseded":
       return "superseded";
+    case "returned":
+      return "returned";
     case "dismissed":
       return "dismissed";
     case "expired":

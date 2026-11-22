@@ -760,6 +760,11 @@
   color: var(--accent-green);
 }
 
+.status-pill--returned {
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+}
+
 .status-pill--rejected,
 .status-pill--failed {
   background: rgba(242, 107, 107, 0.2);
@@ -2021,4 +2026,43 @@
   font-family: var(--font-mono);
   color: var(--text-primary);
   word-break: break-word;
+}
+
+.auth-review {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.auth-review--with-comments {
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 28%);
+}
+
+.auth-review__content,
+.auth-review__sidebar {
+  min-width: 0;
+}
+
+.auth-review__sidebar {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+
+.auth-review__side,
+.auth-review__versions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.auth-review__dialog,
+.auth-review__dialog label {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.auth-review__dialog button {
+  justify-self: end;
 }

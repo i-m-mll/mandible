@@ -328,6 +328,16 @@
         ]
       }
     },
+    "auth.review.show": {
+      "route": ["auth", "review", "show"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "request","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
     "auth.withdraw": {
       "route": ["auth", "withdraw"],
       "grammar": {

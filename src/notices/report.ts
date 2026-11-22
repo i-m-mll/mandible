@@ -173,6 +173,8 @@ export function createOutcomeReporter(db: Db): OutcomeReporter {
     `SELECT reason FROM auth_request_lifecycle_events
      WHERE auth_request_id = ? AND event_type = 'rejected' ORDER BY revision DESC LIMIT 1`,
   );
+  const returnQuery = db.prepare(`SELECT reason, review_submission_id FROM auth_request_lifecycle_events
+    WHERE auth_request_id = ? AND event_type = 'returned' ORDER BY revision DESC LIMIT 1`);
   const actionsQuery = db.prepare(
     `SELECT a.kind, COALESCE(i.short_id, a.target_issue_ref) AS issue, a.state,
             json_extract(a.payload, '$.branch') AS branch, a.outcome_detail
@@ -189,8 +191,10 @@ export function createOutcomeReporter(db: Db): OutcomeReporter {
     const status = request.status;
     const completedMerge = status === "completed" && request.type === "merge";
 
+    const returned = returnQuery.get(request.id) as { reason: string | null; review_submission_id: string } | undefined;
     let reason: string | null = null;
     if (status === "rejected") reason = (rejectionQuery.get(request.id) as { reason: string | null } | undefined)?.reason ?? null;
+    else if (status === "returned") reason = returned?.reason ?? null;
     else if (status === "failed") reason = firstLine(request.error);
     else if (status === "superseded" && request.superseded_by_request_id) {
       reason = shortRef(db, "auth_request", request.superseded_by_request_id);
@@ -214,6 +218,7 @@ export function createOutcomeReporter(db: Db): OutcomeReporter {
       status,
       merge_commit: completedMerge ? extractSuccessfulMergeCommitSha(request.output) : null,
       reason,
+      ...(returned ? { review_submission_id: returned.review_submission_id } : {}),
       steps,
       left_open: completedMerge ? leftOpen(request.issue_accounting_json, actions) : [],
     };
