@@ -12,7 +12,7 @@ export function readBundleLaunch(context: ServiceInstallationContext): BundleLau
 export function bundleLoginSession(): string;
 export function bundleLaunchAllowed(preference: BundleLaunch | null, session: string | null, role?: ServiceKind): boolean;
 export function admitBundleOwner(context: BundleContext, release: BundleRelease, options?: { relocation?: boolean }): BundleAdmission;
-export function adoptBundleRelease(context: BundleContext, release: BundleRelease, expectedOwner: BundleOwner | null, acceptedRelease: string, options: { until?: number; verification: InstalledApplicationVerification }): BundleOwner;
+export function adoptBundleRelease(context: BundleContext, release: BundleRelease, expectedOwner: BundleOwner | null, acceptedRelease: string | undefined, options: { until?: number; verification: InstalledApplicationVerification }): BundleOwner;
 export function nativeServiceControl(context: BundleContext, operation: 'status' | 'register' | 'unregister' | 'settings', role: ServiceKind, options?: { until?: number }): NativeServiceObservation;
 export function nativeServiceControls(context: BundleContext, operation: 'status' | 'register' | 'unregister' | 'settings', roles: ServiceKind[], options?: { until?: number; release?: import('./installed-release.mjs').InstalledRelease }): Partial<Record<ServiceKind, NativeServiceObservation>>;
 export interface BundleRuntimeObservation {

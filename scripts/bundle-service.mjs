@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { serviceInstallationContext } from './service-definitions.mjs';
 import { readServiceConfiguration, servicePath } from './service-configuration.mjs';
 import { admitBundleOwner, readBundleLaunch, bundleLaunchAllowed, bundleLoginSession } from './bundle-services.mjs';
-import { assertInstalledApplicationVerification, installedRuntimeEnvironment, readInstalledRelease, releaseFile } from './installed-release.mjs';
+import { installedRuntimeEnvironment, readInstalledRelease, releaseFile } from './installed-release.mjs';
 import { prepareGatewayAdmin } from './gateway-admin.mjs';
 import { PRODUCTION_ORIGIN } from './canonical-origin.mjs';
 
@@ -29,8 +29,6 @@ if (fs.existsSync(activeFile)) {
 const preference = readBundleLaunch(context);
 const loginSession = preference.launchMode === 'manual' ? bundleLoginSession() : null;
 if (bundleLaunchAllowed(preference, loginSession, role)) {
-  assertInstalledApplicationVerification(root, admission.owner.verification);
-  const installationVerifiedAt = Date.now();
   const configuration = readServiceConfiguration(context).configuration;
   const runtime = releaseFile(root, release.native.bun, release.layout);
   const environment = installedRuntimeEnvironment(root, { HOME: context.accountHome,
@@ -48,7 +46,7 @@ if (bundleLaunchAllowed(preference, loginSession, role)) {
     Object.assign(process.env, { MANDIBLE_INSTANCE_ROLE: 'main', MANDIBLE_INSTANCE_ID: 'production',
       MANDIBLE_INSTALLATION_ID: main.installation_id, MANDIBLE_PUBLIC_ORIGIN: main.public_origin,
       MANDIBLE_BACKEND_GENERATION: release.provenance.commit, MANDIBLE_ALLOWED_EFFECTS: JSON.stringify(main.effectCeiling),
-      MANDIBLE_SERVICE_ENTERED_MS: String(serviceEnteredAt), MANDIBLE_INSTALLATION_VERIFIED_MS: String(installationVerifiedAt),
+      MANDIBLE_SERVICE_ENTERED_MS: String(serviceEnteredAt),
       MANDIBLE_WRITABLE_ROOTS: JSON.stringify(main.writableRoots), MANDIBLE_PORT: main.backendUrl.port,
       MANDIBLE_PID_FILE: configuration.environment.MANDIBLE_PID_FILE || path.join(context.accountHome, '.cache/mandible/production.pid'),
       MANDIBLE_STDERR_LOG_PATH: configuration.environment.MANDIBLE_STDERR_LOG_PATH || path.join(context.accountHome, '.cache/mandible/production-stderr.log') });

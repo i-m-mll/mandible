@@ -859,8 +859,8 @@ function daemonBootTrace(startupEpoch: string): (phase: string) => void {
   };
   const launcherPhases = [
     ["native_entry", timestamp(process.env.MANDIBLE_SERVICE_NATIVE_ENTERED_MS)],
-    ["service_entry", timestamp(process.env.MANDIBLE_SERVICE_ENTERED_MS)],
     ["installation_verified", timestamp(process.env.MANDIBLE_INSTALLATION_VERIFIED_MS)],
+    ["service_entry", timestamp(process.env.MANDIBLE_SERVICE_ENTERED_MS)],
   ] as const;
   const startedAt = timestamp(process.env.MANDIBLE_SERVICE_PROCESS_STARTED_MS)
     ?? launcherPhases[0][1] ?? performance.timeOrigin;
