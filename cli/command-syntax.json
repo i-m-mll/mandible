@@ -1337,7 +1337,7 @@
         "items": [
           {"kind": "argument","name": "group-ref","value": {"type": "string"}},
           {"kind": "optional","item": {"kind": "sequence","items": [
-            {"kind": "option","names": ["--apply"],"values": []},
+            {"kind": "option","names": ["--request"],"values": []},
             {"kind": "option","names": ["--expected-base"],"values": [{"kind": "argument","name": "bundle-ref","value": {"type": "string"}}]},
             {"kind": "option","names": ["--plan-digest"],"values": [{"kind": "argument","name": "sha256","value": {"type": "string"}}]}
           ]}},

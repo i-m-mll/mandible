@@ -1,3 +1,4 @@
+import { briefingConversionArguments, convertTrackedBriefingGroup } from "./feedback/convert-tracked-briefing-group.js";
 import { canonicalJson } from "./canonical-json.js";
 import { changeEditRef } from "./feedback/change-edit-git.js";
 import { collectAuthMergeReview } from "./auth-change-report.js";
@@ -24,7 +25,7 @@ import type { OperatorSigningAuthority } from "./operator-signing/authority.js";
 import { SignedActionRefused } from "./operator-signing/http.js";
 import { buildCommit, commitTime, defaultMergeMessage, signedCommitObject, writeCommitObject } from "./commit-object.js";
 import type { EvidenceMethod } from "./users/types.js";
-import { DOMAIN_EVENTS, OPERATOR_PROOF_WINDOW_MS, type AuthResolvedPayload } from "./contracts.js";
+import { BRIEFING_EVENTS, DOMAIN_EVENTS, OPERATOR_PROOF_WINDOW_MS, type AuthResolvedPayload } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { childOutput, observeChild } from "./child-observation.js";
@@ -4022,6 +4023,7 @@ export class AuthQueue {
   }
 
   private async planApprovalHooks(request: AuthRequest): Promise<void> {
+    if (briefingConversionArguments(request.command)) return;
     const observed = this.observationToken(request.id, request);
     const nativeHooks: AuthHook[] = [];
     if (isAuthMergeCommand(request)) {
@@ -6084,6 +6086,22 @@ export class AuthQueue {
     }
   }
 
+  private applyBriefingConversion(request: AuthRequest): AuthExecutionResult | null {
+    const conversion = briefingConversionArguments(request.command);
+    if (conversion === null) return null;
+    this.requireExternalEffects("Briefing group conversion");
+    if (request.type !== "config-change") {
+      throw new AuthQueueError("invalid_command", "Briefing group conversion requires a courtesy configuration request.");
+    }
+    const started_at = this.now();
+    const result = convertTrackedBriefingGroup(this.db, conversion, started_at);
+    if (result.changed) this.broadcast({ event: BRIEFING_EVENTS.groupConfigurationUpdated,
+      data: { group_id: result.plan.group_id, current_bundle_id: result.bundle_id } });
+    const output = JSON.stringify(result, null, 2);
+    this.handleOutput({ request_id: request.id, stream: "stdout", text: output, timestamp: this.now() });
+    return { exit_code: 0, signal: null, stdout: output, stderr: "", output, started_at, finished_at: this.now() };
+  }
+
   private executeInBackground(request: AuthRequest): Promise<void> {
     return withLedgerMutationActor({ actor_type: "system", attribution: systemAction() },
       () => withRequestOrigin(authRequestInitiatingOrigin(this.db, request.id),
@@ -6159,7 +6177,8 @@ export class AuthQueue {
                 .run(executedAt, executedAt, request.id);
               execution = this.executionToken(request.id);
               this.queuedAdmissions.delete(runPromise);
-              const result = await this.executor({
+              const nativeResult = this.applyBriefingConversion(request);
+              const result = nativeResult ?? await this.executor({
                 request_id: request.id,
                 command: request.command,
                 cwd: request.cwd,
@@ -6193,7 +6212,7 @@ export class AuthQueue {
               // Bug: 4afab83 — run post-auth hooks after successful execution,
               // BEFORE reporting completion. Hook failures don't change the
               // auth result (the merge already succeeded).
-              if (result.exit_code === 0 && (await this.successfulMergeEvidenceFailure(this.requireRequest(request.id))) === null) await this.runPostSuccessHooks(request);
+              if (!nativeResult && result.exit_code === 0 && (await this.successfulMergeEvidenceFailure(this.requireRequest(request.id))) === null) await this.runPostSuccessHooks(request);
               // Store result and broadcast auth:resolved BEFORE scheduling
               // any self-rebuild exit, while the daemon is still alive.
               (await this.storeExecutionResult(request.id, result, null, execution));
