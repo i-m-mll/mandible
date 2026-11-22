@@ -7,6 +7,8 @@ import { expect } from "vitest";
 import { ClientAuthenticator } from "../../src/client-auth/authenticator.js";
 import { setDb } from "../../src/db.js";
 import { inlineLedgerReader } from "../../src/ledger-reads/index.js";
+import { resolveInstanceInfo } from "../../src/instance-policy.js";
+import { registerClientAuthRoutes } from "../../src/routes/client-auth.js";
 import { registerAuthRoutes } from "../../src/routes/auth.js";
 import { registerIssueRoutes } from "../../src/routes/issues.js";
 import { registerWorkUnitRoutes } from "../../src/routes/work-units.js";
@@ -38,7 +40,7 @@ export interface OperatorCliRig {
   close: () => Promise<void>;
 }
 
-export async function operatorCliRig(): Promise<OperatorCliRig> {
+export async function operatorCliRig({ browserPage }: { browserPage?: string } = {}): Promise<OperatorCliRig> {
   const r = rig();
   setDb(r.db);
   createLedgerProject(r.db, fs.realpathSync(r.repo));
@@ -52,16 +54,21 @@ export async function operatorCliRig(): Promise<OperatorCliRig> {
   const token = auth.mintApiToken(r.operatorId).token;
   const router = new Router({ clientAuth: auth });
   const reader = inlineLedgerReader(() => r.db);
+  if (browserPage) registerClientAuthRoutes(router, auth);
   registerAuthRoutes(router, r.queue, reader);
   registerIssueRoutes(router, { getRepos: () => [], getRepoById: () => undefined, getBranches: () => [] } as never, undefined, reader);
   registerWorkUnitRoutes(router, {} as never, undefined, { authQueue: r.queue });
   const posts = new Map<string, number>();
   let gate: (() => Promise<unknown>) | null = null;
   const server = http.createServer(async (req, res) => {
+    if (browserPage && req.method === "GET" && req.url?.startsWith("/auth/")) {
+      res.writeHead(200, { "Content-Type": "text/html" }).end(browserPage);
+      return;
+    }
     if (req.url === "/api/instance") {
       const operations = router.operationCatalog("test");
       res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ instance: { role: "main", operational_mutations: "allow",
+      res.end(JSON.stringify({ instance: { ...resolveInstanceInfo({ env: {} }), operational_mutations: "allow",
         instance_id: operations.runtime.instance_id, backend_generation: operations.runtime.backend_generation }, operations }));
       return;
     }
