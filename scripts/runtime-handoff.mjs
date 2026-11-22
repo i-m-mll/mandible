@@ -258,7 +258,7 @@ function requireDesktopForObservation(journal) {
     identity: exact[0], confirmedAt: Date.now(), ...(!stage?.issuedAt ? { suppliedExternally: true } : {}) } } });
 }
 
-function replacementPaint(journal, effect, process) {
+function replacementPaint(journal, effect, process, startupEpoch) {
   const file = path.join(path.dirname(journalFile(journal.binding)), `desktop-paint-${effect.token}.json`);
   let evidence;
   try {
@@ -271,8 +271,9 @@ function replacementPaint(journal, effect, process) {
     if (error.code === "ENOENT") return null;
     throw error;
   }
-  if (evidence.schema !== "mandible-desktop-paint@1" || evidence.token !== effect.token
-      || evidence.pid !== process.pid || evidence.startup_epoch !== acceptedOperations.getStore().startupEpoch) {
+  if (typeof startupEpoch !== 'string' || !startupEpoch
+      || evidence.schema !== "mandible-desktop-paint@1" || evidence.token !== effect.token
+      || evidence.pid !== process.pid || evidence.startup_epoch !== startupEpoch) {
     throw observationFailure("desktop_evidence_mismatch", "The painted desktop belongs to another process, update, or daemon startup.");
   }
   return true;
@@ -300,7 +301,7 @@ function retirePredecessorDesktop(journal, effect) {
   }
 }
 
-async function restoreDesktop(journal) {
+async function restoreDesktop(journal, startupEpoch) {
   const binding = journal.binding;
   if (!binding.desktopWasRunning) return;
   if (!journal.attempt) throw new Error("Desktop effects require a current approved update attempt.");
@@ -353,7 +354,7 @@ async function restoreDesktop(journal) {
     assertObservationLease(journal);
     candidates = desktopIdentities(binding.nativeApp, launchArgument).filter(process => process.installedImage);
     if (candidates.length > 1) throw observationFailure("desktop_ambiguous", "More than one successor desktop is running.");
-    if (candidates.length === 1 && replacementPaint(journal, effect, candidates[0])) {
+    if (candidates.length === 1 && replacementPaint(journal, effect, candidates[0], startupEpoch)) {
       saveEffect(journal, "desktop", { identity: candidates[0], confirmedAt: Date.now() });
       retirePredecessorDesktop(journal, effect);
       saveEffect(journal, "desktop", { completedAt: Date.now() });
@@ -1420,7 +1421,7 @@ export async function activateStagedRuntime(journal, { prepare, install = instal
     const ready = await readControllerEvidence(journal, 'handoff-verify', false, { until: budget.until, awaitReady: true }, invokeControl);
     scope.startupEpoch ??= ready.process?.startupEpoch;
     saveEffect(journal, 'services', { readyAt: journal.attempt.effects.services.readyAt ?? now() });
-    await desktop(journal);
+    await desktop(journal, scope.startupEpoch);
     return observe(journal, { until: budget.until, control: invokeControl, prepared,
       context: scope.context, assertHeld: preparedLease(journal) });
   });

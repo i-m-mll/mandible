@@ -100,6 +100,8 @@ A successor can close an old mutator under the same ordered leases by fencing it
 
 Focused source tests cover interruption and continuation, preparation failure, receipt consumption and cleanup retry, native executable qualification, current health coverage, process continuity, and ancestor lease loss:
 
+The default test gate drives the activation worker's desktop restoration and final observation with a changed shell. A private staged install and journal are exercised with fake native process and service responses. The worker records the successor before retiring the predecessor and refuses to finish when the paint token or observed startup epoch differs, or when the verified epoch is empty.
+
 The admission regression runs the actual producer and worker in separate Bun processes against real journals and lifecycle locks. Explicit barriers cover publication before bootstrap, replay of the same attempt, consumer preparation, the read-only producer wait, live drain permission, failure and owner loss, and fenced replay. Only package, native registration, authority, and health effects are substituted; no separate lifecycle algorithm or full bootstrap is recreated.
 
 ```bash
