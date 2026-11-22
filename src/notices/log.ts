@@ -56,12 +56,12 @@ export class NoticeLog {
     private readonly now: () => number = Date.now,
   ) {
     // Session-addressed rows by session, for the main thread only; messages by exact agent.
-    this.owed = db.prepare(`SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, text, raised_at FROM notifications
+    this.owed = db.prepare(`SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, text, raised_at, rowid AS seq FROM notifications
       WHERE ?3 AND recipient_provider = ?1 AND recipient_id = ?2 AND delivered_at IS NULL AND recipient_kind = 'session' AND subject_kind <> 'message'
       UNION ALL
-      SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, text, raised_at FROM notifications
+      SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, text, raised_at, rowid AS seq FROM notifications
       WHERE responsible_agent_ref = ?4 AND delivered_at IS NULL AND subject_kind = 'message'
-      ORDER BY raised_at, id`);
+      ORDER BY raised_at, seq`);
     this.latest = db.prepare(`SELECT id, delivered_at, digest, recipient_provider, recipient_id, responsible_agent_ref
       FROM notifications WHERE subject_kind = 'auth_request' AND subject_id = ? ORDER BY raised_at DESC, rowid DESC LIMIT 1`);
   }
