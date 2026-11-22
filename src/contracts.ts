@@ -456,6 +456,7 @@ export type AuthChangeFile = {
   new_object?: GitFileObject | null;
   whitespace_only?: boolean;
   operator_edited?: boolean;
+  review_format?: "markdown" | "lines";
   bytes_before: number | null;
   bytes_after: number | null;
   language: string;
@@ -467,7 +468,7 @@ export type AuthChangeFile = {
 export type GitFileObject = { mode: string; oid: string };
 
 export type GitChangeFile = Pick<AuthChangeFile,
-  "old_path" | "new_path" | "change_kind" | "additions" | "deletions" | "old_object" | "new_object" | "whitespace_only" | "operator_edited"
+  "old_path" | "new_path" | "change_kind" | "additions" | "deletions" | "old_object" | "new_object" | "whitespace_only" | "operator_edited" | "review_format"
 >;
 
 export type DiffFileContents = { name: string; contents: string };
@@ -477,9 +478,8 @@ export type DiffFilePair =
   | { kind: "binary" };
 
 /**
- * Immutable server-captured inventory for one reviewed merge candidate.
- * Null on an AuthRequest means unavailable (legacy request or non-merge),
- * never an empty or freshly recomputed report.
+ * Immutable server-captured inventory for a merge candidate or direct commit.
+ * Null on an AuthRequest means no inventory was captured.
  */
 export type AuthChangeReport = {
   schema: "mandible-auth-change-report@1";

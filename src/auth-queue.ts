@@ -24,7 +24,7 @@ import type { OperatorSigningAuthority } from "./operator-signing/authority.js";
 import { SignedActionRefused } from "./operator-signing/http.js";
 import { buildCommit, commitTime, defaultMergeMessage, signedCommitObject, writeCommitObject } from "./commit-object.js";
 import type { EvidenceMethod } from "./users/types.js";
-import { DOMAIN_EVENTS, OPERATOR_PROOF_WINDOW_MS, type AuthResolvedPayload } from "./contracts.js";
+import { DOMAIN_EVENTS, OPERATOR_PROOF_WINDOW_MS, type AuthChangeReport, type AuthResolvedPayload } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { childOutput, observeChild } from "./child-observation.js";
@@ -4309,9 +4309,15 @@ export class AuthQueue {
       if (!verification.verified || verification.user_id !== operatorId || verification.credential_id !== credentialId) {
         throw new AuthQueueError("invalid_status", `The signed commit does not verify against the approval key (${verification.reason}). Nothing was committed.`);
       }
+      const id = randomUUID();
+      const changes = { ...staged.changes, comparison: { ...staged.changes.comparison, head_sha: commitSha } };
+      await retainReviewRevision(staged.checkout, id, changes.comparison);
       const published = await publishDirectCommit(staged, commitSha, message);
-      if (!published.ok) throw new AuthQueueError("invalid_status", published.error);
-      const request = this.recordDirectCommit({ staged, message, commitSha, operatorId, caller, credentialId, signature: signed.value.signature, fingerprint: verification.fingerprint, at });
+      if (!published.ok) {
+        await releaseUnpublishedReviewRevision(staged.checkout, id, changes.comparison);
+        throw new AuthQueueError("invalid_status", published.error);
+      }
+      const request = this.recordDirectCommit({ id, changes, staged, message, commitSha, operatorId, caller, credentialId, signature: signed.value.signature, fingerprint: verification.fingerprint, at });
       this.broadcast({ event: DOMAIN_EVENTS.AUTH_UPDATED, data: { request } });
       this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(request) });
       return { request, commitSha };
@@ -4320,20 +4326,20 @@ export class AuthQueue {
 
   /** The completed record of a published direct commit, with the same evidence chain as a signed merge. */
   private recordDirectCommit(input: {
+    id: string; changes: AuthChangeReport;
     staged: StagedCommit; message: string; commitSha: string; operatorId: string; caller: ApprovalCaller;
     credentialId: string; signature: string; fingerprint: string | null; at: number;
   }): AuthRequest {
-    const { staged, message, commitSha, operatorId, caller, credentialId, at } = input;
-    const id = randomUUID();
+    const { id, changes, staged, message, commitSha, operatorId, caller, credentialId, at } = input;
     const now = this.now();
     return this.db.transaction(() => {
       this.db.prepare(
         `INSERT INTO auth_requests (id, session_id, requested_by_user_id, requester_evidence_method, type, command, title, cwd,
-          diff_summary, commit_message, repo, base_branch, files_changed, additions, deletions, execution_mode, status,
+          change_report_json, commit_message, repo, base_branch, files_changed, additions, deletions, execution_mode, status,
           created_at, updated_at, expires_at, output, target_repo_root)
         VALUES (?, NULL, ?, ?, 'commit', 'mandible commit', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'daemon', 'pending', ?, ?, ?, '', ?)`,
-      ).run(id, operatorId, caller.evidence_method, message.split("\n", 1)[0]!, staged.checkout, staged.diff, message, staged.repo,
-        staged.branch, staged.files, staged.additions, staged.deletions, at, at, at, staged.repoRoot);
+      ).run(id, operatorId, caller.evidence_method, message.split("\n", 1)[0]!, staged.checkout, JSON.stringify(changes), message, staged.repo,
+        staged.branch, changes.totals.files, changes.totals.additions, changes.totals.deletions, at, at, at, staged.repoRoot);
       this.appendLifecycleEvent({ requestId: id, eventType: "submitted", priorStatus: null, nextStatus: "pending",
         actor: { user_id: operatorId, evidence_method: caller.evidence_method, credential_id: caller.credential_id }, occurredAt: at });
       const approval = addAttributionEvidence(this.db, {

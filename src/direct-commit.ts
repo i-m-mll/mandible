@@ -13,6 +13,8 @@ import path from "node:path";
 import { authGitEnv } from "./auth-context.js";
 import { observeChild } from "./child-observation.js";
 import type { Db } from "./db.js";
+import { collectAuthMergeReview } from "./auth-change-report.js";
+import type { AuthChangeReport } from "./contracts.js";
 import { buildProtectedBranchGuardProjection } from "./protected-branch-guard.js";
 
 /** A checkout on a protected branch whose index differs from the branch tip. */
@@ -25,16 +27,10 @@ export interface StagedCommit {
   branch: string;
   parent: string;
   tree: string;
-  files: number;
-  additions: number;
-  deletions: number;
-  /** Unified diff of the staged changes, truncated like a merge request's. */
-  diff: string;
+  changes: AuthChangeReport;
 }
 
 export type StagedCommitResult = { ok: true; value: StagedCommit } | { ok: false; error: string };
-
-const MAX_DIFF_BYTES = 102_400;
 
 async function git(cwd: string, args: string[]): Promise<{ ok: true; stdout: string } | { ok: false; stderr: string }> {
   const result = await observeChild("git", args, {
@@ -73,13 +69,11 @@ export async function readStagedCommit(db: Db, cwd: string): Promise<StagedCommi
   const parentTree = await git(checkout, ["rev-parse", `${parentSha}^{tree}`]);
   if (!parentTree.ok) return refuse(`Cannot read ${branch}: ${parentTree.stderr}`);
   if (parentTree.stdout.trim() === treeSha) return refuse("No changes are staged.");
-  const numstat = await git(checkout, ["diff-tree", "-r", "--numstat", parentSha, treeSha]);
-  const diff = await git(checkout, ["diff-tree", "-r", "-p", "--full-index", parentSha, treeSha]);
-  if (!numstat.ok || !diff.ok) return refuse("Cannot read the staged changes.");
-  const rows = numstat.stdout.split("\n").filter(Boolean).map((line) => line.split("\t"));
-  const count = (column: 0 | 1) => rows.reduce((sum, row) => sum + (Number.parseInt(row[column] ?? "", 10) || 0), 0);
-  const bytes = Buffer.byteLength(diff.stdout);
   const repoRoot = path.dirname(realCommonDir);
+  const changes = await collectAuthMergeReview(checkout, {
+    base_sha: parentSha, merge_base_sha: parentSha, head_sha: treeSha,
+  });
+  if (!changes.ok) return refuse(changes.error.message);
   return {
     ok: true,
     value: {
@@ -89,12 +83,7 @@ export async function readStagedCommit(db: Db, cwd: string): Promise<StagedCommi
       branch,
       parent: parentSha,
       tree: treeSha,
-      files: rows.length,
-      additions: count(0),
-      deletions: count(1),
-      diff: bytes > MAX_DIFF_BYTES
-        ? `${Buffer.from(diff.stdout).subarray(0, MAX_DIFF_BYTES).toString("utf8")}\n... [truncated: ${bytes} bytes total, showing first ${MAX_DIFF_BYTES}]`
-        : diff.stdout,
+      changes: changes.value.report,
     },
   };
 }
@@ -120,7 +109,8 @@ export function cleanCommitMessage(raw: string): string | null {
 export function directCommitReason(staged: StagedCommit, message: string): string {
   const subject = message.split("\n", 1)[0]!;
   const shown = subject.length > 72 ? `${subject.slice(0, 71)}…` : subject;
-  const files = `${staged.files} ${staged.files === 1 ? "file" : "files"} changed`;
+  const count = staged.changes.totals.files;
+  const files = `${count} ${count === 1 ? "file" : "files"} changed`;
   return `commit directly to ${staged.branch} of ${staged.repo}: "${shown}" (${files})`;
 }
 

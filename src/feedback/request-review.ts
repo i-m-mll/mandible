@@ -44,8 +44,9 @@ export function requestReviewRound(request: AuthRequest): RequestReviewRound {
     // Older captured inventories lack blob IDs. Those still render through the
     // pinned file viewer but don't identify two exact comment targets.
     if (file.old_object === undefined || file.new_object === undefined) return;
+    // Older rounds retain the anchor coordinate system captured with their report.
     const format = file.additions === null || file.deletions === null ? "binary"
-      : /\.(?:md|markdown)$/i.test(file.new_path ?? file.old_path ?? "") ? "markdown" : "lines";
+      : file.review_format ?? (/\.(?:md|markdown)$/i.test(file.new_path ?? file.old_path ?? "") ? "markdown" : "lines");
     const before: RequestReviewFile = { kind: "request_file", side: "before", file_index: index, path: file.old_path,
       commit: report.comparison.merge_base_sha, blob: file.old_object, format };
     const after: RequestReviewFile = { kind: "request_file", side: "after", file_index: index, path: file.new_path,

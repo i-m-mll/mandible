@@ -8,6 +8,7 @@ import { narrativeDraftSpan, narrativeHunkPair, type NarrativeHunk, type TextSpa
 import type { RequestReviewComment } from '../../../src/feedback/request-review';
 import type { ReviewRange, ReviewThreadMutation } from '../../../src/feedback/review-types';
 import type { AuthChangeReport, DiffFilePair } from '../../../src/contracts';
+import { isMarkdownFile } from '../../../src/presentation/markdown-file';
 import { DOMAIN_EVENTS } from '../../../src/contracts';
 import {
   annotateAuthReview, answerAuthReview, freezeAuthReview, getAuthReview, getAuthReviewComparison, mutateAuthReviewThread, returnAuthReview,
@@ -420,10 +421,10 @@ export function AuthReviewTextFile({ review, pair, index, view, section }: {
   view: Omit<ChangeTextFileView, 'defaultContent'> & { defaultContent?: ComponentChildren };
   section?: NarrativeHunk;
 }) {
-  const markdown = /\.(?:md|markdown)$/i.test(pair.after.name);
   const shown = section ? narrativeHunkPair(pair, section) : pair;
   const bindings = review.data?.round.bindings ?? [];
   const binding = bindings.find(({ source }) => source.kind === 'request_file' && source.file_index === index && source.side === 'after');
+  const markdown = binding?.source.kind === 'request_file' ? binding.source.format === 'markdown' : isMarkdownFile(pair.after.name);
   const pinned = !section
     ? (markdown ? <AuthReviewMarkdownChange review={review} pair={pair} index={index} wholeFile={view.wholeFile} /> : view.defaultContent)
     : markdown
