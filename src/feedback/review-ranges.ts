@@ -1,5 +1,5 @@
 import { diffChars, diffLines } from "diff";
-import type { CarriedReviewRange, ReviewRange } from "./review-types.js";
+import type { ArtifactDraftStandingNote, CarriedReviewRange, ReviewRange, ReviewRangeKind } from "./review-types.js";
 
 type MatchingSpan = { before: number; after: number; length: number };
 
@@ -66,10 +66,27 @@ export function quoteReviewLines(source: string, start: number, end: number): st
   return lines.slice(start, end).join("\n") + (end < lines.length || source.endsWith("\n") ? "\n" : "");
 }
 
+export function reviewRangeMatches(source: string, { start_offset: start, end_offset: end, quote }: ReviewRange,
+  kind: ReviewRangeKind): boolean {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || !quote) return false;
+  return kind === "lines" ? quoteReviewLines(source, start, end) === quote
+    : end <= source.length && source.slice(start, end) === quote;
+}
+
 export function carryReviewLines(before: string, after: string, anchor: ReviewRange): CarriedReviewRange {
+  return carryReviewLineRanges(before, after)(anchor);
+}
+
+export function carryReviewLineRanges(before: string, after: string): (range: ReviewRange) => CarriedReviewRange {
+  const carry = carryReviewRanges(before, after);
+  return (anchor) => carryReviewLineRange(before, after, carry, anchor);
+}
+
+function carryReviewLineRange(before: string, after: string, carry: ReturnType<typeof carryReviewRanges>,
+  anchor: ReviewRange): CarriedReviewRange {
   if (quoteReviewLines(before, anchor.start_offset, anchor.end_offset) !== anchor.quote) return { status: "detached" };
   const start = anchor.start_offset === 0 ? 0 : quoteReviewLines(before, 0, anchor.start_offset)!.length;
-  const carried = carryReviewRanges(before, after)({
+  const carried = carry({
     start_offset: start, end_offset: start + anchor.quote.length, quote: anchor.quote,
   });
   if (carried.status === "detached") return carried;
@@ -77,4 +94,49 @@ export function carryReviewLines(before: string, after: string, anchor: ReviewRa
   const endLine = startLine + anchor.end_offset - anchor.start_offset;
   if (quoteReviewLines(after, startLine, endLine) !== anchor.quote) return { status: "detached" };
   return { ...carried, start_offset: startLine, end_offset: endLine };
+}
+
+/** Artifacts and briefings share offsets in decoded text with the UTF-8 BOM omitted. */
+export const artifactReviewSource = (source: string): string => source.replace(/^\uFEFF/, "");
+
+export function carryReviewRangeKind(before: string, after: string, kind: ReviewRangeKind) {
+  if (before === after) return (range: ReviewRange): CarriedReviewRange => ({ ...range, status: "preserved" });
+  return (kind === "lines" ? carryReviewLineRanges : carryReviewRanges)(before, after);
+}
+
+export function reviewRangeFromSelection(source: string, start: number, end: number, kind: ReviewRangeKind): ReviewRange | null {
+  if (start >= end || start < 0 || end > source.length) return null;
+  if (kind === "text") return { start_offset: start, end_offset: end, quote: source.slice(start, end) };
+  const first = source.slice(0, start).split("\n").length - 1;
+  const next = source.slice(0, end - 1).split("\n").length;
+  const quote = quoteReviewLines(source, first, next);
+  return quote ? { start_offset: first, end_offset: next, quote } : null;
+}
+
+export function reviewSelectionFromRange(source: string, range: ReviewRange, kind: ReviewRangeKind) {
+  if (!reviewRangeMatches(source, range, kind)) return null;
+  const start = kind === "text" ? range.start_offset
+    : range.start_offset === 0 ? 0 : quoteReviewLines(source, 0, range.start_offset)!.length;
+  return { start, end: start + range.quote.length };
+}
+
+export function carryArtifactDraftNotes(before: string, after: string, notes: ArtifactDraftStandingNote[]) {
+  if (before === after || !notes.length) return notes;
+  const old = artifactReviewSource(before);
+  const next = artifactReviewSource(after);
+  const maps = new Map<ReviewRangeKind, ReturnType<typeof carryReviewRangeKind>>();
+  return notes.map(note => {
+    if (note.anchor.status === "detached") {
+      const end = note.range_kind === "lines" ? note.end_offset - note.start_offset : note.quote.length;
+      return { ...note, anchor: carryReviewRangeKind(note.quote, next, note.range_kind)({
+        start_offset: 0, end_offset: end, quote: note.quote,
+      }) };
+    }
+    let carry = maps.get(note.range_kind);
+    if (!carry) {
+      carry = carryReviewRangeKind(old, next, note.range_kind);
+      maps.set(note.range_kind, carry);
+    }
+    return { ...note, anchor: carry(note.anchor) };
+  });
 }

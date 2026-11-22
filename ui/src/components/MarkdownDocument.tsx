@@ -94,8 +94,12 @@ export function MarkdownDocument(props: MarkdownDocumentProps) {
   return <DocumentSurface {...props} syntax="markdown" />;
 }
 
+export function PlainTextDocument(props: MarkdownDocumentProps) {
+  return <DocumentSurface {...props} syntax="plain" />;
+}
+
 export function PlainTextEditor(props: Pick<MarkdownDocumentProps, 'value' | 'onChange' | 'ariaLabel'>) {
-  return <DocumentSurface {...props} syntax="plain" readOnly={false} />;
+  return <PlainTextDocument {...props} readOnly={false} />;
 }
 
 function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | 'plain' }) {

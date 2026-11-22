@@ -1,3 +1,7 @@
+import { artifactReviewSource, carryArtifactDraftNotes, carryReviewRangeKind } from '../../../src/feedback/review-ranges';
+import { useArtifactStandingNotes, invalidateArtifactStandingNotes } from '../hooks/useArtifactStandingNotes';
+import { useStandingNoteReview } from '../components/shared/StandingNoteReview';
+import { ContextualAction } from '../components/shared/ContextualAction';
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
 import { resolvedArtifactRecord } from "../../../src/artifact-identity.js";
@@ -38,6 +42,8 @@ import {
   getArtifactDraft,
   getLedgerIssueDetail,
   openArtifactExternally,
+  postArtifactStandingNote,
+  postArtifactDraftStandingNote,
   publishArtifactDraft,
   rebaseArtifactDraft,
   saveArtifactDraft,
@@ -62,7 +68,7 @@ import {
   issueRouteHref,
   versionDetailHref,
 } from '../resource-refs';
-import { MarkdownDocument, PlainTextEditor, isLargeMarkdownDocument } from '../components/MarkdownDocument';
+import { MarkdownDocument, PlainTextDocument, isLargeMarkdownDocument } from '../components/MarkdownDocument';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
@@ -656,6 +662,7 @@ export function ArtifactDetail({
     ['Created', formatTime(artifact.created_at)],
   ].filter(([, value]) => Boolean(value)) as MetadataRow[];
   const locatorRows = artifact.aliases ?? [];
+  const [lineSourceOpen, setLineSourceOpen] = useState(false);
   const markdownArtifact = content?.status === 'available' && content.kind === 'markdown';
   const active = useViewActive();
   const markdownText = useQuery({
@@ -678,6 +685,31 @@ export function ArtifactDetail({
   const [draftError, setDraftError] = useState<string | null>(null);
   const [draftStatus, setDraftStatus] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
+  const editing = editMode && draft !== null;
+  const rangeKind = markdownArtifact ? 'text' : 'lines';
+  const lineArtifact = content?.status === 'available'
+    && (content.kind === 'text' || content.kind === 'json' || content.kind === 'html');
+  const showLineSource = lineArtifact && (content.kind === 'text' || content.kind === 'json' && jsonView === 'raw'
+    || lineSourceOpen) && Boolean(selectedVersion);
+  const reviewVersionRef = editing ? draft.base_version_id : selectedVersion?.id ?? null;
+  const reviewSource = useQuery({ ...artifactTextOptions(reviewVersionRef),
+    enabled: active && (showLineSource || editing),
+  }, queryClient);
+  const readReviewSource = editing ? reviewSource.data
+    : markdownArtifact ? markdownText.data : reviewSource.data;
+  const visibleReviewSource = editing ? draftValue : readReviewSource ?? '';
+  const noteQuery = useArtifactStandingNotes(active && (markdownArtifact || showLineSource || editing) ? reviewVersionRef : null);
+  const visibleNotes = useMemo(() => {
+    const notes = noteQuery.data?.notes ?? [];
+    if (!editMode || !draft) return notes;
+    const carry = readReviewSource === undefined ? null
+      : carryReviewRangeKind(artifactReviewSource(readReviewSource), artifactReviewSource(draftValue), rangeKind);
+    const standing = notes.map(note => note.anchor.status === 'detached' || !carry ? note
+      : { ...note, anchor: carry(note.anchor) });
+    const staged = carryArtifactDraftNotes(draft.content, draftValue, draft.standing_notes ?? [])
+      .map(note => ({ ...note, can_edit: Boolean(noteQuery.data?.can_write) }));
+    return [...standing, ...staged];
+  }, [noteQuery.data, editMode, draft, readReviewSource, draftValue, rangeKind]);
   const [diffOpen, setDiffOpen] = useState(false);
   const markdownComparison = useQuery({
     ...artifactTextOptions(previousVersion?.id ?? null),
@@ -690,11 +722,10 @@ export function ArtifactDetail({
   const [briefingCreating, setBriefingCreating] = useState(false);
   const [briefingError, setBriefingError] = useState<string | null>(null);
   const [versionDiff, setVersionDiff] = useState<ArtifactDiffResult | null>(null);
-  const latestDraftRef = useRef<ArtifactDraftRecord | null>(null);
-  latestDraftRef.current = draft;
 
   useEffect(() => {
     setJsonView('formatted');
+    setLineSourceOpen(false);
   }, [seriesRefValue]);
 
   useEffect(() => {
@@ -926,8 +957,7 @@ export function ArtifactDetail({
   const publishDraft = useCallback(async (allowStale: boolean) => {
     if (!seriesRefValue) return;
     const saved = await saveDraftNow();
-    const activeDraft = saved ?? latestDraftRef.current;
-    if (!activeDraft) return;
+    if (!saved) return;
     setDraftSaving(true);
     try {
       const published = await publishArtifactDraft({
@@ -942,6 +972,7 @@ export function ArtifactDetail({
       setDraftStatus(`Published v${published.result.artifact_version.version_no}`);
       setDraftError(null);
       onVersionPublished?.(published);
+      void invalidateArtifactStandingNotes();
     } catch (err) {
       setDraftError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -951,7 +982,8 @@ export function ArtifactDetail({
 
   const rebaseDraft = useCallback(async () => {
     if (!seriesRefValue) return;
-    await saveDraftNow();
+    const saved = await saveDraftNow();
+    if (!saved) return;
     setDraftSaving(true);
     try {
       const rebased = await rebaseArtifactDraft(seriesRefValue);
@@ -965,6 +997,30 @@ export function ArtifactDetail({
       setDraftSaving(false);
     }
   }, [saveDraftNow, seriesRefValue]);
+
+  const canWriteNotes = Boolean(noteQuery.data?.can_write) && !draftSaving;
+  const noteReview = useStandingNoteReview({
+    scopeKey: editing ? draft.id : reviewVersionRef ?? '', source: visibleReviewSource,
+    rangeKind, notes: visibleNotes, stripBom: true,
+    onCreate: canWriteNotes && reviewVersionRef ? async (range, body, captured) => {
+      if (editing) {
+        const saved = await saveDraftNow();
+        if (!saved || saved.content !== captured) throw new Error('The draft changed before the note could be saved.');
+        setDraft(await postArtifactDraftStandingNote(seriesRefValue, { kind: 'add', range, body }, captured));
+      } else {
+        await postArtifactStandingNote(reviewVersionRef, { kind: 'add', range, body });
+        await invalidateArtifactStandingNotes();
+      }
+    } : undefined,
+    onMutate: canWriteNotes && reviewVersionRef ? async (id, mutation) => {
+      if (editing && draft.standing_notes?.some(note => note.id === id)) {
+        setDraft(await postArtifactDraftStandingNote(seriesRefValue, { ...mutation, id }));
+      } else {
+        await postArtifactStandingNote(reviewVersionRef, { ...mutation, id });
+        await invalidateArtifactStandingNotes();
+      }
+    } : undefined,
+  });
 
   const overlays = (
     <>
@@ -1271,33 +1327,41 @@ export function ArtifactDetail({
               <button type="button" className="artifact-detail__inline-button" onClick={() => void discardDraft()}>Discard</button>
             </div>
           )}
-          {markdownArtifact ? (
-            markdownText.data !== undefined || (editMode && draft) ? (
-              <MarkdownDocument
-                key={seriesRefValue || immutableArtifactRef}
-                value={editMode && draft ? draftValue : markdownText.data ?? ''}
-                ariaLabel="Artifact Markdown document"
-                readOnly={!editMode || !draft}
-                onChange={setDraftValue}
-                comparison={diffOpen ? markdownComparison.data : undefined}
-              />
-            ) : null
-          ) : editMode && draft ? (
-            <PlainTextEditor
-              key={seriesRefValue}
-              value={draftValue}
-              ariaLabel="Artifact draft text"
-              onChange={setDraftValue}
-            />
-          ) : (
-            <PreviewSection
-              preview={preview}
-              content={content}
-              contentLoading={contentLoading}
-              contentError={contentError}
-              jsonView={jsonView}
-            />
-          )}
+          {(content?.kind === 'html' || content?.kind === 'json' && !(preview?.kind === 'json' && preview.autoFormatted)) && selectedVersion && !editing && <ContextualAction
+            aria-label={lineSourceOpen ? 'Show preview' : 'Show text source'}
+            title={lineSourceOpen ? 'Show preview' : 'Show text source'}
+            onClick={() => setLineSourceOpen(value => !value)}><Icon name="terminal" /></ContextualAction>}
+          {editing || (markdownArtifact || showLineSource) && readReviewSource !== undefined ? (
+            <>
+              <div className="briefing-document__review-toolbar">{noteReview.toolbar}</div>
+              <div className="artifact-note-review">
+                {markdownArtifact ? <MarkdownDocument
+                  {...noteReview.documentProps}
+                  key={seriesRefValue || immutableArtifactRef}
+                  value={visibleReviewSource}
+                  ariaLabel="Artifact Markdown document"
+                  readOnly={!editing}
+                  onChange={setDraftValue}
+                  comparison={diffOpen ? markdownComparison.data : undefined}
+                /> : <PlainTextDocument
+                  {...noteReview.documentProps}
+                  key={seriesRefValue || immutableArtifactRef}
+                  value={visibleReviewSource}
+                  ariaLabel="Artifact text"
+                  readOnly={!editing}
+                  onChange={setDraftValue}
+                />}
+                {reviewVersionRef && noteReview.sidebar}
+              </div>
+              {noteReview.composer}
+            </>
+          ) : <PreviewSection
+            preview={markdownArtifact ? null : preview}
+            content={content}
+            contentLoading={contentLoading}
+            contentError={contentError}
+            jsonView={jsonView}
+          />}
         </ArtifactEditorSection>
         {!markdownArtifact && diffOpen && selectedVersion && previousVersion && (
             <section className="artifact-detail__section artifact-detail__diff" aria-label="Artifact version diff">

@@ -1,5 +1,5 @@
 import { SPACE_DOCUMENT_SCHEMA_SQL } from "./spaces/document-schema.js";
-import { REVIEW_ROUND_SCHEMA_SQL, REVIEW_EVIDENCE_SCHEMA_SQL, REVIEW_THREAD_SCHEMA_SQL } from "./feedback/review-schema.js";
+import { STANDING_REVIEW_ROUND_SCHEMA_SQL, REVIEW_EVIDENCE_SCHEMA_SQL, REVIEW_THREAD_SCHEMA_SQL, STANDING_NOTE_SCHEMA_SQL } from "./feedback/review-schema.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
 import { INTERFACE_NOTES_SCHEMA_SQL } from "./interface-notes/schema.js";
@@ -37,7 +37,7 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 251;
+export const BASELINE_SCHEMA_VERSION = 252;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
@@ -936,9 +936,10 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   TASK_COMMAND_EVENTS_V2_SQL,
   ...TASK_COMMAND_V2_INDEX_SQL.slice(1),
   ...BRIEFING_OWNER_SCHEMA_SQL,
-  ...REVIEW_ROUND_SCHEMA_SQL,
+  ...STANDING_REVIEW_ROUND_SCHEMA_SQL,
   ...REVIEW_EVIDENCE_SCHEMA_SQL,
   ...REVIEW_THREAD_SCHEMA_SQL,
+  ...STANDING_NOTE_SCHEMA_SQL,
   ...CONVERSATION_SOURCE_SCHEMA_SQL,
   ...ARTIFACT_SOURCE_SCHEMA_SQL,
   ...HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL,

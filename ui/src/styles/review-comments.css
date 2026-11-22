@@ -60,3 +60,20 @@
 .review-range {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
+
+.artifact-note-review {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+}
+
+.artifact-note-review:has(> .review-comments [aria-expanded="true"]) {
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 27%);
+}
+
+@media (max-width: 800px) {
+  .artifact-note-review:has(> .review-comments [aria-expanded="true"]) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -220,12 +220,6 @@ export const REVIEW_ROUND_MIGRATION_SQL = [
 
 const requestRoundIndex = "CREATE INDEX idx_review_rounds_auth_request ON review_rounds(auth_request_id)";
 
-export const REVIEW_ROUND_SCHEMA_SQL = [
-  reviewRoundTable(requestAwareOwner),
-  ...REVIEW_ROUND_V248.slice(1),
-  requestRoundIndex,
-];
-
 export const REQUEST_REVIEW_ROUND_MIGRATION_SQL = [
   "CREATE TEMP TABLE old_review_rounds AS SELECT id, owner_kind, briefing_round_id FROM review_rounds",
   "DROP TABLE review_rounds",
@@ -263,4 +257,65 @@ export const REVIEW_THREAD_SCHEMA_SQL = [
   ...["UPDATE", "DELETE"].map(operation => `CREATE TRIGGER review_thread_events_immutable_${operation.toLowerCase()}
     BEFORE ${operation} ON review_thread_events
     BEGIN SELECT RAISE(ABORT, 'Review thread events are immutable'); END`),
+];
+
+const standingOwner = `
+    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('briefing', 'request_revision', 'standing_document')),
+    briefing_round_id TEXT UNIQUE REFERENCES briefing_rounds(id) ON DELETE RESTRICT,
+    auth_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT,
+    standing_document_key TEXT,
+    CHECK((owner_kind = 'briefing' AND briefing_round_id IS id AND auth_request_id IS NULL AND standing_document_key IS NULL)
+      OR (owner_kind = 'request_revision' AND briefing_round_id IS NULL AND auth_request_id IS NOT NULL AND standing_document_key IS NULL)
+      OR (owner_kind = 'standing_document' AND briefing_round_id IS NULL AND auth_request_id IS NULL
+        AND standing_document_key IS NOT NULL AND standing_document_key != ''))
+`;
+
+const standingIndex = "CREATE INDEX idx_review_rounds_standing_document ON review_rounds(standing_document_key) WHERE standing_document_key IS NOT NULL";
+const standingNoteColumns = [
+  "standing_note_root_id TEXT REFERENCES briefing_annotation_events(id) ON DELETE RESTRICT",
+  "standing_note_resolved INTEGER NOT NULL DEFAULT 0 CHECK(standing_note_resolved IN (0, 1))",
+  "standing_note_draft_origin TEXT CHECK(standing_note_draft_origin IS NULL OR json_type(standing_note_draft_origin) = 'object')",
+] as const;
+
+export const STANDING_REVIEW_ROUND_SCHEMA_SQL = [
+  reviewRoundTable(standingOwner),
+  ...REVIEW_ROUND_V248.slice(1),
+  requestRoundIndex,
+  standingIndex,
+];
+
+export const STANDING_NOTE_SCHEMA_SQL = [
+  ...standingNoteColumns.map((column) => `ALTER TABLE briefing_annotation_events ADD COLUMN ${column}`),
+  "ALTER TABLE artifact_drafts ADD COLUMN standing_notes_json TEXT NOT NULL DEFAULT '[]' CHECK(json_type(standing_notes_json) = 'array')",
+  "CREATE INDEX idx_standing_note_revision ON briefing_annotation_events(standing_note_root_id) WHERE standing_note_root_id IS NOT NULL",
+  `CREATE TRIGGER briefing_submissions_no_standing_document BEFORE INSERT ON briefing_submissions
+    WHEN EXISTS (SELECT 1 FROM review_rounds WHERE id = NEW.round_id AND owner_kind = 'standing_document')
+    BEGIN SELECT RAISE(ABORT, 'Standing notes do not belong to submissions'); END`,
+  `CREATE TRIGGER standing_note_revision_owner BEFORE INSERT ON briefing_annotation_events
+    WHEN NEW.standing_note_root_id IS NOT NULL OR NEW.standing_note_resolved != 0
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM briefing_annotation_events root JOIN review_rounds r ON r.id = root.round_id
+        WHERE root.id = NEW.standing_note_root_id AND root.standing_note_root_id IS NULL
+          AND r.owner_kind = 'standing_document' AND root.operation = 'set' AND NEW.operation = 'set'
+          AND root.annotation_kind = 'comment' AND NEW.annotation_kind = 'comment'
+          AND root.round_id = NEW.round_id AND root.document_binding_id = NEW.document_binding_id
+          AND root.actor_user_id = NEW.actor_user_id AND root.start_offset = NEW.start_offset
+          AND root.end_offset = NEW.end_offset AND root.quote = NEW.quote
+          AND root.standing_note_draft_origin IS NEW.standing_note_draft_origin
+      ) THEN RAISE(ABORT, 'Standing note revision must retain the original author and range') END;
+    END`,
+];
+
+export const STANDING_REVIEW_ROUND_MIGRATION_SQL = [
+  "CREATE TEMP TABLE old_standing_review_rounds AS SELECT id, owner_kind, briefing_round_id, auth_request_id FROM review_rounds",
+  "DROP TABLE review_rounds",
+  reviewRoundTable(standingOwner),
+  `INSERT INTO review_rounds(id, owner_kind, briefing_round_id, auth_request_id)
+    SELECT id, owner_kind, briefing_round_id, auth_request_id FROM old_standing_review_rounds`,
+  "DROP TABLE old_standing_review_rounds",
+  ...roundTriggers,
+  requestRoundIndex,
+  standingIndex,
+  ...STANDING_NOTE_SCHEMA_SQL,
 ];

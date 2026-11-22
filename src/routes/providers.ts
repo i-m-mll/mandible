@@ -1,3 +1,6 @@
+import { getUserById } from "../users/store.js";
+import { appendStandingNote, mutateStandingNote, parseStandingNoteMutation, parseStandingNoteRange } from "../feedback/standing-notes.js";
+import { artifactStandingNoteRecords, artifactStandingNoteSource, readArtifactStandingNotes, resolveStandingArtifactVersion } from "../feedback/artifact-standing-notes.js";
 import { ArtifactAttachmentError } from "../artifact-attachment.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { broadcast } from "../sse.js";
@@ -29,6 +32,7 @@ import {
   getProviderDetail,
   getProviderHealth,
   getArtifactDraft,
+  mutateArtifactDraftNote,
   ingestArtifactAsync,
   ingestProviderManifest,
   ingestProviderManifestFile,
@@ -57,7 +61,7 @@ import {
   saveArtifactDraft,
   snapshotArtifactBytesAsync,
 } from "../provider-artifacts.js";
-import { ClientAuthzError, requireIdentity } from "../client-auth/authz.js";
+import { ClientAuthzError, isUserRequest, requireIdentity, requireOperator } from "../client-auth/authz.js";
 import {
   artifactVersionCustody,
   getArtifactCurrentSource,
@@ -567,6 +571,103 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
     }
   }, { operation: { id: "get:/api/artifacts/diff", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
+  app.get("/api/artifacts/:id/notes", (req, res) => {
+    const db = getDb();
+    const version = resolveStandingArtifactVersion(db, req.params.id);
+    if (!version) {
+      sendJson(res, 404, { error: "Artifact version not found" });
+      return;
+    }
+    const base = { artifact_version_id: version.id };
+    const records = artifactStandingNoteRecords(db, version);
+    const actor = isUserRequest(db, req) ? req.client_identity?.user_id : undefined;
+    if (!queryBoolean(req, "anchors") || records.length === 0) {
+      sendJson(res, 200, { ...base, can_write: Boolean(actor), notes: records });
+      return;
+    }
+    const target = artifactStandingNoteSource(db, version);
+    if (!target) {
+      sendJson(res, 422, { error: "Artifact text is unavailable" });
+      return;
+    }
+    sendJson(res, 200, { ...base, can_write: Boolean(actor), notes: readArtifactStandingNotes(db, target, actor) });
+  }, { operation: { id: "get:/api/artifacts/:id/notes", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  app.post("/api/artifacts/:id/notes", (req, res) => {
+    try {
+      const db = getDb();
+      const actor = requireOperator(db, req);
+      const version = resolveStandingArtifactVersion(db, req.params.id);
+      if (!version) {
+        sendJson(res, 404, { error: "Artifact version not found" });
+        return;
+      }
+      const body = bodyRecord(req);
+      if (body.kind === "add") {
+        const range = parseStandingNoteRange(body);
+        const text = typeof body.body === "string" ? body.body.trim() : "";
+        if (!range || !text) {
+          sendJson(res, 400, { error: "A text range, quote, and note are required" });
+          return;
+        }
+        const target = artifactStandingNoteSource(db, version);
+        if (!target) {
+          sendJson(res, 422, { error: "Artifact text is unavailable" });
+          return;
+        }
+        const result = db.transaction(() => appendStandingNote(db, target, actor.user_id, range, text))();
+        sendJson(res, result.ok ? 200 : 409, result);
+        return;
+      }
+      const mutation = parseStandingNoteMutation(body);
+      if (!mutation || typeof body.id !== "string") {
+        sendJson(res, 400, { error: "A note ID and action are required" });
+        return;
+      }
+      const result = mutateStandingNote(db, version.artifact_id, actor.user_id, body.id, mutation);
+      sendJson(res, result.ok ? 200 : 409, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { operation: { id: "post:/api/artifacts/:id/notes", effects: ["ledger:write"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+
+  app.post("/api/artifacts/drafts/standing-notes", (req, res) => {
+    try {
+      const db = getDb();
+      const identity = requireOperator(db, req);
+      const actor = getUserById(db, identity.user_id);
+      if (!actor) {
+        sendJson(res, 403, { error: "Artifact note author is unavailable" });
+        return;
+      }
+      const body = bodyRecord(req);
+      if (typeof body.ref !== "string") {
+        sendJson(res, 400, { error: "Artifact ref is required" });
+        return;
+      }
+      if (body.kind === "add") {
+        const range = parseStandingNoteRange(body);
+        const text = typeof body.body === "string" ? body.body.trim() : "";
+        if (!range || !text || typeof body.expected_source !== "string") {
+          sendJson(res, 400, { error: "The draft source, selected range, and note are required" });
+          return;
+        }
+        const result = mutateArtifactDraftNote(db, body.ref, actor, { kind: "add", expected_source: body.expected_source, range, body: text });
+        sendJson(res, result.ok ? 200 : 409, result);
+        return;
+      }
+      const mutation = parseStandingNoteMutation(body);
+      if (!mutation || typeof body.id !== "string") {
+        sendJson(res, 400, { error: "A note ID and action are required" });
+        return;
+      }
+      const result = mutateArtifactDraftNote(db, body.ref, actor, { ...mutation, id: body.id });
+      sendJson(res, result.ok ? 200 : 409, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { operation: { id: "post:/api/artifacts/drafts/standing-notes", effects: ["ledger:write"], requestSchema: null, reportingCategory: "artifacts" }, fileRpc: "allow" });
+
   app.get("/api/artifacts/drafts", (req, res) => {
     try {
       const ref = queryString(req, "ref") ?? queryString(req, "series");
@@ -575,7 +676,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         return;
       }
 
-      sendJson(res, 200, projectArtifactPublicValue(getDb(), { draft: getArtifactDraft(getDb(), ref) }));
+      sendJson(res, 200, { draft: getArtifactDraft(getDb(), ref) });
     } catch (error) {
       handleError(res, error);
     }
@@ -602,7 +703,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
           ? body.metadata as Record<string, unknown>
           : undefined,
       });
-      sendJson(res, 200, projectArtifactPublicValue(getDb(), { draft }));
+      sendJson(res, 200, { draft });
     } catch (error) {
       handleError(res, error);
     }
@@ -617,7 +718,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         return;
       }
 
-      sendJson(res, 200, projectArtifactPublicValue(getDb(), { draft: rebaseArtifactDraft(getDb(), ref) }));
+      sendJson(res, 200, { draft: rebaseArtifactDraft(getDb(), ref) });
     } catch (error) {
       handleError(res, error);
     }
@@ -643,7 +744,7 @@ export function registerProviderRoutes(app: RouteRegistrar, reader: LedgerReader
         note: typeof body.note === "string" ? body.note : null,
         allow_stale: body.allow_stale === true,
       });
-      sendJson(res, 200, projectArtifactPublicValue(getDb(), { draft: published.draft, result: projectArtifactVersionWriteResult(getDb(), published.result) }));
+      sendJson(res, 200, { draft: published.draft, result: projectArtifactPublicValue(getDb(), projectArtifactVersionWriteResult(getDb(), published.result)) });
     } catch (error) {
       handleError(res, error);
     }

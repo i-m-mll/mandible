@@ -1282,6 +1282,7 @@ export type ArtifactSeriesSummary = {
 };
 
 export type ArtifactDraftRecord = {
+  standing_notes?: import("./feedback/review-types.js").ArtifactDraftStandingNote[];
   id: string;
   series_id: string;
   base_version_id: string;
