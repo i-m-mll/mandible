@@ -1,11 +1,12 @@
 import { invertedEffects } from '@codemirror/commands';
 import {
-  Annotation, MapMode, StateEffect, StateField, Transaction, type ChangeSet, type EditorState, type Text,
+  Annotation, EditorSelection, MapMode, StateEffect, StateField, Transaction, type ChangeSet, type EditorState, type Text,
 } from '@codemirror/state';
 
 const lineEndings = /\r\n|\r|\n/g;
 
 export type MarkdownSourceRange = { start: number; end: number };
+export type MarkdownSourceEdit = MarkdownSourceRange & { text: string };
 export type MarkdownSelection = MarkdownSourceRange & { quote: string };
 
 class SourceText {
@@ -124,6 +125,31 @@ export function markdownEditorRange(state: EditorState, range: MarkdownSourceRan
     from: source.editorPosition(clamp(range.start)),
     to: source.editorPosition(clamp(range.end)),
   };
+}
+
+export function editMarkdownSource(state: EditorState, edits: readonly MarkdownSourceEdit[], selection?: MarkdownSourceRange) {
+  const endings: LineEnding[] = [];
+  let shift = 0;
+  const changes = [...edits].sort((left, right) => left.start - right.start).map(edit => {
+    const { from, to } = markdownEditorRange(state, edit);
+    const insert = edit.text.replace(lineEndings, (text, position: number) => {
+      endings.push({ text, position: from + shift + position });
+      shift -= text.length - 1;
+      return '\n';
+    });
+    // Replacement offsets are measured in the new normalized buffer.
+    shift += edit.text.length - (to - from);
+    return { from, to, insert };
+  });
+  const changeSet = state.changes(changes);
+  const source = state.field(sourceField).apply(changeSet, new Map(endings.map(({ position, text }) => [position, text])));
+  return state.update({
+    changes: changeSet,
+    effects: setSource.of(source),
+    ...(selection && { selection: EditorSelection.range(source.editorPosition(selection.start), source.editorPosition(selection.end)),
+      scrollIntoView: true }),
+    annotations: Transaction.userEvent.of('input'),
+  });
 }
 
 export function replaceMarkdownSource(state: EditorState, value: string) {

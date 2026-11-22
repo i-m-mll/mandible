@@ -11,8 +11,8 @@ import { getArtifactContent, getSpacePublications, prepareSpacePublication, subm
 import { readExportDialogState, writeExportDialogState } from './exportDialogState';
 import './SpaceExportDialog.css';
 
-export function SpaceExportDialog({ spaceId,projectId,onClose,onImported }: {
-  spaceId:string; projectId:string; onClose:()=>void; onImported?:()=>void;
+export function SpaceExportDialog({ spaceId,projectId,onClose,onImported,savedGeneration }: {
+  spaceId:string; projectId:string; onClose:()=>void; onImported?:()=>void; savedGeneration?:number | null;
 }): JSX.Element {
   const [view,setView]=useState(()=>readExportDialogState(projectId,spaceId));
   const {issue,ref,title,gitPath,gitCommit}=view;
@@ -48,9 +48,9 @@ export function SpaceExportDialog({ spaceId,projectId,onClose,onImported }: {
       header={<DetailPaneHeader variant="compact" title="Publish document" actions={<button onClick={onClose}>Close</button>}/>}
       notice={error || query.error ? <DetailPaneNotice severity="error">{error ?? query.error?.message}</DetailPaneNotice>:null}
       footer={{content:<>
-        <a href={`/api/spaces/${encodeURIComponent(spaceId)}/document/download`} download>Download current document</a>
-        <button disabled={busy || !ready || !view.path.trim() || !issue.trim() || (!projectId && !view.checkoutId)} onClick={()=>void action(async()=> {
-          const publication=await prepareSpacePublication(spaceId,{path:view.path.trim(),issue:issue.trim(),message:view.message,repo_id:view.checkoutId || undefined});
+        <a href={`/api/spaces/${encodeURIComponent(spaceId)}/document/download`} download>Download saved document</a>
+        <button disabled={busy || !ready || savedGeneration === null || !view.path.trim() || !issue.trim() || (!projectId && !view.checkoutId)} onClick={()=>void action(async()=> {
+          const publication=await prepareSpacePublication(spaceId,{path:view.path.trim(),issue:issue.trim(),message:view.message,repo_id:view.checkoutId || undefined,expected_generation:savedGeneration ?? undefined});
           setPublications(current=>[publication,...current]);setSelected(publication);
         })}>Prepare snapshot</button>
       </>}}

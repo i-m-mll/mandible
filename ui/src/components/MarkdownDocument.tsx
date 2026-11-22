@@ -10,8 +10,8 @@ import { useImperativeHandle, useLayoutEffect, useRef } from 'preact/hooks';
 import { Icon } from './icons/Icon';
 import { appTip } from './shared/AppHoverTips';
 import {
-  exactMarkdownSource, externalSourceUpdate, markdownEditorRange, markdownSelection,
-  markdownValue, replaceMarkdownSource, textReplacement, type MarkdownSelection, type MarkdownSourceRange,
+  editMarkdownSource, exactMarkdownSource, externalSourceUpdate, markdownEditorRange, markdownSelection, markdownSourceRange,
+  markdownValue, replaceMarkdownSource, textReplacement, type MarkdownSelection, type MarkdownSourceEdit, type MarkdownSourceRange,
 } from './markdown/source';
 import { compareMarkdownWords } from './markdown/comparison';
 import { markdownPreview, markdownDirectives, markdownPreviewPolicy, type MarkdownDirectives, type MarkdownPreviewPolicy } from './markdown/preview';
@@ -22,7 +22,9 @@ export type { MarkdownDirective, MarkdownDirectiveRenderer, MarkdownDirectives }
 export type { MarkdownSelection, MarkdownSourceRange } from './markdown/source';
 export type MarkdownRangeDecoration = MarkdownSourceRange & { id: string; className: string };
 export type MarkdownDocumentHandle = {
-  select: (range: MarkdownSourceRange) => void;
+  select: (range: MarkdownSourceRange, focus?: boolean) => void;
+  edit: (edits: readonly MarkdownSourceEdit[], selection?: MarkdownSourceRange) => void;
+  positionAt: (x: number, y: number) => number | null;
 };
 
 type MarkdownDocumentProps = {
@@ -35,6 +37,8 @@ type MarkdownDocumentProps = {
   onSelectionChange?: (selection: MarkdownSelection) => void;
   decorations?: readonly MarkdownRangeDecoration[];
   onDecorationClick?: (id: string) => void;
+  onLink?: (href: string, event: MouseEvent) => boolean;
+  onKeyDown?: (event: KeyboardEvent, selection: MarkdownSelection) => boolean;
   documentRef?: Ref<MarkdownDocumentHandle>;
   directives?: MarkdownDirectives;
   previewPolicy?: MarkdownPreviewPolicy;
@@ -118,12 +122,22 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
   const readOnly = props.readOnly || (props.syntax === 'markdown' && isLargeMarkdownDocument(props.value));
 
   useImperativeHandle(props.documentRef ?? null, () => ({
-    select(range) {
+    select(range, focus = true) {
       const editor = view.current;
       if (!editor) return;
       const { from, to } = markdownEditorRange(editor.state, range);
-      editor.focus();
+      if (focus) editor.focus();
       editor.dispatch({ selection: EditorSelection.range(from, to), scrollIntoView: true });
+    },
+    edit(edits, selection) {
+      const editor = view.current;
+      if (!editor || editor.state.readOnly || !edits.length) return;
+      editor.dispatch(editMarkdownSource(editor.state, edits, selection));
+    },
+    positionAt(x, y) {
+      const editor = view.current;
+      const pos = editor?.posAtCoords({ x, y }, false);
+      return editor && pos != null ? markdownSourceRange(editor.state, { from: pos, to: pos }).start : null;
     },
   }), []);
 
@@ -158,6 +172,9 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
           EditorView.clipboardOutputFilter.of((text, state) =>
             state.selection.main.empty ? text : markdownSelection(state).quote),
           EditorView.domEventHandlers({
+            keydown(event, editor) {
+              return latest.current.onKeyDown?.(event, markdownSelection(editor.state)) ?? false;
+            },
             click(event, editor) {
               const target = event.target;
               const id = target instanceof Element
@@ -165,7 +182,13 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
                 : undefined;
               if (id) latest.current.onDecorationClick?.(id);
               const link = target instanceof Element && target.closest('a[data-markdown-link]');
-              return Boolean(link && !editor.state.readOnly && !event.metaKey && !event.ctrlKey);
+              if (!link) return false;
+              const href = link.getAttribute('href');
+              if (href && latest.current.onLink?.(href, event)) {
+                event.preventDefault();
+                return true;
+              }
+              return !editor.state.readOnly && !event.metaKey && !event.ctrlKey;
             },
           }),
         ],

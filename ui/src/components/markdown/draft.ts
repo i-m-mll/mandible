@@ -38,7 +38,7 @@ export class DocumentDraftControl {
     if (this.conflict) return Promise.resolve(null);
     if (!this.dirty) return Promise.resolve(this.base);
     const attempted = { base: this.base, source: this.source };
-    this.pending = write(attempted).then(({ kind, document }) => {
+    this.pending = Promise.resolve().then(() => write(attempted)).then(({ kind, document }) => {
       if (kind === 'saved' && document.generation >= this.base.generation) this.base = document;
       this.observe(document);
       return kind === 'saved' && this.latest.generation === document.generation ? document : null;

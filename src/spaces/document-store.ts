@@ -18,10 +18,10 @@ export function getSpaceDocument(db: Db, spaceId: string): SpaceDocument {
 function addExportKeys(siblings: SpaceSourceBlock[]): void {
   let nextHint = 0;
   let previous: SpaceBlockRecord | undefined;
-  for (const [index, { block, addressed }] of siblings.entries()) {
-    if (!addressed && !block.sort_key) {
+  for (const [index, { block }] of siblings.entries()) {
+    if (!block.sort_key) {
       nextHint = Math.max(index + 1, nextHint);
-      while (nextHint < siblings.length && !siblings[nextHint].addressed && !siblings[nextHint].block.sort_key) nextHint++;
+      while (nextHint < siblings.length && !siblings[nextHint].block.sort_key) nextHint++;
       const after = siblings[nextHint]?.block.sort_key ?? null;
       const before = previous?.sort_key ?? null;
       if (after !== null && (after === '' || (before !== null && before >= after))) break;

@@ -19,7 +19,7 @@ export type MarkdownDirective = MarkdownSelection & {
 
 type MarkdownDirectiveMount = HTMLElement | { element: HTMLElement; destroy: () => void };
 export type MarkdownDirectiveRenderer = (directive: MarkdownDirective, document: Document) => MarkdownDirectiveMount;
-export type MarkdownDirectives = ReadonlyMap<string, MarkdownDirectiveRenderer>;
+export type MarkdownDirectives = ReadonlyMap<string, MarkdownDirectiveRenderer | 'transparent'>;
 export const markdownDirectives = Facet.define<MarkdownDirectives, MarkdownDirectives | undefined>({
   combine: ([directives]) => directives,
 });
@@ -244,6 +244,17 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
     const render = allowlist?.get(directive.name);
     if (!render || selected(state, focused, directive)
         || (policy?.directivePreview !== 'on-changed-text' && changed(state, directive))) continue;
+    if (render === 'transparent') {
+      if (!directive.body) continue;
+      const body = markdownEditorRange(state, directive.body);
+      if (body.from === body.to) {
+        marks.push(Decoration.replace({ block: true }).range(directive.from, directive.to));
+      } else {
+        marks.push(Decoration.replace({ block: true }).range(directive.from, body.from));
+        marks.push(Decoration.replace({ block: true }).range(body.to, directive.to));
+      }
+      continue;
+    }
     const block = directive.kind !== 'inline';
     const widget = new DirectiveWidget({
       ...markdownSourceRange(state, directive),
@@ -257,7 +268,9 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
       if (ref.name === 'Document') return;
       if (frontmatter && ref.to <= frontmatter.end) return false;
       while (directives[directiveIndex]?.to <= ref.from) directiveIndex++;
-      const directive = directives[directiveIndex];
+      const candidate = directives[directiveIndex];
+      const transparent = candidate && allowlist?.get(candidate.name) === 'transparent';
+      const directive = !transparent ? candidate : undefined;
       if (directive && directive.from <= ref.from && ref.to <= directive.to) return false;
       const node = ref.node;
       const inDirective = (range: Span) => directive && directive.from < range.to && directive.to > range.from;

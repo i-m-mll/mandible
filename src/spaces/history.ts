@@ -48,3 +48,11 @@ export function listDocumentHistory(db: Db, spaceId: string): Array<Record<strin
 export function documentHistoryEntry(db: Db, spaceId: string, id: string): Record<string, unknown> | null {
   return db.prepare('SELECT * FROM space_document_history WHERE space_id=? AND id=?').get(spaceId,id) as Record<string, unknown> | null ?? null;
 }
+
+export function legacySpaceDraftBases(db: Db, spaceId: string): Array<{ id: string; markdown: string }> {
+  return db.prepare(`SELECT json_extract(block.value, '$.id') AS id,
+      json_extract(block.value, '$.markdown') AS markdown
+    FROM space_document_history history, json_each(history.blocks_json) block
+    WHERE history.id=? AND history.space_id=? AND history.kind='pre-text-storage'`)
+    .all(`pre-text-storage:${spaceId}`, spaceId) as Array<{ id: string; markdown: string }>;
+}

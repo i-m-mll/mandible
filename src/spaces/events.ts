@@ -56,6 +56,7 @@ export const SPACE_EVENTS = {
   //   `space:block:changed` topic (the C11 route layer carries finer detail in
   //   the SSE payload rather than minting per-verb topic names).
   SPACE_BLOCK_CHANGED: "space:block:changed",
+  SPACE_DOCUMENT_NOTE_CHANGED: "space:document:note-changed",
 
   // --- C13b (export/custody, issue 8730bf9): export + document snapshots ---
   //   `space:export:tracked` fires after a successful export-and-track (a

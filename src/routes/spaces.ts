@@ -1,3 +1,5 @@
+import { parseStandingNoteMutation } from "../feedback/standing-notes.js";
+import { addSpaceNote, readSpaceReview, updateSpaceNote } from "../feedback/space-review.js";
 import { isLocalBlockId } from "../spaces/document-source.js";
 import { getSpaceDocument, saveSpaceDocument } from "../spaces/document-store.js";
 import * as z from "zod";
@@ -60,7 +62,7 @@ import {
 import { SPACE_EVENTS, type SpaceEvent } from "../spaces/events.js";
 import { exportUntrackedCopy, serializeSpaceDocument, ExportError } from "../spaces/export.js";
 import { preparePublication, executePublication, getPublication, listPublications, importManagedDocument, importHistoryDocument, importGitDocument, type PublicationResult, publicationDestinations } from "../spaces/publication.js";
-import { documentHistoryEntry, listDocumentHistory } from "../spaces/history.js";
+import { documentHistoryEntry, legacySpaceDraftBases, listDocumentHistory } from "../spaces/history.js";
 import { broadcastSpaceEvent } from "../sse.js";
 import {
   SPACE_ITEM_REF_TYPES,
@@ -81,7 +83,7 @@ import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { lookupBriefingId, shortBriefingRef } from "../feedback/briefings.js";
-import { ClientAuthzError } from "../client-auth/authz.js";
+import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import { briefingReadViewer } from "./briefing.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import { effectiveWorkerStatus } from "../ledger/issue-work-state.js";
@@ -1016,6 +1018,12 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       sendJson(res, 200, getSpaceDocument(db, space.id));
     } catch (error) { handleError(res, error); }
   }, { operation: { id: "get:/api/spaces/:id/document", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  router.get("/api/spaces/:id/document/legacy-draft-bases", (req, res) => {
+    try {
+      const db = getDb(), space = loadSpaceOr404(db, req.params.id);
+      sendJson(res, 200, { blocks: legacySpaceDraftBases(db, space.id) });
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "get:/api/spaces/:id/document/legacy-draft-bases", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
   router.patch("/api/spaces/:id/document", (req, res) => {
     try {
       const db = getDb(), space = loadSpaceOr404(db, req.params.id);
@@ -1048,6 +1056,47 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     } catch (error) { handleError(res, error); }
   }, { operation: { id: "post:/api/spaces/:id/document/address", effects: ["ledger:write"],
     requestSchema: z.object({ expected_generation: z.number().int().nonnegative(), start: z.number().int().nonnegative(), end: z.number().int().nonnegative() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  router.get("/api/spaces/:id/document/notes", (req, res) => {
+    try {
+      const db = getDb(), space = loadSpaceOr404(db, req.params.id);
+      sendJson(res, 200, readSpaceReview(db, space.id, req.client_identity?.user_id));
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "get:/api/spaces/:id/document/notes", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  router.post("/api/spaces/:id/document/notes", (req, res) => {
+    try {
+      const db = getDb(), space = loadSpaceOr404(db, req.params.id);
+      const { user_id } = requireOperator(db, req);
+      const { expected_generation, body, ...range } = req.body as import("../feedback/review-types.js").ReviewRange & {
+        expected_generation: number; body: string;
+      };
+      const result = addSpaceNote(db, space.id, user_id, expected_generation, range, body);
+      if (!result.ok) {
+        sendJson(res, 409, { code: result.reason, error: result.reason === 'annotation_noop'
+          ? 'This note is already saved.' : 'The selected text no longer matches the saved document.' });
+        return;
+      }
+      emit(SPACE_EVENTS.SPACE_DOCUMENT_NOTE_CHANGED, space.id);
+      sendJson(res, 201, { id: result.id });
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "post:/api/spaces/:id/document/notes", effects: ["ledger:write"], requestSchema: z.object({
+    expected_generation: z.number().int().nonnegative(), start_offset: z.number().int().nonnegative(),
+    end_offset: z.number().int().positive(), quote: z.string().min(1), body: z.string().trim().min(1),
+  }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  router.patch("/api/spaces/:id/document/notes/:note_id", (req, res) => {
+    try {
+      const db = getDb(), space = loadSpaceOr404(db, req.params.id);
+      const mutation = parseStandingNoteMutation(bodyRecord(req));
+      if (!mutation) throw new HttpError(400, "Invalid note mutation");
+      const { user_id } = requireOperator(db, req);
+      const result = updateSpaceNote(db, space.id, user_id, req.params.note_id, mutation);
+      if (!result.ok) throw new HttpError(409, "This note is no longer editable.");
+      emit(SPACE_EVENTS.SPACE_DOCUMENT_NOTE_CHANGED, space.id);
+      sendJson(res, 200, { id: result.id });
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "patch:/api/spaces/:id/document/notes/:note_id", effects: ["ledger:write"],
+    requestSchema: z.discriminatedUnion("kind", [z.object({ kind: z.literal("edit"), body: z.string().trim().min(1) }).strict(),
+      z.object({ kind: z.literal("resolve") }).strict(), z.object({ kind: z.literal("retract") }).strict()]),
+    reportingCategory: "spaces" }, fileRpc: "allow" });
   router.get("/api/spaces/:id/document/download", (req,res)=> {
     try { const db=getDb(),space=loadSpaceOr404(db,req.params.id);
 
