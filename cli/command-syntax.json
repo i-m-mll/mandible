@@ -339,6 +339,15 @@
         ]
       }
     },
+    "auth.review.approval": {
+      "route": ["auth", "review", "approval"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "request","value": {"type": "string"}}
+        ]
+      }
+    },
     "auth.review.reply": {
       "route": ["auth", "review", "reply"],
       "grammar": {
@@ -379,7 +388,10 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "request","value": {"type": "string"}},
-          {"kind": "option","names": ["--revision"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}
+          {"kind": "choice","items": [
+            {"kind": "option","names": ["--revision"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
+            {"kind": "option","names": ["--review"],"values": [{"kind": "argument","name": "file","value": {"type": "string"}}]}
+          ]}
         ]
       }
     },
