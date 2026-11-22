@@ -27,6 +27,8 @@ export function appendAuthLifecycleEvent(
     actor?: AuthLifecycleActor | null;
     reason?: string | null;
     relatedRequestId?: string | null;
+    reviewSubmissionId?: string;
+    custodyGeneration?: number;
     priorSnapshot?: string | null;
     historyShape?: "v212" | "current";
     occurredAt: number;
@@ -57,13 +59,15 @@ export function appendAuthLifecycleEvent(
     credential_id: input.actor?.credential_id ?? null,
     reason: input.reason?.trim() || null,
     related_request_id: input.relatedRequestId ?? null,
+    ...(input.reviewSubmissionId ? { review_submission_id: input.reviewSubmissionId } : {}),
     custody_work_unit_id: rowCustody(db, input.requestId)?.work_unit_id ?? null,
-    custody_generation: rowCustody(db, input.requestId)?.custody_generation ?? null,
+    custody_generation: input.custodyGeneration ?? rowCustody(db, input.requestId)?.custody_generation ?? null,
     authority_path: input.actor?.authority_path ?? (input.actor ? "custodian" : "system"),
     occurred_at: input.occurredAt,
   };
   const columns = input.historyShape === "v212" ? AUTH_LIFECYCLE_HISTORY_COLUMNS_V212
-    : ["request_origin_json" as const, ...AUTH_LIFECYCLE_HISTORY_COLUMNS_V212];
+    : ["request_origin_json" as const, ...AUTH_LIFECYCLE_HISTORY_COLUMNS_V212,
+      ...(input.reviewSubmissionId ? ["review_submission_id" as const] : [])];
   db.prepare(`INSERT INTO auth_request_lifecycle_events (${columns.join(",")})
     VALUES (${columns.map(column => `@${column}`).join(",")})`)
     .run(Object.fromEntries(columns.map(column => [column, event[column]])));
@@ -80,8 +84,10 @@ function rowCustody(db: Db, requestId: string): { work_unit_id: string; custody_
 export function listAuthLifecycleEvents(db: Db, requestId: string): AuthRequestLifecycleEvent[] {
   return db.prepare(
     "SELECT * FROM auth_request_lifecycle_events WHERE auth_request_id = ? ORDER BY revision",
-  ).all(requestId).map((row: AuthRequestLifecycleEvent) => ({ ...row, request_origin_json: row.request_origin_json ?? null,
-    request_origin: row.request_origin_json ? JSON.parse(row.request_origin_json) : null })) as AuthRequestLifecycleEvent[];
+  ).all(requestId).map(({ review_submission_id, ...row }: AuthRequestLifecycleEvent) => ({
+    ...row, ...(review_submission_id ? { review_submission_id } : {}), request_origin_json: row.request_origin_json ?? null,
+    request_origin: row.request_origin_json ? JSON.parse(row.request_origin_json) : null,
+  })) as AuthRequestLifecycleEvent[];
 }
 
 /**

@@ -262,6 +262,7 @@ export interface AuthRequest {
    * were removed. Always null for new requests; kept read-only as history.
    */
   spec_content: string | null;
+  narrative?: string | null;
   /** Issue 8ae6b5f — where a protected-root dirty policy moved uncommitted work. */
   protected_root_dirty_action?: ProtectedRootDirtyAction | null;
   repo?: string;
@@ -269,6 +270,7 @@ export interface AuthRequest {
   base_branch?: string;
   head_branch?: string;
   merge_head_sha?: string | null;
+  merge_effective_head_sha?: string | null;
   merge_candidate_tree_sha?: string | null;
   merge_candidate_pin_sha?: string | null;
   merge_atomic_enabled?: boolean;
@@ -316,7 +318,7 @@ export interface AuthRequest {
 
 export type AuthRequestLifecycleEventType =
   | "legacy_snapshot" | "submitted" | "revised" | "approved" | "executing"
-  | "rejected" | "withdrawn" | "superseded" | "needs_rebase" | "expired" | "completed" | "failed";
+  | "rejected" | "returned" | "withdrawn" | "superseded" | "needs_rebase" | "expired" | "completed" | "failed";
 
 export interface AuthLifecycleActor {
   user_id: string;
@@ -348,6 +350,7 @@ export interface AuthRequestLifecycleEvent {
   credential_id: string | null;
   reason: string | null;
   related_request_id: string | null;
+  review_submission_id?: string | null;
   custody_work_unit_id: string | null;
   custody_generation: number | null;
   authority_path: string | null;
@@ -365,10 +368,11 @@ export interface AuthRequestLifecycleEvent {
  */
 export type AuthRequestSummary = Omit<
   AuthRequest,
-  "diff_summary" | "spec_content" | "output" | "change_report"
+  "diff_summary" | "spec_content" | "narrative" | "output" | "change_report"
 > & { action_count: number };
 
 export interface AuthRequestInput {
+  narrative?: string;
   space_publication_id?: string | null;
   session_id?: string | null;
   type?: AuthRequestType;

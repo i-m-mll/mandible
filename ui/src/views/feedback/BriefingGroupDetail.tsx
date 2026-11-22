@@ -1,6 +1,9 @@
 import { useState } from 'preact/hooks';
 
-import { dispositionBriefingGroupProposal, type BriefingGroup } from '../../api';
+import { dispositionBriefingGroupProposal, type BriefingBundleLeaf, type BriefingGroup } from '../../api';
+import { TrackedBriefingDocumentPanel } from './TrackedBriefingDocumentPanel';
+import type { FeedbackCollection } from './collection-model';
+import { authReviewHref } from '../auth-review-navigation';
 import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
 import { DetailPaneShell } from '../../components/shared/DetailPaneShell';
 import { shortIdentityRef } from '../../identity-refs';
@@ -10,6 +13,7 @@ export type BriefingGroupDetailProps = {
   selectedUpdateId: string | null;
   onSelectUpdate(updateId: string | null): void;
   onDisposition?(group: BriefingGroup): void;
+  onSelectBriefing?(briefing: FeedbackCollection): void;
 };
 
 export function BriefingGroupDetail({
@@ -17,11 +21,31 @@ export function BriefingGroupDetail({
   selectedUpdateId,
   onSelectUpdate,
   onDisposition,
+  onSelectBriefing,
 }: BriefingGroupDetailProps): JSX.Element {
   const [busy, setBusy] = useState<'accepted' | 'rejected' | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const baseName = group.current?.name === 'Original' ? 'Base' : group.current?.name;
   const selectedProposal = group.updates.find((update) => update.id === selectedUpdateId) ?? null;
+  const layout = (selectedProposal ?? group.current)?.layout ?? [];
+  const proposals = group.trackedProposals ?? [];
+  const subgroupMembers = (entry: Extract<(typeof layout)[number], { kind: 'subgroup' }>): BriefingBundleLeaf[] =>
+    entry.members ?? entry.briefings.map(briefing => ({ kind: 'briefing', briefing }));
+  const showsTracked = layout.some(entry => entry.kind === 'tracked'
+    || (entry.kind === 'subgroup' && subgroupMembers(entry).some(leaf => leaf.kind === 'tracked')));
+  const renderLeaf = (entry: BriefingBundleLeaf) => {
+    if (entry.kind === 'briefing') return <li key={entry.briefing.id}>
+      <button type="button" onClick={() => onSelectBriefing?.(entry.briefing)}>{entry.briefing.label}</button>
+    </li>;
+    const { tracked } = entry;
+    const matches = proposals.filter(proposal => proposal.members.some(member =>
+      member.project_id === tracked.project_id && member.path === tracked.path));
+    return <li key={`${tracked.project_id}:${tracked.path}`}>
+      <TrackedBriefingDocumentPanel document={tracked} pending={matches.length}>
+        {matches.map(proposal => <a key={proposal.request_id} href={authReviewHref(proposal.request_ref, 'diff')}>{proposal.title}</a>)}
+      </TrackedBriefingDocumentPanel>
+    </li>;
+  };
   const reviewCandidate = group.reviewCandidates?.find((candidate) => candidate.proposalBundleId === selectedUpdateId) ?? null;
   const publishedReportCount = group.destinations.filter((destination) => destination.publicationMode === 'published-report').length;
   const reviewedDocumentCount = group.destinations.filter((destination) => destination.publicationMode === 'reviewed-document').length;
@@ -161,6 +185,28 @@ export function BriefingGroupDetail({
           ) : null}
           {status ? <p className="briefing-group-detail__review-status" role="status">{status}</p> : null}
         </section>
+        {showsTracked ? (
+          <section aria-label="Group documents">
+            <ul>{layout.map(entry => entry.kind === 'subgroup'
+              ? <li key={entry.name}><span>{entry.name}</span><ul>{subgroupMembers(entry).map(renderLeaf)}</ul></li>
+              : renderLeaf(entry))}</ul>
+          </section>
+        ) : null}
+        {proposals.length ? (
+          <section aria-label="Merge requests">
+            <h3>Merge requests</h3>
+            <ul>{proposals.map(proposal => (
+              <li key={proposal.request_id}>
+                <a href={authReviewHref(proposal.request_ref, 'diff')}>{proposal.title}</a> · {proposal.project_key}
+                {proposal.depends_on.length ? <ul aria-label="Depends on">{proposal.depends_on.map(dep => (
+                  <li key={dep.requested_id}>Depends on {dep.request_id
+                    ? <a href={authReviewHref(dep.request_id, 'diff')}>{shortIdentityRef(dep.request_id)}</a>
+                    : shortIdentityRef(dep.requested_id)} · {dep.state}</li>
+                ))}</ul> : null}
+              </li>
+            ))}</ul>
+          </section>
+        ) : null}
         {(group.history?.length ?? 0) > 0 ? (
           <section className="briefing-group-detail__history" aria-label="History">
             <details>

@@ -41,16 +41,25 @@ import { MIGRATIONS } from "../src/db-migrations.js";
 import { startDaemon } from "../src/index.js";
 import { checkHealth } from "../src/lifecycle.js";
 import { readArtifactBytesFull } from "../src/artifact-content.js";
+import { readBriefing } from "../src/feedback/briefings.js";
+import { setSetting } from "../src/client-auth/settings-kv.js";
+import { recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { appendAuthLifecycleEvent, listAuthExecutionAttempts, listAuthLifecycleEvents } from "../src/auth-lifecycle.js";
 import { AUTH_SNAPSHOT_SHAPE_V220, AUTH_SNAPSHOT_SHAPE_V221, AUTH_SNAPSHOT_SHAPE_V238, authRequestSnapshot, authSnapshotDigest } from "../src/auth-request-snapshot.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
 import { readLedgerChangeFeed } from "../src/ledger/change-feed.js";
 import { addProject } from "../src/ledger/project-registry.js";
-import { createSpaceBlock } from "../src/ledger/space-blocks.js";
-import { createSpace } from "../src/ledger/spaces.js";
+import { listSpaceBlocks } from "../src/ledger/space-blocks.js";
+import { resolveId } from "../src/entity-refs.js";
+import { getSpace, createSpace } from "../src/ledger/spaces.js";
+import { getSpaceDocument } from "../src/spaces/document-store.js";
+import { convertSpaceDocuments } from "../src/spaces/migrate-document.js";
+import { readLegacySpaceBlocks } from "../src/spaces/legacy-blocks.js";
+import { exportDocument } from "../src/spaces/serialize.js";
 import { LedgerStore } from "../src/ledger/store.js";
-import { serializeSpaceDocument } from "../src/spaces/export.js";
+import { serializeSpaceDocument, spaceDocTree } from "../src/spaces/export.js";
 import { listDocumentHistory } from "../src/spaces/history.js";
+import { executePublication, getPublication } from "../src/spaces/publication.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { insertRawLedgerIssue, insertRawLedgerProject, SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
@@ -117,7 +126,7 @@ describe("floor to head", () => {
       const event = db.prepare("SELECT * FROM ledger_events WHERE id = 'identity-event'").get();
       migrate(db);
       expect(authRequestSnapshot(db, "identity-review")).toBe(reviewed);
-      expect(db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE id = 'identity-receipt'").get()).toEqual(receipt);
+      expect(db.prepare("SELECT * FROM auth_request_lifecycle_events WHERE id = 'identity-receipt'").get()).toEqual({ ...receipt as object, review_submission_id: null });
       expect(db.prepare("SELECT * FROM ledger_events WHERE id = 'identity-event'").get()).toEqual(event);
       const row = db.prepare("SELECT legacy_assignment_target_json, assignment_target_json, execution_identity_json, responsibility_session_id, custody_generation FROM work_units WHERE id = 'legacy-claude'").get() as Record<string, unknown>;
       expect(row).toEqual({ legacy_assignment_target_json: assignment, assignment_target_json: null,
@@ -923,8 +932,62 @@ describe("v188 reminder attribution", () => {
   });
 });
 
+describe("Spaces source cutover", () => {
+  it("reopens a lossless native document and keeps the pre-cutover online backup", () => {
+    const fixture = migrateFixtureThrough(248);
+    const database = path.join(tempDir, "spaces.db");
+    const legacySpace = createSpace(fixture, { title: "Legacy canvas", default_renderer: "canvas" });
+    createSpace(fixture, { title: "Empty board", default_renderer: "board" });
+    fixture.prepare(`INSERT INTO space_items
+      (id,space_id,ref_type,ref_id,created_at,updated_at)
+      VALUES ('live-item',?,'issue','retained-issue',1,2)`).run(legacySpace.id);
+    const insert = fixture.prepare(`INSERT INTO space_blocks
+      (id,space_id,parent_id,block_type,item_id,item_snapshot_json,sort_key,markdown,metadata_json,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,3,9)`);
+    const markdown = "  original\r\n::::issue{}\r\n```\r\n::::\n\n\r";
+    insert.run("legacy-parent", legacySpace.id, null, "heading", null, null, "aaaa", markdown, '{"view":{"zoom":2}}');
+    insert.run("legacy-child", legacySpace.id, "legacy-parent", "reference", "live-item", "{}", "000z", "", "{}");
+    insert.run("legacy-detached", legacySpace.id, "legacy-child", "issue_embed", null, '{"ref_id":"gone"}', "zz", markdown, "{}");
+    fixture.prepare("UPDATE space_blocks SET parent_id='legacy-detached' WHERE id='legacy-parent'").run();
+    expect(() => convertSpaceDocuments(fixture, "apply")).toThrow("cyclic parent");
+    expect(fixture.prepare("SELECT parent_id FROM space_blocks WHERE id='legacy-parent'").get()).toEqual({ parent_id: "legacy-detached" });
+    fixture.prepare("UPDATE space_blocks SET parent_id=NULL WHERE id='legacy-parent'").run();
+    const legacy = readLegacySpaceBlocks(fixture, legacySpace.id);
+    const frozen = exportDocument(spaceDocTree(getSpace(fixture, legacySpace.id)!, legacy));
+    expect(convertSpaceDocuments(fixture, "dry-run")).toMatchObject({ spaces: 2, blocks: 3, liveEmbeds: 1 });
+    expect(readLegacySpaceBlocks(fixture, legacySpace.id)).toEqual(legacy);
+    expect(fixture.prepare("SELECT name FROM sqlite_schema WHERE name='space_documents'").get()).toBeUndefined();
+    fs.writeFileSync(database, fixture.serialize());
+    fixture.close();
+
+    const upgraded = openDb(database);
+    const backup = path.join(tempDir, "backups", fs.readdirSync(path.join(tempDir, "backups"))[0]);
+    const before = new SqliteDatabase(backup, { readonly: true });
+    try {
+      expect(schemaVersion(before)).toBe("248");
+      expect(readLegacySpaceBlocks(before, legacySpace.id)).toEqual(legacy);
+      expect(serializeSpaceDocument(upgraded, legacySpace.id)).toBe(frozen);
+      expect(listSpaceBlocks(upgraded, legacySpace.id)).toEqual(legacy);
+      expect(resolveId(upgraded, "space_block", "legacy-ch", { scope: legacySpace.id })).toEqual({ ok: true, id: "legacy-child" });
+      expect(() => upgraded.exec("DELETE FROM space_items WHERE id='live-item'")).toThrow("FOREIGN KEY");
+      expect(listDocumentHistory(upgraded, legacySpace.id).find(entry => entry.kind === "pre-text-storage")?.content).toBe(frozen);
+    } finally {
+      before.close();
+      upgraded.close();
+    }
+
+    const reopened = openDb(database);
+    try {
+      expect(getSpaceDocument(reopened, legacySpace.id).generation).toBe(0);
+      expect(fs.readdirSync(path.join(tempDir, "backups"))).toHaveLength(1);
+    } finally {
+      reopened.close();
+    }
+  });
+});
+
 describe("v190 managed document publications", () => {
-  it("separates clean, managed-only, Git-only, divergent and unreachable legacy documents", () => {
+  it("separates clean, managed-only, Git-only, divergent and unreachable legacy documents", async () => {
     const db = migrateFixtureThrough(189);
     try {
       const repo = path.join(tempDir, "repo");
@@ -932,12 +995,15 @@ describe("v190 managed document publications", () => {
       db.prepare("INSERT INTO ledger_projects (id,project_key,display_name,remote_identity,created_at,updated_at) VALUES ('p','fixture','Fixture','local:fixture',1,1)").run();
       db.prepare("INSERT INTO ledger_project_checkouts (id,project_id,root,name,default_branch,created_at,updated_at) VALUES ('c','p',?,'fixture','main',1,1)").run(repo);
       const unexported = createSpace(db, { project_id: "p", title: "Unexported", default_renderer: "document" });
-      createSpaceBlock(db, unexported.id, { block_type: "paragraph", markdown: "original" });
+      const addLegacy = db.prepare(`INSERT INTO space_blocks
+        (id,space_id,block_type,sort_key,markdown,metadata_json,created_at,updated_at)
+        VALUES (?,?,'paragraph','a',?,?,1,2)`);
+      addLegacy.run("unexported-block", unexported.id, "original", "{}");
       const snapshots = new Map<string, string>();
       for (const kind of ["clean", "managed-only", "git-only", "both", "unreachable"]) {
         const document = createSpace(db, { project_id: "p", title: kind, default_renderer: "document" });
         const managedChanged = kind === "managed-only" || kind === "both";
-        createSpaceBlock(db, document.id, { block_type: "paragraph", markdown: managedChanged ? "managed change" : "published", metadata: { fixture: kind } });
+        addLegacy.run(`${kind}-block`, document.id, managedChanged ? "managed change" : "published", JSON.stringify({ fixture: kind }));
         const worktree = path.join(repo, ".git", "mandible-docs-worktrees", `docs_${kind}`);
         if (kind !== "unreachable") {
           fs.mkdirSync(worktree, { recursive: true });
@@ -946,10 +1012,30 @@ describe("v190 managed document publications", () => {
         }
         db.prepare(`INSERT INTO space_exports (id,space_id,repo_id,branch,path,authority,status,last_export_commit,created_at,updated_at)
           VALUES (?,?,'c',?,'doc.md','repo','conflict',?,1,1)`).run(kind, document.id, `docs/${kind}`, commit);
-        snapshots.set(document.id, serializeSpaceDocument(db, document.id));
+        snapshots.set(document.id, exportDocument(spaceDocTree(document, readLegacySpaceBlocks(db, document.id))));
       }
 
+      migrate(db, 248);
+      const preparedContent = exportDocument(spaceDocTree(unexported, readLegacySpaceBlocks(db, unexported.id)));
+      const issue = insertRawLedgerIssue(db, { id: "legacy-proposal-issue", projectId: "p" });
+      db.prepare(`INSERT INTO space_publications
+        (id,space_id,source_revision,snapshot_ref,content,repo_id,path,issue_id,message,state,created_at)
+        VALUES ('prior-prepared',?,?,?,?,'c','new.md',?,'Prepared under v1','prepared',3)`)
+        .run(unexported.id, sha256(preparedContent), "legacy-snapshot", preparedContent, issue);
       migrate(db);
+
+      const proposal = path.join(tempDir, "retained-proposal");
+      fs.mkdirSync(proposal);
+      const retry = await executePublication(db, unexported.id, "prior-prepared", {
+        createWorktree: () => proposal,
+        commit: () => { throw new Error("fixture signing stopped"); },
+        submit: () => { throw new Error("must not submit"); },
+      });
+      expect(retry).toMatchObject({ ok: false, error: { message: "fixture signing stopped" } });
+      expect(fs.readFileSync(path.join(proposal, "new.md"), "utf8")).toBe(preparedContent);
+      expect(getPublication(db, unexported.id, "prior-prepared")).toMatchObject({
+        snapshot_ref: "legacy-snapshot", source_revision: sha256(preparedContent), source_history_id: null, state: "prepared",
+      });
 
       for (const [id, content] of snapshots) {
         const history = listDocumentHistory(db, id);
@@ -963,7 +1049,7 @@ describe("v190 managed document publications", () => {
           expect(fs.readFileSync(path.join(repo, ".git", "mandible-docs-worktrees", `docs_${kind}`, "unique-ignored"), "utf8")).toBe("retained");
         }
       }
-      expect(listDocumentHistory(db, unexported.id)).toEqual([]);
+      expect(listDocumentHistory(db, unexported.id).map(entry => entry.kind)).toEqual(["pre-text-storage"]);
       const before = db.prepare("SELECT * FROM space_document_history ORDER BY id").all();
       migrate(db);
       expect(db.prepare("SELECT * FROM space_document_history ORDER BY id").all()).toEqual(before);
@@ -1235,6 +1321,48 @@ describe("v240 delegation removal", () => {
   });
 });
 
+it("v248 preserves frozen UTF-16 quotes and target evidence from populated briefing rounds", () => {
+  const db = migrateFixtureThrough(247);
+  try {
+    setSetting(db, "artifact_root", tempDir);
+    const user = createUser(db, { slug: "review-operator", display_name: "Review operator", kind: "human" });
+    const text = "A 😀 retained quote.\r\n";
+    const { artifact_version: version } = recordArtifactVersion(db, {
+      source_kind: "managed", series_key: "historical-review", logical_name: "review.md", content: "\uFEFF" + text,
+    });
+    db.prepare(`INSERT INTO briefings
+      (id, briefing_key, title, logical_artifact_id, latest_round_id, round_count, created_at, updated_at)
+      VALUES ('briefing', 'historical', 'Historical', ?, 'round', 1, 1, 1)`).run(version.artifact_id);
+    db.prepare("INSERT INTO briefing_members (briefing_id, user_id, created_at) VALUES ('briefing', ?, 1)").run(user.id);
+    db.prepare(`INSERT INTO briefing_rounds (id, briefing_id, ordinal, artifact_version_id, comparison_base_artifact_version_id, profile, binding_digest, created_at)
+      VALUES ('round', 'briefing', 1, ?, ?, 'mandible-briefing.v3', ?, 1)`).run(version.id, version.id, sha256("[]"));
+    db.prepare(`INSERT INTO briefing_annotation_events (id, round_id, briefing_id, operation, annotation_kind,
+      start_offset, end_offset, quote, body, actor_user_id, created_at)
+      VALUES ('annotation', 'round', 'briefing', 'set', 'comment', 2, 4, '😀', 'Keep the original quote.', ?, 2)`).run(user.id);
+    db.prepare(`INSERT INTO briefing_submissions (id, round_id, briefing_id, ordinal, actor_user_id, created_at)
+      VALUES ('submission', 'round', 'briefing', 1, ?, 3)`).run(user.id);
+    db.prepare(`INSERT INTO briefing_submission_annotations (submission_id, round_id, actor_user_id, annotation_event_id, position)
+      VALUES ('submission', 'round', ?, 'annotation', 0)`).run(user.id);
+    db.prepare(`INSERT INTO briefing_annotation_events (id, round_id, briefing_id, operation, retracts_event_id, actor_user_id, created_at)
+      VALUES ('later-retraction', 'round', 'briefing', 'retract', 'annotation', ?, 4)`).run(user.id);
+
+    migrate(db);
+    const review = readBriefing(db, "briefing", { actorUserId: user.id, operator: true, submissionId: "submission" });
+    expect(review?.selected_round).toMatchObject({
+      id: "round",
+      binding: { status: "valid" },
+      document: { source: text, utf8_bom: true, comparison_base: { artifact_version_id: version.id } },
+      annotations: [],
+      selected_submission_overlay: { ordinal: 1, annotations: [
+        { annotation_event_id: "annotation", start_offset: 2, end_offset: 4, quote: "😀", body: "Keep the original quote." },
+      ] },
+    });
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+  } finally {
+    db.close();
+  }
+});
+
 describe("one version behind head", () => {
   it("the ledger change feed refuses to read until the database is migrated", () => {
     const db = migrateFixtureThrough(CURRENT_SCHEMA_VERSION - 1);
@@ -1465,7 +1593,7 @@ describe("v242 operator authority path", () => {
 
       migrate(db);
 
-      expect(rows()).toEqual(before);
+      expect(rows()).toEqual(before.map(row => ({ ...row as object, review_submission_id: null })));
       appendAuthLifecycleEvent(db, { requestId: "held-request", eventType: "withdrawn", priorStatus: "pending", nextStatus: "withdrawn", occurredAt: 4,
         actor: { user_id: agent.id, evidence_method: "local_socket", authority_path: "operator" } });
       expect(() => db.prepare(`INSERT INTO auth_request_lifecycle_events (id, auth_request_id, revision, event_type, next_status, snapshot_json,

@@ -1,5 +1,5 @@
 import { render } from 'preact';
-import { RoutedAuthReview, navigationDiff, navigationRequest, navigationRequestId } from '../../helpers/auth-navigation-fixture';
+import { RoutedAuthReview, navigationRequest, navigationRequestId } from '../../helpers/auth-navigation-fixture';
 
 window.fetch = () => Promise.reject(new Error('Offline review fixture'));
 const diagnostic = new URLSearchParams(window.location.search).has('diagnostic');
@@ -15,7 +15,7 @@ if (!window.location.pathname.startsWith('/auth/')) {
   window.localStorage.clear();
   if (diagnostic || canonical) {
     window.localStorage.setItem(`auth-review-tab:${requestId}`, JSON.stringify('diff'));
-    window.localStorage.setItem(`auth-review-scroll:${requestId}:diff`, '6758.5');
+    window.localStorage.setItem(`auth-review-scroll:${requestId}:diff`, '400.5');
   }
   const query = new URLSearchParams(window.location.search);
   query.set('sidebar', 'hidden');
@@ -78,11 +78,9 @@ if (actionLayout) {
     render(<RoutedAuthReview requests={[summary]} />, root);
   } else {
     const mount = (hydrated: boolean) => render(<RoutedAuthReview requests={[hydrated ? navigationRequest : {
-      ...navigationRequest, diff_summary: undefined, spec_content: undefined, output: undefined,
+      ...navigationRequest, diff_summary: undefined, spec_content: undefined, output: undefined, change_report: undefined,
     }]} />, root);
     Object.assign(window, { scrollDiagnostic: { events, requestId, hydrate: () => mount(true), summary: () => mount(false), unmount: () => render(null, root) } });
     mount(false);
   }
-} else render(<RoutedAuthReview requests={[new URLSearchParams(window.location.search).has('partial') ? {
-  ...navigationRequest, diff_summary: navigationDiff.split(/^(?=diff --git )/m).slice(0, 18).join(''),
-} : navigationRequest]} />, root);
+} else render(<RoutedAuthReview requests={[navigationRequest]} />, root);

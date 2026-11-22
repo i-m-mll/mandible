@@ -1,3 +1,7 @@
+import { artifactReviewRangeKind } from "./artifact-content.js";
+import { artifactReviewSource, carryArtifactDraftNotes, reviewRangeMatches } from "./feedback/review-ranges.js";
+import { appendStandingNote, mutateStandingNote, type StandingNoteMutation } from "./feedback/standing-notes.js";
+import type { ArtifactDraftStandingNote, ReviewRange } from "./feedback/review-types.js";
 import { mutateArtifactRecord } from "./artifact-mutation-history.js";
 import { withRequestOriginMetadata } from "./request-origin.js";
 import { artifactDescriptiveMetadata as descriptiveArtifactMetadata } from './artifact-metadata.js';
@@ -5393,6 +5397,7 @@ function draftFromRow(db: Db, row: Record<string, unknown>): ArtifactDraftRecord
     base_version_no: canonicalBaseVersion?.version_no ?? 0,
     latest_version_id: latestCanonical?.id ?? latestId,
     latest_version_no: latestCanonical?.version_no ?? null,
+    standing_notes: parseJsonArray<ArtifactDraftStandingNote>(row.standing_notes_json as string | undefined),
     stale: Boolean(latestId && latestId !== canonicalBaseVersionId),
     content: String(row.content ?? ""),
     media_type: nullableString(row.media_type),
@@ -5476,34 +5481,40 @@ export function saveArtifactDraft(
   if (typeof input.content !== "string") throw new Error("draft content must be a string");
   const context = resolveCanonicalDraftContext(db, ref, input.base_version_id);
   const id = artifactDraftId(context.seriesId);
-  mutateArtifactRecord(db, "artifact_drafts", context.logical.id, () => db.prepare(
-    `INSERT INTO artifact_drafts (
-      id, artifact_id, version_id, content, media_type, label, note,
-      metadata_json, created_at, updated_at
-    ) VALUES (
-      @id, @artifact_id, @version_id, @content, @media_type, @label, @note,
-      @metadata_json, @created_at, @updated_at
-    )
-    ON CONFLICT(artifact_id) DO UPDATE SET
-      version_id = excluded.version_id,
-      content = excluded.content,
-      media_type = excluded.media_type,
-      label = excluded.label,
-      note = excluded.note,
-      metadata_json = excluded.metadata_json,
-      updated_at = excluded.updated_at`,
-  ).run({
-    id,
-    artifact_id: context.logical.id,
-    version_id: context.base.id,
-    content: input.content,
-    media_type: input.media_type ?? null,
-    label: input.label ?? null,
-    note: input.note ?? null,
-    metadata_json: jsonStringify(withRequestOriginMetadata(descriptiveArtifactMetadata(input.metadata ?? {}))),
-    created_at: now,
-    updated_at: now,
-  }));
+  db.transaction(() => {
+    const draft = getArtifactDraft(db, context.logical.id);
+    const notes = draft ? carryArtifactDraftNotes(draft.content, input.content, draft.standing_notes ?? []) : [];
+    mutateArtifactRecord(db, "artifact_drafts", context.logical.id, () => db.prepare(
+      `INSERT INTO artifact_drafts (
+        id, artifact_id, version_id, content, media_type, label, note,
+        metadata_json, created_at, updated_at, standing_notes_json
+      ) VALUES (
+        @id, @artifact_id, @version_id, @content, @media_type, @label, @note,
+        @metadata_json, @created_at, @updated_at, @standing_notes_json
+      )
+      ON CONFLICT(artifact_id) DO UPDATE SET
+        version_id = excluded.version_id,
+        content = excluded.content,
+        media_type = excluded.media_type,
+        label = excluded.label,
+        note = excluded.note,
+        metadata_json = excluded.metadata_json,
+        standing_notes_json = excluded.standing_notes_json,
+        updated_at = excluded.updated_at`,
+    ).run({
+      id,
+      artifact_id: context.logical.id,
+      version_id: context.base.id,
+      content: input.content,
+      media_type: input.media_type ?? null,
+      label: input.label ?? null,
+      note: input.note ?? null,
+      metadata_json: jsonStringify(withRequestOriginMetadata(descriptiveArtifactMetadata(input.metadata ?? {}))),
+      standing_notes_json: JSON.stringify(notes),
+      created_at: now,
+      updated_at: now,
+      }));
+  })();
   return getArtifactDraft(db, context.logical.id) as ArtifactDraftRecord;
 }
 
@@ -5591,32 +5602,86 @@ export function publishArtifactDraft(
   input: PublishArtifactDraftInput,
   now = Date.now(),
 ): import("./contracts.js").ArtifactDraftWriteResult {
-  const draft = getArtifactDraft(db, input.ref);
-  if (!draft) throw new Error("artifact draft not found");
-  if (draft.stale && !input.allow_stale) {
-    throw new Error("artifact draft is stale; publish with allow_stale to fork from the base version");
-  }
-  const base = getCanonicalArtifactVersion(db, draft.base_version_id);
-  const logical = base ? getLogicalArtifact(db, base.artifact_id) : null;
-  const baseBlob = base ? getArtifactBlob(db, base.blob_id) : null;
-  if (!base || !logical || !baseBlob) throw new Error("artifact draft canonical base is missing");
-  const planned = planArtifactVersion(db, {
-    source_kind: 'managed', artifact_id: logical.id, content: draft.content,
-    media_type: draft.media_type ?? baseBlob.media_type ?? undefined,
-    role: baseBlob.role ?? undefined, logical_name: logical.logical_name ?? undefined,
-    label: input.label ?? draft.label ?? undefined, note: input.note ?? draft.note ?? undefined,
-    metadata: mergeJsonRecords(draft.metadata, {
-      edited_from_version_id: draft.base_version_id, edited_from_version_no: draft.base_version_no,
-      stale_base_published: draft.stale,
-    }),
-  });
-  if (!planned.ok) throw new Error(planned.error.message);
   return db.transaction(() => {
+    const draft = getArtifactDraft(db, input.ref);
+    if (!draft) throw new Error("artifact draft not found");
+    if (draft.stale && !input.allow_stale) {
+      throw new Error("artifact draft is stale; publish with allow_stale to fork from the base version");
+    }
+    const base = getCanonicalArtifactVersion(db, draft.base_version_id);
+    const logical = base ? getLogicalArtifact(db, base.artifact_id) : null;
+    const baseBlob = base ? getArtifactBlob(db, base.blob_id) : null;
+    if (!base || !logical || !baseBlob) throw new Error("artifact draft canonical base is missing");
+    const planned = planArtifactVersion(db, {
+      source_kind: 'managed', artifact_id: logical.id, content: draft.content,
+      media_type: draft.media_type ?? baseBlob.media_type ?? undefined,
+      role: baseBlob.role ?? undefined, logical_name: logical.logical_name ?? undefined,
+      label: input.label ?? draft.label ?? undefined, note: input.note ?? draft.note ?? undefined,
+      metadata: mergeJsonRecords(draft.metadata, {
+        edited_from_version_id: draft.base_version_id, edited_from_version_no: draft.base_version_no,
+        stale_base_published: draft.stale,
+      }),
+    });
+    if (!planned.ok) throw new Error(planned.error.message);
     const published = commitArtifactVersion(db, planned.value, now);
     if (!published.ok) throw new Error(published.error.message);
+    const version = published.value.artifact_version;
+    const target = artifactMaterializationTarget(published.value);
+    const finalKind = target.ok ? artifactReviewRangeKind(target.value) : null;
+    const source = artifactReviewSource(draft.content);
+    for (const note of draft.standing_notes ?? []) {
+      const attached = note.anchor.status !== "detached" && note.range_kind === finalKind ? note.anchor : null;
+      const stored = appendStandingNote(db, {
+        documentKey: logical.id, reference: { kind: "artifact_version", artifact_version_id: version.id },
+        order: version.version_no, source, rangeKind: finalKind ?? note.range_kind,
+      }, note.actor_user_id, attached ?? note, note.body, note.created_at,
+        attached ? undefined : { ...note.origin, range_kind: note.range_kind });
+      if (!stored.ok && stored.reason !== "annotation_noop") throw new Error("Saved artifact does not match its draft note");
+      if (stored.ok && note.resolved) {
+        const resolution = mutateStandingNote(db, logical.id, note.actor_user_id, stored.id, { kind: "resolve" }, now);
+        if (!resolution.ok) throw new Error("Could not finalize the draft note resolution");
+      }
+    }
     deleteArtifactDraft(db, logical.id);
     return { draft, result: published.value };
   }).immediate();
+}
+
+type DraftNoteOperation = { kind: "add"; expected_source: string; range: ReviewRange; body: string }
+  | (StandingNoteMutation & { id: string });
+
+type DraftNoteResult = { ok: true; draft: ArtifactDraftRecord }
+  | { ok: false; reason: "stale_document" | "quote_mismatch" | "stale_annotation" };
+
+export function mutateArtifactDraftNote(db: Db, ref: string, actor: { id: string; display_name: string },
+  operation: DraftNoteOperation, now = Date.now(),
+): DraftNoteResult {
+  return db.transaction((): DraftNoteResult => {
+    const draft = getArtifactDraft(db, ref);
+    if (!draft) return { ok: false, reason: "stale_document" };
+    let notes = draft.standing_notes ?? [];
+    if (operation.kind === "add") {
+      if (operation.expected_source !== draft.content) return { ok: false, reason: "stale_document" };
+      const version = artifactMaterializationTarget(resolveArtifactIdentity(db, draft.base_version_id));
+      const rangeKind = version.ok ? artifactReviewRangeKind(version.value) : null;
+      if (!rangeKind || !reviewRangeMatches(artifactReviewSource(draft.content), operation.range, rangeKind)) {
+        return { ok: false, reason: "quote_mismatch" };
+      }
+      notes = [...notes, { ...operation.range, id: crypto.randomUUID(), body: operation.body, created_at: now,
+        resolved: false, actor_user_id: actor.id, author: actor.display_name, range_kind: rangeKind,
+        origin: { base_version_id: draft.base_version_id, source_hash: crypto.createHash("sha256").update(draft.content).digest("hex") },
+        anchor: { ...operation.range, status: "preserved" } }];
+    } else {
+      const note = notes.find(note => note.id === operation.id && note.actor_user_id === actor.id);
+      if (!note) return { ok: false, reason: "stale_annotation" };
+      notes = notes.flatMap(item => item !== note ? [item] : operation.kind === "retract" ? []
+        : [{ ...note, ...(operation.kind === "edit" ? { body: operation.body } : { resolved: true }) }]);
+    }
+    const artifactId = canonicalArtifactIdForSeriesRef(draft.series_id);
+    mutateArtifactRecord(db, "artifact_drafts", artifactId, () =>
+      db.prepare("UPDATE artifact_drafts SET standing_notes_json = ? WHERE id = ?").run(JSON.stringify(notes), draft.id));
+    return { ok: true, draft: { ...draft, standing_notes: notes } };
+  })();
 }
 
 // Flexible history resolver for read surfaces. Public callers use canonical

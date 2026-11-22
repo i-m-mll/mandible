@@ -1,4 +1,6 @@
-import { DOMAIN_EVENTS, WORK_SCAN_SKIP_WINDOW_MS } from "./contracts.js";
+import { DOMAIN_EVENTS, WORK_SCAN_SKIP_WINDOW_MS, type AuthChangeReport, type GitChangeFile } from "./contracts.js";
+import { collectAuthMergeReview } from "./auth-change-report.js";
+import { resolveCommitSha, resolveMergeBaseSha } from "./auth-context.js";
 import { execFile } from "child_process";
 import { randomUUID } from "node:crypto";
 import fs from "fs";
@@ -153,8 +155,8 @@ export interface WorkCompareResult {
   to: string;
   mode: WorkCompareMode;
   range: string;
-  raw: string;
-  stat: string;
+  comparison: AuthChangeReport["comparison"];
+  files: GitChangeFile[];
 }
 
 export interface RepoInfo {
@@ -1069,24 +1071,19 @@ export class WorkScanner {
   ): Promise<WorkCompareResult> {
     const normalizedMode: WorkCompareMode = mode === "range" ? "range" : "merge-base";
     const range = normalizedMode === "range" ? `${from}..${to}` : `${from}...${to}`;
-    const raw = await runGit(["diff", range], {
-      cwd: repoRoot,
-      signal: this.scanAbort.signal,
-
-    }) ?? "";
-    const stat = await runGit(["diff", "--stat", range], {
-      cwd: repoRoot,
-      signal: this.scanAbort.signal,
-
-    }) ?? "";
+    const [base_sha, head_sha] = await Promise.all([resolveCommitSha(repoRoot, from), resolveCommitSha(repoRoot, to)]);
+    const merge_base_sha = normalizedMode === "range" ? base_sha : await resolveMergeBaseSha(repoRoot, base_sha, head_sha);
+    const comparison = { base_sha, head_sha, merge_base_sha };
+    const result = await collectAuthMergeReview(repoRoot, comparison);
+    if (!result.ok) throw new Error(result.error.message);
     return {
       repo_root: repoRoot,
       from,
       to,
       mode: normalizedMode,
       range,
-      raw,
-      stat: stat.trim(),
+      comparison,
+      files: result.value.report.files,
     };
   }
 

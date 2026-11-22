@@ -7,6 +7,7 @@ import {
   getRepoBranchCommits,
   getWorkRepoAudit,
   getWorkCompare,
+  getWorkDiffFile,
   openPath,
   pushRepos,
   pushRepo,
@@ -19,7 +20,7 @@ import {
   type WorkRepoAudit,
   type InstanceInfo,
 } from '../api';
-import { DiffView } from '../components/DiffView';
+import { ChangeList } from '../components/ChangeList';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { SidebarItemBadge, SidebarItemRow } from '../components/shared/SidebarItemRow';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
@@ -2102,16 +2103,14 @@ export function WorkOverviewView({
                                   <div className="empty-state">Loading diff...</div>
                                 ) : compareError ? (
                                   <div className="empty-state">{compareError}</div>
-                                ) : compareResult ? (
-                                  <>
-                                    {compareResult.stat ? <pre className="work-compare-stat">{compareResult.stat}</pre> : null}
-                                    <DiffView
-                                      diffText={compareResult.raw}
-                                      ariaLabel="Projects compare diff"
-                                      emptyMessage="No diff for this comparison."
-                                      initialMode="split"
-                                    />
-                                  </>
+                                ) : compareResult && selectedRepo ? (
+                                  <ChangeList
+                                    files={compareResult.files}
+                                    scope={`work:${selectedRepo.repoId}`}
+                                    revision={`${compareResult.comparison.merge_base_sha}:${compareResult.comparison.head_sha}`}
+                                    ariaLabel="Projects compare diff"
+                                    loadFile={(file, _index, signal) => getWorkDiffFile(selectedRepo.repoId, compareResult.comparison, file, signal)}
+                                  />
                                 ) : (
                                   <div className="empty-state">Select two commits or a branch compare action.</div>
                                 )}

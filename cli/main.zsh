@@ -116,6 +116,12 @@ case "${1:-}" in
       ""|-h|--help|help) auth_usage ;;
       list)    shift; exec "$MANDIBLE_CLI_DIR/auth-list.sh" "$@" ;;
       show)    shift; exec "$MANDIBLE_CLI_DIR/auth-show.sh" "$@" ;;
+      review)
+        case "${2:-}" in
+          show|reply|address) shift; exec "$MANDIBLE_CLI_DIR/auth-review.sh" "$@" ;;
+          ""|-h|--help|help) mandible_command_help auth review ;;
+          *) mandible_command_help auth review >&2; exit 2 ;;
+        esac ;;
       action)  shift; exec "$MANDIBLE_CLI_DIR/auth-action.sh" "$@" ;;
       check)   shift; exec "$MANDIBLE_CLI_DIR/auth-check.sh" "$@" ;;
       request) shift; exec "$MANDIBLE_CLI_DIR/auth-request.sh" "$@" ;;

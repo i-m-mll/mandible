@@ -2,13 +2,17 @@ import type { Query, QueryClient, QueryKey } from '@tanstack/preact-query';
 import { isBriefingEvent } from '../../../src/contracts';
 import { isSpaceEvent, SPACE_EVENTS } from '../../../src/spaces/events';
 
+const spaceDocument = (spaceId: string | null | undefined) => ['space', spaceId ?? null, 'document'] as const;
+const spaceDocumentNotes = (spaceId: string) => [...spaceDocument(spaceId), 'notes'] as const;
+
 export const browserResourceKeys = {
   briefings: ['briefing'] as const,
   briefingSidebar: ['briefing', 'sidebar'] as const,
   briefingProjections: (briefingId: string) => ['briefing', 'projection', briefingId] as const,
-  briefingProjection: (briefingId: string, roundId: string | null, submissionId: string | null, displayContext?: { groupId: string; proposalBundleId: string | null }) =>
-    ['briefing', 'projection', briefingId, roundId, submissionId, displayContext ?? null] as const,
-  spaceDocument: (spaceId: string | null | undefined) => ['space', spaceId ?? null, 'document'] as const,
+  briefingProjection: (briefingId: string, roundId: string | null, submissionId: string | null, displayContext?: { groupId: string; proposalBundleId: string | null }, comparisonCommit?: string | null) =>
+    ['briefing', 'projection', briefingId, roundId, submissionId, displayContext ?? null, comparisonCommit ?? null] as const,
+  spaceDocument,
+  spaceDocumentNotes,
 };
 
 export function browserResourceKeysForEvent(type: string, data?: unknown): readonly QueryKey[] {
@@ -16,7 +20,8 @@ export function browserResourceKeysForEvent(type: string, data?: unknown): reado
   if (!isSpaceEvent(type) || !data || typeof data !== 'object') return [];
   if (type === SPACE_EVENTS.SPACE_DOCUMENT_SETTINGS_UPDATED) return [['space']];
   const id = (data as { space_id?: unknown }).space_id;
-  return typeof id === 'string' ? [browserResourceKeys.spaceDocument(id)] : [];
+  if (typeof id !== 'string') return [];
+  return type === SPACE_EVENTS.SPACE_DOCUMENT_NOTE_CHANGED ? [spaceDocumentNotes(id)] : [spaceDocument(id)];
 }
 
 export async function refreshBrowserResources(client: QueryClient, keys: readonly QueryKey[], options: { predicate?: (query: Query) => boolean } = {}): Promise<void> {

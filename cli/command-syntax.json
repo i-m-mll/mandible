@@ -302,6 +302,7 @@
           {"kind": "repeat","min": 0,"item": {"kind": "sequence","items": [{"kind": "option","names": ["--teardown-preview"],"values": [{"kind": "argument","name": "branch","value": {"type": "string"}}]}]}},
           {"kind": "choice","hint": "the canonical change message: an outcome line, then a short Why paragraph; it becomes the reviewed merge commit message","items": [{"kind": "option","names": ["--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},{"kind": "option","names": ["--message-file"],"values": [{"kind": "argument","name": "file","value": {"type": "string"}}]}]},
           {"kind": "option","hint": "the checks you ran and their results; it becomes the merge commit's Verification section","names": ["--verification"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
+          {"kind": "optional","item": {"kind": "option","names": ["--narrative"],"values": [{"kind": "argument","name": "file","value": {"type": "string"}}]}},
           {"kind": "repeat","min": 0,"item": {"kind": "sequence","items": [{"kind": "option","names": ["--depends-on"],"values": [{"kind": "argument","name": "request","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--no-watch"],"values": []},{"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--type"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
@@ -325,6 +326,37 @@
         "items": [
           {"kind": "argument","name": "request","value": {"type": "string"}},
           {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
+    "auth.review.show": {
+      "route": ["auth", "review", "show"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "request","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
+    "auth.review.reply": {
+      "route": ["auth", "review", "reply"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "request","value": {"type": "string"}},
+          {"kind": "argument","name": "comment","value": {"type": "string"}},
+          {"kind": "option","names": ["--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}
+        ]
+      }
+    },
+    "auth.review.address": {
+      "route": ["auth", "review", "address"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "successor-request","value": {"type": "string"}},
+          {"kind": "argument","name": "comment","value": {"type": "string"}}
         ]
       }
     },
@@ -1298,6 +1330,21 @@
         ]
       }
     },
+    "briefing.group.convert": {
+      "route": ["briefing", "group", "convert"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "group-ref","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "sequence","items": [
+            {"kind": "option","names": ["--apply"],"values": []},
+            {"kind": "option","names": ["--expected-base"],"values": [{"kind": "argument","name": "bundle-ref","value": {"type": "string"}}]},
+            {"kind": "option","names": ["--plan-digest"],"values": [{"kind": "argument","name": "sha256","value": {"type": "string"}}]}
+          ]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+        ]
+      }
+    },
     "briefing.group.archive": {
       "route": ["briefing", "group", "archive"],
       "grammar": {
@@ -1754,6 +1801,7 @@
           {"kind": "option","names": ["--title"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]},
           {"kind": "repeat","min": 1,"item": {"kind": "option","names": ["--issue","--ref-issue","--references-issue"],"values": [{"kind": "argument","name": "id","value": {"type": "string"}}]}},
           {"kind":"choice","hint":"required Description explaining the action being approved","items":[{"kind":"option","names":["--message"],"values":[{"kind":"argument","name":"text","value":{"type":"string"}}]},{"kind":"option","names":["--message-file"],"values":[{"kind":"argument","name":"file","value":{"type":"string"}}]}]},
+          {"kind": "optional","item": {"kind": "option","names": ["--narrative"],"values": [{"kind": "argument","name": "file","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--no-watch"],"values": []}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--diff-summary"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
           {"kind": "repeat","min": 0,"item": {"kind": "option","names": ["--depends-on"],"values": [{"kind": "argument","name": "value","value": {"type": "string"}}]}},
@@ -2897,6 +2945,16 @@
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--project"],"values": [{"kind": "argument","name": "project","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--canonical"],"values": []}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
+        ]
+      }
+    },
+    "artifact.notes": {
+      "route": ["artifact", "notes"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument", "name": "artifact-ref", "value": {"type": "string"}},
+          {"kind": "optional", "item": {"kind": "sequence", "items": [{"kind": "option", "names": ["--json"], "values": []}]}}
         ]
       }
     },

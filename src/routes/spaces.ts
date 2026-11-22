@@ -1,3 +1,7 @@
+import { parseStandingNoteMutation } from "../feedback/standing-notes.js";
+import { addSpaceNote, readSpaceReview, updateSpaceNote } from "../feedback/space-review.js";
+import { isLocalBlockId } from "../spaces/document-source.js";
+import { getSpaceDocument, saveSpaceDocument } from "../spaces/document-store.js";
 import * as z from "zod";
 import { documentArtifactImportEffects, documentHistoryImportEffects } from "../security/document-import-effects.js";
 import { getDb, type Db } from "../db.js";
@@ -43,10 +47,10 @@ import {
   type BatchOccurrenceEntry,
 } from "../ledger/spaces.js";
 import {
+  addressSpaceBlock,
   createSpaceBlock,
   deleteSpaceBlock,
   detachItemFromBlocks,
-  getSpaceBlock,
   isBlockType,
   isEmbedBlockType,
   listSpaceBlocks,
@@ -58,7 +62,7 @@ import {
 import { SPACE_EVENTS, type SpaceEvent } from "../spaces/events.js";
 import { exportUntrackedCopy, serializeSpaceDocument, ExportError } from "../spaces/export.js";
 import { preparePublication, executePublication, getPublication, listPublications, importManagedDocument, importHistoryDocument, importGitDocument, type PublicationResult, publicationDestinations } from "../spaces/publication.js";
-import { documentHistoryEntry, listDocumentHistory } from "../spaces/history.js";
+import { documentHistoryEntry, legacySpaceDraftBases, listDocumentHistory } from "../spaces/history.js";
 import { broadcastSpaceEvent } from "../sse.js";
 import {
   SPACE_ITEM_REF_TYPES,
@@ -79,7 +83,7 @@ import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
 import { bodyRecord, sendJson } from "./http.js";
 import { lookupBriefingId, shortBriefingRef } from "../feedback/briefings.js";
-import { ClientAuthzError } from "../client-auth/authz.js";
+import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import { briefingReadViewer } from "./briefing.js";
 import { resolveProjectRef } from "../ledger/project-registry.js";
 import { effectiveWorkerStatus } from "../ledger/issue-work-state.js";
@@ -906,31 +910,30 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     try {
       const db = getDb();
       const space = loadSpaceOr404(db, req.params.id);
-      if (!getSpaceBlock(db, space.id, req.params.block_id)) {
-        throw new HttpError(404, "block not found");
-      }
       const input = parseBlockUpdateInput(db, space.id, bodyRecord(req));
-      const block = updateSpaceBlock(db, space.id, req.params.block_id, input);
+      const block = updateSpaceBlock(db, space.id, resolveSpaceBlock(db, space.id, req.params.block_id), input);
+      if (!block) throw new HttpError(404, "block not found");
       emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED, space.id);
       sendJson(res, 200, { block });
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "patch:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { block_id: entityRefs.spaceBlock } } });
+  }, { operation: { id: "patch:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   router.delete("/api/spaces/:id/blocks/:block_id", (req, res) => {
     try {
       const db = getDb();
       const space = loadSpaceOr404(db, req.params.id);
-      if (!deleteSpaceBlock(db, space.id, req.params.block_id)) {
+      const id = resolveSpaceBlock(db, space.id, req.params.block_id);
+      if (!deleteSpaceBlock(db, space.id, id)) {
         throw new HttpError(404, "block not found");
       }
       emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED, space.id);
-      sendJson(res, 200, { ok: true, id: req.params.block_id });
+      sendJson(res, 200, { ok: true, id });
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "delete:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow", refs: { params: { block_id: entityRefs.spaceBlock } } });
+  }, { operation: { id: "delete:/api/spaces/:id/blocks/:block_id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "spaces" }, fileRpc: "allow" });
 
   // Detach/degrade: drop the item_id embed from every block in the Space that
   // embeds it (preserving item_snapshot_json as a placeholder) so the item can
@@ -964,11 +967,12 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id), body=bodyRecord(req);
 
       const publication=publicationValue(preparePublication(db,{ spaceId:space.id,repoId:optionalString(body,"repo_id"),
-        path:requireString(body,"path"),issue:requireString(body,"issue"),message:optionalString(body,"message") ?? undefined }));
+        path:requireString(body,"path"),issue:requireString(body,"issue"),message:optionalString(body,"message") ?? undefined,
+        expectedGeneration:typeof body.expected_generation === "number" ? body.expected_generation : undefined }));
       emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED,space.id);
       sendJson(res,201,publication);
     } catch(error) { handleExportError(res,error); }
-  }, { operation: { id: "post:/api/spaces/:id/publications", effects: ["ledger:write", "files:production"], requestSchema: z.object({ repo_id: z.string().trim().min(1).nullish(), path: z.string().trim().min(1), issue: z.string().trim().min(1), message: z.string().optional() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  }, { operation: { id: "post:/api/spaces/:id/publications", effects: ["ledger:write", "files:production"], requestSchema: z.object({ repo_id: z.string().trim().min(1).nullish(), path: z.string().trim().min(1), issue: z.string().trim().min(1), message: z.string().optional(), expected_generation: z.number().int().nonnegative().optional() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
   router.post("/api/spaces/:id/publications/:publication_id/submit", async (req,res)=> {
     try { const db=getDb(), space=loadSpaceOr404(db,req.params.id);
 
@@ -1008,6 +1012,91 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       emit(SPACE_EVENTS.SPACE_CREATED,space.id);sendJson(res,201,space);
     } catch(error){handleExportError(res,error);}
   }, { operation: { id: "post:/api/spaces/:id/history/:history_id/import", effects: ({ params }) => documentHistoryImportEffects(getDb(), params.id, params.history_id), requestSchema: z.object({ title: z.string().trim().min(1) }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  router.get("/api/spaces/:id/document", (req, res) => {
+    try {
+      const db = getDb(), space = loadSpaceOr404(db, req.params.id);
+      sendJson(res, 200, getSpaceDocument(db, space.id));
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "get:/api/spaces/:id/document", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  router.get("/api/spaces/:id/document/legacy-draft-bases", (req, res) => {
+    try {
+      const db = getDb(), space = loadSpaceOr404(db, req.params.id);
+      sendJson(res, 200, { blocks: legacySpaceDraftBases(db, space.id) });
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "get:/api/spaces/:id/document/legacy-draft-bases", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  router.patch("/api/spaces/:id/document", (req, res) => {
+    try {
+      const db = getDb(), space = loadSpaceOr404(db, req.params.id);
+      const body = bodyRecord(req);
+      if (typeof body.source !== "string" || typeof body.expected_generation !== "number") {
+        throw new HttpError(400, "source and expected_generation are required");
+      }
+      const result = saveSpaceDocument(db, space.id, body.expected_generation, body.source);
+      if (!result.ok) {
+        sendJson(res, 409, { code: "stale_document", document: result.document });
+        return;
+      }
+      if (result.changed) emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED, space.id);
+      sendJson(res, 200, result.document);
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "patch:/api/spaces/:id/document", effects: ["ledger:write"],
+    requestSchema: z.object({ source: z.string(), expected_generation: z.number().int().nonnegative() }).strict(),
+    reportingCategory: "spaces" }, fileRpc: "allow" });
+  router.post("/api/spaces/:id/document/address", (req, res) => {
+    try {
+      const db = getDb(), space = loadSpaceOr404(db, req.params.id);
+      const { expected_generation, start, end } = req.body as Record<"expected_generation" | "start" | "end", number>;
+      const result = addressSpaceBlock(db, space.id, expected_generation, { start, end });
+      if (!result.ok) {
+        sendJson(res, 409, { code: "stale_document", document: result.document });
+        return;
+      }
+      if (result.document.generation !== expected_generation) emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED, space.id);
+      sendJson(res, 200, { ...result.document, id: result.id });
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "post:/api/spaces/:id/document/address", effects: ["ledger:write"],
+    requestSchema: z.object({ expected_generation: z.number().int().nonnegative(), start: z.number().int().nonnegative(), end: z.number().int().nonnegative() }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  router.get("/api/spaces/:id/document/notes", (req, res) => {
+    try {
+      const db = getDb(), space = loadSpaceOr404(db, req.params.id);
+      sendJson(res, 200, readSpaceReview(db, space.id, req.client_identity?.user_id));
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "get:/api/spaces/:id/document/notes", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  router.post("/api/spaces/:id/document/notes", (req, res) => {
+    try {
+      const db = getDb(), space = loadSpaceOr404(db, req.params.id);
+      const { user_id } = requireOperator(db, req);
+      const { expected_generation, body, ...range } = req.body as import("../feedback/review-types.js").ReviewRange & {
+        expected_generation: number; body: string;
+      };
+      const result = addSpaceNote(db, space.id, user_id, expected_generation, range, body);
+      if (!result.ok) {
+        sendJson(res, 409, { code: result.reason, error: result.reason === 'annotation_noop'
+          ? 'This note is already saved.' : 'The selected text no longer matches the saved document.' });
+        return;
+      }
+      emit(SPACE_EVENTS.SPACE_DOCUMENT_NOTE_CHANGED, space.id);
+      sendJson(res, 201, { id: result.id });
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "post:/api/spaces/:id/document/notes", effects: ["ledger:write"], requestSchema: z.object({
+    expected_generation: z.number().int().nonnegative(), start_offset: z.number().int().nonnegative(),
+    end_offset: z.number().int().positive(), quote: z.string().min(1), body: z.string().trim().min(1),
+  }).strict(), reportingCategory: "spaces" }, fileRpc: "allow" });
+  router.patch("/api/spaces/:id/document/notes/:note_id", (req, res) => {
+    try {
+      const db = getDb(), space = loadSpaceOr404(db, req.params.id);
+      const mutation = parseStandingNoteMutation(bodyRecord(req));
+      if (!mutation) throw new HttpError(400, "Invalid note mutation");
+      const { user_id } = requireOperator(db, req);
+      const result = updateSpaceNote(db, space.id, user_id, req.params.note_id, mutation);
+      if (!result.ok) throw new HttpError(409, "This note is no longer editable.");
+      emit(SPACE_EVENTS.SPACE_DOCUMENT_NOTE_CHANGED, space.id);
+      sendJson(res, 200, { id: result.id });
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "patch:/api/spaces/:id/document/notes/:note_id", effects: ["ledger:write"],
+    requestSchema: z.discriminatedUnion("kind", [z.object({ kind: z.literal("edit"), body: z.string().trim().min(1) }).strict(),
+      z.object({ kind: z.literal("resolve") }).strict(), z.object({ kind: z.literal("retract") }).strict()]),
+    reportingCategory: "spaces" }, fileRpc: "allow" });
   router.get("/api/spaces/:id/document/download", (req,res)=> {
     try { const db=getDb(),space=loadSpaceOr404(db,req.params.id);
 
@@ -1035,7 +1124,7 @@ function handleExportError(res: ResponseLike, error: unknown): void {
         ? 404
         : error.code === "checkout_not_found"
           ? 404
-          : error.code === "worktree_dirty" || error.code === "locked" || error.code === "stale_destination"
+          : error.code === "worktree_dirty" || error.code === "locked" || error.code === "stale_destination" || error.code === "stale_document"
             ? 409
             : error.code === "invalid_path"
               ? 400
@@ -1044,6 +1133,15 @@ function handleExportError(res: ResponseLike, error: unknown): void {
     return;
   }
   handleError(res, error);
+}
+
+function resolveSpaceBlock(db: Db, spaceId: string, ref: string): string {
+  if (isLocalBlockId(ref)) return ref;
+  const resolved = resolveId(db, "space_block", ref, { scope: spaceId });
+  if (resolved.ok) return resolved.id;
+  throw resolved.error === "ambiguous"
+    ? new HttpError(409, "block reference is ambiguous")
+    : new HttpError(404, "block not found");
 }
 
 // --- block input parsing -----------------------------------------------------
@@ -1071,10 +1169,10 @@ function optionalSnapshot(body: Record<string, unknown>): BlockItemSnapshot | nu
  * `space_id`), but validating here returns a clean 400 instead of a raw SQLite
  * constraint error.
  */
-function requireBlockParentInSpace(db: Db, spaceId: string, parentId: string): void {
-  if (!getSpaceBlock(db, spaceId, parentId)) {
-    throw new HttpError(400, `parent_id not found in space: ${parentId}`);
-  }
+function blockParentInSpace(db: Db, spaceId: string, parentId: string): string {
+  const resolved = resolveId(db, "space_block", parentId, { scope: spaceId });
+  if (resolved.ok) return resolved.id;
+  throw new HttpError(400, `parent_id is unavailable or ambiguous in space: ${parentId}`);
 }
 
 function requireItemInSpace(db: Db, spaceId: string, itemId: string): void {
@@ -1085,10 +1183,8 @@ function requireItemInSpace(db: Db, spaceId: string, itemId: string): void {
 
 function parseBlockCreateInput(db: Db, spaceId: string, body: Record<string, unknown>) {
   const blockType = requireBlockType(body.block_type);
-  const parentId = optionalString(body, "parent_id");
-  if (typeof parentId === "string" && parentId) {
-    requireBlockParentInSpace(db, spaceId, parentId);
-  }
+  const parent = optionalString(body, "parent_id");
+  const parentId = parent ? blockParentInSpace(db, spaceId, parent) : parent;
   const itemId = optionalString(body, "item_id");
   if (typeof itemId === "string" && itemId) {
     requireItemInSpace(db, spaceId, itemId);
@@ -1109,10 +1205,8 @@ function parseBlockCreateInput(db: Db, spaceId: string, body: Record<string, unk
 function parseBlockUpdateInput(db: Db, spaceId: string, body: Record<string, unknown>) {
   const blockType =
     body.block_type === undefined ? undefined : requireBlockType(body.block_type);
-  const parentId = optionalString(body, "parent_id");
-  if (typeof parentId === "string" && parentId) {
-    requireBlockParentInSpace(db, spaceId, parentId);
-  }
+  const parent = optionalString(body, "parent_id");
+  const parentId = parent ? blockParentInSpace(db, spaceId, parent) : parent;
   const itemId = optionalString(body, "item_id");
   if (typeof itemId === "string" && itemId) {
     requireItemInSpace(db, spaceId, itemId);

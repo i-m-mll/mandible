@@ -472,11 +472,12 @@
   font: inherit;
 }
 
-.artifact-editor .spaces-markdown-source {
+.artifact-editor .markdown-document {
   min-height: min(560px, calc(100vh - 360px));
   border: 1px solid var(--neutral-alpha-07);
   border-radius: 8px;
   overflow: auto;
+  padding: 8px;
   background: var(--bg-card);
 }
 

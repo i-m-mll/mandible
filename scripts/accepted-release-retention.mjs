@@ -116,7 +116,7 @@ export function acceptedReleaseDatabaseReferences(db, reference, receipt) {
 
   const request = db.prepare('SELECT * FROM auth_requests WHERE id = ?').get(row.auth_request_id);
   if (!request || row.pin_sha !== request.merge_candidate_pin_sha || row.tree_sha !== request.merge_candidate_tree_sha
-      || row.base_sha !== request.merge_preflight_base_sha || row.head_sha !== request.merge_head_sha
+      || row.base_sha !== request.merge_preflight_base_sha || row.head_sha !== (request.merge_effective_head_sha ?? request.merge_head_sha)
       || request.custody_work_unit_id && request.custody_work_unit_id !== receipt.retention.work_unit) return [];
   const actions = db.prepare(`SELECT state, payload FROM auth_request_actions WHERE auth_request_id = ?
     AND kind = 'checkpoint_add' AND json_extract(payload, '$.kind') = 'accepted-release'`).all(request.id);

@@ -10,7 +10,8 @@ import { createSpaceBlock, listSpaceBlocks, updateSpaceBlock } from '../src/ledg
 import { LedgerStore } from '../src/ledger/store.js';
 import { systemAction } from '../src/identity/resolver.js';
 import { preparePublication as prepareResult, executePublication as executeResult, importManagedDocument as importResult, getPublication, type PublicationRunner } from '../src/spaces/publication.js';
-import { preserveLegacyDocuments, listDocumentHistory } from '../src/spaces/history.js';
+import { getSpaceDocument } from '../src/spaces/document-store.js';
+import { readNativeDocument } from '../src/spaces/document-file.js';
 import { serializeSpaceDocument } from '../src/spaces/export.js';
 import { recordArtifactVersion } from '../src/provider-artifacts.js';
 import { documentArtifactImportEffects } from '../src/security/document-import-effects.js';
@@ -53,16 +54,22 @@ it('freezes saved revision, retains failed proposal, refuses changed destination
   const author = {provider:"codex",agent_id:"document-author",session_id:null};
   const importer = {provider:"claude",agent_id:null,session_id:"document-importer"};
   const publication=withRequestOrigin(author,()=>preparePublication(db,{spaceId:space,path:'doc.md',issue:'abc1234'}));
+  const saved = getSpaceDocument(db,space);
+  expect(readNativeDocument(publication.content)?.source).toBe(saved.source);
+  expect(db.prepare("SELECT generation,content FROM space_document_history WHERE id=?").get(publication.source_history_id))
+    .toEqual({generation:saved.generation,content:saved.source});
   const originalBlock=listSpaceBlocks(db,space)[0];updateSpaceBlock(db,space,originalBlock.id,{markdown:'edited later'});
   expect(getPublication(db,space,publication.id).content).toContain('original');
   expect(serializeSpaceDocument(db,space)).toContain('edited later');
+  expect(prepareResult(db,{spaceId:space,path:'doc.md',issue:'abc1234',expectedGeneration:saved.generation}))
+    .toMatchObject({ok:false,error:{code:'stale_document'}});
   const copy=withRequestOrigin(importer,()=>importManagedDocument(db,{ref:publication.snapshot_ref,title:'Copy',projectId:'p'}));
   const events = db.prepare("SELECT entity_id,payload_json FROM ledger_events WHERE entity_type IN ('space_publication','space','space_block') ORDER BY rowid").all() as Array<{entity_id:string;payload_json:string}>;
   expect(JSON.parse(events.find(row=>row.entity_id===publication.id)!.payload_json).request_origin).toEqual(author);
   expect(events.filter(row=>row.entity_id===copy.id || row.entity_id===listSpaceBlocks(db,copy.id)[0].id).every(row=>JSON.stringify(JSON.parse(row.payload_json).request_origin)===JSON.stringify(importer))).toBe(true);
   const beforeFailure = db.prepare("SELECT count(*) AS n FROM ledger_events").get();
   const spacesBefore = db.prepare("SELECT count(*) AS n FROM spaces").get();
-  db.exec("CREATE TRIGGER reject_import BEFORE INSERT ON space_blocks BEGIN SELECT RAISE(ABORT,'import unavailable'); END");
+  db.exec("CREATE TRIGGER reject_import BEFORE INSERT ON space_documents BEGIN SELECT RAISE(ABORT,'import unavailable'); END");
   expect(importResult(db,{ref:publication.snapshot_ref,title:'Failed copy'})).toMatchObject({ok:false});
   expect(db.prepare("SELECT count(*) AS n FROM spaces").get()).toEqual(spacesBefore);
   expect(db.prepare("SELECT count(*) AS n FROM ledger_events").get()).toEqual(beforeFailure);
@@ -108,22 +115,16 @@ it('publishes the frozen bytes once, and later editing leaves Git publication pi
   expect(listSpaceBlocks(db,imported.id)[0].markdown).toBe('original');
 });
 
-it('preserves every legacy variant without touching checkout bytes and is restart-safe',()=> {
-  const repo=path.join(root,'repo');
-  fs.writeFileSync(path.join(repo,'doc.md'),'published');git(repo,'add','doc.md');git(repo,'commit','-m','Published');const commit=git(repo,'rev-parse','HEAD');
-  const snapshot=recordArtifactVersion(db,{source_kind:'managed',series_key:'legacy',content:'pre-export',custody_mode:'managed'});
-  const legacy=path.join(repo,'.git','mandible-docs-worktrees','docs_spaces');fs.mkdirSync(legacy,{recursive:true});fs.writeFileSync(path.join(legacy,'doc.md'),'unique dirty bytes');fs.writeFileSync(path.join(legacy,'ignored'),'ignored unique');
-  db.prepare(`INSERT INTO space_exports (id,space_id,repo_id,branch,path,authority,status,last_export_blob_id,pre_export_snapshot_blob_id,last_export_commit,created_at,updated_at)
-    VALUES (?,?,?,?,?,'repo','conflict',?,?,?,?,?)`).run('legacy',space,'c','docs/spaces','doc.md',snapshot.artifact_blob.id,snapshot.artifact_blob.id,commit,1,1);
-  preserveLegacyDocuments(db);const history=listDocumentHistory(db,space);
-  expect(history.find(value=>value.kind==='managed-before-migration')?.content).toContain('original');
-  expect(history.find(value=>value.kind==='published-git')?.content).toBe('published');
-  expect(history.find(value=>value.kind==='checkout-file')?.content).toBe('unique dirty bytes');
-  expect(history.filter(value=>value.artifact_ref)).toHaveLength(2);
-  preserveLegacyDocuments(db);expect(listDocumentHistory(db,space)).toEqual(history);
-  expect(fs.readFileSync(path.join(legacy,'ignored'),'utf8')).toBe('ignored unique');
-  expect(db.prepare('SELECT authority,status FROM space_exports').get()).toEqual({authority:'repo',status:'conflict'});
-  expect(()=>db.prepare('UPDATE space_document_history SET content=?').run('overwrite')).toThrow('immutable');
+it('plain Markdown imports verbatim through a native publication', () => {
+  const source = "---\r\nheading: literal header\r\n---\r\n\r\n  final prose";
+  const artifact = recordArtifactVersion(db, {
+    source_kind:'managed', series_key:'plain-markdown', content:source, custody_mode:'managed',
+  });
+  const plain = importManagedDocument(db,{ref:artifact.artifact_version.id,title:'Plain',projectId:'p'});
+  expect(getSpaceDocument(db,plain.id).source).toBe(source);
+  const publication = preparePublication(db,{spaceId:plain.id,path:'new.md',issue:'abc1234'});
+  const copy = importManagedDocument(db,{ref:publication.snapshot_ref,title:'Copy',projectId:'p'});
+  expect(getSpaceDocument(db,copy.id).source).toBe(source);
 });
 
 it('publication import retains embedded snapshots and metadata independently of the source',()=> {
@@ -158,7 +159,7 @@ it('rechecks the destination after a committed submission failure without changi
   fs.chmodSync(path.join(proposal,'doc.md'),0o644);runner.submit=()=> 'unbound-auth';
   await expect(executePublication(db,space,prepared.id,runner)).rejects.toThrow('did not atomically bind');
   expect(getPublication(db,space,prepared.id)).toEqual(committed);
-  expect(git(repo,'show',`${committed.commit_sha}:doc.md`)+'\n').toBe(prepared.content);
+  expect(execFileSync('git',['show',`${committed.commit_sha}:doc.md`],{cwd:repo,encoding:'utf8',timeout:10_000})).toBe(prepared.content);
 });
 
 it('exports saved document bytes and returns the result when repo_id is omitted', async () => {

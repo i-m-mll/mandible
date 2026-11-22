@@ -1,18 +1,22 @@
+import { canonicalJson } from "../canonical-json.js";
 import { requestOriginFromRow } from "../ledger/origin-read.js";
 import { mutateBriefing } from "./mutation-history.js";
 import { requestOriginJson } from "../request-origin.js";
 import { randomUUID } from "node:crypto";
 
 import type {
-  BriefingBundle, BriefingBundleLayoutEntry, BriefingBundleLayoutInputEntry,
-  BriefingBundleMember, BriefingListEntry,
+  BriefingBundle, BriefingBundleLayoutEntry, BriefingBundleLeaf,
+  BriefingBundleMember, BriefingListEntry, TrackedBriefingPath,
 } from "../contracts.js";
 import type { Db } from "../db.js";
 import { BRIEFING_HAS_ROUND_SQL, BriefingStoreError, resolveBriefingId } from "./briefings.js";
 import { enforceActivePlacement, placementTargetForBundle, type PlacementOverride } from "./briefing-placement.js";
 import { resolveId } from "../entity-refs.js";
 
-export type BriefingBundleViewer = { userId: string; operator: boolean; humanReviewOperator?: boolean };
+import { resolveProjectRef } from "../ledger/project-registry.js";
+import { isTrackedBriefingPath, trackedBriefingReader, type TrackedBriefingReader } from "./tracked-briefing-files.js";
+
+export type BriefingBundleViewer = { userId: string; operator: boolean; humanReviewOperator?: boolean; hideTracked?: boolean };
 
 function untypedRef(value: string, prefix: string): string {
   const trimmed = value.trim();
@@ -28,56 +32,96 @@ export function resolveBundleId(db: Db, bundleRef: string): string {
   throw new BriefingStoreError("Briefing bundle not found", 404, "not_found");
 }
 
-type LayoutRow = BriefingListEntry & {
+export type BundleMemberRow = {
   layout_position: number;
   entry_kind: "briefing" | "subgroup";
   subgroup_name: string | null;
   subgroup_position: number;
-};
+} & (
+  | { briefing_id: string; tracked_project_id: null; tracked_path: null }
+  | { briefing_id: null; tracked_project_id: string; tracked_path: string }
+);
 
-function layoutRows(db: Db, bundleId: string, viewer: BriefingBundleViewer): LayoutRow[] {
-  return db.prepare(
-    `SELECT bm.layout_position, bm.entry_kind, bm.subgroup_name, bm.subgroup_position,
-            b.id, b.briefing_key, b.title, b.description, b.latest_round_id, b.round_count, b.archived_at,
-            b.created_at, b.updated_at
-       FROM briefing_bundle_members bm JOIN briefings b ON b.id = bm.briefing_id
-      WHERE bm.bundle_id = ? AND b.archived_at IS NULL AND ${BRIEFING_HAS_ROUND_SQL} AND (? = 1 OR EXISTS (
-        SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?
-      )) ORDER BY bm.layout_position, bm.subgroup_position`,
-  ).all(bundleId, viewer.operator ? 1 : 0, viewer.userId) as LayoutRow[];
+const MEMBER_COLUMNS = "briefing_id, tracked_project_id, tracked_path, layout_position, entry_kind, subgroup_name, subgroup_position";
+
+export function bundleMemberRows(db: Db, bundleId: string): BundleMemberRow[] {
+  return db.prepare(`SELECT ${MEMBER_COLUMNS} FROM briefing_bundle_members
+    WHERE bundle_id = ? ORDER BY layout_position, subgroup_position`).all(bundleId) as BundleMemberRow[];
 }
 
-function projectLayout(rows: readonly LayoutRow[]): { layout: BriefingBundleLayoutEntry[]; members: BriefingBundleMember[] } {
+export function writeBundleMemberRows(db: Db, bundleId: string, rows: readonly BundleMemberRow[], now: number): void {
+  const insert = db.prepare(`INSERT INTO briefing_bundle_members (bundle_id, ${MEMBER_COLUMNS}, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const row of rows) {
+    insert.run(bundleId, row.briefing_id, row.tracked_project_id, row.tracked_path,
+      row.layout_position, row.entry_kind, row.subgroup_name, row.subgroup_position, now);
+  }
+}
+
+type LayoutRow = BundleMemberRow & { briefing: BriefingListEntry | null };
+
+function visibleLayoutRows(db: Db, bundleId: string, viewer: BriefingBundleViewer): LayoutRow[] {
+  const rows = db.prepare(
+    `SELECT bm.briefing_id, bm.tracked_project_id, bm.tracked_path,
+            bm.layout_position, bm.entry_kind, bm.subgroup_name, bm.subgroup_position,
+            b.id, b.briefing_key, b.title, b.description, b.latest_round_id, b.round_count, b.archived_at,
+            b.created_at, b.updated_at
+       FROM briefing_bundle_members bm LEFT JOIN briefings b ON b.id = bm.briefing_id
+      WHERE bm.bundle_id = ? AND ((bm.tracked_project_id IS NOT NULL AND ? = 1) OR
+        (b.id IS NOT NULL AND b.archived_at IS NULL AND ${BRIEFING_HAS_ROUND_SQL} AND (? = 1 OR EXISTS (
+          SELECT 1 FROM briefing_members m WHERE m.briefing_id = b.id AND m.user_id = ?
+        )))) ORDER BY bm.layout_position, bm.subgroup_position`,
+  ).all(bundleId, viewer.operator && !viewer.hideTracked ? 1 : 0, viewer.operator ? 1 : 0, viewer.userId) as Array<BundleMemberRow & BriefingListEntry>;
+  return rows.map(({ briefing_id, tracked_project_id, tracked_path,
+    layout_position, entry_kind, subgroup_name, subgroup_position, ...briefing }) => ({
+    layout_position, entry_kind, subgroup_name, subgroup_position,
+    ...(briefing_id === null
+      ? { briefing_id, tracked_project_id: tracked_project_id!, tracked_path: tracked_path!, briefing: null }
+      : { briefing_id, tracked_project_id: null, tracked_path: null, briefing }),
+  }));
+}
+
+function projectLayout(rows: readonly LayoutRow[], reader: TrackedBriefingReader): Pick<BriefingBundle, "layout" | "members"> {
   const layout: BriefingBundleLayoutEntry[] = [];
   const members: BriefingBundleMember[] = [];
+  const tracked = reader.readAll(rows.flatMap(row => row.briefing === null
+    ? [{ project_id: row.tracked_project_id!, path: row.tracked_path! }] : []));
+  let trackedIndex = 0;
   for (const row of rows) {
-    const { layout_position, entry_kind, subgroup_name, subgroup_position, ...briefing } = row;
-    members.push({ position: members.length, briefing });
-    if (entry_kind === "briefing") layout.push({ kind: "briefing", position: layout_position, briefing });
-    else {
-      const prior = layout.at(-1);
-      if (prior?.kind === "subgroup" && prior.position === layout_position) {
-        prior.briefings.push({ position: subgroup_position, briefing });
-      } else {
-        layout.push({ kind: "subgroup", position: layout_position, name: subgroup_name ?? "",
-          briefings: [{ position: subgroup_position, briefing }] });
-      }
+    const position = row.entry_kind === "subgroup" ? row.subgroup_position : row.layout_position;
+    const leaf: BriefingBundleLeaf = row.briefing === null
+      ? { kind: "tracked", position, tracked: tracked[trackedIndex++]! }
+      : { kind: "briefing", position, briefing: row.briefing };
+    if (leaf.kind === "briefing") members.push({ position: members.length, briefing: leaf.briefing });
+    if (row.entry_kind === "briefing") {
+      layout.push(leaf);
+      continue;
     }
+    const prior = layout.at(-1);
+    const subgroup = prior?.kind === "subgroup" && prior.position === row.layout_position ? prior
+      : { kind: "subgroup" as const, position: row.layout_position, name: row.subgroup_name!, members: [], briefings: [] };
+    if (subgroup !== prior) layout.push(subgroup);
+    subgroup.members.push(leaf);
+    if (leaf.kind === "briefing") subgroup.briefings.push({ position, briefing: leaf.briefing });
   }
   return { layout, members };
 }
 
-export function readBriefingBundle(db: Db, bundleRef: string, viewer: BriefingBundleViewer): BriefingBundle {
+export function readBriefingBundle(db: Db, bundleRef: string, viewer: BriefingBundleViewer,
+  reader = trackedBriefingReader(db)): BriefingBundle {
   const id = resolveBundleId(db, bundleRef);
   const bundle = db.prepare("SELECT id, name, created_at, updated_at, request_origin_json FROM briefing_bundles WHERE id = ?")
     .get(id) as Omit<BriefingBundle, "layout" | "members">;
-  return { ...bundle, request_origin: requestOriginFromRow(bundle), ...projectLayout(layoutRows(db, id, viewer)) };
+  return { ...bundle, request_origin: requestOriginFromRow(bundle), ...projectLayout(visibleLayoutRows(db, id, viewer), reader) };
 }
 
 export function listBriefingBundles(db: Db, viewer: BriefingBundleViewer): BriefingBundle[] {
   const bundles = db.prepare("SELECT id, name, created_at, updated_at, request_origin_json FROM briefing_bundles ORDER BY created_at, id")
     .all() as Array<Omit<BriefingBundle, "layout" | "members">>;
-  return bundles.map((bundle) => ({ ...bundle, request_origin: requestOriginFromRow(bundle), ...projectLayout(layoutRows(db, bundle.id, viewer)) }));
+  const reader = trackedBriefingReader(db);
+  return bundles.map((bundle) => ({
+    ...bundle, request_origin: requestOriginFromRow(bundle), ...projectLayout(visibleLayoutRows(db, bundle.id, viewer), reader),
+  }));
 }
 
 export type DeletedBriefingBundle = { bundle_id: string; name: string; deleted: true };
@@ -129,95 +173,101 @@ export function deleteEmptyBriefingBundle(db: Db, bundleRef: string): DeletedBri
   });
 }
 
-type ResolvedLayoutEntry =
-  | { kind: "briefing"; briefingId: string }
-  | { kind: "subgroup"; name: string; briefingIds: string[] };
+type ResolvedLeaf = Pick<BundleMemberRow, "briefing_id" | "tracked_project_id" | "tracked_path">;
 
-function resolveLayout(db: Db, layout: unknown, viewer: BriefingBundleViewer): ResolvedLayoutEntry[] {
-  if (!Array.isArray(layout)) throw new BriefingStoreError("layout must be an array");
-  const subgroupNames = new Set<string>();
-  const allBriefingIds: string[] = [];
-  const resolved = layout.map((raw, position): ResolvedLayoutEntry => {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      throw new BriefingStoreError(`layout entry ${position} must be an object`);
-    }
-    const entry = raw as Partial<BriefingBundleLayoutInputEntry> & Record<string, unknown>;
-    if (entry.kind === "briefing") {
-      const unexpected = Object.keys(entry).filter((key) => key !== "kind" && key !== "briefing_ref");
-      if (unexpected.length) throw new BriefingStoreError(`layout entry ${position} contains unsupported field '${unexpected[0]}'`);
-      if (typeof entry.briefing_ref !== "string" || !entry.briefing_ref.trim()) {
-        throw new BriefingStoreError(`layout entry ${position} briefing_ref must be nonblank`);
-      }
-      const briefingId = resolveBriefingId(db, entry.briefing_ref, viewer);
-      allBriefingIds.push(briefingId);
-      return { kind: "briefing", briefingId };
-    }
-    if (entry.kind === "subgroup") {
-      const unexpected = Object.keys(entry).filter((key) => key !== "kind" && key !== "name" && key !== "briefing_refs");
-      if (unexpected.length) throw new BriefingStoreError(`layout entry ${position} contains unsupported field '${unexpected[0]}'`);
-      if (typeof entry.name !== "string" || !entry.name.trim()) {
-        throw new BriefingStoreError(`layout subgroup ${position} name must be nonblank`);
-      }
-      const name = entry.name.trim();
-      if (subgroupNames.has(name)) throw new BriefingStoreError("layout must not contain duplicate subgroup blocks");
-      subgroupNames.add(name);
-      if (!Array.isArray(entry.briefing_refs) || entry.briefing_refs.length === 0
-          || !entry.briefing_refs.every((ref) => typeof ref === "string" && ref.trim())) {
-        throw new BriefingStoreError("layout subgroups require a nonempty briefing_refs array");
-      }
-      const briefingIds = entry.briefing_refs.map((ref) => resolveBriefingId(db, ref, viewer));
-      allBriefingIds.push(...briefingIds);
-      return { kind: "subgroup", name, briefingIds };
-    }
-    throw new BriefingStoreError(`layout entry ${position} kind must be 'briefing' or 'subgroup'`);
-  });
-  if (new Set(allBriefingIds).size !== allBriefingIds.length) {
-    throw new BriefingStoreError("layout must not contain duplicate Briefings");
+function layoutInputObject(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new BriefingStoreError("Each layout entry must be an object");
   }
-  return resolved;
+  return raw as Record<string, unknown>;
 }
 
-function flatLayout(db: Db, refs: readonly string[], viewer: BriefingBundleViewer): ResolvedLayoutEntry[] {
+function requireLayoutFields(entry: Record<string, unknown>, keys: string[]): void {
+  const unexpected = Object.keys(entry).find(key => !keys.includes(key));
+  if (unexpected) throw new BriefingStoreError(`Layout entry contains unsupported field '${unexpected}'`);
+}
+
+function resolveLeaf(db: Db, input: unknown, viewer: BriefingBundleViewer): ResolvedLeaf {
+  const leaf = layoutInputObject(input);
+  if (leaf.kind === "briefing") {
+    requireLayoutFields(leaf, ["kind", "briefing_ref"]);
+    if (typeof leaf.briefing_ref !== "string" || !leaf.briefing_ref.trim()) {
+      throw new BriefingStoreError("briefing_ref must be nonblank");
+    }
+    return { briefing_id: resolveBriefingId(db, leaf.briefing_ref, viewer), tracked_project_id: null, tracked_path: null };
+  }
+  if (leaf.kind === "tracked") {
+    requireLayoutFields(leaf, ["kind", "project_ref", "path"]);
+    if (!viewer.operator) throw new BriefingStoreError("Tracked layout changes require an operator", 403, "forbidden");
+    if (typeof leaf.project_ref !== "string" || !isTrackedBriefingPath(leaf.path)) {
+      throw new BriefingStoreError("Tracked layout entries require a project_ref and a Git-relative file path");
+    }
+    const project = resolveProjectRef(db, leaf.project_ref);
+    if (!project.ok) throw new BriefingStoreError("Tracked layout project must resolve uniquely");
+    return { briefing_id: null, tracked_project_id: project.project.id, tracked_path: leaf.path };
+  }
+  throw new BriefingStoreError("A bundle leaf must be a Briefing or a tracked path");
+}
+
+function resolveLayout(db: Db, layout: unknown, viewer: BriefingBundleViewer): BundleMemberRow[] {
+  if (!Array.isArray(layout)) throw new BriefingStoreError("layout must be an array");
+  const subgroupNames = new Set<string>();
+  const seen = new Set<string>();
+  return layout.flatMap((raw, layout_position) => {
+    const entry = layoutInputObject(raw);
+    const subgroup = entry.kind === "subgroup";
+    let subgroup_name: string | null = null;
+    let leaves: unknown[] = [entry];
+    if (subgroup) {
+      requireLayoutFields(entry, ["kind", "name", "briefing_refs", "members"]);
+      if (typeof entry.name !== "string" || !entry.name.trim()) {
+        throw new BriefingStoreError("Layout subgroup name must be nonblank");
+      }
+      subgroup_name = entry.name.trim();
+      if (subgroupNames.has(subgroup_name)) throw new BriefingStoreError("layout must not contain duplicate subgroup blocks");
+      subgroupNames.add(subgroup_name);
+      if ((entry.briefing_refs === undefined) === (entry.members === undefined)) {
+        throw new BriefingStoreError("Layout subgroup requires either members or briefing_refs");
+      }
+      const inputs = entry.members ?? entry.briefing_refs;
+      if (!Array.isArray(inputs) || inputs.length === 0) throw new BriefingStoreError("Layout subgroup must contain leaves");
+      leaves = entry.members === undefined
+        ? inputs.map(briefing_ref => ({ kind: "briefing", briefing_ref }))
+        : inputs;
+    }
+    return leaves.map((input, subgroup_position) => {
+      const leaf = resolveLeaf(db, input, viewer);
+      const key = leaf.briefing_id ?? JSON.stringify([leaf.tracked_project_id, leaf.tracked_path]);
+      if (seen.has(key)) throw new BriefingStoreError("layout must not contain duplicate members");
+      seen.add(key);
+      return { ...leaf, layout_position, entry_kind: subgroup ? "subgroup" : "briefing",
+        subgroup_name, subgroup_position } as BundleMemberRow;
+    });
+  });
+}
+
+function flatLayout(db: Db, refs: readonly string[], viewer: BriefingBundleViewer): BundleMemberRow[] {
   if (!Array.isArray(refs) || !refs.every((ref) => typeof ref === "string" && ref.trim())) {
     throw new BriefingStoreError("briefing_refs must be an array of nonblank Briefing refs");
   }
   try {
     return resolveLayout(db, refs.map((briefing_ref) => ({ kind: "briefing", briefing_ref })), viewer);
   } catch (error) {
-    if (error instanceof BriefingStoreError && error.message === "layout must not contain duplicate Briefings") {
+    if (error instanceof BriefingStoreError && error.message === "layout must not contain duplicate members") {
       throw new BriefingStoreError("briefing_refs must not contain duplicates");
     }
     throw error;
   }
 }
 
-function currentResolvedLayout(db: Db, bundleId: string): ResolvedLayoutEntry[] {
-  const rows = db.prepare(`SELECT briefing_id, layout_position, entry_kind, subgroup_name
-    FROM briefing_bundle_members WHERE bundle_id = ? ORDER BY layout_position, subgroup_position`).all(bundleId) as
-    Array<{ briefing_id: string; layout_position: number; entry_kind: "briefing" | "subgroup"; subgroup_name: string | null }>;
-  const result: ResolvedLayoutEntry[] = [];
-  let priorPosition = -1;
-  for (const row of rows) {
-    if (row.entry_kind === "briefing") result.push({ kind: "briefing", briefingId: row.briefing_id });
-    else {
-      const prior = result.at(-1);
-      if (prior?.kind === "subgroup" && priorPosition === row.layout_position) prior.briefingIds.push(row.briefing_id);
-      else result.push({ kind: "subgroup", name: row.subgroup_name ?? "", briefingIds: [row.briefing_id] });
-    }
-    priorPosition = row.layout_position;
-  }
-  return result;
+export function trackedBundleMembers(db: Db, bundleId: string): TrackedBriefingPath[] {
+  return bundleMemberRows(db, bundleId).flatMap(row => row.briefing_id === null
+    ? [{ project_id: row.tracked_project_id, path: row.tracked_path }] : []);
 }
 
-function writeLayout(db: Db, bundleId: string, layout: readonly ResolvedLayoutEntry[], now: number): void {
-  const insert = db.prepare(`INSERT INTO briefing_bundle_members
-    (bundle_id, briefing_id, layout_position, entry_kind, subgroup_name, subgroup_position, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`);
-  layout.forEach((entry, layoutPosition) => {
-    if (entry.kind === "briefing") insert.run(bundleId, entry.briefingId, layoutPosition, entry.kind, null, 0, now);
-    else entry.briefingIds.forEach((briefingId, subgroupPosition) =>
-      insert.run(bundleId, briefingId, layoutPosition, entry.kind, entry.name, subgroupPosition, now));
-  });
+export function sameTrackedBundleLayout(db: Db, baseId: string, proposalId: string): boolean {
+  const tracked = (id: string) => bundleMemberRows(db, id).filter(row => row.briefing_id === null);
+  return JSON.stringify(tracked(baseId)) === JSON.stringify(tracked(proposalId));
 }
 
 export function createBriefingBundle(
@@ -230,11 +280,11 @@ export function createBriefingBundle(
   const bundleId = randomUUID();
   db.transaction(() => {
     enforceActivePlacement(db, { operation: "bundle_create", target: { kind: "bundle", id: bundleId },
-      briefingIds: layout.flatMap((entry) => entry.kind === "briefing" ? [entry.briefingId] : entry.briefingIds),
+      briefingIds: layout.flatMap(row => row.briefing_id === null ? [] : [row.briefing_id]),
       override: input.placementOverride, now });
     db.prepare("INSERT INTO briefing_bundles (request_origin_json, id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
       .run(requestOriginJson(), bundleId, name, now, now);
-    writeLayout(db, bundleId, layout, now);
+    writeBundleMemberRows(db, bundleId, layout, now);
   }).immediate();
   return readBriefingBundle(db, bundleId, input.viewer);
 }
@@ -264,13 +314,17 @@ export function replaceBriefingBundleLayout(
   return mutateBriefing(db, "briefing_bundle", bundleId, () => {
   const layout = input.layout === undefined ? flatLayout(db, input.briefingRefs ?? [], viewer) : resolveLayout(db, input.layout, viewer);
   const changed = db.transaction(() => {
-    if (JSON.stringify(currentResolvedLayout(db, bundleId)) === JSON.stringify(layout)) return false;
+    const previous = bundleMemberRows(db, bundleId);
+    if (canonicalJson(previous) === canonicalJson(layout)) return false;
+    if (!viewer.operator && previous.some(row => row.briefing_id === null)) {
+      throw new BriefingStoreError("Tracked layout changes require an operator", 403, "forbidden");
+    }
     const target = placementTargetForBundle(db, bundleId);
     if (target) enforceActivePlacement(db, { operation: "bundle_replace", target,
-      briefingIds: layout.flatMap((entry) => entry.kind === "briefing" ? [entry.briefingId] : entry.briefingIds),
+      briefingIds: layout.flatMap(row => row.briefing_id === null ? [] : [row.briefing_id]),
       override: placementOverride, now });
     db.prepare("DELETE FROM briefing_bundle_members WHERE bundle_id = ?").run(bundleId);
-    writeLayout(db, bundleId, layout, now);
+    writeBundleMemberRows(db, bundleId, layout, now);
     db.prepare("UPDATE briefing_bundles SET updated_at = ? WHERE id = ?").run(now, bundleId);
     return true;
   }).immediate();

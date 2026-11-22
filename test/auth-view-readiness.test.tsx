@@ -262,7 +262,7 @@ describe('Auth Description presentation', () => {
         onApprove={vi.fn()} onReject={vi.fn()} onSelectAuth={vi.fn()} />);
       expect(screen.getByRole('heading', { name: 'Review this action' })).toBeTruthy();
       expect(screen.getByText('Preserve the existing service.')).toBeTruthy();
-      expect(document.querySelector('.rendered-markdown script')).toBeNull();
+      expect(document.querySelector('[aria-label="Request description"] script')).toBeNull();
     });
   }
 });

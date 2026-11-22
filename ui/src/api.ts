@@ -1,3 +1,9 @@
+import type { TrackedBriefingDocument, TrackedBriefingProposal } from "../../src/contracts";
+import type { StandingNoteMutation } from '../../src/feedback/standing-notes';
+import type { ReviewRange, StandingNote, StandingNotePresentation } from '../../src/feedback/review-types';
+import type { RequestReview } from '../../src/feedback/request-review';
+import type { ReviewAnnotationMutation } from '../../src/feedback/review-store';
+import type { CarriedReviewRange, ReviewDocumentReference } from "../../src/feedback/review-types";
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, OPERATOR_PROOF_WINDOW_MS, type DashboardBadgeCounts } from '../../src/contracts';
 import { queryClient } from './query/client';
@@ -10,6 +16,10 @@ import { browserResourceKeys, browserResourceKeysForEvent, refreshBrowserResourc
 import { LIST_ENVELOPE_KEYS } from '../../src/contracts';
 import { INTERFACE_NOTE_CHANGED_EVENT } from "../../src/interface-notes/contract";
 import type { ResolveRefResponse, SessionDescendant, SessionSummary } from '../../src/contracts';
+import type { DiffFilePair, GitChangeFile } from '../../src/contracts';
+import type { RequestReviewDraft, ReviewDraftMutation, ReviewDraftStamp } from "../../src/feedback/request-draft-types";
+import type { WorkCompareResult } from '../../src/work-scanner';
+export type { WorkCompareResult } from '../../src/work-scanner';
 import type { EntityKind } from '../../src/app-routes';
 export type { SessionDescendant, SessionSummary } from '../../src/contracts';
 import { browserSessionFetch } from './client-auth-token';
@@ -59,8 +69,6 @@ import type {
   WorkflowRunStatus as ContractWorkflowRunStatus,
   WorkflowWorkerStatus as ContractWorkflowWorkerStatus,
   WorkflowWarning as ContractWorkflowWarning,
-  SpaceBlock as ContractSpaceBlock,
-  SpaceBlockType as ContractSpaceBlockType,
   Space as ContractSpace,
   SpaceGroup as ContractSpaceGroup,
   SpaceItem as ContractSpaceItem,
@@ -311,16 +319,6 @@ export type WorkCommitPage = {
 
 export type WorkCompareMode = 'merge-base' | 'range';
 
-export type WorkCompareResult = {
-  repo_root: string;
-  from: string;
-  to: string;
-  mode: WorkCompareMode;
-  range: string;
-  raw: string;
-  stat: string;
-};
-
 export type WorkAuditClassification =
   | 'safe_candidate'
   | 'unique_commits'
@@ -467,8 +465,8 @@ async function throwOnError(response: Response, method: string, path: string): P
 
 type JsonWriteMethod = 'POST' | 'PATCH' | 'PUT';
 
-async function apiWrite(method: JsonWriteMethod, path: string, body?: unknown, fetchImpl?: typeof fetch): Promise<Response> {
-  const response = await browserSessionFetch(path, {
+function sendJsonRequest(method: JsonWriteMethod, path: string, body?: unknown, fetchImpl?: typeof fetch): Promise<Response> {
+  return browserSessionFetch(path, {
     method,
     headers: {
       ...DEFAULT_HEADERS,
@@ -476,9 +474,11 @@ async function apiWrite(method: JsonWriteMethod, path: string, body?: unknown, f
     },
     body: body ? JSON.stringify(body) : undefined,
   }, fetchImpl);
-  if (!response.ok) {
-    await throwOnError(response, method, path);
-  }
+}
+
+async function apiWrite(method: JsonWriteMethod, path: string, body?: unknown, fetchImpl?: typeof fetch): Promise<Response> {
+  const response = await sendJsonRequest(method, path, body, fetchImpl);
+  if (!response.ok) await throwOnError(response, method, path);
   return response;
 }
 
@@ -811,6 +811,16 @@ export function invalidateDashboardApiCacheForEvent(type: string, data?: unknown
   } else if (type.startsWith('auth:')) {
     invalidateApiGetCache('/api/auth/');
     if (type !== 'auth:output') invalidateCrossEntityProjections(type, data);
+    if (type === DOMAIN_EVENTS.AUTH_NEW || type === DOMAIN_EVENTS.AUTH_UPDATED
+      || type === DOMAIN_EVENTS.AUTH_MERGED || type === DOMAIN_EVENTS.AUTH_RESOLVED || type === DOMAIN_EVENTS.AUTH_FINALIZED) {
+      const sidebar = queryClient.getQueryData<BriefingSidebarSnapshot>(browserResourceKeys.briefingSidebar);
+      if (sidebar?.groups.some(group => group.current?.layout.some(entry => entry.kind === 'tracked'
+        || (entry.kind === 'subgroup' && entry.members?.some(member => member.kind === 'tracked'))))) {
+        invalidateApiGetCache('/api/briefing-groups');
+        invalidateApiGetCache('/api/briefing-bundles');
+        void refreshBrowserResources(queryClient, [browserResourceKeys.briefingSidebar]);
+      }
+    }
   } else if (type.startsWith('work:') || type.startsWith('push:')) {
     invalidateApiGetCache('/api/work/');
     invalidateCrossEntityProjections(type, data);
@@ -1032,6 +1042,75 @@ export async function getAuthRequestDetail(requestId: string): Promise<Record<st
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
 }
 
+export async function getAuthDiffFile(requestId: string, index: number, signal?: AbortSignal, against?: string, round?: string): Promise<DiffFilePair> {
+  const query = new URLSearchParams();
+  if (against) query.set('against', against);
+  if (round) query.set('round', round);
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/files/${index}${query.size ? `?${query}` : ''}`, { signal });
+  return await response.json() as DiffFilePair;
+}
+
+export type AuthReviewPrecondition = { expected_revision: number | null; expected_custody_generation: number };
+export type AuthReviewProjection = RequestReview & { precondition: AuthReviewPrecondition; status: string; proof_digest: string };
+export async function getAuthReview(requestId: string, signal?: AbortSignal): Promise<AuthReviewProjection> {
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review`, { signal });
+  return await response.json();
+}
+
+export async function getAuthReviewComparison(requestId: string, against: string, signal: AbortSignal) {
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review/changes?against=${encodeURIComponent(against)}`, { signal });
+  return await response.json() as import('../../src/contracts').AuthChangeReport;
+}
+
+export async function annotateAuthReview(requestId: string, precondition: AuthReviewPrecondition,
+  document_binding_id: string, mutation: ReviewAnnotationMutation): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/annotations`, { ...precondition, document_binding_id, mutation });
+}
+
+export async function answerAuthReview(requestId: string, review: AuthReviewProjection, directive_key: string,
+  mutation: import('../../src/feedback/request-review').NarrativeAnswerMutation): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/answers`, {
+    ...review.precondition, round_id: review.round.id, directive_key, mutation,
+  });
+}
+
+export async function mutateAuthReviewThread(requestId: string, precondition: AuthReviewPrecondition,
+  comment_id: string, mutation: import('../../src/feedback/review-types').ReviewThreadMutation): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/thread-events`, { ...precondition, comment_id, mutation });
+}
+
+export async function mutateAuthReviewDraft(requestId: string, review: AuthReviewProjection, path: string,
+  expected_generation: number, mutation: ReviewDraftMutation): Promise<RequestReviewDraft> {
+  const response = await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/drafts`, {
+    ...review.precondition, round_id: review.round.id, path, expected_generation, mutation,
+  });
+  return await response.json();
+}
+
+export type AuthApprovalReview = {
+  proof_digest: string; round_id: string; annotation_event_ids: string[]; answer_event_ids?: string[];
+};
+
+export type ShownAuthApproval = { revision: number | null; review: AuthApprovalReview };
+
+export function authApprovalReview(review: AuthReviewProjection): AuthApprovalReview {
+  return { proof_digest: review.proof_digest, round_id: review.round.id,
+    annotation_event_ids: review.active_annotation_event_ids, answer_event_ids: review.active_answer_event_ids };
+}
+
+export async function freezeAuthReview(requestId: string, review: AuthReviewProjection, draft_snapshot: ReviewDraftStamp[]): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/review/freeze`, {
+    ...review.precondition, ...authApprovalReview(review), draft_snapshot,
+  });
+}
+
+export async function returnAuthReview(requestId: string, review: AuthReviewProjection, reason: string,
+  draft_snapshot: ReviewDraftStamp[]): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/return`, {
+    ...review.precondition, ...authApprovalReview(review), reason, draft_snapshot,
+  });
+}
+
 export type RequestResponsibilitySnapshot = {
   owner_user_id: string | null; responsibility_session_id: string | null; custody_generation: number;
 };
@@ -1081,7 +1160,7 @@ export async function cancelApprovalProof(requestId: string): Promise<void> {
 }
 
 /** Approve the request at `lifecycleRevision`, the revision that was shown; the server refuses any other. */
-export async function approveAuthRequest(requestId: string, lifecycleRevision: number | null): Promise<void> {
+export async function approveAuthRequest(requestId: string, lifecycleRevision: number | null, review?: AuthApprovalReview): Promise<void> {
   // Bug: 58d93ee — extract server error message so the dashboard can surface it
   // (e.g. invalid_command: "Auth request has no command set")
   // Bug: 737df04 — wrap in AbortController so the fetch does not hang indefinitely
@@ -1099,7 +1178,7 @@ export async function approveAuthRequest(requestId: string, lifecycleRevision: n
     response = await browserSessionFetch(path, {
       method: 'POST',
       headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lifecycle_revision: lifecycleRevision }),
+      body: JSON.stringify({ lifecycle_revision: lifecycleRevision, review }),
       signal: controller.signal,
     });
   } catch (e) {
@@ -1127,8 +1206,8 @@ export async function approveAuthRequest(requestId: string, lifecycleRevision: n
   }
 }
 
-export async function rejectAuthRequest(requestId: string): Promise<void> {
-  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/reject`);
+export async function rejectAuthRequest(requestId: string, reason?: string): Promise<void> {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/reject`, { reason });
 }
 
 export async function retryAuthRequest(requestId: string): Promise<void> {
@@ -1204,6 +1283,15 @@ export async function getWorkCompare(
     `/api/work/repos/${encodeURIComponent(repoId)}/compare${buildQuery(params)}`,
   );
   return (await response.json()) as WorkCompareResult;
+}
+
+export async function getWorkDiffFile(repoId: string, comparison: WorkCompareResult['comparison'], file: Pick<GitChangeFile, 'old_path' | 'new_path'>, signal?: AbortSignal): Promise<DiffFilePair> {
+  const query = buildQuery({
+    before: comparison.merge_base_sha, after: comparison.head_sha,
+    oldPath: file.old_path ?? undefined, newPath: file.new_path ?? undefined,
+  });
+  const response = await apiGet(`/api/work/repos/${encodeURIComponent(repoId)}/compare/file${query}`, { signal });
+  return await response.json() as DiffFilePair;
 }
 
 /** Read a repository's branch audit; `refresh` makes the daemon rescan instead of serving a fresh stored scan. */
@@ -3131,6 +3219,7 @@ export type ArtifactDiffResult = {
   kind: string;
   unified: string | null;
   stats: { added: number; removed: number } | null;
+  contents?: Extract<DiffFilePair, { kind: 'text' }>;
   reason?: string;
 };
 
@@ -3238,10 +3327,32 @@ export async function getArtifactVersions(
 }
 
 export async function getArtifactDiff(from: string, to: string): Promise<ArtifactDiffResult> {
-  const query = buildQuery({ a: from, b: to });
+  const query = buildQuery({ a: from, b: to, format: 'contents' });
   const response = await apiGet(`/api/artifacts/diff${query}`);
   const payload = (await parseMaybeJson(response)) as { diff: ArtifactDiffResult };
   return payload.diff;
+}
+
+export async function getArtifactStandingNotes(ref: string, signal?: AbortSignal): Promise<{
+  notes: StandingNote[]; can_write: boolean;
+}> {
+  const response = await apiGet(`/api/artifacts/${encodeURIComponent(ref)}/notes?anchors=true`, { signal });
+  return await parseMaybeJson(response) as { notes: StandingNote[]; can_write: boolean };
+}
+
+type ArtifactNoteAction = { kind: 'add'; range: ReviewRange; body: string } | (StandingNoteMutation & { id: string });
+
+function artifactNotePayload(action: ArtifactNoteAction) {
+  return action.kind === 'add' ? { kind: action.kind, ...action.range, body: action.body } : action;
+}
+
+export async function postArtifactStandingNote(ref: string, action: ArtifactNoteAction): Promise<void> {
+  await apiPost(`/api/artifacts/${encodeURIComponent(ref)}/notes`, artifactNotePayload(action));
+}
+
+export async function postArtifactDraftStandingNote(ref: string, action: ArtifactNoteAction, expected_source?: string): Promise<ArtifactDraftRecord> {
+  const response = await apiPost('/api/artifacts/drafts/standing-notes', { ref, expected_source, ...artifactNotePayload(action) });
+  return (await parseMaybeJson(response) as { draft: ArtifactDraftRecord }).draft;
 }
 
 export async function getArtifactDraft(ref: string, options: { signal?: AbortSignal } = {}): Promise<ArtifactDraftRecord | null> {
@@ -3297,6 +3408,13 @@ export async function getArtifactContent(id: string, options: { signal?: AbortSi
   const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/content`, { signal: options.signal });
   const payload = (await parseMaybeJson(response)) as { content: ArtifactContentResult };
   return payload.content;
+}
+
+export async function getArtifactText(id: string, options: { signal?: AbortSignal } = {}): Promise<string> {
+  const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/text`, options);
+  const payload = (await parseMaybeJson(response)) as { text?: unknown } | null;
+  if (typeof payload?.text !== "string") throw new Error("Artifact text was missing from the response.");
+  return payload.text;
 }
 
 export async function openArtifactExternally(id: string): Promise<void> {
@@ -3670,7 +3788,7 @@ export async function getSpacePublications(spaceId: string,signal?:AbortSignal):
   if (!result || !Array.isArray(result.publications) || !Array.isArray(result.history) || !Array.isArray(result.destinations)) throw new Error('The Spaces service returned invalid publication history.');
   return result;
 }
-export async function prepareSpacePublication(spaceId: string, body: { path: string; repo_id?: string; issue: string; message?: string }): Promise<SpacePublication> {
+export async function prepareSpacePublication(spaceId: string, body: { path: string; repo_id?: string; issue: string; message?: string; expected_generation?: number }): Promise<SpacePublication> {
   return await parseMaybeJson(await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/publications`,body)) as SpacePublication;
 }
 export async function submitSpacePublication(spaceId: string,id: string): Promise<SpacePublication> {
@@ -3810,6 +3928,14 @@ export type BriefingDocumentProfile = (typeof BRIEFING_DOCUMENT_PROFILES)[number
 export const BRIEFING_DIRECTIVE_BINDING_STATUSES = ['valid', 'invalid', 'unavailable'] as const;
 export type BriefingDirectiveBindingStatus = (typeof BRIEFING_DIRECTIVE_BINDING_STATUSES)[number];
 
+type BriefingComparisonDocument = {
+  artifact_version_id: string | null;
+  content_hash: string;
+  source: string;
+  utf8_bom?: boolean;
+  target?: ReviewDocumentReference;
+};
+
 export type BriefingRoundProjection = {
   round_id: string;
   state: 'open' | 'submitted';
@@ -3823,20 +3949,16 @@ export type BriefingRoundProjection = {
     previous_round_id: string | null;
     profile: BriefingDocumentProfile;
     source: string;
-    comparison_base?: null | {
-      artifact_version_id: string;
-      content_hash: string;
-      source: string;
-    };
-    original_comparison_base?: null | {
-      artifact_version_id: string;
-      content_hash: string;
-      source: string;
-    };
+    utf8_bom?: boolean;
+    comparison_branches?: Array<{ name: string; commit: string }>;
+    comparison_base?: BriefingComparisonDocument | null;
+    original_comparison_base?: BriefingComparisonDocument | null;
   };
   directive_binding: null | { status: BriefingDirectiveBindingStatus; reason?: string };
-  latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[] };
+  latest_frozen_membership?: null | { answer_event_ids: string[]; annotation_event_ids: string[]; comparison_target?: ReviewDocumentReference | null };
   annotations?: BriefingAnnotation[];
+  carried_annotations?: CarriedBriefingAnnotation[];
+  standing_notes?: StandingNotePresentation[];
   submission_overlays?: BriefingSubmissionOverlaySummary[];
   selected_submission_overlay?: BriefingSubmissionOverlaySummary | null;
   items: BriefingDirectiveItem[];
@@ -3904,6 +4026,12 @@ export type BriefingAnnotation = {
     source: 'current_draft' | 'annotation_set';
     actor: { slug: string; display_name: string | null } | null;
   };
+};
+
+export type CarriedBriefingAnnotation = BriefingAnnotation & {
+  source_round_id: string;
+  source_round_ordinal: number;
+  anchor: CarriedReviewRange;
 };
 
 export type BriefingAnnotationOperation =
@@ -3982,6 +4110,40 @@ function briefingResponseValue(
   const selected = new Set(row.option_keys as string[]);
   const canonical = optionKeys.filter((key) => selected.has(key));
   return canonical.length > 0 ? { option_keys: canonical } : null;
+}
+
+const briefingObjectId = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+function briefingReviewTarget(value: unknown): ReviewDocumentReference | null {
+  const target = briefingRecord(value);
+  if (target.kind === 'artifact_version' && typeof target.artifact_version_id === 'string' && target.artifact_version_id
+      && exactBriefingValueKeys(target, ['kind', 'artifact_version_id'])) {
+    return { kind: target.kind, artifact_version_id: target.artifact_version_id };
+  }
+  if (target.kind !== 'git_file' || typeof target.project_id !== 'string' || !target.project_id
+      || typeof target.path !== 'string' || !target.path || typeof target.commit !== 'string'
+      || !briefingObjectId.test(target.commit)
+      || !exactBriefingValueKeys(target, ['kind', 'project_id', 'path', 'commit', 'blob'])) return null;
+  const blob = briefingRecord(target.blob);
+  const pinned = blob.mode === '100644' || blob.mode === '100755'
+    ? typeof blob.oid === 'string' && briefingObjectId.test(blob.oid) && exactBriefingValueKeys(blob, ['oid', 'mode'])
+      ? { oid: blob.oid, mode: blob.mode } as const : null
+    : null;
+  if (target.blob !== null && !pinned) return null;
+  return { kind: target.kind, project_id: target.project_id, path: target.path, commit: target.commit, blob: pinned };
+}
+
+function briefingComparisonDocument(value: unknown): BriefingComparisonDocument | null | undefined {
+  if (value == null) return null;
+  const row = briefingRecord(value);
+  const id = briefingOptionalString(row.artifact_version_id);
+  const target = row.target === undefined && id ? { kind: 'artifact_version' as const, artifact_version_id: id }
+    : briefingReviewTarget(row.target);
+  const hash = briefingString(row.content_hash);
+  if (!target || (target.kind === 'artifact_version' ? target.artifact_version_id !== id : id !== null)
+      || !/^[0-9a-f]{64}$/.test(hash) || typeof row.source !== 'string'
+      || (row.utf8_bom !== undefined && typeof row.utf8_bom !== 'boolean')) return undefined;
+  return { artifact_version_id: id, target, content_hash: hash, source: row.source, utf8_bom: row.utf8_bom === true };
 }
 
 function briefingAnnotation(value: unknown): BriefingAnnotation | null {
@@ -4154,53 +4316,36 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       && (!latestSubmissionForActor.id || latestSubmissionForActor.ordinal < 1)) valid = false;
   const rawDocument = briefingRecord(root.document);
   const profile = briefingDocumentProfile(rawDocument.profile);
-  const documentShapeValid = [
-    ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base', 'original_comparison_base'],
-    ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source', 'comparison_base'],
-    ['artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source'],
-  ].some((keys) => exactBriefingValueKeys(rawDocument, keys));
-  const rawComparisonBase = briefingRecord(rawDocument.comparison_base);
-  const comparisonBase = rawDocument.comparison_base == null ? null
-    : exactBriefingValueKeys(rawComparisonBase, ['artifact_version_id', 'content_hash', 'source'])
-      && briefingString(rawComparisonBase.artifact_version_id)
-      && /^[0-9a-f]{64}$/.test(briefingString(rawComparisonBase.content_hash))
-      && typeof rawComparisonBase.source === 'string'
-      ? {
-        artifact_version_id: briefingString(rawComparisonBase.artifact_version_id),
-        content_hash: briefingString(rawComparisonBase.content_hash),
-        source: rawComparisonBase.source,
-      }
-      : undefined;
-  const rawOriginalComparisonBase = briefingRecord(rawDocument.original_comparison_base);
-  const originalComparisonBase = rawDocument.original_comparison_base == null ? null
-    : exactBriefingValueKeys(rawOriginalComparisonBase, ['artifact_version_id', 'content_hash', 'source'])
-      && briefingString(rawOriginalComparisonBase.artifact_version_id)
-      && /^[0-9a-f]{64}$/.test(briefingString(rawOriginalComparisonBase.content_hash))
-      && typeof rawOriginalComparisonBase.source === 'string'
-      ? {
-        artifact_version_id: briefingString(rawOriginalComparisonBase.artifact_version_id),
-        content_hash: briefingString(rawOriginalComparisonBase.content_hash),
-        source: rawOriginalComparisonBase.source,
-      }
-      : undefined;
-  const documentFieldsValid = briefingString(rawDocument.artifact_version_id)
+  const allowedDocumentKeys = new Set([
+    'artifact_version_id', 'content_hash', 'previous_round_id', 'profile', 'source',
+    'comparison_base', 'original_comparison_base', 'comparison_branches', 'utf8_bom',
+  ]);
+  const comparisonBase = briefingComparisonDocument(rawDocument.comparison_base);
+  const originalComparisonBase = briefingComparisonDocument(rawDocument.original_comparison_base);
+  const rawBranches = Array.isArray(rawDocument.comparison_branches) ? rawDocument.comparison_branches : [];
+  const branches = rawBranches.flatMap((entry) => {
+    const row = briefingRecord(entry);
+    return typeof row.name === 'string' && row.name && typeof row.commit === 'string' && briefingObjectId.test(row.commit)
+      ? [{ name: row.name, commit: row.commit }] : [];
+  });
+  const document = Object.keys(rawDocument).every((key) => allowedDocumentKeys.has(key))
+    && (rawDocument.utf8_bom === undefined || typeof rawDocument.utf8_bom === 'boolean')
+    && (rawDocument.comparison_branches === undefined || (Array.isArray(rawDocument.comparison_branches) && branches.length === rawBranches.length))
+    && profile !== null && typeof rawDocument.source === 'string'
     && /^[0-9a-f]{64}$/.test(briefingString(rawDocument.content_hash))
-    && typeof rawDocument.source === 'string'
-    && Boolean(rawDocument.source.trim())
-    && comparisonBase !== undefined
-    && originalComparisonBase !== undefined
-    && (rawDocument.previous_round_id === null || typeof rawDocument.previous_round_id === 'string');
-  const document = root.document !== null && documentShapeValid && documentFieldsValid && profile !== null ? {
+    && (rawDocument.previous_round_id === null || typeof rawDocument.previous_round_id === 'string')
+    && comparisonBase !== undefined && originalComparisonBase !== undefined ? {
     artifact_version_id: briefingString(rawDocument.artifact_version_id),
     content_hash: briefingString(rawDocument.content_hash),
     previous_round_id: briefingOptionalString(rawDocument.previous_round_id),
     profile,
-    source: typeof rawDocument.source === 'string' ? rawDocument.source : '',
+    source: rawDocument.source,
+    utf8_bom: rawDocument.utf8_bom === true,
+    comparison_branches: branches,
     comparison_base: comparisonBase,
     original_comparison_base: originalComparisonBase,
   } : null;
-  if (!document
-      || !document.artifact_version_id) valid = false;
+  if (!document?.artifact_version_id) valid = false;
   const bindingRow = briefingRecord(root.directive_binding);
   const bindingStatus = briefingDirectiveBindingStatus(bindingRow.status);
   const directiveBinding = root.directive_binding === null ? null : Object.prototype.hasOwnProperty.call(root, 'directive_binding')
@@ -4214,7 +4359,8 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     && Array.isArray(frozenRow.answer_event_ids) && Array.isArray(frozenRow.annotation_event_ids)
     && frozenRow.answer_event_ids.every((id) => briefingString(id))
     && frozenRow.annotation_event_ids.every((id) => briefingString(id))
-    ? { answer_event_ids: briefingStringArray(frozenRow.answer_event_ids), annotation_event_ids: briefingStringArray(frozenRow.annotation_event_ids) }
+    ? { answer_event_ids: briefingStringArray(frozenRow.answer_event_ids), annotation_event_ids: briefingStringArray(frozenRow.annotation_event_ids),
+      ...(frozenRow.comparison_target !== undefined ? { comparison_target: briefingReviewTarget(frozenRow.comparison_target) } : {}) }
     : undefined;
   if (Object.prototype.hasOwnProperty.call(root, 'latest_frozen_membership') && latestFrozenMembership === undefined) valid = false;
   if (document) {
@@ -4247,6 +4393,50 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
       return parsed;
     }).filter((entry): entry is BriefingAnnotation => entry !== null);
   }
+  const carriedAnnotations: CarriedBriefingAnnotation[] = [];
+  if (root.carried_annotations !== undefined) {
+    if (!Array.isArray(root.carried_annotations)) valid = false;
+    for (const entry of Array.isArray(root.carried_annotations) ? root.carried_annotations : []) {
+      const row = briefingRecord(entry);
+      const annotation = briefingAnnotation(entry);
+      const anchor = briefingRecord(row.anchor);
+      const actor = briefingRecord(row.actor);
+      const source_round_id = briefingString(row.source_round_id);
+      const source_round_ordinal = briefingOptionalNumber(row.source_round_ordinal);
+      let placement: CarriedReviewRange | null = null;
+      if (anchor.status === 'detached') placement = { status: 'detached' };
+      else if ((anchor.status === 'preserved' || anchor.status === 'moved') && annotation
+        && Number.isSafeInteger(anchor.start_offset) && Number.isSafeInteger(anchor.end_offset)
+        && (anchor.start_offset as number) >= 0 && (anchor.end_offset as number) > (anchor.start_offset as number)
+        && anchor.quote === annotation.quote
+        && document?.source.slice(anchor.start_offset as number, anchor.end_offset as number) === annotation.quote) {
+        placement = { status: anchor.status, start_offset: anchor.start_offset as number,
+          end_offset: anchor.end_offset as number, quote: annotation.quote };
+      }
+      if (!annotation || !placement || !source_round_id || !source_round_ordinal || source_round_ordinal < 1
+          || !briefingString(actor.slug)) { valid = false; continue; }
+      carriedAnnotations.push({ ...annotation, source_round_id, source_round_ordinal, anchor: placement,
+        presentation: { source: 'annotation_set',
+          actor: { slug: briefingString(actor.slug), display_name: briefingOptionalString(actor.display_name) } } });
+    }
+  }
+  const standingNotes = (Array.isArray(root.standing_notes) ? root.standing_notes : []).flatMap((entry): StandingNotePresentation[] => {
+    const row = briefingRecord(entry);
+    const anchor = briefingRecord(row.anchor);
+    const id = briefingString(row.id);
+    const quote = briefingString(row.quote);
+    if (!id || !quote || typeof row.author !== 'string' || typeof row.body !== 'string') return [];
+    let placement: CarriedReviewRange;
+    if (anchor.status === 'detached') placement = { status: 'detached' };
+    else if ((anchor.status === 'preserved' || anchor.status === 'moved')
+      && typeof anchor.start_offset === 'number' && typeof anchor.end_offset === 'number'
+      && Number.isSafeInteger(anchor.start_offset) && Number.isSafeInteger(anchor.end_offset)
+      && anchor.start_offset >= 0 && anchor.end_offset > anchor.start_offset
+      && document?.source.slice(anchor.start_offset, anchor.end_offset) === quote) {
+      placement = { status: anchor.status, start_offset: anchor.start_offset, end_offset: anchor.end_offset, quote };
+    } else return [];
+    return [{ id, quote, body: row.body, author: row.author, anchor: placement, can_edit: false, resolved: row.resolved === true }];
+  });
   if ((rawState === 'open' && latestSubmissionForActor !== null)
       || (rawState === 'submitted' && latestSubmissionForActor === null)) valid = false;
   return {
@@ -4260,6 +4450,8 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     directive_binding: directiveBinding ?? null,
     ...(latestFrozenMembership !== undefined ? { latest_frozen_membership: latestFrozenMembership } : {}),
     ...(annotations ? { annotations } : {}),
+    carried_annotations: carriedAnnotations,
+    standing_notes: standingNotes,
     items,
     valid,
   };
@@ -4347,9 +4539,11 @@ const BRIEFINGS_PATH = '/api/briefings';
 const BRIEFING_BUNDLES_PATH = '/api/briefing-bundles';
 const BRIEFING_GROUPS_PATH = '/api/briefing-groups';
 
-export type BriefingBundleLayoutEntry =
+export type BriefingBundleLeaf =
   | { kind: 'briefing'; briefing: FeedbackCollection }
-  | { kind: 'subgroup'; name: string; briefings: FeedbackCollection[] };
+  | { kind: 'tracked'; tracked: TrackedBriefingDocument };
+export type BriefingBundleLayoutEntry = BriefingBundleLeaf
+  | { kind: 'subgroup'; name: string; briefings: FeedbackCollection[]; members?: BriefingBundleLeaf[] };
 
 export type BriefingBundle = {
   id: string;
@@ -4369,6 +4563,7 @@ export type BriefingGroup = {
   archivedAt?: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  trackedProposals?: TrackedBriefingProposal[];
   destinations: Array<{ logicalArtifactId: string; publicationMode: 'reviewed-document' | 'published-report' | null;
     routeKeys: string[] }>;
   destinationHistory: Array<{ id: string; logicalArtifactId: string; priorGroupId: string | null;
@@ -4433,6 +4628,23 @@ export type BriefingSidebarSnapshot = {
   invalidBriefings: InvalidBriefingRow[];
 };
 
+function normalizeBriefingLeaf(entry: unknown, invalid: InvalidBriefingRow[]): BriefingBundleLeaf | null {
+  const row = briefingRecord(entry);
+  if (row.kind === 'briefing') {
+    const briefing = normalizeMemberBriefing(row.briefing, invalid);
+    return briefing ? { kind: 'briefing', briefing } : null;
+  }
+  if (row.kind !== 'tracked') return null;
+  const tracked = briefingRecord(row.tracked);
+  const project_id = briefingString(tracked.project_id);
+  const project_key = briefingString(tracked.project_key);
+  const path = typeof tracked.path === 'string' ? tracked.path : '';
+  return project_id && project_key && path ? { kind: 'tracked', tracked: {
+    project_id, project_key, path, commit_sha: briefingOptionalString(tracked.commit_sha),
+    content: typeof tracked.content === 'string' ? tracked.content : null,
+  } } : null;
+}
+
 function normalizeBriefingBundle(entry: unknown, invalid: InvalidBriefingRow[]): BriefingBundle | null {
   const bundle = briefingRecord(entry);
   const id = briefingString(bundle.id);
@@ -4447,10 +4659,6 @@ function normalizeBriefingBundle(entry: unknown, invalid: InvalidBriefingRow[]):
   const layoutRows = briefingOptionalRows(bundle.layout, 'layout');
   const layout = layoutRows.map((layoutEntry): BriefingBundleLayoutEntry | null => {
     const row = briefingRecord(layoutEntry);
-    if (row.kind === 'briefing') {
-      const briefing = normalizeMemberBriefing(row.briefing, invalid);
-      return briefing ? { kind: 'briefing', briefing } : null;
-    }
     if (row.kind === 'subgroup') {
       const name = briefingString(row.name);
       const briefings = (briefingOptionalRows(row.briefings, 'subgroup briefings'))
@@ -4459,16 +4667,19 @@ function normalizeBriefingBundle(entry: unknown, invalid: InvalidBriefingRow[]):
           return normalizeMemberBriefing(member.briefing ?? entry, invalid);
         })
         .filter((briefing): briefing is FeedbackCollection => Boolean(briefing));
-      return name ? { kind: 'subgroup', name, briefings } : null;
+      const members = Array.isArray(row.members)
+        ? row.members.map(member => normalizeBriefingLeaf(member, invalid)).filter((member): member is BriefingBundleLeaf => member !== null)
+        : undefined;
+      return name ? { kind: 'subgroup', name, briefings, members } : null;
     }
-    return null;
+    return normalizeBriefingLeaf(row, invalid);
   }).filter((layoutEntry): layoutEntry is BriefingBundleLayoutEntry => layoutEntry !== null);
   const canonicalLayout = layout.length > 0
     ? layout
     : members.map((member): BriefingBundleLayoutEntry => ({ kind: 'briefing', briefing: member.briefing }));
   const canonicalMembers = canonicalLayout.flatMap((layoutEntry) => layoutEntry.kind === 'briefing'
     ? [layoutEntry.briefing]
-    : layoutEntry.briefings)
+    : layoutEntry.kind === 'subgroup' ? layoutEntry.briefings : [])
     .map((briefing, position) => ({ position, briefing }));
   return id && briefingString(bundle.name) ? {
     id,
@@ -4612,6 +4823,7 @@ export function normalizeBriefingGroups(payload: unknown, invalid: InvalidBriefi
       archivedAt: briefingOptionalNumber(group.archived_at),
       current,
       updates,
+      trackedProposals: Array.isArray(group.tracked_proposals) ? group.tracked_proposals as TrackedBriefingProposal[] : [],
       destinations,
       destinationHistory,
       reviewCandidates,
@@ -4761,6 +4973,8 @@ export function normalizeBriefingProjection(payload: unknown): BriefingProjectio
     document: selected.document ?? null,
     directive_binding: selected.binding ?? null,
     latest_frozen_membership: selected.latest_frozen_membership ?? null,
+    carried_annotations: selected.carried_annotations,
+    standing_notes: selected.standing_notes,
     annotations: rawSelectedOverlay == null
       ? currentAnnotations
       : [
@@ -4852,9 +5066,11 @@ export async function getBriefing(
   submissionId?: string | null,
   signal?: AbortSignal,
   displayContext?: { groupId: string; proposalBundleId: string | null },
+  comparisonCommit?: string | null,
 ): Promise<BriefingProjection> {
   const params = new URLSearchParams();
   if (roundId) params.set('round', roundId);
+  if (comparisonCommit) params.set('comparison_commit', comparisonCommit);
   if (submissionId) params.set('submission', submissionId);
   if (displayContext) {
     params.set('group', displayContext.groupId);
@@ -4959,6 +5175,7 @@ export async function postBriefingSubmission(
     supersedes_submission_id?: string;
     answers: readonly BriefingSubmissionAnswer[];
     annotations?: ReadonlyArray<{ annotation_event_id: string }>;
+    comparison_target?: ReviewDocumentReference | null;
   },
 ): Promise<{
   submission_id: string;
@@ -4974,6 +5191,7 @@ export async function postBriefingSubmission(
       response_event_id: answer.response_event_id,
     })),
     annotation_event_ids: (input.annotations ?? []).map((annotation) => annotation.annotation_event_id),
+    ...(input.comparison_target !== undefined ? { comparison_target: input.comparison_target } : {}),
   });
   markBriefingReadsStale(briefingId);
   const root = briefingRecord(await parseMaybeJson(response));
@@ -5731,49 +5949,48 @@ export async function cancelTaskDisable(commandId: string): Promise<TaskCommandM
 }
 
 /** Embed snapshot placeholder posted alongside an `item_id` (C11 invariant). */
-export type BlockItemSnapshot = Record<string, unknown>;
+export const spaceDocumentPath = (spaceId: string) => `/api/spaces/${encodeURIComponent(spaceId)}/document`;
 
-/** Create-block request body (mirrors `parseBlockCreateInput`, C11). */
-export type CreateBlockBody = {
-  block_type: ContractSpaceBlockType;
-  parent_id?: string | null;
-  item_id?: string | null;
-  item_snapshot?: BlockItemSnapshot | null;
-  sort_key?: string | null;
-  markdown?: string | null;
-  metadata?: Record<string, unknown>;
-};
+type SpaceDocument = import('../../src/spaces/document-store').SpaceDocument;
 
-/** Update-block request body (mirrors `parseBlockUpdateInput`, C11). */
-export type UpdateBlockBody = {
-  block_type?: ContractSpaceBlockType;
-  parent_id?: string | null;
-  item_id?: string | null;
-  item_snapshot?: BlockItemSnapshot | null;
-  sort_key?: string | null;
-  markdown?: string | null;
-  metadata?: Record<string, unknown>;
-};
+export async function getSpaceDocument(spaceId: string, signal?: AbortSignal, fetchImpl?: typeof fetch): Promise<SpaceDocument> {
+  return await (await apiGet(spaceDocumentPath(spaceId), { signal }, fetchImpl)).json() as SpaceDocument;
+}
 
-const spaceBlocksPath = (spaceId: string) => `/api/spaces/${encodeURIComponent(spaceId)}/blocks`;
-export async function listSpaceBlocks(spaceId: string, fetchImpl?: typeof fetch, signal?: AbortSignal): Promise<ContractSpaceBlock[]> {
-  const payload = await parseMaybeJson(await apiGet(spaceBlocksPath(spaceId), { signal }, fetchImpl)) as { blocks?: ContractSpaceBlock[] };
-  if (!Array.isArray(payload.blocks)) throw new Error('The Spaces service returned an invalid block collection.');
-  return payload.blocks;
+export async function getSpaceLegacyDraftBases(spaceId: string, signal?: AbortSignal, fetchImpl?: typeof fetch) {
+  const path = `${spaceDocumentPath(spaceId)}/legacy-draft-bases`;
+  return (await (await apiGet(path, { signal }, fetchImpl)).json() as { blocks: { id: string; markdown: string }[] }).blocks;
 }
-export async function createSpaceBlock(spaceId: string, body: CreateBlockBody, fetchImpl?: typeof fetch): Promise<ContractSpaceBlock> {
-  const payload = await parseMaybeJson(await apiWrite('POST', spaceBlocksPath(spaceId), body, fetchImpl)) as { block: ContractSpaceBlock };
-  return payload.block;
+
+export async function saveSpaceDocument(spaceId: string, source: string, expected_generation: number, fetchImpl?: typeof fetch) {
+  const path = spaceDocumentPath(spaceId);
+  const response = await sendJsonRequest('PATCH', path, { source, expected_generation }, fetchImpl);
+  if (response.status === 409) {
+    const candidate = await response.clone().json() as { code?: string; document?: SpaceDocument };
+    if (candidate.code === 'stale_document' && candidate.document) return { kind: 'conflict' as const, document: candidate.document };
+  }
+  if (!response.ok) await throwOnError(response, 'PATCH', path);
+  return { kind: 'saved' as const, document: await response.json() as SpaceDocument };
 }
-export async function updateSpaceBlock(spaceId: string, blockId: string, body: UpdateBlockBody, fetchImpl?: typeof fetch): Promise<ContractSpaceBlock> {
-  const payload = await parseMaybeJson(await apiWrite('PATCH', `${spaceBlocksPath(spaceId)}/${encodeURIComponent(blockId)}`, body, fetchImpl)) as { block: ContractSpaceBlock };
-  return payload.block;
+
+export async function addressSpaceDocumentBlock(spaceId: string, expected_generation: number, start: number, end: number,
+  fetchImpl?: typeof fetch): Promise<SpaceDocument & { id: string }> {
+  return await (await apiWrite('POST', `${spaceDocumentPath(spaceId)}/address`, { expected_generation, start, end }, fetchImpl)).json() as SpaceDocument & { id: string };
 }
-export async function deleteSpaceBlock(spaceId: string, blockId: string, fetchImpl?: typeof fetch): Promise<void> {
-  await apiDelete(`${spaceBlocksPath(spaceId)}/${encodeURIComponent(blockId)}`, fetchImpl);
+
+export async function getSpaceReview(spaceId: string, signal?: AbortSignal, fetchImpl?: typeof fetch) {
+  return await (await apiGet(`${spaceDocumentPath(spaceId)}/notes`, { signal }, fetchImpl)).json() as
+    import('../../src/feedback/space-review').SpaceReview;
 }
-export async function detachItemFromBlocks(spaceId: string, itemId: string, fetchImpl?: typeof fetch): Promise<{ detached: ContractSpaceBlock[] }> {
-  return await parseMaybeJson(await apiWrite('POST', `/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}/detach-blocks`, {}, fetchImpl)) as { detached: ContractSpaceBlock[] };
+
+export async function addSpaceNote(spaceId: string, expected_generation: number,
+  range: import('../../src/feedback/review-types').ReviewRange, body: string, fetchImpl?: typeof fetch) {
+  await apiWrite('POST', `${spaceDocumentPath(spaceId)}/notes`, { expected_generation, ...range, body }, fetchImpl);
+}
+
+export async function updateSpaceNote(spaceId: string, id: string,
+  mutation: import('../../src/feedback/standing-notes').StandingNoteMutation, fetchImpl?: typeof fetch) {
+  await apiWrite('PATCH', `${spaceDocumentPath(spaceId)}/notes/${encodeURIComponent(id)}`, mutation, fetchImpl);
 }
 
 export async function importSpaceHistory(spaceId: string,id: string,title: string): Promise<ContractSpace> {

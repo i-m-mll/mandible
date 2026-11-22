@@ -47,6 +47,8 @@ User-facing artifact links use `/artifact/<typed-short-ref>` on the Mandible ori
 
 `mandible artifact snapshot` creates managed bytes. Bundles retain ordered membership and manifests; a membership link does not alter member custody. Project associations express ownership/access and grouping independently of byte custody.
 
+`mandible artifact notes <artifact-ref>` reads standing notes on the selected version and earlier versions of the same artifact. A logical ref selects the latest version. The command prints each original quote and position. Markdown positions use zero-based, half-open UTF-16 offsets in decoded source without the UTF-8 BOM. Other text uses one-based inclusive line numbers in human output. The `--json` form uses zero-based, half-open ranges for both formats.
+
 ## API
 
 `POST /api/artifacts/ingest` accepts host paths, a bounded `paths` batch, optional `project`/`commit`, and `custody_mode: git|managed`. `POST /api/artifacts/versions` records a version from a path, uploaded bytes, or already materializable reference. `POST /api/artifacts/source/move` applies a guarded source change. Authorization uses canonical project identity, never user-provided custody metadata.

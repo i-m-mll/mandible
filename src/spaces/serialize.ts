@@ -508,6 +508,10 @@ function extractDirectiveRefs(markdown: string): string[] {
 
 // --- frontmatter splitting ---------------------------------------------------
 
+export function isV1Document(source: string): boolean {
+  return splitFrontmatter(source).frontmatter[FORMAT_KEY] === SPACES_DOC_VERSION;
+}
+
 function splitFrontmatter(text: string): { frontmatter: Record<string, string>; body: string } {
   const frontmatter: Record<string, string> = {};
   const normalized = text.replace(/^﻿/, '');

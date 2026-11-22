@@ -110,11 +110,8 @@ export const METADATA_BACKUP_TABLES = [
   "space_items",
   "space_occurrences",
   "space_edges",
-  // Spaces document/canvas blocks (issue d2a8e77 / umbrella de56ffa). Child of
-  // spaces + space_items (composite FKs), so it MUST follow both in this list;
-  // the metadata backup emits inline UNIQUE/composite-FK + CHECK constraints as
-  // part of the table's own DDL, so they survive backup/restore.
-  "space_blocks",
+  "space_documents",
+  "space_document_addresses",
   // Spaces document-custody tracking (issue 9041bb3 / umbrella de56ffa). The
   // MUTABLE tracking record keyed to the BACKED-UP `ledger_project_checkouts.id`
   // (in LEDGER_BACKUP_TABLES below) — NOT the excluded `work_repos.id` — so its
@@ -173,15 +170,23 @@ export const METADATA_BACKUP_TABLES = [
   "briefings",
   "briefing_members",
   "briefing_rounds",
+  "review_rounds",
+  "review_document_bindings",
   "briefing_directive_definitions",
   "briefing_directive_instances",
   "briefing_runs",
   "briefing_run_occurrences",
   "briefing_response_events",
   "briefing_annotation_events",
+  "review_thread_events",
+  "request_review_drafts",
+  "request_review_change_edits",
   "briefing_submissions",
+  "review_submission_change_edits",
+  "briefing_request_group_snapshots",
   "briefing_submission_answers",
   "briefing_submission_annotations",
+  "review_submission_targets",
   "briefing_legacy_audit",
   "briefing_legacy_custody",
   "briefing_creation_overrides",
@@ -253,17 +258,13 @@ export const METADATA_BACKUP_TABLES = [
   "operational_incident_workflow_events",
 ] as const;
 
-// Older installs may retain patch history after self-modification is removed.
-// Include that inert table only when it exists; new databases never create it.
-const HISTORICAL_METADATA_BACKUP_TABLE = "runtime_patches";
+// Retained schemas can still carry Space blocks or patch history.
+const HISTORICAL_METADATA_BACKUP_TABLES = ["space_blocks", "runtime_patches"] as const;
 
 export function metadataBackupTables(db: Db): readonly string[] {
-  const historical = db.prepare(
-    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-  ).get(HISTORICAL_METADATA_BACKUP_TABLE);
-  return historical
-    ? [...METADATA_BACKUP_TABLES, HISTORICAL_METADATA_BACKUP_TABLE]
-    : METADATA_BACKUP_TABLES;
+  const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?");
+  const historical = HISTORICAL_METADATA_BACKUP_TABLES.filter(table => exists.get(table));
+  return [...METADATA_BACKUP_TABLES, ...historical];
 }
 
 export const REPRODUCIBLE_OR_RUNTIME_TABLES = [
@@ -358,7 +359,7 @@ export function listUserTables(db: Db): string[] {
 export function getUnclassifiedBackupTables(db: Db): string[] {
   const classified = new Set<string>([
     ...METADATA_BACKUP_TABLES,
-    HISTORICAL_METADATA_BACKUP_TABLE,
+    ...HISTORICAL_METADATA_BACKUP_TABLES,
     ...REPRODUCIBLE_OR_RUNTIME_TABLES,
   ]);
   return listUserTables(db).filter((table) => !classified.has(table));

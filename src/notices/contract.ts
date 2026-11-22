@@ -16,7 +16,7 @@ import type { AuthRequestStatus } from "../contracts.js";
 
 /** Statuses that end or suspend a request; a notice is owed from the first of them. */
 export const NOTICE_STATUSES = [
-  "completed", "failed", "rejected", "withdrawn", "superseded", "expired", "dismissed", "needs_rebase",
+  "completed", "failed", "rejected", "returned", "withdrawn", "superseded", "expired", "dismissed", "needs_rebase",
 ] as const satisfies readonly AuthRequestStatus[];
 
 /**
@@ -56,6 +56,7 @@ export interface OutcomeReport {
   merge_commit: string | null;
   /** The rejection reason, the first error line, or the superseding request, by status. */
   reason: string | null;
+  review_submission_id?: string;
   steps: OutcomeStep[];
   /**
    * Issue 9395f25 — the landed issues a completed merge left open, kept open

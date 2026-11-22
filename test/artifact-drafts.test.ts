@@ -8,7 +8,9 @@ import { getArtifactDraft, rebaseArtifactDraft, saveArtifactDraft } from "../src
 import { publishArtifactDraft, recordArtifactVersion } from "./helpers/artifact-http-write-fixtures.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
-import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { createMigratedDbWithSeeds, migratedMemoryDb } from "./helpers/ledger-fixtures.js";
+import { runCli, startStubDaemon } from "./helpers/cli-process.js";
+import type { ResolvedClientIdentity } from "../src/server.js";
 
 class TestRoutes implements RouteRegistrar {
   private readonly handlers = new Map<string, RouteHandler>();
@@ -17,11 +19,11 @@ class TestRoutes implements RouteRegistrar {
   put(pathname: string, handler: RouteHandler): void { this.handlers.set(`PUT ${pathname}`, handler); }
   patch(pathname: string, handler: RouteHandler): void { this.handlers.set(`PATCH ${pathname}`, handler); }
   delete(pathname: string, handler: RouteHandler): void { this.handlers.set(`DELETE ${pathname}`, handler); }
-  handle(method: string, pathname: string, req: Partial<RequestLike> = {}): { statusCode: number; payload: any } {
+  async handle(method: string, pathname: string, req: Partial<RequestLike> = {}): Promise<{ statusCode: number; payload: any }> {
     const handler = this.handlers.get(`${method} ${pathname}`);
     if (!handler) throw new Error(`missing handler for ${method} ${pathname}`);
     const res = createResponse();
-    handler({
+    await handler({
       method,
       url: pathname,
       params: {},
@@ -63,14 +65,21 @@ afterEach(() => {
   delete process.env.MANDIBLE_ARTIFACT_DIR;
 });
 
-function managedVersion(content: string, now: number) {
+function managedVersion(content: string, now: number, format = { logical_name: "notes.md", media_type: "text/markdown" }) {
   return recordArtifactVersion(db, {
     source_kind: "managed",
     provider_id: "test",
-    logical_name: "notes.md",
-    media_type: "text/markdown",
+    ...format,
     content,
   }, now);
+}
+
+function operatorIdentity(): ResolvedClientIdentity {
+  db.close();
+  const seeded = createMigratedDbWithSeeds({ operator: { slug: "reviewer", display_name: "Reviewer" }, setGlobal: true });
+  db = seeded.db;
+  return { user_id: seeded.seeds.operator!.id, slug: "reviewer", method: "local_os_user",
+    source: "local_os_user", credential_id: null, effect_ceiling: ["ledger:read", "ledger:write"] };
 }
 
 describe("artifact drafts", () => {
@@ -126,31 +135,110 @@ describe("artifact drafts", () => {
     expect(getArtifactDraft(db, v1.series.id)).toBeNull();
   });
 
-  it("exposes draft save, read, publish, and delete through provider routes", () => {
-    const v1 = managedVersion("hello\n", 1000);
+  it("carries a line note across versions and gives the CLI its original range", async () => {
+    const actor = operatorIdentity();
+    const format = { logical_name: "notes.txt", media_type: "text/plain" };
+    const v1 = managedVersion("header\nline under review\nfooter\n", 1000, format);
+    const routes = new TestRoutes();
+    registerProviderRoutes(routes, inlineLedgerReader());
+    const route = "/api/artifacts/:id/notes";
+    const post = (id: string, body: Record<string, unknown>) => routes.handle("POST", route, {
+      params: { id }, client_identity: actor, body,
+    });
+    const get = (id: string, anchors: boolean) => routes.handle("GET", route, { params: { id },
+      client_identity: actor, query: anchors ? { anchors: "true" } : {},
+    });
+
+    const note = await post(v1.version.id, { kind: "add", start_offset: 1, end_offset: 2,
+      quote: "line under review\n", body: "Check this" });
+    expect(note.statusCode).toBe(200);
+    const id = note.payload.id;
+    const v2 = managedVersion("new header\nheader\nline under review\nchanged footer\n", 1100, format);
+    const moved = await get(v2.version.id, true);
+    expect(moved.payload.notes).toMatchObject([{ id, anchor: { status: expect.stringMatching(/preserved|moved/), start_offset: 2 } }]);
+
+    expect((await post(v2.version.id, { kind: "edit", id, body: "Verified" })).statusCode).toBe(200);
+    expect((await post(v2.version.id, { kind: "resolve", id })).statusCode).toBe(200);
+    const v3 = managedVersion("new header\nheader\nchanged footer\n", 1200, format);
+    const detached = await get(v3.version.id, true);
+    expect(detached.payload.notes).toMatchObject([{ id, resolved: true, anchor: { status: "detached" } }]);
+
+    const original = await get(v1.series.id, false);
+    const stub = await startStubDaemon(request => request.method === "GET" && request.url.endsWith("/notes")
+      ? { body: original.payload } : { status: 404, body: {} });
+    try {
+      const output = await runCli(["artifact", "notes", v1.series.id], { cwd: tempDir, env: stub.env });
+      expect(output.status, output.stderr).toBe(0);
+      expect(output.stdout).toContain("line 2\n> line under review");
+      expect(output.stdout).toContain("Verified");
+    } finally {
+      await stub.close();
+    }
+    expect((await post(v3.version.id, { kind: "retract", id })).statusCode).toBe(200);
+    expect((await get(v1.version.id, false)).payload.notes).toEqual([]);
+  });
+
+  it("keeps pinned Markdown bytes through route load, draft save, and publish", async () => {
+    const actor = operatorIdentity();
+    const source = "\uFEFF# Draft\r\nEmoji 😀\nLast line";
+    const v1 = managedVersion(source, 1000);
+    const v2 = managedVersion("newer version", 1100);
     const routes = new TestRoutes();
     registerProviderRoutes(routes, inlineLedgerReader());
 
-    const saved = routes.handle("POST", "/api/artifacts/drafts", {
+    const original = await routes.handle("GET", "/api/artifacts/:id/text", { params: { id: v1.version.id } });
+    expect(original.statusCode).toBe(200);
+    expect(Buffer.from(original.payload.text)).toEqual(Buffer.from(source));
+
+    const saved = await routes.handle("POST", "/api/artifacts/drafts", {
       body: {
         ref: v1.series.id,
-        base_version_id: v1.version.id,
-        content: "hello edited\n",
+        base_version_id: v2.version.id,
+        content: original.payload.text,
         media_type: "text/markdown",
       },
     });
     expect(saved.statusCode).toBe(200);
-    expect(saved.payload.draft.content).toBe("hello edited\n");
+    expect(saved.payload.draft.content).toBe(source);
 
-    const read = routes.handle("GET", "/api/artifacts/drafts", {
+    const read = await routes.handle("GET", "/api/artifacts/drafts", {
       query: { ref: v1.series.id },
     });
-    expect(read.payload.draft.base_version_id).toBe(v1.version.id);
+    expect(read.payload.draft.base_version_id).toBe(v2.version.id);
 
-    const published = routes.handle("POST", "/api/artifacts/drafts/publish", {
+    const reviewSource = "\uFEFFTemporary\n" + source.slice(1);
+    saveArtifactDraft(db, { ref: v1.series.id, base_version_id: v2.version.id, content: reviewSource, media_type: "text/markdown" });
+    const stage = (quote: string) => {
+      const start = reviewSource.slice(1).indexOf(quote);
+      return routes.handle("POST", "/api/artifacts/drafts/standing-notes", {
+        client_identity: actor, body: { ref: v1.series.id, kind: "add", expected_source: reviewSource,
+          start_offset: start, end_offset: start + quote.length, quote, body: quote },
+      });
+    };
+    expect((await stage("\u{1f600}")).statusCode).toBe(200);
+    expect((await stage("Temporary")).statusCode).toBe(200);
+    saveArtifactDraft(db, { ref: v1.series.id, base_version_id: v2.version.id, content: source, media_type: "text/markdown" });
+    const reloaded = getArtifactDraft(db, v1.series.id);
+    expect(reloaded?.standing_notes).toMatchObject([
+      { quote: "\u{1f600}", anchor: { start_offset: source.slice(1).indexOf("\u{1f600}") } },
+      { quote: "Temporary", anchor: { status: "detached" } },
+    ]);
+
+    const published = await routes.handle("POST", "/api/artifacts/drafts/publish", {
       body: { ref: v1.series.id, label: "ui" },
     });
-    expect(published.payload.result.version.parent_version_id).toBe(v1.version.id);
+    expect(published.payload.result.version.parent_version_id).toBe(v2.version.id);
+    const publishedText = await routes.handle("GET", "/api/artifacts/:id/text", {
+      params: { id: published.payload.result.version.id },
+    });
+    expect(Buffer.from(publishedText.payload.text)).toEqual(Buffer.from(source));
+    const notes = await routes.handle("GET", "/api/artifacts/:id/notes", {
+      params: { id: published.payload.result.version.id }, query: { anchors: "true" },
+    });
+    expect(notes.payload.notes).toMatchObject([
+      { source_order: 3, quote: "\u{1f600}", anchor: { status: "preserved", start_offset: source.slice(1).indexOf("\u{1f600}") } },
+      { source_order: 3, quote: "Temporary", draft_origin: { base_version_id: v2.version.id }, anchor: { status: "detached" } },
+    ]);
 
     saveArtifactDraft(db, {
       ref: v1.series.id,
@@ -158,7 +246,7 @@ describe("artifact drafts", () => {
       content: "second draft\n",
       media_type: "text/markdown",
     }, 1500);
-    const deleted = routes.handle("DELETE", "/api/artifacts/drafts", {
+    const deleted = await routes.handle("DELETE", "/api/artifacts/drafts", {
       query: { ref: v1.series.id },
     });
     expect(deleted.payload.deleted).toBe(true);

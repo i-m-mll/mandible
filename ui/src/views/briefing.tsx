@@ -288,7 +288,8 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
       members: bundle.members.map((member) => ({ ...member, briefing: updateCollection(member.briefing) })),
       layout: bundle.layout.map((entry) => entry.kind === 'briefing'
         ? { ...entry, briefing: updateCollection(entry.briefing) }
-        : { ...entry, briefings: entry.briefings.map(updateCollection) }),
+        : entry.kind === 'subgroup' ? { ...entry, briefings: entry.briefings.map(updateCollection), members: entry.members?.map(member =>
+          member.kind === 'briefing' ? { ...member, briefing: updateCollection(member.briefing) } : member) } : entry),
     });
     setSidebar((current) => ({
       ...current,
@@ -337,6 +338,7 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
           selectedUpdateId={selectedGroupUpdateId}
           onSelectUpdate={(updateId) => selectGroupUpdate(selectedGroup.id, updateId)}
           onDisposition={updateDispositionedGroup}
+          onSelectBriefing={selectBriefing}
         />
       ) : !selected ? sidebarLoaded && !error ? <p className="briefing-empty briefing-empty--selection">No Briefings in this view.</p> : null : (
         <BriefingDocumentRenderer

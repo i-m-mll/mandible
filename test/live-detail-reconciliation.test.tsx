@@ -223,6 +223,8 @@ describe('live artifact detail ownership', () => {
         series: original.history.series, version: original.history.versions[0], warnings: [],
       }) }));
       const artifact = decodeURIComponent(url.pathname).includes(second.id) ? second : first;
+      if (url.pathname.endsWith('/notes')) return Promise.resolve(json({ notes: [], can_write: false }));
+      if (url.pathname.endsWith('/text')) return Promise.resolve(json({ text: artifact === first ? 'First preview' : 'Second preview' }));
       if (url.pathname.endsWith('/content') && artifact === second) return secondContent.promise.then((response) => response.clone());
       if (url.pathname.endsWith('/content')) return Promise.resolve(json({ content: {
         artifact_id: artifact.id, status: 'available', kind: 'text', media_type: 'text/markdown', size_bytes: 20,
@@ -291,7 +293,7 @@ describe('live artifact detail ownership', () => {
     await act(async () => {
       for (let i = 0; i < 4; i++) invalidateDashboardApiCacheForEvent('artifact:changed');
     });
-    expect(fetcher).toHaveBeenCalledTimes(beforeHidden);
+    expect(fetcher.mock.calls.slice(beforeHidden).map(([input]) => String(input))).toEqual([]);
     view.rerender(pane(true));
     expect(await pinned.findByText('hidden-external-ref')).toBeTruthy();
     expect(await latest.findByText('hidden-external-ref')).toBeTruthy();

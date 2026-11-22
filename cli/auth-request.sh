@@ -49,7 +49,8 @@
 #   --cwd <path>            Merge: protected worktree override. Other types: required execution directory
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
 #   --depends-on <id>       Repeat for each prerequisite that must finish before approval
-#   --supersedes <id>       Atomically replace this exact pending request
+#   --supersedes <id>       Atomically replace this exact pending or returned request
+#   --narrative <file>      Markdown reasons and change references
 #   --expected-revision <n> Required with --supersedes
 #   --expected-custody-generation <n> Required with --supersedes
 #   --drop-superseded-action <ordinal>:<reason>
@@ -137,6 +138,8 @@ change_message_text=""
 change_message_file=""
 change_message_set=0
 verification_text=""
+narrative_file=""
+narrative_set=0
 canonical_message="false"
 diff_summary=""
 post_merge_handoff=""
@@ -163,7 +166,7 @@ promote_briefing_group=""
 promote_briefing_expected_base=""
 promote_briefing_proposal=""
 
-binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"KEEPS_OPEN":{"option":"keeps-open","array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"TEARDOWN_PREVIEW_BRANCHES":{"option":"teardown-preview","array":true},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"json":{"option":"json","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
+binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"narrative_file":{"option":"narrative"},"narrative_set":{"option":"narrative","constant":"1"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"KEEPS_OPEN":{"option":"keeps-open","array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"TEARDOWN_PREVIEW_BRANCHES":{"option":"teardown-preview","array":true},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"json":{"option":"json","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
 eval "$binding"
 # The daemon resolves a relative path against its own working directory.
 [[ -z "$cwd_override" ]] || cwd_override=$(api_resolve_user_path "$cwd_override")
@@ -198,6 +201,12 @@ if [[ $json -eq 1 && $no_watch -eq 0 ]]; then
 fi
 if api_is_file_rpc && [[ $no_watch -eq 0 ]]; then
   echo "Error: file transport does not support SSE/watch; pass --no-watch." >&2
+  exit 2
+fi
+
+if [[ $narrative_set -eq 1 ]] && { [[ ! -f "$narrative_file" || ! -s "$narrative_file" ]] ||
+  ! iconv -f UTF-8 -t UTF-8 < "$narrative_file" > /dev/null; }; then
+  echo "Error: --narrative requires a nonempty UTF-8 file" >&2
   exit 2
 fi
 
@@ -374,6 +383,7 @@ payload=$(jq -nc \
   --arg head_branch "$head_branch" \
   --arg diff_summary "$diff_summary" \
   --arg commit_message "$commit_message" \
+  --rawfile narrative "${narrative_file:-/dev/null}" \
   --argjson canonical_message "$canonical_message" \
   --arg verification "$verification_text" \
   --arg post_merge_handoff "$post_merge_handoff" \
@@ -415,7 +425,8 @@ payload=$(jq -nc \
     target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),
     protected_root_dirty_action: $protected_root_dirty_action
   } + (if $supersedes_request_id != "" and ($depends_on_ids | length) == 0 then {} else {depends_on_ids:$depends_on_ids} end)
-    + (if $space_publication_id == "" then {} else {space_publication_id:$space_publication_id} end)')
+    + (if $space_publication_id == "" then {} else {space_publication_id:$space_publication_id} end)
+    + (if $narrative == "" then {} else {narrative:$narrative} end)') || exit $?
 
 # Bug: de8d29c — use -w to capture HTTP status separately so we can distinguish
 # a 409 Conflict (duplicate) from a connection failure. curl -sf treats HTTP 4xx

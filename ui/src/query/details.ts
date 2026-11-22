@@ -2,7 +2,7 @@ import { hashKey, keepPreviousData, queryOptions, type QueryKey } from '@tanstac
 import {
   getLedgerIssueDetailByIssueId, getLedgerIssueDetailByRef,
   getLedgerIssueInitialDetailByIssueId, getLedgerIssueInitialDetailByRef, type LedgerIssueDetailProjection,
-  getArtifact, getArtifactContent, getArtifactKnowledgeBackrefs, getArtifactVersions,
+  getArtifact, getArtifactContent, getArtifactText, getArtifactKnowledgeBackrefs, getArtifactVersions,
   getArtifactSeriesList, resolveArtifact, type ArtifactQueryParams,
   isApiErrorStatus,
 } from '../api';
@@ -65,6 +65,11 @@ export const artifactRecordOptions = (id: string | null) =>
   snapshotOptions(detailKeys.record(id), (signal) => getArtifact(id!, { signal }), (data) => data.id === id);
 export const artifactContentOptions = (id: string | null) =>
   snapshotOptions(detailKeys.content(id), (signal) => getArtifactContent(id!, { signal }), (data) => data.artifact_id === id);
+export const artifactTextOptions = (id: string | null) => queryOptions({
+  queryKey: detailKeys.text(id),
+  queryFn: ({ signal }) => getArtifactText(id!, { signal }),
+  staleTime: Infinity,
+});
 export const artifactBackrefsOptions = (id: string | null) =>
   snapshotOptions(detailKeys.backrefs(id), (signal) => getArtifactKnowledgeBackrefs(id!, { signal }));
 export const artifactListOptions = (params: ArtifactQueryParams) => queryOptions({

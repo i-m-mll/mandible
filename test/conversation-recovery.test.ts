@@ -4,6 +4,8 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { openDb, setDb, CURRENT_SCHEMA_VERSION } from "../src/db.js";
 import { buildMetadataBackupSql } from "../src/ledger/backup.js";
+import { createSpace } from "../src/ledger/spaces.js";
+import { listSpaceBlocks } from "../src/ledger/space-blocks.js";
 import { configureIngestionWorker, ingestBatchForWorker, stopIngestionGracefully } from "../src/ingestion.js";
 import { restoreConversationMetadata, inspectConversationRecovery } from "../src/conversations/recovery.js";
 import { IngestionActor } from "../src/ingestion-actor.js";
@@ -69,11 +71,17 @@ it("recovers a prior metadata backup through production forward migrations witho
   let restored: ReturnType<typeof openDb> | undefined;
   try {
     prior.prepare("INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, session_id, started_at, title, notes, created_at, updated_at) VALUES ('prior', 'codex', '/missing/native.jsonl', 'hash', 0, 'prior-native', '2026-10-01', 'Retained title', 'authored note', '2026-10-01', '2026-10-01')").run();
+    const space = createSpace(prior, { title: "Recovered legacy document" });
+    const markdown = "Legacy paragraph\r\n\r\n";
+    prior.prepare(`INSERT INTO space_blocks
+      (id, space_id, block_type, sort_key, markdown, metadata_json, created_at, updated_at)
+      VALUES ('retained-block', ?, 'paragraph', 'a', ?, '{}', 1, 2)`).run(space.id, markdown);
     const metadata = buildMetadataBackupSql(prior);
     const destination = path.join(root, "restored.db");
     restored = restoreConversationMetadata(metadata, destination);
     expect(restored.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: String(CURRENT_SCHEMA_VERSION) });
     expect(restored.prepare("SELECT title, notes FROM conversations WHERE id = 'prior'").get()).toEqual({ title: 'Retained title', notes: 'authored note' });
+    expect(listSpaceBlocks(restored, space.id)).toMatchObject([{ id: "retained-block", markdown }]);
     expect(restored.pragma("foreign_key_check")).toEqual([]);
     expect(() => restoreConversationMetadata(metadata, destination)).toThrow("must not exist");
   } finally {

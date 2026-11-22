@@ -5,30 +5,41 @@ import path from "node:path";
 import type { Db } from "../db.js";
 import type { Space } from "../contracts.js";
 import { getSpace } from "../ledger/spaces.js";
-import { listSpaceBlocks, toDocBlock } from "../ledger/space-blocks.js";
+import { listSpaceBlocks } from "../ledger/space-blocks.js";
+import { isLocalBlockId, type SpaceBlockRecord } from "./document-source.js";
 import { exportDocument, type DocBlock, type DocTree } from "./serialize.js";
 // --- doc tree assembly -------------------------------------------------------
 
-/**
- * Build the canonical {@link DocTree} for a Space from its `space_blocks` rows
- * plus document-level frontmatter. The serialized text is the lossless source
- * of truth; this is the export-side projection (C11 owns the table, C12 owns the
- * format).
- */
+export function spaceDocTree(space: Space, storedBlocks: SpaceBlockRecord[]): DocTree {
+  const used = new Set(storedBlocks.map(block => block.id));
+  const ids = new Map<string, string>();
+  for (const [index, block] of storedBlocks.entries()) {
+    if (!isLocalBlockId(block.id)) continue;
+    let id = `local-${index + 1}`;
+    while (used.has(id)) id += '-';
+    used.add(id);
+    ids.set(block.id, id);
+  }
+  const blocks: DocBlock[] = storedBlocks.map(({ id, parent_id, block_type, item_id, sort_key, markdown }) =>
+    ({ id: ids.get(id) ?? id, parent_id, block_type, item_id, sort_key, markdown }));
+  return {
+    frontmatter: {
+      mandible_space: space.id,
+      mandible_space_title: space.title,
+      mandible_document_state: Buffer.from(JSON.stringify({
+        description: space.description, metadata: space.metadata,
+        blocks: Object.fromEntries(storedBlocks.map(block => [ids.get(block.id) ?? block.id,
+          { metadata: block.metadata, item_snapshot: block.item_snapshot }])),
+      })).toString('base64'),
+    },
+    blocks,
+  };
+}
+
 export function buildSpaceDocTree(db: Db, spaceId: string): DocTree {
   const space = getSpace(db, spaceId);
   if (!space) throw new ExportError("space_not_found", `space not found: ${spaceId}`);
-  const storedBlocks = listSpaceBlocks(db, spaceId);
-  const blocks: DocBlock[] = storedBlocks.map(toDocBlock);
-  const frontmatter: Record<string, string> = {
-    mandible_space: space.id,
-    mandible_space_title: space.title,
-    mandible_document_state: Buffer.from(JSON.stringify({
-      description: space.description, metadata: space.metadata,
-      blocks: Object.fromEntries(storedBlocks.map(block => [block.id,{ metadata:block.metadata,item_snapshot:block.item_snapshot }])),
-    })).toString('base64'),
-  };
-  return { frontmatter, blocks };
+  return spaceDocTree(space, listSpaceBlocks(db, spaceId));
 }
 
 /** Serialize a Space directly to canonical `spaces-doc.v1` text. */
@@ -48,6 +59,7 @@ export type ExportErrorCode =
   | "commit_failed"
   | "git_failed"
   | "locked"
+  | "stale_document"
   | "stale_destination"
   | "invalid_publication";
 

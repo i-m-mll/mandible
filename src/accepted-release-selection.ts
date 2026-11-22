@@ -82,7 +82,7 @@ function readSelection(db: Db, request: Record<string, any>, selection: Accepted
   if (!selection || typeof selection.acceptanceId !== 'string' || typeof selection.reference !== 'string') throw new AcceptedReleaseSelectionRefusal('Invalid accepted-release selection.');
   const row = db.prepare('SELECT * FROM auth_candidate_acceptances WHERE id = ?').get(selection.acceptanceId) as Record<string, any> | undefined;
   const candidate: AcceptedReleaseCandidate = { pin_sha: request.merge_candidate_pin_sha, tree_sha: request.merge_candidate_tree_sha,
-    base_sha: request.merge_preflight_base_sha, head_sha: request.merge_head_sha };
+    base_sha: request.merge_preflight_base_sha, head_sha: request.merge_effective_head_sha ?? request.merge_head_sha };
   if (!row || row.auth_request_id !== request.id || row.status !== 'passed'
       || Object.entries(candidate).some(([key, value]) => !value || row[key] !== value)
       || JSON.parse(row.result_json ?? 'null')?.receipt !== selection.reference) throw new AcceptedReleaseSelectionRefusal('Selected acceptance does not pass for this exact request and candidate.');

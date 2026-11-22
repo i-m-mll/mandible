@@ -1,8 +1,12 @@
+import { TRACKED_BRIEFING_MEMBER_MIGRATION_SQL, TRACKED_BRIEFING_REVIEW_SCHEMA_SQL } from "./feedback/schema.js";
+import { backupBeforeSpaceCutover, convertSpaceDocuments } from "./spaces/migrate-document.js";
+import { REQUEST_REVIEW_DRAFT_SCHEMA_SQL } from "./feedback/request-draft-schema.js";
+import { STANDING_REVIEW_ROUND_MIGRATION_SQL, REQUEST_REVIEW_ROUND_MIGRATION_SQL, REVIEW_ROUND_MIGRATION_SQL, REVIEW_THREAD_SCHEMA_SQL } from "./feedback/review-schema.js";
 import { exactAgentRef } from "./ambient-provider-identity.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { INTERFACE_NOTE_EMBED_GRANTS_SQL } from "./interface-notes/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
-import { NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
+import { NOTICE_REVIEW_SUBMISSION_SQL, NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL, recoverHistoricalExactAssignments } from "./work-unit-assignment-schema.js";
@@ -19,11 +23,13 @@ import { ARTIFACT_CUSTODY_MIGRATION_SQL, ARTIFACT_CUSTODY_TRIGGERS_SQL } from '.
 import { ARTIFACT_SOURCE_SCHEMA_SQL, ARTIFACT_SOURCE_BACKFILL_SQL } from './artifact-source-schema.js';
 import {
   AUTH_PROTECTED_ROOT_DIRTY_ACTION_COLUMN_SQL,
+  AUTH_LIFECYCLE_AUTHORITY_PATHS,
   AUTH_LIFECYCLE_AUTHORITY_PATHS_V212,
   AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
   authRequestLifecycleEventsSchemaSql,
   WORKER_THREAD_ARCHIVES_SCHEMA_SQL,
   BASELINE_SCHEMA_VERSION,
+  FROZEN_REQUEST_REVIEW_COLUMNS_SQL,
   AUTH_PREREQUISITE_SCHEMA_SQL,
   SESSION_EXECUTION_SCHEMA_SQL,
   LEDGER_SESSION_ISSUE_LINKS_SCHEMA_SQL,
@@ -57,6 +63,7 @@ import {
   BRIEFING_DESTINATION_MUTATION_SCHEMA_SQL,
   BRIEFING_GROUP_REVIEW_SCHEMA_V167_SQL,
   BRIEFING_GROUP_SCHEMA_SQL,
+  REQUEST_NARRATIVE_MIGRATION_SQL,
 } from "./feedback/schema.js";
 import { TASK_ACTIVATION_SCHEMA_SQL } from "./task-activation-schema.js";
 import { CANDIDATE_ACCEPTANCE_SCHEMA_SQL } from "./candidate-acceptance-schema.js";
@@ -2475,6 +2482,41 @@ export const MIGRATIONS: readonly Migration[] = [
   ] },
   // Issue 2927dd8 — a conditional closure that finds its issue still held ends skipped_held.
   { version: 247, name: "skipped_held_action_state", statements: [...AUTH_REQUEST_ACTIONS_REBUILD_SQL], requires_foreign_keys_off: true },
+  { version: 248, name: "review_round_document_bindings", statements: [...REVIEW_ROUND_MIGRATION_SQL], requires_foreign_keys_off: true },
+  { version: 249, name: "spaces_document_source", statements: [] },
+  { version: 250, name: "request_review_rounds", requires_foreign_keys_off: true, statements: [
+    ...REQUEST_REVIEW_ROUND_MIGRATION_SQL,
+    NOTICE_REVIEW_SUBMISSION_SQL,
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_update",
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_delete",
+    "DROP INDEX idx_auth_request_lifecycle_events_request",
+    "ALTER TABLE auth_request_lifecycle_events RENAME TO auth_request_lifecycle_events_v248",
+    ...authRequestLifecycleEventsSchemaSql(AUTH_LIFECYCLE_AUTHORITY_PATHS, "returns"),
+    `ALTER TABLE auth_request_lifecycle_events ADD COLUMN ${ledgerOriginColumnSql}`,
+    `INSERT INTO auth_request_lifecycle_events (${AUTH_LIFECYCLE_EVENT_COLUMNS})
+       SELECT ${AUTH_LIFECYCLE_EVENT_COLUMNS} FROM auth_request_lifecycle_events_v248`,
+    "DROP TABLE auth_request_lifecycle_events_v248",
+    "DROP INDEX idx_auth_requests_history",
+    AUTH_REQUEST_HISTORY_INDEX_SQL,
+  ] },
+  { version: 251, name: "review_comment_threads", statements: REVIEW_THREAD_SCHEMA_SQL },
+  { version: 252, name: "request_review_drafts", statements: REQUEST_REVIEW_DRAFT_SCHEMA_SQL },
+  { version: 253, name: "standing_document_notes", requires_foreign_keys_off: true, statements: STANDING_REVIEW_ROUND_MIGRATION_SQL },
+  { version: 254, name: "request_narrative", requires_foreign_keys_off: true, statements: REQUEST_NARRATIVE_MIGRATION_SQL },
+  { version: 255, name: "frozen_request_review", requires_foreign_keys_off: true, statements: [
+    ...FROZEN_REQUEST_REVIEW_COLUMNS_SQL,
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_update",
+    "DROP TRIGGER auth_request_lifecycle_events_immutable_delete",
+    "DROP INDEX idx_auth_request_lifecycle_events_request",
+    "ALTER TABLE auth_request_lifecycle_events RENAME TO auth_request_lifecycle_events_v254",
+    ...authRequestLifecycleEventsSchemaSql(AUTH_LIFECYCLE_AUTHORITY_PATHS, "decisions"),
+    `ALTER TABLE auth_request_lifecycle_events ADD COLUMN ${ledgerOriginColumnSql}`,
+    `INSERT INTO auth_request_lifecycle_events (${AUTH_LIFECYCLE_EVENT_COLUMNS}, review_submission_id)
+       SELECT ${AUTH_LIFECYCLE_EVENT_COLUMNS}, review_submission_id FROM auth_request_lifecycle_events_v254`,
+    "DROP TABLE auth_request_lifecycle_events_v254",
+  ] },
+  { version: 256, name: "tracked_briefing_members",
+    statements: [...TRACKED_BRIEFING_MEMBER_MIGRATION_SQL, ...TRACKED_BRIEFING_REVIEW_SCHEMA_SQL] },
 ];
 
 /**
@@ -2683,6 +2725,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
     const group = normal;
     normal = [];
     db.transaction(() => {
+      if (group.some(migration => migration.name === "spaces_document_source")) backupBeforeSpaceCutover(db);
       for (const migration of group) {
         if (migration.version !== 209 || !validateConversationIdentitySchema(db)) {
           for (const statement of migration.statements) db.exec(statement);
@@ -2690,6 +2733,7 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         if (migration.version === 190) loadHistoricalMigrations().preserveLegacyDocuments(db);
         if (migration.version === 223) seedLegacyAssignmentTargets(db);
         if (migration.version === 233) recoverHistoricalExactAssignments(db);
+        if (migration.name === "spaces_document_source") convertSpaceDocuments(db, "apply");
         setVersion.run(SCHEMA_VERSION_KEY, String(migration.version));
       }
     })();

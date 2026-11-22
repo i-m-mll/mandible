@@ -94,7 +94,7 @@ describe('AuthQueueView', () => {
     await waitFor(() => expect(document.querySelector('[data-request-id="req-filter-final"]')).toBeTruthy());
   });
 
-  it('renders canonical commit messages through sanitized Markdown without an authorship badge', () => {
+  it('keeps canonical approval Description references navigable and authored HTML inert', () => {
     render(
       h(AuthQueueView, {
         queue: [{
@@ -114,9 +114,8 @@ describe('AuthQueueView', () => {
       }),
     );
 
-    expect(screen.getByText('structured prose').tagName).toBe('STRONG');
-    expect(document.querySelector('[data-resource-ref="artifact:bbbbbbbbbbbb"]')).toBeTruthy();
-    expect(document.querySelector('script')).toBeNull();
+    expect(screen.getByRole('link', { name: 'artifact:bbbbbbbbbbbb' }).getAttribute('href')).toMatch(/^\/artifact.*bbbbbbbbbbbb/);
+    expect(screen.getByRole('textbox', { name: 'Request description' }).querySelector('script')).toBeNull();
     expect((window as { compromised?: boolean }).compromised).toBeUndefined();
   });
 

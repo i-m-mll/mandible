@@ -9,14 +9,14 @@ import type { ChromeAppearanceTheme } from './chrome-appearance';
 import { useNativeWindowPresentation } from './native-window-presentation';
 import { browserResourceKeys, refreshBrowserResources } from './query/browserResources';
 import { invalidateActivityTargets } from './query/activityTargets';
-import { BRIEFING_EVENT_VALUES, DASHBOARD_BADGE_COUNTS } from '../../src/contracts';
+import { BRIEFING_EVENT_VALUES, DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS } from '../../src/contracts';
 import { render, type ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
 import { QueryClientProvider } from '@tanstack/preact-query';
 
 import {
-  approveAuthRequest,
+  approveAuthRequest, type ShownAuthApproval,
   startProviderChat,
   getAuthHistory,
   refreshAuthQueue,
@@ -188,8 +188,6 @@ import '@xterm/xterm/css/xterm.css';
 import '@xyflow/react/dist/style.css';
 import './components/spaces/AddToSpace.css';
 import './views/filters/issue-predicate-filter.css';
-import './views/spaces/DocumentBlockEditor.css';
-import './views/spaces/DocumentRenderer.css';
 import './views/spaces/renderers.css';
 import './views/spaces/space-board.css';
 import './views/spaces/SpaceCanvas.css';
@@ -1551,6 +1549,9 @@ function App(): JSX.Element {
       client.on('auth:resolved', authResolvedHandler),
       client.on('auth:finalized', handler),
       client.on('auth:lifecycle', handler),
+      client.on(DOMAIN_EVENTS.AUTH_REVIEW_UPDATED, (payload) => {
+        window.dispatchEvent(new CustomEvent(DOMAIN_EVENTS.AUTH_REVIEW_UPDATED, { detail: payload.data }));
+      }),
       client.on('auth:approval_phase', (payload) => {
         window.dispatchEvent(new CustomEvent('auth:approval_phase', { detail: payload.data }));
       }),
@@ -1871,10 +1872,10 @@ function App(): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [state.daemonReload?.hash]);
 
-  const handleApprove = async (requestId: string) => {
+  const handleApprove = async (requestId: string, proof?: ShownAuthApproval) => {
     try {
       const shown = state.authQueue.find((request) => request.id === requestId);
-      await approveAuthRequest(requestId, shown?.lifecycle_revision ?? null);
+      await approveAuthRequest(requestId, proof ? proof.revision : shown?.lifecycle_revision ?? null, proof?.review);
       // Set to 'approved' locally for immediate feedback; the SSE auth:resolved
       // event will update to 'completed' when the command finishes.
       authProjectionRefreshRef.current!.notePush();
@@ -1891,15 +1892,10 @@ function App(): JSX.Element {
     }
   };
 
-  const handleReject = async (requestId: string) => {
-    try {
-      await rejectAuthRequest(requestId);
-      authProjectionRefreshRef.current!.notePush();
-      dispatch({ type: 'authResolved', requestId, status: 'rejected' });
-    } catch {
-      // Do not set a local error status — the server state is unchanged.
-      // The action simply failed; inFlight cleanup in runAction is sufficient.
-    }
+  const handleReject = async (requestId: string, reason?: string) => {
+    await rejectAuthRequest(requestId, reason);
+    authProjectionRefreshRef.current!.notePush();
+    dispatch({ type: 'authResolved', requestId, status: 'rejected' });
   };
 
   const handleRetry = async (requestId: string) => {

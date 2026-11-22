@@ -33,20 +33,10 @@ export interface AuthMergeExecutionContext {
 }
 
 export interface AuthMergeReviewMetadata {
-  filesChanged?: number;
-  additions?: number;
-  deletions?: number;
-  diffSummary?: string;
-  changeReport?: AuthChangeReport;
-}
-
-// Issue 7d64d8f — there is deliberately no `commitMessage` here any more. The
-// merge message is either an agent-authored canonical change message supplied
-// with the request, or nothing at all; the daemon no longer synthesizes a
-// `git log --format="- %s"` bullet dump as a stand-in.
-export interface AuthMergeReviewMetadataOptions {
-  counts?: boolean;
-  diffSummary?: boolean;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  changeReport: AuthChangeReport;
 }
 
 export class AuthExecutionContextError extends Error {
@@ -80,6 +70,7 @@ export function authGitEnv(): NodeJS.ProcessEnv {
     GIT_CONFIG_SYSTEM: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_ATTR_NOSYSTEM: "1",
+    GIT_NO_REPLACE_OBJECTS: "1",
     GIT_OPTIONAL_LOCKS: "0",
   };
 }
@@ -518,37 +509,28 @@ export async function computeAuthMergeReviewMetadata(
   repoRoot: string,
   baseRef: string,
   headRef: string,
-  options: AuthMergeReviewMetadataOptions = {
-    counts: true,
-    diffSummary: true,
-  }
 ): Promise<AuthMergeReviewMetadata> {
   const baseSha = isUnbornBase(baseRef) ? baseRef : (await resolveCommitSha(repoRoot, baseRef));
   const headSha = (await resolveCommitSha(repoRoot, headRef));
   const mergeBaseSha = isUnbornBase(baseSha) ? (await baseTree(repoRoot, baseSha)) : (await resolveMergeBaseSha(repoRoot, baseSha, headSha));
-  const metadata: AuthMergeReviewMetadata = {};
   const collected = await collectAuthMergeReview(
     repoRoot,
     { base_sha: baseSha, head_sha: headSha, merge_base_sha: mergeBaseSha },
-    { report: options.counts !== false, diffSummary: options.diffSummary !== false },
   );
   if (!collected.ok) throw new AuthExecutionContextError(collected.error.message);
 
-  if (collected.value.report) {
-    const report = collected.value.report;
-    metadata.changeReport = report;
-    metadata.filesChanged = report.totals.files;
-    metadata.additions = report.totals.additions;
-    metadata.deletions = report.totals.deletions;
-  }
-  if (collected.value.diffSummary !== undefined) metadata.diffSummary = collected.value.diffSummary;
-
-  return metadata;
+  const report = collected.value.report;
+  return {
+    changeReport: report,
+    filesChanged: report.totals.files,
+    additions: report.totals.additions,
+    deletions: report.totals.deletions,
+  };
 }
 
-async function resolveCommitSha(repoRoot: string, ref: string): Promise<string> {
+export async function resolveCommitSha(repoRoot: string, ref: string): Promise<string> {
   try {
-    const sha = (await childOutput("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
+    const sha = (await childOutput("git", ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: GIT_REF_TIMEOUT_MS,
@@ -564,7 +546,7 @@ async function resolveCommitSha(repoRoot: string, ref: string): Promise<string> 
   throw new AuthExecutionContextError(`Unable to resolve auth review commit ${ref}: git returned an empty value.`);
 }
 
-async function resolveMergeBaseSha(repoRoot: string, baseSha: string, headSha: string): Promise<string> {
+export async function resolveMergeBaseSha(repoRoot: string, baseSha: string, headSha: string): Promise<string> {
   try {
     const sha = (await childOutput("git", ["merge-base", baseSha, headSha], {
       cwd: repoRoot,

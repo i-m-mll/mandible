@@ -118,19 +118,19 @@ export function CollectionsSidebar({
     );
     const { layoutSource } = projection;
     const groupMatches = group.name.toLocaleLowerCase().includes(viewState.collectionSourceFilter.trim().toLocaleLowerCase());
-    const layout = (layoutSource?.layout ?? []).map((entry): BriefingBundleLayoutEntry | null => {
+    type SidebarEntry = Exclude<BriefingBundleLayoutEntry, { kind: 'tracked' }>;
+    const layout = (layoutSource?.layout ?? []).flatMap((entry): SidebarEntry[] => {
       if (entry.kind === 'briefing') {
-        return groupMatches || filteredIds.has(entry.briefing.id) ? entry : null;
+        return groupMatches || filteredIds.has(entry.briefing.id) ? [entry] : [];
       }
+      if (entry.kind === 'tracked') return [];
       const briefings = groupMatches
         ? entry.briefings
         : entry.briefings.filter((briefing) => filteredIds.has(briefing.id));
-      return briefings.length > 0 || !viewState.collectionSourceFilter.trim()
-        ? { ...entry, briefings }
-        : null;
-    }).filter((entry): entry is BriefingBundleLayoutEntry => entry !== null);
-    return { group, projection, layout };
-  }).filter((entry) => entry.layout.length > 0 || !viewState.collectionSourceFilter.trim()), [
+      return briefings.length > 0 || !viewState.collectionSourceFilter.trim() ? [{ ...entry, briefings }] : [];
+    });
+    return { group, projection, layout, groupMatches };
+  }).filter((entry) => entry.groupMatches || entry.layout.length > 0 || !viewState.collectionSourceFilter.trim()), [
     lifecycleGroups,
     filteredIds,
     viewState.collectionSourceFilter,

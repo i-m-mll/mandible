@@ -1,3 +1,5 @@
+import * as z from "zod";
+import { convertTrackedBriefingGroup, planTrackedBriefingGroupConversion } from "../feedback/convert-tracked-briefing-group.js";
 import type { LedgerReader } from "../ledger-reads/index.js";
 import { attributionForRequest, ClientAuthzError, isLocalHumanRequest, isOperator, requireIdentity, requireOperator } from "../client-auth/authz.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -684,6 +686,32 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) { handleError(res, error); }
   }, { operation: { id: "post:/api/briefing-groups/:groupId/review-candidates", effects: ["ledger:write"], requestSchema: null, reportingCategory: "briefing" }, fileRpc: "allow" });
 
+  server.get("/api/briefing-groups/:groupId/tracking-conversion", (req, res) => {
+    try {
+      requireOperator(db, req);
+      sendJson(res, 200, { plan: planTrackedBriefingGroupConversion(db, req.params.groupId) });
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "get:/api/briefing-groups/:groupId/tracking-conversion", effects: ["ledger:read", "process:external"],
+    requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  server.post("/api/briefing-groups/:groupId/tracking-conversion", (req, res) => {
+    try {
+      requireOperator(db, req);
+      const input = req.body as { expected_base_bundle_ref: string; plan_digest: string };
+      const result = convertTrackedBriefingGroup(db, { groupRef: req.params.groupId,
+        expectedBaseRef: input.expected_base_bundle_ref, planDigest: input.plan_digest });
+      if (result.changed) broadcast(BRIEFING_EVENTS.groupConfigurationUpdated, {
+        group_id: result.plan.group_id, current_bundle_id: result.bundle_id,
+      });
+      sendJson(res, 200, result);
+    } catch (error) { handleError(res, error); }
+  }, { operation: { id: "post:/api/briefing-groups/:groupId/tracking-conversion",
+    effects: ["ledger:write", "files:production", "process:external", "auth:protected"],
+    requestSchema: z.object({
+      expected_base_bundle_ref: z.string().trim().min(1),
+      plan_digest: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict(), reportingCategory: "briefing" }, fileRpc: "allow" });
+
   server.post("/api/briefing-groups/:groupId/destinations", (req, res) => {
     try {
       const principal = humanReviewOperator(db, req);
@@ -729,13 +757,13 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     try {
       sendJson(res, 200, { groups: listBriefingGroups(db, briefingLayoutViewer(db, req)) });
     } catch (error) { handleError(res, error); }
-  }, { operation: { id: "get:/api/briefing-groups", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-groups", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefing-groups/:groupId", (req, res) => {
     try {
       sendJson(res, 200, { group: readBriefingGroup(db, req.params.groupId, briefingLayoutViewer(db, req)) });
     } catch (error) { handleError(res, error); }
-  }, { operation: { id: "get:/api/briefing-groups/:groupId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-groups/:groupId", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefing-bundles", (req, res) => {
     try {
@@ -878,7 +906,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/briefing-bundles", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-bundles", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.get("/api/briefing-bundles/:bundleId", (req, res) => {
     try {
@@ -886,7 +914,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
     } catch (error) {
       handleError(res, error);
     }
-  }, { operation: { id: "get:/api/briefing-bundles/:bundleId", effects: ["ledger:read"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+  }, { operation: { id: "get:/api/briefing-bundles/:bundleId", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   server.post("/api/briefings", (req, res) => {
     try {
@@ -1029,7 +1057,9 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
   server.get("/api/briefings/:briefingId", (req, res) => {
     try {
       const viewer = briefingReadViewer(db, req);
-      const values = new URL(req.url, "http://localhost").searchParams.getAll("round");
+      const search = new URL(req.url, "http://localhost").searchParams;
+      const values = search.getAll("round");
+      const comparisonValues = search.getAll("comparison_commit");
       const submissionValues = new URL(req.url, "http://localhost").searchParams.getAll("submission");
       const groupValues = new URL(req.url, "http://localhost").searchParams.getAll("group");
       const proposalValues = new URL(req.url, "http://localhost").searchParams.getAll("proposal");
@@ -1045,12 +1075,16 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       if (proposalValues.length > 1 || (proposalValues.length === 1 && !proposalValues[0])) {
         throw new BriefingStoreError("proposal must be one nonblank Briefing bundle id");
       }
+      if (comparisonValues.length > 1 || (comparisonValues.length === 1 && !comparisonValues[0])) {
+        throw new BriefingStoreError("comparison_commit must be one full object id");
+      }
       if (proposalValues.length > 0 && groupValues.length === 0) {
         throw new BriefingStoreError("proposal display context requires group");
       }
       const briefingId = resolveBriefingId(db, req.params.briefingId, viewer);
       const projection = readBriefing(db, briefingId, {
         ...(values[0] ? { roundId: values[0] } : {}),
+        ...(comparisonValues[0] ? { comparisonCommit: comparisonValues[0] } : {}),
         ...(submissionValues[0] ? { submissionId: submissionValues[0] } : {}),
         ...(groupValues[0] ? { displayGroup: {
           groupRef: groupValues[0],

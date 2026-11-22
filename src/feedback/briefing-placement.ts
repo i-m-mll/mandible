@@ -97,7 +97,7 @@ export function briefingIdsForBundles(db: Db, bundleIds: readonly string[]): str
   if (bundleIds.length === 0) return [];
   const placeholders = bundleIds.map(() => "?").join(",");
   return (db.prepare(`SELECT DISTINCT briefing_id FROM briefing_bundle_members
-    WHERE bundle_id IN (${placeholders}) ORDER BY briefing_id`).all(...bundleIds) as Array<{ briefing_id: string }>)
+    WHERE briefing_id IS NOT NULL AND bundle_id IN (${placeholders}) ORDER BY briefing_id`).all(...bundleIds) as Array<{ briefing_id: string }>)
     .map((row) => row.briefing_id);
 }
 

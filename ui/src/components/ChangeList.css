@@ -1,0 +1,59 @@
+.change-list {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.change-list__toolbar,
+.change-list__toolbar > [role="group"] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.change-list__toolbar button,
+.change-list__viewed {
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+}
+
+.change-list__toolbar button:hover,
+.change-list__viewed:hover,
+.change-list__toolbar button[aria-pressed="true"],
+.change-list__viewed[aria-pressed="true"] {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.change-list__file,
+.change-list__path {
+  min-width: 0;
+}
+
+.change-list__path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.change-list__badge,
+.change-list__empty {
+  color: var(--text-muted);
+}
+
+.change-list__badge,
+.change-list__add,
+.change-list__del {
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.change-list__add { color: var(--status-success-fg); }
+.change-list__del { color: var(--status-error-fg); }

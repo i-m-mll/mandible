@@ -235,7 +235,7 @@ export function buildAuthHookEnv(
   // on. Post-merge hooks must use them instead of retry-time HEAD when deciding
   // which convergence work the original merge required.
   env.MANDIBLE_AUTH_MERGE_BASE_SHA = request.merge_preflight_base_sha ?? "";
-  env.MANDIBLE_AUTH_MERGE_HEAD_SHA = request.merge_head_sha ?? "";
+  env.MANDIBLE_AUTH_MERGE_HEAD_SHA = request.merge_effective_head_sha ?? request.merge_head_sha ?? "";
   env.MANDIBLE_AUTH_MERGE_COMMIT_SHA = extractSuccessfulMergeCommitSha(request.output) ?? "";
   env.MANDIBLE_HOOK_ID = context.hook_id;
   env.MANDIBLE_HOOK_LABEL = context.hook_label;

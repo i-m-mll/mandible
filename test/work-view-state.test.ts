@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
 import { WorkOverviewView } from '../ui/src/views/work';
+import type { WorkCompareResult } from '../src/work-scanner';
 
 beforeEach(() => bindTestInstanceCatalog(mainInstance));
 
@@ -190,11 +191,19 @@ it('keeps cold and failed project discovery distinct from successful empty resul
 it('preserves mounted compound targets, absent projects and branches, and unrelated route context', async () => {
     const repos = [{ id: 'r1', name: 'Repo One', default_branch: 'main' }, { id: 'r2', name: 'Repo Two', default_branch: 'main' }];
     const branchesByRepo = { r1: [{ name: 'main', status: 'clean' }], r2: [{ name: 'other', status: 'clean' }] };
+    const before = 'a'.repeat(40);
+    const after = 'b'.repeat(40);
+    const comparison = {
+      repo_root: '/repo/one',
+      from: 'old', to: 'new', mode: 'range', range: 'old..new',
+      comparison: { base_sha: before, merge_base_sha: before, head_sha: after },
+      files: [],
+    } satisfies WorkCompareResult;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       const body = url === '/api/work/repos' ? repos : url.includes('/commits')
         ? { commits: [], total: 0, limit: 50, offset: 0 } : url.includes('/compare')
-          ? { from: 'old', to: 'new', mode: 'range', range: 'old..new', raw: '', stat: '' }
+          ? comparison
           : [];
       return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
     }));

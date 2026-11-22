@@ -4,7 +4,7 @@ import type { SpaceRenderer } from '../../api';
 import { type SpaceFactPacket } from '../../api';
 import { SpaceCollectionRenderer } from './space-collection';
 import { SpaceBoardRenderer } from './SpaceBoard';
-import { DocumentBlockEditor } from './DocumentBlockEditor';
+import { SpaceDocumentEditor } from './SpaceDocumentEditor';
 import { SpaceCanvas, type SpaceCanvasModel } from './SpaceCanvas';
 import './renderers.css';
 
@@ -27,9 +27,5 @@ export const SPACE_RENDERERS_REGISTRY: Partial<Record<SpaceRenderer, SpaceRender
   collection: SpaceCollectionRenderer,
   board: SpaceBoardRenderer,
   canvas: CanvasMountPoint,
-  // The `document` renderer mounts the C14c block EDITOR. It gates against C13d
-  // custody: a repo-authoritative + drifted document renders read-only/stale
-  // with re-import / fork affordances, while Mandible-custody documents are
-  // freely editable (it renders the live tree through the C14b read renderer).
-  document: DocumentBlockEditor,
+  document: SpaceDocumentEditor,
 };

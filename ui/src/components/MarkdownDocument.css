@@ -1,0 +1,79 @@
+.markdown-document {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.markdown-document__navigation {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
+.markdown-document .cm-content {
+  font-variant-ligatures: none;
+}
+
+.markdown-document .cm-line[class*="markdown-document__heading--"] {
+  font-weight: 650;
+  line-height: 1.3;
+  padding-block: 0.15em;
+}
+
+.markdown-document .cm-line.markdown-document__heading--1 { font-size: 1.55em; }
+.markdown-document .cm-line.markdown-document__heading--2 { font-size: 1.35em; }
+.markdown-document .cm-line.markdown-document__heading--3 { font-size: 1.18em; }
+
+.markdown-document__StrongEmphasis { font-weight: 700; }
+.markdown-document__Emphasis { font-style: italic; }
+.markdown-document__Strikethrough { text-decoration: line-through; }
+.markdown-document__InlineCode,
+.markdown-document .cm-line.markdown-document__code {
+  font-family: ui-monospace, monospace;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.markdown-document .cm-line.markdown-document__quote {
+  border-inline-start: 2px solid currentColor;
+  padding-inline-start: 0.7em;
+  font-style: italic;
+}
+
+.markdown-document__link {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.markdown-document__image {
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown-document table {
+  border-collapse: collapse;
+  max-width: 100%;
+}
+
+.markdown-document td,
+.markdown-document th {
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  padding: 0.3em 0.55em;
+  text-align: start;
+}
+
+.markdown-document__frontmatter {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.2em 1em;
+  margin: 0;
+  padding: 0.6em 0.8em;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.markdown-document__frontmatter dt {
+  font-weight: 600;
+}
+
+.markdown-document__frontmatter dd {
+  margin: 0;
+  white-space: pre-wrap;
+}

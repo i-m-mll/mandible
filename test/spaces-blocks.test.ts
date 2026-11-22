@@ -1,167 +1,23 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { addSpaceNote, readSpaceReview } from "../src/feedback/space-review.js";
+import { setupOperator } from "../src/users/store.js";
 import { setDb, type Db } from "../src/db.js";
 import { migratedMemoryDb } from "./helpers/ledger-fixtures.js";
 import {
   generateSortKey,
   isValidSortKey,
   normalizeSortKeys,
-  toDocBlock,
-  BLOCK_TYPES,
 } from "../src/ledger/space-blocks.js";
 import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { Router } from "../src/server.js";
-import { exportDocument, importDocument, type DocBlock } from "../src/spaces/serialize.js";
-
-// Issue d2a8e77 (umbrella de56ffa): Spaces document/canvas blocks — the
-// space_blocks table (second serial-chain migration), the /blocks* REST routes,
-// and the cycle/sort-key/detach logic. Block
-// identity agrees with the C12 spaces-doc.v1 serialization.
-
-function now(): number {
-  return Date.now();
-}
 
 function allowsFileRpcRoute(method: string, url: string): boolean {
   const router = new Router();
   registerSpacesRoutes(router);
   return router.resolveFileRpcPolicy(method, url);
 }
-
-// ============================================================================
-// Schema / migration (direct DB)
-// ============================================================================
-
-describe("space_blocks schema (issue d2a8e77)", () => {
-  let db: Db;
-
-  function seedProject(id = "proj-1"): string {
-    db.prepare(
-      `INSERT INTO ledger_projects (id, display_name, remote_identity, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    ).run(id, "Test Project", `github.com/test/${id}`, now(), now());
-    return id;
-  }
-  function seedSpace(projectId: string, id = "space-1"): string {
-    db.prepare(
-      `INSERT INTO spaces (id, project_id, title, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    ).run(id, projectId, "Space One", now(), now());
-    return id;
-  }
-  function seedItem(spaceId: string, id: string, refType = "issue", refId = "issue-1"): string {
-    db.prepare(
-      `INSERT INTO space_items (id, space_id, ref_type, ref_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(id, spaceId, refType, refId, now(), now());
-    return id;
-  }
-  function insertBlock(
-    spaceId: string,
-    id: string,
-    opts: {
-      parentId?: string | null;
-      blockType?: string;
-      itemId?: string | null;
-      snapshot?: string | null;
-      sortKey?: string;
-    } = {},
-  ): void {
-    db.prepare(
-      `INSERT INTO space_blocks (
-         id, space_id, parent_id, block_type, item_id, item_snapshot_json,
-         sort_key, markdown, metadata_json, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, '', '{}', ?, ?)`,
-    ).run(
-      id,
-      spaceId,
-      opts.parentId ?? null,
-      opts.blockType ?? "paragraph",
-      opts.itemId ?? null,
-      opts.snapshot ?? null,
-      opts.sortKey ?? "m",
-      now(),
-      now(),
-    );
-  }
-
-  beforeEach(() => {
-    db = migratedMemoryDb();
-  });
-  afterEach(() => {
-    db.close();
-  });
-
-  it("rejects invalid block_type via CHECK (lockstep with C12 BLOCK_TYPES)", () => {
-    const projectId = seedProject();
-    const spaceId = seedSpace(projectId);
-    expect(() => insertBlock(spaceId, "b-bad", { blockType: "not-a-type" })).toThrow();
-    // Every C12 BLOCK_TYPES value is accepted by the CHECK.
-    for (const t of BLOCK_TYPES) {
-      expect(() => insertBlock(spaceId, `b-${t}`, { blockType: t })).not.toThrow();
-    }
-  });
-
-  it("enforces CHECK(item_id IS NULL OR item_snapshot_json IS NOT NULL)", () => {
-    const projectId = seedProject();
-    const spaceId = seedSpace(projectId);
-    const itemId = seedItem(spaceId, "item-1");
-    // item_id set but NO snapshot → rejected by the invariant CHECK.
-    expect(() => insertBlock(spaceId, "b-no-snap", { itemId, snapshot: null })).toThrow();
-    // item_id set WITH snapshot → accepted.
-    expect(() =>
-      insertBlock(spaceId, "b-with-snap", { itemId, snapshot: '{"item_id":"item-1"}' }),
-    ).not.toThrow();
-    // item_id NULL with no snapshot → accepted (prose block).
-    expect(() => insertBlock(spaceId, "b-prose", { itemId: null, snapshot: null })).not.toThrow();
-    // a snapshot WITHOUT an item_id is allowed (detached placeholder).
-    expect(() =>
-      insertBlock(spaceId, "b-detached", { itemId: null, snapshot: '{"item_id":"gone"}' }),
-    ).not.toThrow();
-  });
-
-  it("rejects cross-space parent_id and item_id via composite FKs", () => {
-    const projectId = seedProject();
-    const spaceA = seedSpace(projectId, "space-A");
-    const spaceB = seedSpace(projectId, "space-B");
-    const parentInA = ((): string => {
-      insertBlock(spaceA, "p-A", {});
-      return "p-A";
-    })();
-    const itemInA = seedItem(spaceA, "item-A");
-    // A block in B cannot point its parent at a block in A.
-    expect(() => insertBlock(spaceB, "child-B", { parentId: parentInA })).toThrow();
-    // ... nor embed an item that lives in A.
-    expect(() =>
-      insertBlock(spaceB, "embed-B", { itemId: itemInA, snapshot: '{"item_id":"item-A"}' }),
-    ).toThrow();
-  });
-
-  it("cascades blocks on space deletion and on parent block deletion", () => {
-    const projectId = seedProject();
-    const spaceId = seedSpace(projectId);
-    insertBlock(spaceId, "root", {});
-    insertBlock(spaceId, "child", { parentId: "root" });
-    // Deleting the parent cascades to the child (self-referential FK CASCADE).
-    db.prepare("DELETE FROM space_blocks WHERE id = 'root'").run();
-    const remaining = db
-      .prepare("SELECT COUNT(*) AS n FROM space_blocks WHERE space_id = ?")
-      .get(spaceId) as { n: number };
-    expect(remaining.n).toBe(0);
-
-    insertBlock(spaceId, "root2", {});
-    db.prepare("DELETE FROM spaces WHERE id = ?").run(spaceId);
-    const afterSpace = db
-      .prepare("SELECT COUNT(*) AS n FROM space_blocks WHERE space_id = ?")
-      .get(spaceId) as { n: number };
-    expect(afterSpace.n).toBe(0);
-  });
-});
-
-// ============================================================================
-// Sort-key generation / normalization (deterministic)
-// ============================================================================
 
 describe("block sort-key generation / normalization (issue d2a8e77)", () => {
   it("generateSortKey inserts between adjacent keys without collision", () => {
@@ -227,7 +83,7 @@ describe("blocks routes (issue d2a8e77)", () => {
     db.prepare(
       `INSERT INTO ledger_projects (id, display_name, remote_identity, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?)`,
-    ).run(PROJECT_ID, "Blocks Test", "github.com/test/blocks", now(), now());
+    ).run(PROJECT_ID, "Blocks Test", "github.com/test/blocks", Date.now(), Date.now());
   });
   afterEach(() => {
     db.close();
@@ -252,6 +108,58 @@ describe("blocks routes (issue d2a8e77)", () => {
     const ids = (listed.body as { blocks: { id: string }[] }).blocks.map((x) => x.id);
     // Depth-first: a, then its children a1,a2 (by sort_key), then b.
     expect(ids).toEqual([a, a1, a2, b]);
+  });
+
+  it("retains the saved generation when a block command wins a concurrent text edit", async () => {
+    const spaceId = await makeSpace();
+    const path = `/api/spaces/${spaceId}/document`;
+    const original = "same\r\n\r\nsame";
+    expect((await call("PATCH", path, { source: original, expected_generation: 0 })).body)
+      .toEqual({ source: original, generation: 1 });
+    const address = await call("POST", `${path}/address`, { start: 8, end: 12, expected_generation: 1 });
+    expect(address.status).toBe(200);
+    const { id, generation } = address.body as { id: string; generation: number };
+    expect((await call("GET", `/api/spaces/${spaceId}/blocks`)).body)
+      .toMatchObject({ blocks: [{ markdown: "same" }, { id, markdown: "same" }] });
+    const edited = await call("PATCH", `/api/spaces/${spaceId}/blocks/${id.slice(0, 8)}`, { markdown: "block edit" });
+    expect(edited.status).toBe(200);
+    const working = "unsaved working text";
+    const stale = await call("PATCH", path, { source: working, expected_generation: generation });
+    expect(stale.status).toBe(409);
+    const saved = (await call("GET", path)).body as { source: string; generation: number };
+    expect(saved.generation).toBe(generation + 1);
+    expect(saved.source).toContain("block edit");
+    expect(stale.body).toEqual({ code: "stale_document", document: saved });
+    expect((await call("PATCH", path, { source: saved.source, expected_generation: saved.generation })).body).toEqual(saved);
+  });
+
+  it("pins standing notes to a saved UTF-16 quote and carries them without rewriting the anchor", async () => {
+    const spaceId = await makeSpace();
+    const path = `/api/spaces/${spaceId}/document`;
+    const actor = setupOperator(db, { slug: "reviewer", display_name: "Reviewer" });
+    const source = "A😀\r\n\r\nsecond block";
+    const quote = "😀\r\n\r\nsecond";
+    const range = { start_offset: 1, end_offset: 1 + quote.length, quote };
+    await call("PATCH", path, { source, expected_generation: 0 });
+    expect(addSpaceNote(db, spaceId, actor.id, 0, range, "Review both blocks."))
+      .toEqual({ ok: false, reason: "stale_document" });
+    expect(addSpaceNote(db, spaceId, actor.id, 1, range, "Review both blocks.").ok).toBe(true);
+    await call("PATCH", path, { source: "Moved " + source, expected_generation: 1 });
+    expect(readSpaceReview(db, spaceId)).toMatchObject({ generation: 2, notes: [{
+      ...range, source_order: 1, body: "Review both blocks.", anchor: { start_offset: 7, end_offset: 7 + quote.length, quote },
+    }] });
+    const whole = "Moved " + source;
+    const section = { start_offset: 0, end_offset: 9, quote: "Moved A😀" };
+    expect(addSpaceNote(db, spaceId, actor.id, 2, section, "Keep the section.").ok).toBe(true);
+    const remaining = "second block";
+    await call("PATCH", path, { source: remaining + "\r\n\r\n" + section.quote, expected_generation: 2 });
+    expect(readSpaceReview(db, spaceId).notes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ...range, anchor: { status: "detached" } }),
+      expect.objectContaining({ ...section, anchor: { status: "moved", start_offset: 16, end_offset: 25, quote: section.quote } }),
+    ]));
+    await call("PATCH", path, { source: whole + "\n\n" + whole, expected_generation: 3 });
+    expect(readSpaceReview(db, spaceId).notes.every(note => note.anchor.status === "detached")).toBe(true);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 
   it("rejects a parent cycle via the API (400)", async () => {
@@ -328,72 +236,3 @@ describe("blocks file-RPC allowlist (issue d2a8e77, standing AC #1)", () => {
 // ============================================================================
 // C12 round-trip: block identity agrees with the serialization
 // ============================================================================
-
-describe("block identity agrees with C12 serialization (issue d2a8e77)", () => {
-  let db: Db;
-  let router: Router;
-  const PROJECT_ID = "prj-rt";
-
-  async function call(method: string, url: string, body?: unknown) {
-    return router.invoke({ method, url, body });
-  }
-
-  beforeEach(() => {
-    db = migratedMemoryDb();
-    setDb(db);
-    router = new Router();
-    registerSpacesRoutes(router);
-    db.prepare(
-      `INSERT INTO ledger_projects (id, display_name, remote_identity, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    ).run(PROJECT_ID, "RT", "github.com/test/rt", now(), now());
-  });
-  afterEach(() => db.close());
-
-  it("toDocBlock projects the C12 DocBlock fields and round-trips through export/import", async () => {
-    const sp = await call("POST", "/api/spaces", { project_id: PROJECT_ID, title: "Doc" });
-    const spaceId = (sp.body as { space: { id: string } }).space.id;
-    const mk = async (parentId: string | null, sortKey: string, markdown: string) => {
-      const res = await call("POST", `/api/spaces/${spaceId}/blocks`, {
-        block_type: "paragraph",
-        parent_id: parentId,
-        sort_key: sortKey,
-        markdown,
-      });
-      return (res.body as { block: { id: string } }).block.id;
-    };
-    const h = await mk(null, "a", "# Title");
-    await mk(h, "a", "child one");
-    await mk(null, "c", "tail");
-
-    const listed = await call("GET", `/api/spaces/${spaceId}/blocks`);
-    const stored = (listed.body as {
-      blocks: Array<Parameters<typeof toDocBlock>[0]>;
-    }).blocks;
-
-    // The stored records project onto the frozen C12 DocBlock shape.
-    const docBlocks: DocBlock[] = stored.map(toDocBlock);
-    for (const b of docBlocks) {
-      expect(new Set(Object.keys(b))).toEqual(
-        new Set(["id", "parent_id", "block_type", "item_id", "sort_key", "markdown"]),
-      );
-    }
-
-    // Round-trip: export → import reconstructs id/parent/sort/type/item/markdown.
-    const text = exportDocument({ frontmatter: { space: spaceId }, blocks: docBlocks });
-    const { tree, conflicts } = importDocument(text);
-    expect(conflicts).toEqual([]);
-    const byId = new Map(tree.blocks.map((b) => [b.id, b]));
-    for (const original of docBlocks) {
-      const round = byId.get(original.id);
-      expect(round, `block ${original.id} survived round trip`).toBeTruthy();
-      expect(round).toMatchObject({
-        id: original.id,
-        parent_id: original.parent_id,
-        block_type: original.block_type,
-        item_id: original.item_id,
-        sort_key: original.sort_key,
-      });
-    }
-  });
-});

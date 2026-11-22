@@ -1,13 +1,13 @@
+import { TrackedBriefingDisclosure, TrackedBriefingDocumentPanel } from './feedback/TrackedBriefingDocumentPanel';
+import { AuthReviewNarrative } from './AuthReviewNarrative';
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
 import type { RefObject } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import {
-  DiffView,
-  type DiffViewClassNames,
-  type DiffViewMode,
-  type DiffTargetReady,
-} from '../components/DiffView';
+import { AuthReviewDialog, AuthReviewMarkdown, AuthReviewTextFile, AuthReviewDetachedDrafts, AuthReviewSidebar, authReviewSelector,
+  useAuthRequestReview, type AuthRequestReviewState } from './AuthRequestReview';
+import type { RequestReviewComment } from '../../../src/feedback/request-review';
+import { ChangeList, type DiffTargetReady } from '../components/ChangeList';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { IssuePill } from '../components/shared/IssuePill';
@@ -40,6 +40,7 @@ import {
   canPerformOperation,
   getAuthRequestActions,
   getAuthRequestDetail,
+  getAuthDiffFile,
   changeAuthResponsibility,
   isApiErrorStatus,
   createAuthHook,
@@ -54,6 +55,7 @@ import {
   ApiError,
   type InstanceInfo,
   type ReadUserIdentity,
+  authApprovalReview, type ShownAuthApproval,
 } from '../api';
 import { exhausted } from '../../../src/exhaustive';
 import type { AuthConvergence } from '../../../src/types';
@@ -77,11 +79,16 @@ import { authChangeBreakdownStorageKey } from './auth-change-breakdown-state';
 import { AUTH_TYPE_META, authStatusPillClass, isFailedLikeStatus } from './auth-presentation';
 import { navigateAuthFile, navigateAuthReviewView, useAuthReviewNavigation, type AuthActionViewState, type AuthInfoSnapshot, type AuthReviewNavigation } from './auth-review-navigation';
 
+function TrackedReviewDocuments({ documents }: { documents: import('../../../src/contracts').TrackedBriefingDocument[] }) {
+  return <ul>{documents.map(doc => <li key={`${doc.project_id}:${doc.path}`}>
+    <TrackedBriefingDocumentPanel document={doc} showCommit />
+  </li>)}</ul>;
+}
+
 const RETAINED_FINALIZED_AUTH_KEY = 'mandible.auth.retained-finalized-selection';
 
 type AuthActionRetry =
-  | { kind: 'approve' }
-  | { kind: 'reject' }
+  | { kind: 'approve'; proof?: ShownAuthApproval }
   | { kind: 'retry' }
   | { kind: 'veto'; action: AuthRequestAction; vetoed: boolean };
 
@@ -106,6 +113,8 @@ export type AuthRequest = {
   base_branch?: string;
   head_branch?: string;
   merge_preflight_base_sha?: string | null;
+  merge_effective_head_sha?: string | null;
+  merge_head_sha?: string | null;
   merge_preflight_queue_fingerprint?: string | null;
   change_report?: AuthChangeReport | null;
   status?: string;
@@ -255,8 +264,8 @@ export type AuthQueueViewProps = {
   onSelectAuth?: (id: string | null) => void;
   /** Explicit row/filter navigation; passive selection updates only notify onSelectAuth. */
   onNavigateRequest?: (id: string | null) => void;
-  onApprove: (requestId: string) => void | Promise<void>;
-  onReject: (requestId: string) => void | Promise<void>;
+  onApprove: (requestId: string, proof?: ShownAuthApproval) => void | Promise<void>;
+  onReject: (requestId: string, reason?: string) => void | Promise<void>;
   onRetry: (requestId: string) => void | Promise<void>;
   onRefreshAuthProjection?: (signal: AbortSignal) => Promise<void>;
   autoShowConsoleOnApproval?: boolean;
@@ -305,20 +314,6 @@ const COURTESY_APPROVER_BADGE = {
   title: 'Courtesy approval: recorded as an interface action, not operator-verified',
 } as const;
 
-
-const AUTH_DIFF_VIEW_CLASS_NAMES: DiffViewClassNames = {
-  toolbar: 'auth-detail__diff-toolbar',
-  modeGroup: 'auth-detail__diff-mode',
-  modeButton: 'auth-detail__diff-mode-button',
-  modeButtonActive: 'auth-detail__diff-mode-button--active',
-  empty: 'auth-detail__diff-empty',
-  file: 'auth-diff-file',
-  fileHeader: 'auth-diff-file__header',
-  filePath: 'auth-diff-file__path',
-  fileBody: 'auth-diff-file__body',
-  fileHtml: 'auth-diff-file__html',
-  fileFallback: 'auth-diff-file__fallback',
-};
 
 /** Returns true when the request type has meaningful diff stats to display. */
 function typeHasDiffStats(type: AuthRequestType): boolean {
@@ -389,7 +384,7 @@ function visibleExecutionAttempts(request: AuthRequest): AuthExecutionAttempt[] 
 
 function isHistoryStatus(status: string): boolean {
   return status === 'completed' || status === 'rejected' || status === 'withdrawn' || status === 'superseded'
-    || status === 'dismissed' || status === 'error';
+    || status === 'returned' || status === 'dismissed' || status === 'error';
 }
 
 function isAuthExecutingStatus(status: string): boolean {
@@ -902,7 +897,10 @@ function AuthRequestDetail({
   request,
   history,
   actionBundle,
-  actions,
+  renderActions,
+  onReject,
+  onReturned,
+  canWriteReview,
   executionOutput,
   notice,
   autoShowConsoleOnApproval = true,
@@ -917,7 +915,10 @@ function AuthRequestDetail({
   history?: boolean;
   branchMerged?: boolean;
   actionBundle?: JSX.Element | null;
-  actions?: JSX.Element | null;
+  renderActions: (review: AuthRequestReviewState, openCandidate: () => void) => JSX.Element | null;
+  onReject: (id: string, reason: string) => void | Promise<void>;
+  onReturned?: (signal: AbortSignal) => Promise<void>;
+  canWriteReview: boolean;
   executionOutput?: string;
   notice?: JSX.Element | null;
   autoShowConsoleOnApproval?: boolean;
@@ -977,7 +978,6 @@ function AuthRequestDetail({
     observer.observe(node);
     return () => { observer.disconnect(); node.style.removeProperty('--auth-diff-target-scroll-space'); };
   }, [targetToken, viewMode]);
-  const [diffMode, setDiffMode] = useState<DiffViewMode>('split');
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
@@ -1020,14 +1020,7 @@ function AuthRequestDetail({
   const dirtyAction = request.protected_root_dirty_action ?? null;
   const diffRaw = typeof request.diff_summary === 'string' ? request.diff_summary : '';
 
-  const { branch: commitBranch, body: commitBody } = useMemo(
-    () => isCanonicalMessage ? parseBranchTag(commitMsg) : { branch: null, body: commitMsg },
-    [commitMsg, isCanonicalMessage],
-  );
-  const commitHtml = useMemo(
-    () => commitBody ? linkifyArtifactRefs(renderMarkdown(commitBody)) : '',
-    [commitBody],
-  );
+  const commitBranch = useMemo(() => isCanonicalMessage ? parseBranchTag(commitMsg).branch : null, [commitMsg, isCanonicalMessage]);
   const specHtml = useMemo(
     () => specContent ? linkifyArtifactRefs(renderMarkdown(specContent)) : '',
     [specContent],
@@ -1042,7 +1035,39 @@ function AuthRequestDetail({
   const hasConsoleOutput = consoleText.trim().length > 0;
 
   const stats = getStats(request);
+  const fullId = getAuthId(request);
   const status = getAuthStatus(request);
+  const review = useAuthRequestReview(fullId, status, request.updated_at, canWriteReview, onReject, onReturned);
+  const [changeOrder, setChangeOrder] = usePersistedViewState<'narrative' | 'files'>(
+    `auth-change-order:${fullId}`, value => value === 'files' ? 'files' : 'narrative', 'narrative',
+  );
+  const hasNarrative = !review.against && review.data?.round.owner.auth_request_id === fullId && !!review.data.narrative;
+  const narrativeOrder = hasNarrative && changeOrder === 'narrative' && !navigation.file
+    && review.navigation?.comment.source.kind !== 'request_file';
+  const description = review.data?.round.bindings.find(binding => binding.source.kind === 'request_description');
+  const comparedVersion = review.data?.versions.find(version => version.id === review.against);
+  const changeReport = review.against ? review.comparison : request.change_report;
+  const revisionSelector = authReviewSelector(review, fullId, onSelectRequest, () => setViewMode('diff'));
+  const selectComment = (comment: RequestReviewComment) => {
+    if (review.against) review.compare('');
+    if (comment.source.kind === 'request_description') {
+      setDescriptionView(current => ({ ...current, descriptionExpanded: true }));
+      setViewMode('abstract');
+    } else {
+      if (comment.source.kind === 'request_narrative') setChangeOrder('narrative');
+      setViewMode('diff');
+    }
+    review.setNavigation({ comment, token: crypto.randomUUID() });
+  };
+  const targetComment = review.navigation?.comment;
+  const targetFile = targetComment?.source.kind === 'request_file' ? targetComment.source : undefined;
+  const targetInventoryFile = targetFile && request.change_report?.files[targetFile.file_index];
+  const commentTarget = targetInventoryFile && review.navigation ? {
+    oldPath: targetInventoryFile.old_path, newPath: targetInventoryFile.new_path, navigationToken: review.navigation.token,
+  } : undefined;
+  const lineTarget = targetFile?.format === 'lines' && targetComment && targetComment.anchor.status !== 'detached' && review.navigation
+    ? { side: targetFile.side, startLine: targetComment.anchor.start_offset + 1, endLine: targetComment.anchor.end_offset, token: review.navigation.token }
+    : undefined;
   const statusLabel = getStatusLabel(request);
   const completedConvergence = status === 'completed'
     ? getConvergence(request)
@@ -1061,7 +1086,6 @@ function AuthRequestDetail({
   const executionAttempts = visibleExecutionAttempts(request);
   const attemptLabel = executionAttempts.length > 1 ? `Attempt ${executionAttempts.length}` : null;
   const requestHash = getRequestHash(request);
-  const fullId = getAuthId(request);
 
   const baseBranch = request.base_branch ?? request.base;
   const headBranch = request.head_branch ?? request.head;
@@ -1170,7 +1194,7 @@ function AuthRequestDetail({
         />
       </div>
       <div className="auth-detail__action-strip">
-        {actions}
+        {renderActions(review, () => setViewMode('diff'))}
       </div>
     </>
   );
@@ -1213,6 +1237,10 @@ function AuthRequestDetail({
         <MetadataRow label="Requester evidence" value={request.requester_evidence_method ?? null} />
         <MetadataRow label="Requester credential" value={request.requester_credential_id ?? null} />
         <MetadataRow label="Requester" value={requester?.display_name ?? request.requested_by_user_id ?? null} />
+        {request.merge_effective_head_sha && <>
+          <MetadataRow label="Requester verification commit" value={request.merge_head_sha ?? null} />
+          <MetadataRow label="Frozen change edit" value={request.merge_effective_head_sha} />
+        </>}
         <MetadataRow label="Approver" value={approver?.display_name ?? request.approved_by_user_id ?? null} />
         <MetadataRow label="Execution evidence" value={request.execution_evidence?.evidence_method ?? null} />
         <MetadataRow label="Lifecycle revision" value={latestLifecycle ? String(latestLifecycle.revision) : null} />
@@ -1229,44 +1257,7 @@ function AuthRequestDetail({
     </DetailPaneModal>
   );
 
-  return (
-    <DetailPaneShell
-      className={`auth-detail__pane auth-detail-pane${history ? ' auth-detail-pane--history' : ''}`}
-      headerClassName="auth-detail__header"
-      headerPrimaryClassName="auth-detail__header-primary"
-      subheaderClassName="auth-detail__aux-header"
-      bodyRef={bodyRef}
-      bodyClassName={`auth-detail__body${viewMode === 'console' ? ' auth-detail__body--console' : ''}`}
-      headerRef={headerRef}
-      subheader={subheader}
-      notice={<>
-        {notice}
-        {runtimeVerification && (
-          <DetailPaneNotice severity="info" density="compact" title="Update verification is pending">
-            {runtimeVerification.reason}
-          </DetailPaneNotice>
-        )}
-        {viewMode === 'diff' && request.diff_summary !== undefined && targetToken && unmatchedTarget === targetToken && (
-          <DetailPaneNotice severity="warning" density="compact">
-            This request has no captured change matching the selected before/after paths.
-          </DetailPaneNotice>
-        )}
-      </>}
-      overlays={overlays}
-      header={(
-        <DetailPaneHeader
-          variant="standard"
-          identity={{
-            entityLabel: repoName,
-            displayRef: shortRef,
-            canonicalRef: fullId,
-            copyRef: `auth:${shortRef}`,
-            copyLabel: `Copy auth:${shortRef}`,
-          }}
-          title={<span dangerouslySetInnerHTML={{
-            __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))),
-          }} />}
-          status={(
+  const headerState = (
             <>
               <span
                 className={statusClass}
@@ -1284,39 +1275,8 @@ function AuthRequestDetail({
               )}
               {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
             </>
-          )}
-          actions={(
-            <div className="auth-detail__header-actions">
-              <DetailPaneMenuTrigger
-                buttonRef={actionsTriggerRef}
-                label="Approval actions"
-                expanded={actionsOpen}
-                onClick={() => setActionsOpen((open) => !open)}
-              />
-              {actionsOpen && (
-                <div
-                  ref={actionsMenuRef}
-                  className="auth-detail__actions-menu app-anchored-menu"
-                  role="menu"
-                  popover="manual"
-                  style={actionsMenuStyle}
-                >
-                  <button
-                    type="button"
-                    className="auth-detail__actions-item"
-                    role="menuitem"
-                    onClick={() => closeActionsAfter(() => setMetadataOpen(true))}
-                  >
-                    Show metadata
-                  </button>
-                  <button type="button" className="auth-detail__actions-item" role="menuitem"
-                    onClick={() => closeActionsAfter(() => { void openResponsibility(); })}>Responsibility</button>
-                </div>
-              )}
-            </div>
-          )}
-          actionsLabel="Approval header actions"
-          secondaryMetadata={(
+  );
+  const headerMetadata = (
             <div className="auth-detail__secondary-metadata">
               <div className="auth-detail__subtitle">
                 <span className="auth-detail__primary-metadata">
@@ -1372,7 +1332,84 @@ function AuthRequestDetail({
                 </div>
               )}
             </div>
+  );
+
+  return (
+    <DetailPaneShell
+      className={`auth-detail__pane auth-detail-pane${history ? ' auth-detail-pane--history' : ''}`}
+      headerClassName="auth-detail__header"
+      headerPrimaryClassName="auth-detail__header-primary"
+      subheaderClassName="auth-detail__aux-header"
+      bodyRef={bodyRef}
+      bodyClassName={`auth-detail__body${viewMode === 'console' ? ' auth-detail__body--console' : ''}`}
+      headerRef={headerRef}
+      subheader={subheader}
+      notice={<>
+        {notice}
+        {review.error && !review.decision && !review.replyTarget && !review.editor &&
+          <DetailPaneNotice density="compact" severity="error">{review.error}</DetailPaneNotice>}
+        {review.data?.returned && <DetailPaneNotice severity={review.data.returned.delivered ? 'info' : 'warning'}
+          density="compact" title={review.data.returned.delivered ? 'Review delivered' : 'Review notice undelivered'}>
+          {review.data.returned.reason}
+        </DetailPaneNotice>}
+        {runtimeVerification && (
+          <DetailPaneNotice severity="info" density="compact" title="Update verification is pending">
+            {runtimeVerification.reason}
+          </DetailPaneNotice>
+        )}
+        {viewMode === 'diff' && targetToken && unmatchedTarget === targetToken && (
+          <DetailPaneNotice severity="warning" density="compact">
+            This request has no captured change matching the selected before/after paths.
+          </DetailPaneNotice>
+        )}
+      </>}
+      overlays={overlays}
+      header={(
+        <DetailPaneHeader
+          {...(revisionSelector
+            ? { variant: 'versioned', state: headerState, selector: revisionSelector, supportingMetadata: headerMetadata } as const
+            : { variant: 'standard', status: headerState, secondaryMetadata: headerMetadata } as const)}
+          identity={{
+            entityLabel: repoName,
+            displayRef: shortRef,
+            canonicalRef: fullId,
+            copyRef: `auth:${shortRef}`,
+            copyLabel: `Copy auth:${shortRef}`,
+          }}
+          title={<span dangerouslySetInnerHTML={{
+            __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))),
+          }} />}
+          actions={(
+            <div className="auth-detail__header-actions">
+              <DetailPaneMenuTrigger
+                buttonRef={actionsTriggerRef}
+                label="Approval actions"
+                expanded={actionsOpen}
+                onClick={() => setActionsOpen((open) => !open)}
+              />
+              {actionsOpen && (
+                <div
+                  ref={actionsMenuRef}
+                  className="auth-detail__actions-menu app-anchored-menu"
+                  role="menu"
+                  popover="manual"
+                  style={actionsMenuStyle}
+                >
+                  <button
+                    type="button"
+                    className="auth-detail__actions-item"
+                    role="menuitem"
+                    onClick={() => closeActionsAfter(() => setMetadataOpen(true))}
+                  >
+                    Show metadata
+                  </button>
+                  <button type="button" className="auth-detail__actions-item" role="menuitem"
+                    onClick={() => closeActionsAfter(() => { void openResponsibility(); })}>Responsibility</button>
+                </div>
+              )}
+            </div>
           )}
+          actionsLabel="Approval header actions"
         />
       )}
     >
@@ -1483,27 +1520,7 @@ function AuthRequestDetail({
           </div>
         )}
 
-        {viewMode === 'diff' ? (
-          <div id="auth-detail-panel-diff" role="tabpanel" aria-labelledby="auth-detail-tab-diff" style={targetToken ? { paddingBottom: 'var(--auth-diff-target-scroll-space, 0px)' } : undefined}>
-          <DiffView
-            diffText={diffRaw}
-            target={navigation.file && targetToken ? { ...navigation.file, navigationToken: targetToken } : undefined}
-            contentReady={request.diff_summary !== undefined}
-            onTargetReady={(token, result) => {
-              if (token !== targetToken) return;
-              targetReady.current = { token, result };
-              setUnmatchedTarget(result.kind === 'unavailable' ? token : null);
-              scrollRestoring.resolveTarget();
-            }}
-            mode={diffMode}
-            onModeChange={setDiffMode}
-            ariaLabel="Approval request changes"
-            emptyMessage={request.diff_summary === undefined ? null : "No diff available for this request."}
-            className="auth-detail__diff-view"
-            classNames={AUTH_DIFF_VIEW_CLASS_NAMES}
-          />
-          </div>
-        ) : viewMode === 'console' ? (
+        {viewMode === 'console' ? (
           <div id="auth-detail-panel-console" role="tabpanel" aria-labelledby="auth-detail-tab-console" className="auth-detail__console-view">
             {hasConsoleOutput ? (
               <pre className="console-output__pre">{consoleText}<div ref={consoleEndRef} /></pre>
@@ -1512,17 +1529,110 @@ function AuthRequestDetail({
             )}
           </div>
         ) : (
+      <AuthReviewSidebar review={review} id={fullId} onNavigate={selectComment}>
+        {viewMode === 'diff' ? (
+          <div id="auth-detail-panel-diff" role="tabpanel" aria-labelledby="auth-detail-tab-diff" style={targetToken ? { paddingBottom: 'var(--auth-diff-target-scroll-space, 0px)' } : undefined}>
+          {comparedVersion && comparedVersion.description !== request.commit_message &&
+            <AuthReviewMarkdown review={review} value={commitMsg} comparison={comparedVersion.description ?? ''} label="Description comparison" />}
+          {review.comparisonError && <DetailPaneNotice severity="error" density="compact" title="Revision comparison unavailable">
+            {review.comparisonError}
+          </DetailPaneNotice>}
+          {!review.against && <AuthReviewDetachedDrafts review={review} />}
+          {!review.against && review.data?.tracked_groups?.length ? (
+            <section aria-label="Briefing groups">
+              {review.data.tracked_groups.map(group => (
+                <TrackedBriefingDisclosure key={group.group_id} title={group.name}>
+                  <ul>{group.members.flatMap(member => member.file_indexes.map(index => (
+                    <li key={`${member.project_id}:${member.path}:${index}`}>
+                      <button type="button" onClick={() => {
+                        const file = request.change_report?.files[index];
+                        if (file) {
+                          review.setNavigation(null);
+                          review.clearSelection();
+                          navigateAuthReviewView(fullId, 'diff', { oldPath: file.old_path, newPath: file.new_path });
+                        }
+                      }}>{member.path}</button>
+                    </li>
+                  )))}</ul>
+                  <TrackedReviewDocuments documents={group.documents} />
+                </TrackedBriefingDisclosure>
+              ))}
+            </section>
+          ) : null}
+          {!review.against && review.data?.tracked_group_history?.map(receipt => (
+            <TrackedBriefingDisclosure key={receipt.round_id} title={`Briefing groups · review ${receipt.revision}`}>
+              {receipt.groups.map(group => <section key={group.group_id} aria-label={group.name}>
+                <h4>{group.name}</h4>
+                <TrackedReviewDocuments documents={group.documents} />
+              </section>)}
+            </TrackedBriefingDisclosure>
+          ))}
+          {hasNarrative && <div className="auth-review__side" role="group" aria-label="Change order">
+            <button type="button" aria-pressed={narrativeOrder} onClick={() => {
+              review.setNavigation(null);
+              review.clearSelection();
+              setChangeOrder('narrative');
+              if (navigation.file) setViewMode('diff');
+            }}>Narrative order</button>
+            <button type="button" aria-pressed={!narrativeOrder} onClick={() => {
+              review.setNavigation(null);
+              review.clearSelection();
+              setChangeOrder('files');
+            }}>File order</button>
+          </div>}
+          {narrativeOrder ? <AuthReviewNarrative key={review.data!.round.id} id={fullId} review={review}
+            onFile={index => {
+              const file = review.data?.narrative_report?.files[index];
+              if (!file) return;
+              review.setNavigation(null);
+              review.clearSelection();
+              navigateAuthReviewView(fullId, 'diff', { oldPath: file.old_path, newPath: file.new_path });
+            }} /> : <ChangeList
+            files={changeReport?.files}
+            patch={authType === 'merge' || review.against ? undefined : diffRaw}
+            emptyLabel={authType === 'merge' && request.change_report === null ? 'Change inventory unavailable' : undefined}
+            scope={`auth:${getAuthId(request)}`}
+            revision={changeReport?.comparison.head_sha}
+            loadFile={(_file, index, signal) => getAuthDiffFile(fullId, index, signal, review.against || undefined)}
+            target={commentTarget ?? (navigation.file && targetToken && !review.against ? { ...navigation.file, navigationToken: targetToken } : undefined)}
+            lineTarget={lineTarget}
+            onLineSelection={review.available && !review.against ? (_file, index, range, quote) => review.lineSelection(index, range, quote) : undefined}
+            renderFileStatus={!review.against ? file => {
+              const status = review.drafts.fileStatus(file.new_path);
+              const label = status === 'conflict' ? 'Draft conflict' : status === 'draft' ? 'Review draft' : file.operator_edited ? 'Operator edit' : null;
+              return label && <span className="change-list__badge">{label}</span>;
+            } : undefined}
+            renderTextFile={(_file, pair, index, view) => <AuthReviewTextFile review={review} pair={pair} index={index} view={view} />}
+            contentReady={review.against ? Boolean(review.comparison) || !comparedVersion?.head : authType === 'merge'
+              ? request.change_report !== undefined : request.diff_summary !== undefined}
+            onTargetReady={(token, result) => {
+              if (token === commentTarget?.navigationToken && result.kind === 'file') {
+                result.element.scrollIntoView({ block: 'nearest' });
+                return;
+              }
+              if (token !== targetToken) return;
+              targetReady.current = { token, result };
+              setUnmatchedTarget(result.kind === 'unavailable' ? token : null);
+              scrollRestoring.resolveTarget();
+            }}
+            ariaLabel="Approval request changes"
+          />}
+          </div>
+      ) : (
           <div id="auth-detail-panel-abstract" role="tabpanel" aria-labelledby="auth-detail-tab-abstract">
           <div className="auth-detail__panels collapsible-panel-region--persistent-disclosures">
             <div className="auth-detail__left-col">
               <CollapsiblePanel
-                title="Description"
-                availability={request.commit_message === undefined ? 'unknown' : commitHtml ? 'available' : 'unavailable'}
+                title={request.merge_effective_head_sha && request.merge_head_sha
+                  ? `Description · verification at ${request.merge_head_sha.slice(0, 12)}` : "Description"}
+                availability={request.commit_message === undefined ? 'unknown' : commitMsg ? 'available' : 'unavailable'}
                 expanded={descriptionView.descriptionExpanded}
                 onExpandedChange={descriptionExpanded => setDescriptionView(current => ({ ...current, descriptionExpanded }))}
                 bodyClassName="spec-panel"
               >
-                <div className="rendered-markdown" dangerouslySetInnerHTML={{ __html: commitHtml }} />
+                <AuthReviewMarkdown review={review} binding={description}
+                  value={description?.source.kind === 'request_description' ? description.source.text : commitMsg}
+                  label="Request description" />
               </CollapsiblePanel>
               {referenceRefs.length > 0 && canIssueLink && (
                 <CollapsiblePanel
@@ -1599,6 +1709,9 @@ function AuthRequestDetail({
           </div>
           </div>
         )}
+      </AuthReviewSidebar>
+      )}
+      <AuthReviewDialog review={review} />
       <DetailPaneModal open={responsibilityDialog !== null} onClose={() => setResponsibilityDialog(null)}
         titleId="auth-responsibility-title" title="Request responsibility" closeLabel="Close responsibility">
         <p>Taking responsibility preserves authorship and existing execution. Protected effects still require human approval.</p>
@@ -1636,7 +1749,7 @@ function AuthSidebarItem({
     dotStatus = 'completed';
   } else if (isAuthExecutingStatus(status)) {
     dotStatus = 'approved';  // Keep CSS class as 'approved' for now
-  } else if (status === 'rejected' || status === 'withdrawn' || status === 'superseded' || status === 'dismissed') {
+  } else if (status === 'rejected' || status === 'withdrawn' || status === 'superseded' || status === 'returned' || status === 'dismissed') {
     dotStatus = 'dismissed';
   } else {
     dotStatus = status;
@@ -2547,25 +2660,14 @@ export function AuthQueueView({
   );
 
   const handleApprove = useCallback(
-    (id: string) => runAction(
+    (id: string, proof?: ShownAuthApproval) => runAction(
       id,
-      onApprove,
+      requestId => proof ? onApprove(requestId, proof) : onApprove(requestId),
       'Approval failed. Try again.',
-      { kind: 'approve' },
+      { kind: 'approve', proof },
       (requestId) => `/api/auth/request/${encodeURIComponent(requestId)}/approve`,
     ),
     [runAction, onApprove],
-  );
-
-  const handleReject = useCallback(
-    (id: string) => runAction(
-      id,
-      onReject,
-      'Rejection failed. Try again.',
-      { kind: 'reject' },
-      (requestId) => `/api/auth/request/${encodeURIComponent(requestId)}/reject`,
-    ),
-    [runAction, onReject],
   );
 
   // Track retry-specific in-flight state so the button label stays exact.
@@ -2660,10 +2762,7 @@ export function AuthQueueView({
   const retryActionError = useCallback((requestId: string, retry: AuthActionRetry) => {
     switch (retry.kind) {
       case 'approve':
-        handleApprove(requestId);
-        return;
-      case 'reject':
-        handleReject(requestId);
+        handleApprove(requestId, retry.proof);
         return;
       case 'retry':
         handleRetry(requestId);
@@ -2671,41 +2770,7 @@ export function AuthQueueView({
       case 'veto':
         handleToggleActionVeto(requestId, retry.action, retry.vetoed);
     }
-  }, [handleApprove, handleReject, handleRetry, handleToggleActionVeto]);
-
-  const [rejectConfirmId, setRejectConfirmId] = useState<string | null>(null);
-  const rejectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (rejectTimerRef.current) {
-        clearTimeout(rejectTimerRef.current);
-      }
-    };
-  }, []);
-
-  const toggleRejectConfirm = useCallback(
-    (id: string) => {
-      if (rejectConfirmId === id) {
-        setRejectConfirmId(null);
-        if (rejectTimerRef.current) {
-          clearTimeout(rejectTimerRef.current);
-          rejectTimerRef.current = null;
-        }
-        handleReject(id);
-        return;
-      }
-      setRejectConfirmId(id);
-      if (rejectTimerRef.current) {
-        clearTimeout(rejectTimerRef.current);
-      }
-      rejectTimerRef.current = setTimeout(() => {
-        setRejectConfirmId(null);
-        rejectTimerRef.current = null;
-      }, 3000);
-    },
-    [rejectConfirmId, handleReject],
-  );
+  }, [handleApprove, handleRetry, handleToggleActionVeto]);
 
   // Build the sidebar list based on the active filter mode
   const sidebarItems = useMemo((): AuthRequest[] => {
@@ -3038,7 +3103,7 @@ export function AuthQueueView({
   }, [branchFilter, filterMode, repoFilter, sortMode, typeFilter]);
 
   // Render the action buttons for the selected request in the detail panel
-  const renderDetailActions = (request: AuthRequest): JSX.Element | null => {
+  const renderDetailActions = (request: AuthRequest, review: AuthRequestReviewState, openCandidate: () => void): JSX.Element | null => {
     const id = getAuthId(request);
     const status = getAuthStatus(request);
     const isFailed = isFailedLikeStatus(status);
@@ -3117,29 +3182,38 @@ export function AuthQueueView({
     const blockers = requestPrerequisites(request).filter(prerequisite => !prerequisite.ready);
     const dependencyBlocked = blockers.length > 0;
     const dependencyState = [...new Set(blockers.map(prerequisite => prerequisite.state))].join(', ');
+    const shown = review.data;
+    const shownCandidate = shown?.comparison_head === (request.change_report?.comparison.head_sha ?? null)
+      && shown?.frozen_head === (request.merge_effective_head_sha ?? null);
+    const proof = shown?.proof_digest && shownCandidate
+      ? { revision: shown.precondition.expected_revision, review: authApprovalReview(shown) } : undefined;
+    const mustFreeze = review.drafts.hasEdits || review.drafts.hasConflicts;
+    const unavailable = actionDisabled || review.busy || Boolean(review.against);
+    const approveDisabled = unavailable || !approvalAllowed || dependencyBlocked || Boolean(request.merge_effective_head_sha && !proof);
     return (
       <div className="auth-actions">
-        <button
+        {mustFreeze ? <button type="button" className="btn btn--success"
+          onClick={() => { void review.freeze(openCandidate); }}
+          disabled={unavailable || !review.available || review.drafts.hasConflicts
+            || !canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/review/freeze`)}>
+          Freeze edits
+        </button> : <button
           type="button"
           className="btn btn--success"
-          onClick={() => {
-            if (!dependencyBlocked) handleApprove(id);
-          }}
-          disabled={actionDisabled || !approvalAllowed || dependencyBlocked}
+          onClick={() => { if (!approveDisabled) handleApprove(id, proof); }}
+          disabled={approveDisabled}
           title={dependencyBlocked
             ? `Dependency is ${dependencyState}; approval requires successful durable finalization.`
             : request.publication_blocker?.message ?? (!approvalAllowed ? 'Approval is unavailable in this instance.' : approveTitle(getApprovalTier(request)))}
         >
           {actionDisabled ? 'Checking the request…' : dependencyBlocked ? `Blocked: dependency ${dependencyState}` : 'Approve'}
-        </button>
-        <button
-          type="button"
-          className={`btn btn--danger${rejectConfirmId === id ? ' btn--confirm' : ''}`}
-          onClick={() => toggleRejectConfirm(id)}
-          disabled={actionDisabled || !rejectAllowed}
-        >
-          {rejectConfirmId === id ? 'Confirm reject?' : 'Reject'}
-        </button>
+        </button>}
+        {status === 'pending' && <>
+          <button type="button" className="btn btn--ghost" disabled={unavailable || !review.available}
+            onClick={() => review.openDecision('return')}>Return</button>
+          <button type="button" className="btn btn--danger" disabled={actionDisabled || !rejectAllowed}
+            onClick={() => review.openDecision('reject')}>Reject</button>
+        </>}
       </div>
     );
   };
@@ -3423,7 +3497,10 @@ export function AuthQueueView({
                   initialViewState={restoredInfo?.actions}
                 />
               )}
-              actions={renderDetailActions(request)}
+              renderActions={(review, openCandidate) => renderDetailActions(request, review, openCandidate)}
+              onReject={onReject}
+              onReturned={onRefreshAuthProjection}
+              canWriteReview={daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/return`)}
               autoShowConsoleOnApproval={autoShowConsoleOnApproval}
               autoReturnToAbstractOnSuccess={autoReturnToAbstractOnSuccess}
             />

@@ -53,6 +53,7 @@ export const DOMAIN_EVENTS = Object.freeze({
   AUTH_NEW: "auth:new",
   AUTH_OUTPUT: "auth:output",
   AUTH_RESOLVED: "auth:resolved",
+  AUTH_REVIEW_UPDATED: "auth:review_updated",
   AUTH_UPDATED: "auth:updated",
   CONSOLE_ATTENTION: "console:attention",
   CONSOLE_STATUS: "console:status",
@@ -223,7 +224,7 @@ export type SidebarOrderPreference = {
 
 export const AUTH_REQUEST_STATUSES = [
   "pending", "executing", "approved", "needs_rebase", "rejected", "withdrawn",
-  "superseded", "expired", "completed", "failed", "dismissed",
+  "superseded", "returned", "expired", "completed", "failed", "dismissed",
 ] as const;
 export type AuthRequestStatus = (typeof AUTH_REQUEST_STATUSES)[number];
 
@@ -234,6 +235,7 @@ export type AuthRequestOutcome =
   | "rejected"
   | "withdrawn"
   | "superseded"
+  | "returned"
   | "dismissed"
   | "expired"
   | null;
@@ -301,6 +303,8 @@ export function computeAuthRequestOutcome(status: AuthRequestStatus): AuthReques
       return "withdrawn";
     case "superseded":
       return "superseded";
+    case "returned":
+      return "returned";
     case "dismissed":
       return "dismissed";
     case "expired":
@@ -448,6 +452,10 @@ export type AuthChangeFile = {
   file_type_after: AuthChangeFileType;
   additions: number | null;
   deletions: number | null;
+  old_object?: GitFileObject | null;
+  new_object?: GitFileObject | null;
+  whitespace_only?: boolean;
+  operator_edited?: boolean;
   bytes_before: number | null;
   bytes_after: number | null;
   language: string;
@@ -455,6 +463,18 @@ export type AuthChangeFile = {
   generated: boolean;
   vendor: boolean;
 };
+
+export type GitFileObject = { mode: string; oid: string };
+
+export type GitChangeFile = Pick<AuthChangeFile,
+  "old_path" | "new_path" | "change_kind" | "additions" | "deletions" | "old_object" | "new_object" | "whitespace_only" | "operator_edited"
+>;
+
+export type DiffFileContents = { name: string; contents: string };
+
+export type DiffFilePair =
+  | { kind: "text"; before: DiffFileContents; after: DiffFileContents }
+  | { kind: "binary" };
 
 /**
  * Immutable server-captured inventory for one reviewed merge candidate.
@@ -1263,6 +1283,7 @@ export type ArtifactSeriesSummary = {
 };
 
 export type ArtifactDraftRecord = {
+  standing_notes?: import("./feedback/review-types.js").ArtifactDraftStandingNote[];
   id: string;
   series_id: string;
   base_version_id: string;
@@ -1380,20 +1401,8 @@ export type SpaceEdge = {
   updated_at: number;
 };
 
-/**
- * Document block (C11 `space_blocks`). Mirrors the planned schema at
- * docs/spaces/UMBRELLA-PLAN.md §3.5. An `item_id` embed ALWAYS carries an
- * `item_snapshot_json` placeholder (DB-level invariant) so it degrades to a
- * resolvable node when the embedded item is deleted.
- */
-export type SpaceBlockType =
-  | 'heading'
-  | 'paragraph'
-  | 'reference'
-  | 'artifact_embed'
-  | 'issue_embed'
-  | 'comment_embed'
-  | 'todo';
+/** A compatibility block projected from the saved Space Markdown. */
+export type SpaceBlockType = import("./spaces/serialize.js").BlockType;
 
 export type SpaceBlock = {
   id: string;
@@ -1684,12 +1693,43 @@ export type BriefingBundleMember = {
   position: number;
   briefing: BriefingListEntry;
 };
-export type BriefingBundleLayoutEntry =
+export type TrackedBriefingPath = { project_id: string; path: string };
+export type TrackedBriefingPin = { project_id: string; project_key: string; commit_sha: string | null };
+export type TrackedBriefingDocument = TrackedBriefingPath & {
+  project_key: string;
+  commit_sha: string | null;
+  content: string | null;
+};
+export type BriefingBundleLeaf =
   | { kind: "briefing"; position: number; briefing: BriefingListEntry }
-  | { kind: "subgroup"; position: number; name: string; briefings: BriefingBundleMember[] };
-export type BriefingBundleLayoutInputEntry =
+  | { kind: "tracked"; position: number; tracked: TrackedBriefingDocument };
+export type BriefingBundleLayoutEntry = BriefingBundleLeaf
+  | { kind: "subgroup"; position: number; name: string; briefings: BriefingBundleMember[]; members: BriefingBundleLeaf[] };
+export type BriefingBundleLeafInput =
   | { kind: "briefing"; briefing_ref: string }
-  | { kind: "subgroup"; name: string; briefing_refs: string[] };
+  | { kind: "tracked"; project_ref: string; path: string };
+export type BriefingBundleLayoutInputEntry = BriefingBundleLeafInput
+  | { kind: "subgroup"; name: string; briefing_refs: string[] }
+  | { kind: "subgroup"; name: string; members: BriefingBundleLeafInput[] };
+
+export type TrackedBriefingMatch = TrackedBriefingPath & { file_indexes: number[] };
+export type TrackedBriefingProposal = {
+  request_id: string;
+  request_ref: string;
+  title: string;
+  project_id: string;
+  project_key: string;
+  members: TrackedBriefingMatch[];
+  depends_on: AuthDependencyProjection[];
+};
+export type TrackedBriefingReviewGroup = {
+  group_id: string;
+  group_key: string;
+  name: string;
+  members: TrackedBriefingMatch[];
+  documents: TrackedBriefingDocument[];
+};
+
 export type BriefingBundle = {
   request_origin_json?: string | null;
   request_origin?: import("./request-origin.js").RequestOrigin | null;
@@ -1712,6 +1752,7 @@ export type BriefingGroup = {
   archived_at: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  tracked_proposals: TrackedBriefingProposal[];
   destinations: BriefingGroupDestination[];
   destination_history: Array<{ id: string; logical_artifact_id: string; prior_group_id: string | null;
     resulting_group_id: string; actor_user_id: string; created_at: number }>;
@@ -1771,6 +1812,7 @@ export type BriefingGroupReviewCandidate = {
   proposal_layout: BriefingGroupReviewLayoutEntry[];
   destination_changes: BriefingGroupDestinationChange[];
   items: BriefingGroupReviewItem[];
+  tracked_documents?: TrackedBriefingDocument[];
 };
 export type BriefingGroupDisposition = {
   request_origin_json?: string | null;

@@ -1,3 +1,9 @@
+import { BriefingStoreError } from "../feedback/briefing-errors.js";
+import { readChangeEditPatch } from "../feedback/change-edit-git.js";
+import { REVIEW_EDIT_MAX_BYTES } from "../feedback/request-draft-types.js";
+import * as z from "zod";
+import { collectAuthMergeReview, type AuthMergeReviewCollectionResult } from "../auth-change-report.js";
+import { requestReviewRound, requestReviewVersions, readRequestReview, returnedRequestReview } from "../feedback/request-review.js";
 import { exactAgentRef } from "../ambient-provider-identity.js";
 import { responsibilityActor, sessionResponsibilityActor } from "../responsibility.js";
 import { describeCustodyHolder } from "../work-unit-custody.js";
@@ -5,6 +11,7 @@ import type { LedgerReader } from "../ledger-reads/index.js";
 import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-action.js";
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
 import { AuthQueue, AuthQueueError, publicationBlockerFor } from "../auth-queue.js";
+import { readGitFilePair } from "../git-change-review.js";
 import { runtimeHandoffLockRefusal } from "../../scripts/runtime-handoff-lock.mjs";
 import { AuthActionValidationError, normalizeAuthActionInputs } from "../auth-actions.js";
 import { listAuthExecutionAttempts } from "../auth-lifecycle.js";
@@ -30,7 +37,7 @@ import {
   AttributionReadResolver,
   authAttributionReadFields,
 } from "../identity/read-projection.js";
-import { ClientAuthzError, requireAttribution, requireOperator } from "../client-auth/authz.js";
+import { ClientAuthzError, isUserRequest, requireAttribution, requireOperator } from "../client-auth/authz.js";
 import { SignedActionRefused, sendSigningRefusal } from "../operator-signing/http.js";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -57,6 +64,71 @@ export function registerAuthRoutes(
 ): AuthQueue {
   const db = authQueue.db;
   const outcomeReport = createOutcomeReporter(db);
+  const comparisons = new Map<string, Promise<AuthMergeReviewCollectionResult>>();
+  async function comparisonReport(request: AuthRequest, against: string) {
+    const root = request.target_repo_root;
+    const head = request.change_report?.comparison.head_sha;
+    const versions = requestReviewVersions(db, request.id);
+    const target = versions.find(version => version.id === against || version.short_id === against);
+    if (!root || !head || !target?.head || target.id === request.id) return null;
+    const base = target.head;
+    const key = JSON.stringify([root, base, head]);
+    let pending = comparisons.get(key);
+    if (!pending) {
+      pending = collectAuthMergeReview(root, { base_sha: base, merge_base_sha: base, head_sha: head });
+      comparisons.set(key, pending);
+      if (comparisons.size > 8) comparisons.delete(comparisons.keys().next().value!);
+    }
+    const result = await pending;
+    if (!result.ok) comparisons.delete(key);
+    return result;
+  }
+  const reviewPrecondition = z.object({
+    expected_revision: z.number().int().positive(),
+    expected_custody_generation: z.number().int().nonnegative(),
+  });
+  const reviewAnnotation = reviewPrecondition.extend({
+    document_binding_id: z.string().min(1),
+    mutation: z.discriminatedUnion("operation", [
+      z.object({ operation: z.literal("retract"), annotation_event_id: z.string().min(1) }),
+      z.object({ operation: z.literal("set"), kind: z.literal("comment"), start_offset: z.number().int().nonnegative(),
+        end_offset: z.number().int().positive(), quote: z.string().min(1), body: z.string().trim().min(1) }),
+    ]),
+  });
+  const reviewDraftText = z.string().max(REVIEW_EDIT_MAX_BYTES);
+  const reviewDraft = reviewPrecondition.extend({
+    round_id: z.string().min(1), path: z.string().min(1), expected_generation: z.number().int().nonnegative(),
+    mutation: z.discriminatedUnion("operation", [
+      z.object({ operation: z.literal("save"), text: reviewDraftText }),
+      z.object({ operation: z.literal("resolve"), text: reviewDraftText }),
+      z.object({ operation: z.literal("revert") }),
+    ]),
+  });
+  const narrativeAnswer = reviewPrecondition.extend({
+    round_id: z.string().min(1),
+    directive_key: z.string().regex(/^[A-Za-z0-9._-]{1,128}$/),
+    mutation: z.discriminatedUnion("operation", [
+      z.object({ operation: z.literal("set"), expected_response_event_id: z.string().min(1).nullable(), value: z.unknown() }),
+      z.object({ operation: z.literal("retract"), expected_response_event_id: z.string().min(1) }),
+    ]),
+  });
+  const reviewFreeze = reviewPrecondition.extend({
+    round_id: z.string().min(1),
+    annotation_event_ids: z.array(z.string().min(1)),
+    answer_event_ids: z.array(z.string().min(1)).optional(),
+    draft_snapshot: z.array(z.object({ path: z.string().min(1), generation: z.number().int().positive() })).optional(),
+  });
+  const reviewReturn = reviewFreeze.extend({ reason: z.string().optional() });
+  const approvalReview = reviewFreeze.pick({ round_id: true, annotation_event_ids: true, answer_event_ids: true }).extend({
+    proof_digest: z.string().regex(/^[a-f0-9]{64}$/),
+  });
+  const reviewThread = reviewPrecondition.extend({
+    comment_id: z.string().regex(/^[0-9a-f]{8}[0-9a-f-]*$/),
+    mutation: z.discriminatedUnion("operation", [
+      z.object({ operation: z.literal("reply"), body: z.string().trim().min(1) }),
+      z.object({ operation: z.enum(["address", "resolve", "reopen"]) }),
+    ]),
+  });
   app.post("/api/auth/check", async (req, res) => {
     if (!authQueue.externalEffectsAllowed) {
       res.status(403).json({
@@ -191,19 +263,12 @@ export function registerAuthRoutes(
           resolved.targetRepoRoot,
           resolved.baseSha,
           resolved.headSha,
-          {
-            counts: true,
-            diffSummary: true,
-          }
         );
-        if (!metadata.changeReport) {
-          throw new Error("Auth change report collection returned no report.");
-        }
         payload.change_report = metadata.changeReport;
         payload.files_changed = metadata.changeReport.totals.files;
         payload.additions = metadata.changeReport.totals.additions;
         payload.deletions = metadata.changeReport.totals.deletions;
-        payload.diff_summary = metadata.diffSummary;
+        payload.diff_summary = null;
       } catch (error) {
         res.status(400).json({
           error: error instanceof Error ? error.message : "Invalid auth merge execution context."
@@ -353,6 +418,125 @@ export function registerAuthRoutes(
       outcome_report: outcomeReport(request.id),
     });
   }, { operation: { id: "get:/api/auth/request/:id", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:read"] : ["auth:protected"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  app.get("/api/auth/request/:id/files/:index", async (req, res) => {
+    const request = await authQueue.getRequest(req.params.id);
+    const against = req.query?.against;
+    const expectedRound = req.query?.round;
+    if (expectedRound !== undefined && (!request || expectedRound !== requestReviewRound(request).id || against !== undefined)) {
+      res.status(409).json({ error: "The reviewed documents changed." });
+      return;
+    }
+    const comparison = request && typeof against === "string" ? await comparisonReport(request, against) : null;
+    const report = typeof against === "string" ? comparison?.ok ? comparison.value.report : null : request?.change_report;
+    const index = req.params.index;
+    const file = report && /^(?:0|[1-9]\d*)$/.test(index) ? report.files[Number(index)] : undefined;
+    if (!request?.target_repo_root || !report || !file) {
+      res.status(404).json({ error: "Reviewed file not found." });
+      return;
+    }
+    if (file.additions === null || file.deletions === null) {
+      res.json({ kind: "binary" });
+      return;
+    }
+    const result = await readGitFilePair(request.target_repo_root, report.comparison, file);
+    if (result.ok) res.json(result.file);
+    else res.status(result.status).json({ error: result.error });
+  }, { operation: { id: "get:/api/auth/request/:id/files/:index", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  app.get("/api/auth/request/:id/review", async (req, res) => {
+    try {
+      const request = await authQueue.getRequest(req.params.id);
+      if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
+      const precondition = { expected_revision: authQueue.lifecycleRevision(request.id),
+        expected_custody_generation: authQueue.requestResponsibility(request).custody_generation };
+      const viewer = requireAttribution(db, req);
+      const proof_digest = authQueue.reviewApprovalProof(request);
+      res.json({ ...await readRequestReview(db, request, isUserRequest(db, req) ? viewer.user_id : null),
+        precondition, status: request.status, proof_digest });
+    } catch (error) { handleQueueError(error, res); }
+  }, { operation: { id: "get:/api/auth/request/:id/review", effects: ["ledger:read", "ledger:write", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  app.get("/api/auth/request/:id/review/returned", async (req, res) => {
+    const resolved = resolveId(db, "auth_request", req.params.id);
+    if (!resolved.ok) { res.status(resolved.error === "ambiguous" ? 409 : 404).json({ error: "Use an unambiguous request reference." }); return; }
+    const submission = returnedRequestReview(db, resolved.id);
+    if (!submission) { res.status(404).json({ error: "This request has no returned review." }); return; }
+    const request = authQueue.getRequestExact(resolved.id)!;
+    let replacements: string | null = null;
+    let replacements_error: string | null = null;
+    if (submission.change_edit) {
+      try { replacements = await readChangeEditPatch(request.target_repo_root!, submission.change_edit); }
+      catch { replacements_error = "The change-edit diff is unavailable in the request checkout."; }
+    }
+    res.json({ ...submission, replacements, replacements_error, request_id: resolved.id, status: request.status,
+      lifecycle_revision: authQueue.lifecycleRevision(resolved.id), responsibility: authQueue.requestResponsibility(request) });
+  }, { operation: { id: "get:/api/auth/request/:id/review/returned", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
+
+  app.get("/api/auth/request/:id/review/changes", async (req, res) => {
+    const request = await authQueue.getRequest(req.params.id);
+    const against = req.query?.against;
+    const comparison = request && typeof against === "string" ? await comparisonReport(request, against) : null;
+    if (!comparison) { res.status(404).json({ error: "Reviewed comparison not found." }); return; }
+    if (!comparison.ok) { res.status(422).json({ error: comparison.error.message }); return; }
+    res.json(comparison.value.report);
+  }, { operation: { id: "get:/api/auth/request/:id/review/changes", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/review/annotations", globalCapabilityRoute("approve_auth", async (req, res) => {
+    try {
+      const input = reviewAnnotation.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid review annotation." }); return; }
+      const actor = authReviewOperator(db, req);
+      const id = await authQueue.annotateRequestReview(req.params.id, actor, input.data);
+      res.status(201).json({ annotation_event_id: id });
+    } catch (error) { handleQueueError(error, res); }
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/annotations", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/review/answers", globalCapabilityRoute("approve_auth", (req, res) => {
+    try {
+      const input = narrativeAnswer.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid narrative answer." }); return; }
+      const eventId = authQueue.answerRequestNarrative(req.params.id, authReviewOperator(db, req), input.data);
+      res.status(201).json({ response_event_id: eventId });
+    } catch (error) { handleQueueError(error, res); }
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/answers", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/review/thread-events", (req, res) => {
+    try {
+      const input = reviewThread.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid review thread event." }); return; }
+      const actor = isUserRequest(db, req) ? authReviewOperator(db, req) : requestLifecycleActor(db, req, res);
+      if (!actor) return;
+      const id = authQueue.mutateRequestReviewThread(req.params.id, actor, input.data);
+      res.status(201).json({ event_id: id });
+    } catch (error) { handleQueueError(error, res); }
+  }, { operation: { id: "post:/api/auth/request/:id/review/thread-events", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
+
+  app.post("/api/auth/request/:id/review/drafts", globalCapabilityRoute("approve_auth", async (req, res) => {
+    try {
+      const input = reviewDraft.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid review draft." }); return; }
+      res.json(await authQueue.mutateRequestReviewDraft(req.params.id, authReviewOperator(db, req), input.data));
+    } catch (error) { handleQueueError(error, res); }
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/drafts", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/review/freeze", globalCapabilityRoute("approve_auth", async (req, res) => {
+    try {
+      const input = reviewFreeze.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid review freeze." }); return; }
+      const request = await authQueue.freezeRequestReview(req.params.id, authReviewOperator(db, req), input.data);
+      res.json({ request_id: request.id, lifecycle_revision: authQueue.lifecycleRevision(request.id) });
+    } catch (error) { handleQueueError(error, res); }
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/freeze", effects: ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/return", globalCapabilityRoute("approve_auth", async (req, res) => {
+    try {
+      const input = reviewReturn.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid review return." }); return; }
+      const { request, submission_id } = await authQueue.returnRequestReview(req.params.id, authReviewOperator(db, req), input.data);
+      res.json({ request_id: request.id, status: request.status, submission_id });
+    } catch (error) { handleQueueError(error, res); }
+  }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/return", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
 
   app.get("/api/auth/request/:id/actions", (req, res) => {
     try {
@@ -694,7 +878,7 @@ export function registerAuthRoutes(
     }
     const attributionResolver = new AttributionReadResolver(db);
     const publicationBlockers = await authQueue.publicationBlockersForRequests(requests);
-    const enriched = requests.map((r) => {
+    const enriched = requests.map(({ narrative: _narrative, ...r }) => {
       return {
         ...r,
         dependencies: authQueue.dependenciesForRequest(r),
@@ -737,18 +921,21 @@ export function registerAuthRoutes(
   app.post("/api/auth/request/:id/approve", globalCapabilityRoute("approve_auth", async (req, res) => {
     try {
       const identity = req.client_identity!;
-      const reviewedRevision = readBody<Record<string, unknown>>(req).lifecycle_revision;
+      const body = readBody<Record<string, unknown>>(req);
+      const reviewedRevision = body.lifecycle_revision;
       if (!Number.isInteger(reviewedRevision)) {
         res.status(400).json({ error: "lifecycle_revision, the revision of the request that was reviewed, is required.", code: "lifecycle_precondition_required" });
         return;
       }
+      const review = approvalReview.optional().safeParse(body.review);
+      if (!review.success) { res.status(400).json({ error: "Invalid reviewed candidate proof." }); return; }
       const request = await authQueue.approveAsOperator(req.params.id, {
         user_id: identity.user_id,
         evidence_method: requireAttribution(db, req).evidence_method,
         identity_method: identity.method,
         source: identity.source,
         credential_id: identity.credential_id,
-      }, reviewedRevision as number);
+      }, reviewedRevision as number, review.data);
       res.status(202).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
@@ -929,6 +1116,7 @@ const SPEC_CONTENT_REFUSAL =
   "'spec_content' is no longer accepted. Put intent in the change message (post-merge steps under Caveats) and link a substantial design to the issue as an artifact.";
 
 function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInput | null {
+  if (body.narrative !== undefined && typeof body.narrative !== "string") return null;
   if (body.depends_on_ids !== undefined && (!Array.isArray(body.depends_on_ids) || body.depends_on_ids.some(id => typeof id !== "string" || !id.trim()))) return null;
   if (body.space_publication_id !== undefined && (typeof body.space_publication_id !== "string" || !body.space_publication_id.trim())) return null;
   if (typeof body.command !== "string" || typeof body.title !== "string") {
@@ -988,6 +1176,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     depends_on_ids: body.depends_on_ids as string[] | undefined,
     execution_mode: executionMode,
     target_repo_root: typeof body.target_repo_root === "string" ? body.target_repo_root : null,
+    narrative: typeof body.narrative === "string" ? body.narrative : undefined,
     actions: body.actions === undefined ? undefined : body.actions as AuthRequestInput["actions"],
     supersedes_request_id: typeof body.supersedes_request_id === "string" ? body.supersedes_request_id : null,
     superseded_action_dispositions: Array.isArray(body.superseded_action_dispositions)
@@ -1336,12 +1525,21 @@ function isHttpError(error: unknown): error is { status: number; message: string
   );
 }
 
+function authReviewOperator(db: Db, req: RequestLike): AuthLifecycleActor {
+  const identity = requireOperator(db, req);
+  if (!isUserRequest(db, req)) {
+    throw new ClientAuthzError(403, "operator_required", "Only the local operator may act as the reviewer.");
+  }
+  return { user_id: identity.user_id, evidence_method: identity.method, credential_id: identity.credential_id,
+    authority_path: "operator" };
+}
+
 function handleQueueError(error: unknown, res: ResponseLike): void {
   if (error instanceof SignedActionRefused) {
     sendSigningRefusal(res, error.refusal);
     return;
   }
-  if (error instanceof ClientAuthzError) {
+  if (error instanceof BriefingStoreError || error instanceof ClientAuthzError) {
     res.status(error.status).json({ error: error.message, code: error.code });
     return;
   }

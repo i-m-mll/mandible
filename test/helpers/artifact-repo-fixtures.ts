@@ -31,6 +31,8 @@ export function artifactRepo(root: string, files: Record<string, string> = {}): 
     gpgsign = false
 [core]
     hooksPath = /dev/null
+[maintenance]
+    auto = false
 `);
     }
     templates.set(key, template);
