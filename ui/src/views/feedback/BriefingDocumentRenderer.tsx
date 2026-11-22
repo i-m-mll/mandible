@@ -145,6 +145,7 @@ export function BriefingDocumentRenderer({
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [contentGate, setContentGate] = useState<string | null>(null);
+  const [annotationEditing, setAnnotationEditing] = useState(false);
   const [documentFailure, setDocumentFailure] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
@@ -342,6 +343,7 @@ export function BriefingDocumentRenderer({
       ? (round?.directive_binding?.reason || 'The directive binding is unavailable.')
       : contentGate === null ? 'Loading pinned document…'
       : contentGate ? contentGate
+      : annotationEditing ? 'Save or cancel the text replacement.'
       : clearBusy ? 'Clearing pending annotations…'
         : busy ? 'Submitting changes…'
         : requiredIncomplete ? 'Complete the required directives before submitting.'
@@ -350,7 +352,7 @@ export function BriefingDocumentRenderer({
             : null;
 
   const submit = async () => {
-    if (!round || !canMutate || busy || clearBusy || contentGate !== '') return;
+    if (!round || !canMutate || busy || clearBusy || annotationEditing || contentGate !== '') return;
     const mutation = ++mutationSequence.current;
     const submittedRoundId = round.selected_round_id;
     const mutationIsCurrent = () => mutationSequence.current === mutation
@@ -635,6 +637,7 @@ export function BriefingDocumentRenderer({
                   draft={draft}
                   validationErrors={validationErrors}
                   onDirectiveValue={setValue}
+                  onAnnotationEditChange={setAnnotationEditing}
                   onContentGateChange={setContentGate}
                   onDocumentFailureChange={setDocumentFailure} />
               ) : null}
