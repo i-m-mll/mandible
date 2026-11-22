@@ -114,10 +114,10 @@ function readPublicationState(db: Db, binding: RuntimeHookIdentity & Pick<Runtim
   const head = (frozen.merge_effective_head_sha ?? frozen.merge_head_sha) as string;
   const tree = frozen.merge_candidate_tree_sha as string;
   for (const [field, expected] of [["merge_preflight_base_sha", base], ["merge_head_sha", frozen.merge_head_sha],
-    ["merge_effective_head_sha", frozen.merge_effective_head_sha],
     ["merge_candidate_tree_sha", tree], ["merge_candidate_pin_sha", frozen.merge_candidate_pin_sha]] as const) {
     if (row[field] && row[field] !== expected) fail("current reviewed candidate differs");
   }
+  if ((row.merge_effective_head_sha ?? null) !== (frozen.merge_effective_head_sha ?? null)) fail("current reviewed candidate differs");
   const selected = binding.delivery === 'accepted-release' ? acceptedReleaseSelection(db, frozen, snapshot.actions ?? [], false) : null;
   let liveSelection: { state: string; payload: string } | undefined;
   if (selected) {

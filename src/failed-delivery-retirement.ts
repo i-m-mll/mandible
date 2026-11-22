@@ -32,9 +32,10 @@ function binding(db: Db, request: AuthRequest) {
   if (snapshot.request.id !== request.id || snapshot.request.approved_by_user_id !== request.approved_by_user_id) fail('approval identity changed');
   const approved = snapshot.actions.filter((action: any) => action.kind === 'checkpoint_add' && action.payload?.kind === 'accepted-release');
   if (approved.length !== 1 || approved[0].id !== actions[0].id || JSON.stringify(approved[0].payload.payload) !== JSON.stringify(selection)) fail('selected acceptance differs from approval');
-  for (const key of ['merge_candidate_pin_sha', 'merge_candidate_tree_sha', 'merge_preflight_base_sha', 'merge_head_sha', 'merge_effective_head_sha']) {
-    if (!request[key as keyof AuthRequest] || request[key as keyof AuthRequest] !== snapshot.request[key]) fail('reviewed candidate changed');
+  for (const key of ['merge_candidate_pin_sha', 'merge_candidate_tree_sha', 'merge_preflight_base_sha', 'merge_head_sha'] as const) {
+    if (!request[key] || request[key] !== snapshot.request[key]) fail('reviewed candidate changed');
   }
+  if ((request.merge_effective_head_sha ?? null) !== (snapshot.request.merge_effective_head_sha ?? null)) fail('reviewed candidate changed');
   const intents = findRuntimeDeliveryIntents(db, [{ requestId: request.id, executionId: hook!.id, hookId: rebuild, commandDigest: hook!.command_digest }]);
   if (intents.size) fail('publication was admitted; use handoff lifecycle');
   return { hook: hook!, selection, fingerprint: JSON.stringify({ hook, actions }) };
