@@ -3,7 +3,7 @@ import { REVIEW_ROUND_SCHEMA_SQL, REVIEW_EVIDENCE_SCHEMA_SQL } from "./feedback/
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
 import { INTERFACE_NOTES_SCHEMA_SQL } from "./interface-notes/schema.js";
-import { NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
+import { NOTICE_REVIEW_SUBMISSION_SQL, NOTIFICATIONS_SCHEMA_SQL } from "./notices/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL } from "./work-unit-assignment-schema.js";
 import { AUTH_GO_LIVE_SUPERSESSIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_TABLE_SQL, AUTH_HOOK_EXECUTIONS_INDEX_SQL } from './auth-hook-schema.js';
@@ -37,11 +37,11 @@ import { DOTFILES_INSTRUCTION_COMMAND, DOTFILES_INSTRUCTION_LABEL } from "./dotf
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 249;
+export const BASELINE_SCHEMA_VERSION = 250;
 
 export const AUTH_REQUEST_HISTORY_INDEX_SQL =
   `CREATE INDEX idx_auth_requests_history ON auth_requests(resolved_at DESC)
-    WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'dismissed')`;
+    WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'dismissed', 'returned')`;
 
 // Issue 08b4426 — a blob is named by a prefix of its id or of its content
 // hash, and short refs for a page of blobs are found by prefix ranges over
@@ -126,13 +126,13 @@ export const CONVERSATION_SIDEBAR_INDEX_SQL: readonly string[] = [
 export const AUTH_LIFECYCLE_AUTHORITY_PATHS_V212 = ["custodian", "operator_recovery", "system", "legacy"] as const;
 export const AUTH_LIFECYCLE_AUTHORITY_PATHS = ["custodian", "operator", "system", "legacy"] as const;
 
-export function authRequestLifecycleEventsSchemaSql(authorityPaths: readonly string[]): readonly string[] {
+export function authRequestLifecycleEventsSchemaSql(authorityPaths: readonly string[], requestReviews = false): readonly string[] {
   return [
   `CREATE TABLE auth_request_lifecycle_events (
         id TEXT PRIMARY KEY,
         auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE RESTRICT,
         revision INTEGER NOT NULL CHECK(revision >= 1),
-        event_type TEXT NOT NULL CHECK(event_type IN ('legacy_snapshot','submitted','revised','approved','executing','rejected','withdrawn','superseded','needs_rebase','expired','completed','failed')),
+        event_type TEXT NOT NULL CHECK(event_type IN ('legacy_snapshot','submitted','revised','approved','executing','rejected','withdrawn','superseded','needs_rebase','expired','completed','failed'${requestReviews ? ",'returned'" : ""})),
         prior_status TEXT,
         next_status TEXT NOT NULL,
         snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),
@@ -149,6 +149,8 @@ export function authRequestLifecycleEventsSchemaSql(authorityPaths: readonly str
         custody_generation INTEGER,
         authority_path TEXT CHECK(authority_path IN (${authorityPaths.map((path) => `'${path}'`).join(",")})),
         occurred_at INTEGER NOT NULL,
+        ${requestReviews ? `review_submission_id TEXT REFERENCES briefing_submissions(id) ON DELETE RESTRICT,
+        CHECK((event_type = 'returned') = (review_submission_id IS NOT NULL)),` : ""}
         UNIQUE(auth_request_id, revision)
       )`,
   "CREATE INDEX idx_auth_request_lifecycle_events_request ON auth_request_lifecycle_events(auth_request_id, revision)",
@@ -456,7 +458,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   AUTH_HOOK_EXECUTIONS_TABLE_SQL,
   AUTH_REQUEST_ACTIONS_TABLE_SQL,
   "CREATE TABLE auth_requests (\n  id            TEXT PRIMARY KEY,\n  session_id    TEXT,\n  command       TEXT NOT NULL,\n  title         TEXT NOT NULL,\n  cwd           TEXT,\n  diff_summary  TEXT,\n  spec_content  TEXT,\n  status        TEXT NOT NULL DEFAULT 'pending',\n  created_at    INTEGER NOT NULL,\n  updated_at    INTEGER NOT NULL,\n  approved_at   INTEGER,\n  resolved_at   INTEGER,\n  skipped_at    INTEGER,\n  expires_at    INTEGER NOT NULL,\n  exit_code     INTEGER,\n  output        TEXT NOT NULL DEFAULT '',\n  error         TEXT\n, repo TEXT, base_branch TEXT, head_branch TEXT, files_changed INTEGER DEFAULT 0, additions INTEGER DEFAULT 0, deletions INTEGER DEFAULT 0, execution_mode TEXT NOT NULL DEFAULT 'daemon', commit_message TEXT, last_executed_at INTEGER, post_merge_handoff TEXT, issue_ids TEXT, depends_on_id TEXT, issues TEXT, type TEXT NOT NULL DEFAULT 'merge', target_repo_root TEXT, issue_references TEXT, issue_closures TEXT, merge_preflight_base_sha TEXT, merge_preflight_queue_fingerprint TEXT, merge_head_sha TEXT, merge_finalized_at INTEGER, requested_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, approved_by_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT, execution_evidence_id TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL, merge_finalizer_state TEXT, merge_candidate_tree_sha TEXT, merge_candidate_pin_sha TEXT, merge_atomic_enabled INTEGER NOT NULL DEFAULT 0, commit_message_digest TEXT, supersedes_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT, superseded_by_request_id TEXT REFERENCES auth_requests(id) ON DELETE RESTRICT)",
-  ...AUTH_REQUEST_LIFECYCLE_EVENTS_SCHEMA_SQL,
+  ...authRequestLifecycleEventsSchemaSql(AUTH_LIFECYCLE_AUTHORITY_PATHS, true),
   ...WORK_UNIT_CUSTODY_EVENTS_SCHEMA_SQL,
   "CREATE TABLE auth_request_merge_succeeded_facts (\n        auth_request_id   TEXT PRIMARY KEY,\n        project_id        TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        base_branch       TEXT NOT NULL,\n        completed_at      INTEGER NOT NULL,\n        canonical_message INTEGER NOT NULL CHECK(canonical_message IN (0,1)),\n        recorded_at       INTEGER NOT NULL\n      )",
   "CREATE TABLE branches (\n  repo_root     TEXT NOT NULL,\n  branch        TEXT NOT NULL,\n  is_current    INTEGER NOT NULL DEFAULT 0,\n  is_worktree   INTEGER DEFAULT 0,\n  worktree_path TEXT,\n  is_dirty      INTEGER DEFAULT 0,\n  ahead         INTEGER DEFAULT 0,\n  behind        INTEGER DEFAULT 0,\n  last_commit_hash    TEXT,\n  last_commit_message TEXT,\n  last_commit_author  TEXT,\n  last_commit_date    TEXT,\n  diff_stat     TEXT,\n  updated_at    TEXT NOT NULL DEFAULT (datetime('now')), ahead_default INTEGER DEFAULT 0, behind_default INTEGER DEFAULT 0, default_branch TEXT DEFAULT '', worktree_inventory_known INTEGER NOT NULL DEFAULT 0, worktree_status_known INTEGER NOT NULL DEFAULT 0, default_comparison_known INTEGER NOT NULL DEFAULT 0, has_upstream INTEGER NOT NULL DEFAULT 0, upstream TEXT,\n  PRIMARY KEY (repo_root, branch)\n)",
@@ -945,6 +947,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   ...PROTECTED_BASE_AUDIT_SCHEMA_SQL,
   ...INTERFACE_NOTES_SCHEMA_SQL,
   ...NOTIFICATIONS_SCHEMA_SQL,
+  NOTICE_REVIEW_SUBMISSION_SQL,
   ...OPERATOR_TRUST_CHANGES_SCHEMA_SQL,
 ];
 

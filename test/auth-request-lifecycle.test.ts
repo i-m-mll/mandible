@@ -1,3 +1,8 @@
+import { computeAuthMergeReviewMetadata } from "../src/auth-context.js";
+import type { RequestReview } from "../src/feedback/request-review.js";
+import { createOutcomeReporter } from "../src/notices/report.js";
+import { fileRpc, runCli } from "./helpers/cli-process.js";
+import { createAuthCheckRepo, commitOnBranch, git, writeFile, registerWorkRepo } from "./helpers/auth-queue-fixtures.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { Router } from "../src/server.js";
@@ -13,8 +18,9 @@ import { AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fix
  * withdrawal and explicit replacement are the only requester-owned terminal
  * transitions, and every accepted transition leaves a hashed lifecycle receipt.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { fixtureOperatorSigning } from "./helpers/operator-signing-fixtures.js";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import { appendAuthLifecycleEvent } from "../src/auth-lifecycle.js";
 import { authSnapshotDigest } from "../src/auth-request-snapshot.js";
@@ -22,7 +28,7 @@ import type { AuthLifecycleActor, AuthRequestInput } from "../src/types.js";
 import { addCredential, createUser, getOperator } from "../src/users/store.js";
 import { createLedgerIssue, createLedgerProject, createMigratedDb } from "./helpers/auth-queue-fixtures.js";
 
-function requesterFixture() {
+function requesterFixture(root = process.cwd()) {
   const db = createMigratedDb();
   const operator = getOperator(db)!;
   const credential = addCredential(db, operator.id, {
@@ -38,9 +44,10 @@ function requesterFixture() {
     evidence_method: "api_token",
     credential_id: credential.id,
   };
-  const project = createLedgerProject(db, process.cwd());
+  const project = createLedgerProject(db, root);
   const issue = createLedgerIssue(db, project.project.id, "f15617a", "Auth lifecycle");
-  const queue = new AuthQueue({ db });
+  const operatorSigning = fixtureOperatorSigning(db);
+  const queue = new AuthQueue({ db, outcomeReporter: createOutcomeReporter(db), operatorSigning });
   const submitExisting = async (patch: Partial<AuthRequestInput> = {}) => {
     return (await queue.submit({ ...AUTH_MERGE_REVIEW,
     command: "mandible auth merge feature/original --into main",
@@ -66,10 +73,141 @@ function requesterFixture() {
     }
     return submitExisting(patch);
   };
-  return { db, queue, operator, credential, otherCredential, actor, submit, submitExisting };
+  return { db, queue, operator, credential, otherCredential, actor, submit, submitExisting, operatorSigning };
 }
 
 describe("auth request immutable lifecycle", () => {
+
+  it("freezes a return, keeps its quoted review through replacement, and compares pinned heads", async () => {
+    const repo = createAuthCheckRepo();
+    const { db, queue, operator, credential, submit, operatorSigning } = requesterFixture(repo);
+    registerWorkRepo(db, repo);
+    setDb(db);
+    const router = authenticatedTestRouter(operator, { credentialId: credential.id });
+    registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
+    const branch = "feature/original";
+    const session = "agent:claude:review-requester:review-requester";
+    git(repo, ["checkout", "main"]);
+    writeFile(repo, "notes.md", "# Notes\n\nReview the base note.\n");
+    git(repo, ["add", "notes.md"]);
+    git(repo, ["commit", "-m", "A reviewable original note"]);
+    commitOnBranch(repo, branch, { "notes.md": "# Notes\n\nReview the proposed note.\n", "script.txt": "a\ncheck this line\nz\n" });
+    const candidate = async () => {
+      const metadata = await computeAuthMergeReviewMetadata(repo, "main", branch);
+      return { cwd: repo, target_repo_root: repo, merge_head_sha: metadata.changeReport.comparison.head_sha, change_report: metadata.changeReport };
+    };
+    const invoke = (method: string, path: string, body?: unknown) => router.invoke({ method, url: path, body });
+    const read = async (id: string) => {
+      const response = await invoke("GET", `/api/auth/request/${id}/review`);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      return response.body as RequestReview & { precondition: { expected_revision: number; expected_custody_generation: number } };
+    };
+    const command = async (id: string) => {
+      const response = await invoke("GET", `/api/auth/request/${id}/review/returned`);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const rpc = fileRpc(request => ({ status: response.status, body: response.body }));
+      try { return await runCli(["auth", "review", "show", id.slice(0, 8)], { env: rpc.env }); }
+      finally { await rpc.responder.stop(); }
+    };
+
+    try {
+      const request = await submit(await candidate());
+      const base = `/api/auth/request/${request.id}`;
+      const readBefore = await read(request.id);
+      const before = readBefore.round.bindings.find(binding => binding.source.kind === "request_file"
+        && binding.source.path === "notes.md" && binding.source.side === "before")!;
+      const lines = readBefore.round.bindings.find(binding => binding.source.kind === "request_file"
+        && binding.source.path === "script.txt" && binding.source.side === "after")!;
+      const add = (binding: string, start: number, end: number, quote: string, body: string) =>
+        invoke("POST", `${base}/review/annotations`, {
+          ...readBefore.precondition, document_binding_id: binding,
+          mutation: { operation: "set", kind: "comment", start_offset: start, end_offset: end, quote, body },
+        });
+      const markdown = await add(before.id, 9, 29, "Review the base note", "Explain the original wording.");
+      const code = await add(lines.id, 1, 2, "check this line\n", "Keep this check visible.");
+      expect(markdown.status, JSON.stringify(markdown.body)).toBe(201);
+      expect(code.status, JSON.stringify(code.body)).toBe(201);
+      const annotation_event_ids = (await read(request.id)).annotations.map(annotation => annotation.annotation_event_id);
+      const returnBody = { ...readBefore.precondition, round_id: readBefore.round.id, annotation_event_ids, reason: "Clarify the note." };
+      const staleReturn = await invoke("POST", `${base}/return`, { ...returnBody, expected_custody_generation: readBefore.precondition.expected_custody_generation - 1 });
+      expect(staleReturn.status).toBe(409);
+      let entered!: () => void;
+      let release!: () => void;
+      const checkingKey = new Promise<void>(resolve => { entered = resolve; });
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      vi.spyOn(operatorSigning, "readyToSign").mockImplementationOnce(async () => {
+        entered();
+        await gate;
+        return { ok: true, value: { credential, state: "usable", detail: null } };
+      });
+      const signer = vi.spyOn(operatorSigning, "commitSigner");
+      const approving = invoke("POST", `${base}/approve`, { lifecycle_revision: readBefore.precondition.expected_revision });
+      try {
+        await Promise.race([checkingKey, approving.then(() => { throw new Error("Approval did not reach the key check."); })]);
+        const returned = await invoke("POST", `${base}/return`, returnBody);
+        expect(returned.status, JSON.stringify(returned.body)).toBe(200);
+      } finally { release(); }
+      expect((await approving).status).toBe(409);
+      expect(signer).not.toHaveBeenCalled();
+      expect((await invoke("POST", `${base}/approve`, { lifecycle_revision: readBefore.precondition.expected_revision })).status).toBe(409);
+      expect((await invoke("POST", `${base}/review/annotations`, {
+        ...readBefore.precondition, document_binding_id: before.id,
+        mutation: { operation: "retract", annotation_event_id: annotation_event_ids[0] },
+      })).status).toBe(409);
+
+      const first = await command(request.id);
+      expect(first.status, first.stderr).toBe(0);
+      expect(first.stdout).toContain("notes.md (before)");
+      expect(first.stdout).toContain("Review the base note");
+      expect(first.stdout).toContain("script.txt (after) lines 2–2");
+      expect(first.stdout).toContain("Keep this check visible.");
+
+      git(repo, ["checkout", branch]);
+      writeFile(repo, "script.txt", "first line\na\ncheck this line\nz\n");
+      git(repo, ["add", "script.txt"]);
+      git(repo, ["commit", "-m", "Address the review"]);
+      git(repo, ["checkout", "main"]);
+      const replacement = await submit({ ...await candidate(), supersedes_request_id: request.id,
+        expected_revision: readBefore.precondition.expected_revision + 1, expected_custody_generation: readBefore.precondition.expected_custody_generation });
+      const next = await read(replacement.id);
+      expect(next.versions.map(version => [version.id, version.status])).toEqual([[request.id, "superseded"], [replacement.id, "pending"]]);
+      expect(next.annotations.map(annotation => [annotation.body, annotation.anchor.status, annotation.anchor.start_offset]))
+        .toEqual([["Explain the original wording.", "preserved", 9], ["Keep this check visible.", "preserved", 2]]);
+      const compared = await invoke("GET", `/api/auth/request/${replacement.id}/review/changes?against=${request.id}`);
+      expect(compared.status, JSON.stringify(compared.body)).toBe(200);
+      expect(compared.body).toMatchObject({
+        comparison: { merge_base_sha: request.merge_head_sha, head_sha: replacement.merge_head_sha },
+        files: [{ old_path: "script.txt", new_path: "script.txt", additions: 1, deletions: 0 }],
+      });
+      const second = await command(request.id);
+      expect(second.status, second.stderr).toBe(0);
+      expect(second.stdout).toContain("superseded");
+      expect(second.stdout).toContain("Explain the original wording.");
+
+      const unbound = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo revise", title: "Empty review", session_id: session }, operator.id);
+      const unboundUrl = `/api/auth/request/${unbound.id}`;
+      const empty = await read(unbound.id);
+      const emptyReturn = await invoke("POST", `${unboundUrl}/return`, {
+        ...empty.precondition, round_id: empty.round.id, annotation_event_ids: [],
+      });
+      expect(emptyReturn.status, JSON.stringify(emptyReturn.body)).toBe(200);
+      const emptyCli = await command(unbound.id);
+      expect(emptyCli.status, emptyCli.stderr).toBe(0);
+      expect(emptyCli.stdout).toContain("No comments");
+      expect(emptyCli.stdout).toContain("Review notice undelivered");
+      const notices = queue.notices!.collect("claude", "review-requester");
+      expect(notices.map(notice => notice.text).join("\n")).toContain(`mandible auth review show ${unbound.id.slice(0, 8)}`);
+      queue.notices!.delivered(notices.map(notice => notice.id));
+      queue.assumeRequestResponsibility(unbound.id, { kind: "user", user_id: operator.id }, "Take responsibility", 2, 0);
+      const durable = await invoke("GET", `${unboundUrl}/review/returned`);
+      expect(durable.body).toMatchObject({ submission_id: (emptyReturn.body as { submission_id: string }).submission_id,
+        delivered: true, responsibility: { custody_generation: 1 } });
+    } finally {
+      await queue.dispose();
+      db.close();
+    }
+  });
+
 
   it("preserves canonical Description revisions by the existing durable credential owner", async () => {
     const { db, queue, operator, credential, submit } = requesterFixture();

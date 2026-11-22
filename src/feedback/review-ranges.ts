@@ -57,3 +57,24 @@ export function carryReviewRanges(before: string, after: string): (anchor: Revie
     return { status: preserved ? "preserved" : "moved", start_offset: start, end_offset: start + quote.length, quote };
   };
 }
+
+/** A line anchor stores a half-open span of zero-based logical lines. */
+export function quoteReviewLines(source: string, start: number, end: number): string | undefined {
+  const lines = source.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  if (start < 0 || end <= start || end > lines.length) return undefined;
+  return lines.slice(start, end).join("\n") + (end < lines.length || source.endsWith("\n") ? "\n" : "");
+}
+
+export function carryReviewLines(before: string, after: string, anchor: ReviewRange): CarriedReviewRange {
+  if (quoteReviewLines(before, anchor.start_offset, anchor.end_offset) !== anchor.quote) return { status: "detached" };
+  const start = anchor.start_offset === 0 ? 0 : quoteReviewLines(before, 0, anchor.start_offset)!.length;
+  const carried = carryReviewRanges(before, after)({
+    start_offset: start, end_offset: start + anchor.quote.length, quote: anchor.quote,
+  });
+  if (carried.status === "detached") return carried;
+  const startLine = after.slice(0, carried.start_offset).split("\n").length - 1;
+  const endLine = startLine + anchor.end_offset - anchor.start_offset;
+  if (quoteReviewLines(after, startLine, endLine) !== anchor.quote) return { status: "detached" };
+  return { ...carried, start_offset: startLine, end_offset: endLine };
+}

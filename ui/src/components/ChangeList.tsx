@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'preact/compat';
 import type { ComponentChild } from 'preact';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { DiffFilePair, GitChangeFile } from '../../../src/contracts';
+import { quoteReviewLines } from '../../../src/feedback/review-ranges';
 import { diffFileKey, type DiffFileIdentity } from './diff-file-identity';
 import { CollapsiblePanel } from './shared/CollapsiblePanel';
 import { Icon } from './icons/Icon';
@@ -33,8 +34,9 @@ export type ChangeListProps = {
   target?: ChangeListTarget;
   contentReady?: boolean;
   onTargetReady?: (token: string, result: DiffTargetReady) => void;
-  onLineSelection?: (file: ChangeListFile, range: DiffLineRange | null) => void;
-  renderTextFile?: (file: ChangeListFile, pair: Extract<DiffFilePair, { kind: 'text' }>) => ComponentChild;
+  onLineSelection?: (file: ChangeListFile, index: number, range: DiffLineRange | null, quote?: string) => void;
+  lineTarget?: DiffLineRange & { token: string };
+  renderTextFile?: (file: ChangeListFile, pair: Extract<DiffFilePair, { kind: 'text' }>, index: number, wholeFile: boolean) => ComponentChild;
 };
 
 type ViewState = {
@@ -74,14 +76,15 @@ function versionKey(file: ChangeListFile, revision?: string): string {
     : [file.old_path, file.new_path, file.old_object, file.new_object]);
 }
 
-function ChangeBody({ name, inputKey, load, mode, wrap, wholeFile, onLineSelection, renderTextFile, knownWhitespace }: {
+function ChangeBody({ name, inputKey, load, mode, wrap, wholeFile, onLineSelection, lineTarget, renderTextFile, knownWhitespace }: {
   name: string;
   inputKey: string;
   load: (signal: AbortSignal) => Promise<DiffFilePair | PierreDiffInput>;
   mode: DiffMode;
   wrap: boolean;
   wholeFile: boolean;
-  onLineSelection?: (range: DiffLineRange | null) => void;
+  onLineSelection?: (range: DiffLineRange | null, quote?: string) => void;
+  lineTarget?: DiffLineRange & { token: string };
   renderTextFile?: (pair: Extract<DiffFilePair, { kind: 'text' }>) => ComponentChild;
   knownWhitespace?: boolean;
 }) {
@@ -115,7 +118,11 @@ function ChangeBody({ name, inputKey, load, mode, wrap, wholeFile, onLineSelecti
           comparisonLayout={wholeFile ? 'full-document' : undefined} readOnly ariaLabel={name} />
       ) : (
         <PierreDiff input={input} mode={mode} wrap={wrap} wholeFile={wholeFile}
-          ariaLabel={name} onLineSelection={onLineSelection} />
+          ariaLabel={name} lineTarget={lineTarget} onLineSelection={onLineSelection ? range => {
+            const text = input.kind === 'contents' && range
+              ? (range.side === 'before' ? input.before.contents : input.after.contents) : undefined;
+            onLineSelection(range, text !== undefined && range ? quoteReviewLines(text, range.startLine - 1, range.endLine) : undefined);
+          } : undefined} />
       )}
     </Suspense>
   </>;
@@ -127,7 +134,7 @@ export function ChangeList(props: ChangeListProps) {
 }
 
 export function ChangeInventoryList({
-  files = emptyFiles, scope, revision, ariaLabel, emptyLabel = 'No changes', loadFile, target, contentReady = true, onTargetReady, onLineSelection, renderTextFile,
+  files = emptyFiles, scope, revision, ariaLabel, emptyLabel = 'No changes', loadFile, target, contentReady = true, onTargetReady, onLineSelection, lineTarget, renderTextFile,
 }: ChangeListProps) {
   const [view, setView] = usePersistedViewState(`mandible:changes:${scope}`, viewState, defaultView);
   const headings = useRef(new Map<string, HTMLElement>());
@@ -208,11 +215,12 @@ export function ChangeInventoryList({
           {!binary && <ChangeBody key={fileRevision} inputKey={fileRevision} name={name} mode={view.mode}
             wrap={view.wrap} wholeFile={view.wholeFile}
             knownWhitespace={file.whitespace_only}
-            renderTextFile={renderTextFile ? pair => renderTextFile(file, pair) : undefined}
+            renderTextFile={renderTextFile ? pair => renderTextFile(file, pair, index, view.wholeFile) : undefined}
             load={signal => file.patch
               ? Promise.resolve({ kind: 'patch', file: file.patch })
               : loadFile!(file, index, signal)}
-            onLineSelection={onLineSelection ? range => onLineSelection(file, range) : undefined} />}
+            lineTarget={index === targetIndex ? lineTarget : undefined}
+            onLineSelection={onLineSelection ? (range, quote) => onLineSelection(file, index, range, quote) : undefined} />}
         </CollapsiblePanel>;
       })}
       {!files.length && contentReady && <div class="change-list__empty">{emptyLabel}</div>}

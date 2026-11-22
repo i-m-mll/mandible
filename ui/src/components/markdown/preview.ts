@@ -224,8 +224,8 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
   const mark = ({ from, to }: Span, className: string) => {
     if (from < to) marks.push(Decoration.mark({ class: className }).range(from, to));
   };
-  const lineMark = (position: number, className: string) => {
-    marks.push(Decoration.line({ class: className }).range(state.doc.lineAt(position).from));
+  const lineMark = (position: number, className: string, attributes?: Record<string, string>) => {
+    marks.push(Decoration.line({ class: className, attributes }).range(state.doc.lineAt(position).from));
   };
   const link = (range: Span, href: string) => {
     if (range.from < range.to) marks.push(Decoration.mark({
@@ -265,7 +265,8 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
       const heading = /^(ATX|Setext)Heading([1-6])$/.exec(name);
       if (heading) {
         const showSource = !hidden(node);
-        lineMark(node.from, `markdown-document__heading--${heading[2]}`);
+        lineMark(node.from, `markdown-document__heading--${heading[2]}`, state.readOnly
+          ? { role: 'heading', 'aria-level': heading[2]! } : undefined);
         if (!showSource) {
           for (const marker of node.getChildren('HeaderMark')) {
             const suffix = /^\s*/.exec(state.sliceDoc(marker.to, state.doc.lineAt(marker.to).to))?.[0].length ?? 0;

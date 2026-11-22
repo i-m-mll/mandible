@@ -1,3 +1,5 @@
+import { ensureRequestReviewRound, readRequestReviewSource, requestReviewRound } from "./feedback/request-review.js";
+import { appendReviewAnnotation, freezeReviewSubmission, type ReviewAnnotationMutation } from "./feedback/review-store.js";
 import { withLedgerMutationActor } from "./ledger/mutation-history.js";
 import { withRequestOrigin } from "./request-origin.js";
 import { mutateWorkUnit } from "./work-unit-history.js";
@@ -2247,7 +2249,7 @@ export class AuthQueue {
         if (predecessor) {
           this.assertLifecycleCas(predecessor, custody!, payload.expected_revision, payload.expected_custody_generation);
           const current = this.readRequestByExactId(predecessor.id);
-          if (!current || current.status !== "pending") {
+          if (!current || current.status !== predecessor.status || !canSupersedeStatus(current.status)) {
             throw new AuthQueueError(
               "invalid_status",
               `Request is ${current?.status ?? "missing"}, cannot supersede.`,
@@ -2307,10 +2309,10 @@ export class AuthQueue {
           occurredAt: now,
         });
         if (predecessor) {
-          const replacementActions = new Map(listAuthRequestActions(this.db, request.id).map((action) => [action.ordinal, action]));
+          const replacementActions = new Map(listAuthRequestActions(this.db, request.id).map((action) => [supersessionActionKey(action), action]));
           for (const action of listAuthRequestActions(this.db, predecessor.id).filter((item) => item.state === "staged")) {
             const reason = dispositions.get(action.ordinal);
-            const replacementAction = replacementActions.get(action.ordinal);
+            const replacementAction = replacementActions.get(supersessionActionKey(action));
             this.db.prepare(
               `UPDATE auth_request_actions
              SET state = 'vetoed', outcome_detail = ?, replacement_action_id = ?, updated_at = ?
@@ -2327,15 +2329,15 @@ export class AuthQueue {
             `UPDATE auth_requests
            SET status = 'superseded', superseded_by_request_id = ?, resolved_at = ?, updated_at = ?,
                error = ?
-           WHERE id = ? AND status = 'pending'`,
-          ).run(request.id, now, now, `Superseded by ${request.id.slice(0, 8)}.`, predecessor.id);
+           WHERE id = ? AND status = ?`,
+          ).run(request.id, now, now, `Superseded by ${request.id.slice(0, 8)}.`, predecessor.id, predecessor.status);
           if (changed.changes !== 1) {
             throw new AuthQueueError("invalid_status", "Predecessor changed before supersession completed.");
           }
           this.appendLifecycleEvent({
             requestId: predecessor.id,
             eventType: "superseded",
-            priorStatus: "pending",
+            priorStatus: predecessor.status,
             nextStatus: "superseded",
             actor,
             relatedRequestId: request.id,
@@ -2640,7 +2642,9 @@ export class AuthQueue {
     const event = appendAuthLifecycleEvent(this.db, input);
     if (input.nextStatus !== input.priorStatus && (NOTICE_STATUSES as readonly string[]).includes(input.nextStatus)) {
       const actor = input.actor?.authority_path === "system" ? null : input.actor;
-      this.raiseNotice(input.requestId, { kind: "transition", actor: actor ? { user_id: actor.user_id, session_id: actor.session_id ?? null } : null });
+      const cause = { kind: "transition" as const, actor: actor ? { user_id: actor.user_id, session_id: actor.session_id ?? null } : null };
+      if (input.eventType === "returned") this.notices?.raise(input.requestId, cause);
+      else this.raiseNotice(input.requestId, cause);
     }
     return event;
   }
@@ -2850,7 +2854,7 @@ export class AuthQueue {
     rawDispositions: readonly { ordinal: number; reason: string }[],
     identity: RepoIdentityObservation,
   ): Map<number, string> {
-    if (predecessor.status !== "pending") {
+    if (!canSupersedeStatus(predecessor.status)) {
       throw new AuthQueueError("invalid_status", `Request is ${predecessor.status}, cannot supersede.`, predecessor.status);
     }
     if (predecessor.base_branch !== replacement.base_branch ||
@@ -2871,9 +2875,9 @@ export class AuthQueue {
     }
     const staged = listAuthRequestActions(this.db, predecessor.id).filter((action) => action.state === "staged");
     const replacementKeys = new Set((replacementActions ?? []).map((action) =>
-      JSON.stringify([action.kind, action.target_issue_ref, action.payload])));
+      supersessionActionKey(action)));
     for (const action of staged) {
-      const key = JSON.stringify([action.kind, action.target_issue_ref, action.payload]);
+      const key = supersessionActionKey(action);
       if (!replacementKeys.has(key) && !dispositions.has(action.ordinal)) {
         throw new AuthQueueError(
           "action_disposition_required",
@@ -3743,7 +3747,7 @@ export class AuthQueue {
         .prepare(
           "SELECT * FROM auth_requests WHERE " +
             "status IN ('pending', 'approved', 'executing', 'expired', 'needs_rebase', 'failed') " +
-            "OR (status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'dismissed') AND resolved_at >= ?) " +
+            "OR (status IN ('completed', 'rejected', 'withdrawn', 'superseded', 'dismissed', 'returned') AND resolved_at >= ?) " +
             "ORDER BY created_at ASC"
         )
         .all(cutoff) as Record<string, unknown>[];
@@ -3755,7 +3759,7 @@ export class AuthQueue {
   listHistory(limit = 50): AuthRequest[] {
     const rows = this.db
       .prepare(
-        "SELECT * FROM auth_requests WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'dismissed') " +
+        "SELECT * FROM auth_requests WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'dismissed', 'returned') " +
           "ORDER BY resolved_at DESC LIMIT ?"
       )
       .all(limit) as Record<string, unknown>[];
@@ -5407,6 +5411,72 @@ export class AuthQueue {
       evidence_id: evidence.id,
       authorizer_user_id: request.approved_by_user_id,
     };
+  }
+
+  private requirePendingReview(id: string): AuthRequest {
+    const request = this.requireRequest(id);
+    if (request.status !== "pending" || request.expires_at <= this.now()) {
+      throw new AuthQueueError("invalid_status", "Only a pending request can be reviewed.", request.status);
+    }
+    return request;
+  }
+
+  async annotateRequestReview(id: string, actor: AuthLifecycleActor, input: {
+    expected_revision: number; expected_custody_generation: number; document_binding_id: string;
+    mutation: ReviewAnnotationMutation;
+  }): Promise<string> {
+    const request = this.requirePendingReview(id);
+    const round = requestReviewRound(request);
+    const binding = round.bindings.find(candidate => candidate.id === input.document_binding_id);
+    if (!binding) throw new AuthQueueError("lifecycle_conflict", "The reviewed document changed. Refresh and select the text again.");
+    const source = input.mutation.operation === "set" ? await readRequestReviewSource(request.target_repo_root, binding.source) : "";
+    if (source === null) throw new AuthQueueError("not_found", "The reviewed text is unavailable.");
+    return this.db.transaction(() => {
+      const current = this.requirePendingReview(request.id);
+      this.requireRequestCustody(current, actor, input.expected_revision, input.expected_custody_generation);
+      if (round.id !== requestReviewRound(current).id) throw new AuthQueueError("lifecycle_conflict", "The reviewed document changed.");
+      ensureRequestReviewRound(this.db, round);
+      const event = appendReviewAnnotation(this.db, { roundId: round.id, owner: round.owner, actorUserId: actor.user_id }, {
+        id: binding.id, source,
+        ...(binding.source.kind === "request_file" && binding.source.format === "lines" ? { rangeKind: "lines" as const } : {}),
+      }, input.mutation, this.now());
+      if (!event.ok) throw new AuthQueueError("lifecycle_conflict", `The annotation could not be saved (${event.reason}).`);
+      return event.id;
+    })();
+  }
+
+  returnRequestReview(id: string, actor: AuthLifecycleActor, input: {
+    expected_revision: number; expected_custody_generation: number; round_id: string;
+    annotation_event_ids: string[]; reason?: string;
+  }): { request: AuthRequest; submission_id: string } {
+    const result = this.db.transaction(() => {
+      const request = this.requirePendingReview(id);
+      this.requireRequestCustody(request, actor, input.expected_revision, input.expected_custody_generation);
+      const round = requestReviewRound(request);
+      if (round.id !== input.round_id) throw new AuthQueueError("lifecycle_conflict", "The reviewed documents changed. Review them again.");
+      ensureRequestReviewRound(this.db, round);
+      const now = this.now();
+      const frozen = freezeReviewSubmission(this.db, { roundId: round.id, owner: round.owner, actorUserId: actor.user_id }, {
+        annotationEventIds: input.annotation_event_ids,
+        answers: [],
+        comparisonTargets: round.bindings.map(binding => ({ document_binding_id: binding.id, target: binding.comparison_target })),
+        supersedesSubmissionId: null,
+      }, now);
+      if (!frozen.ok) throw new AuthQueueError("lifecycle_conflict", `The return could not be frozen (${frozen.reason}).`);
+      const priorSnapshot = this.currentLifecycleSnapshot(request.id);
+      this.writeResolvedRequest(request,
+        "UPDATE auth_requests SET status = 'returned', resolved_at = ?, updated_at = ? WHERE id = ?", [now, now]);
+      const submission_id = frozen.submission.submission_id;
+      this.appendLifecycleEvent({ requestId: request.id, eventType: "returned", priorStatus: "pending", nextStatus: "returned",
+        actor, reason: input.reason, priorSnapshot, reviewSubmissionId: submission_id,
+        custodyGeneration: input.expected_custody_generation, occurredAt: now });
+      return { request: this.requireRequest(request.id), submission_id };
+    })();
+    this.operatorProofInFlight.get(result.request.id)?.abort();
+    this.queueCandidateCleanup(result.request, { clearRequestFields: false });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_RESOLVED, data: this.buildResolvedPayload(result.request) });
+    this.broadcast({ event: DOMAIN_EVENTS.AUTH_LIFECYCLE, data: { request_id: result.request.id, lifecycle: "returned" } });
+    return result;
   }
 
   async reject(id: string, reason = "Rejected by operator.", actor?: AuthLifecycleActor): Promise<AuthRequest> {
@@ -8872,6 +8942,14 @@ export class AuthQueue {
     return request;
   }
 
+}
+
+function canSupersedeStatus(status: AuthRequestStatus): boolean {
+  return status === "pending" || status === "returned";
+}
+
+function supersessionActionKey(action: Pick<AuthRequestActionInput, "kind" | "target_issue_ref" | "payload">): string {
+  return JSON.stringify([action.kind, action.target_issue_ref, action.payload]);
 }
 
 function projectAuthAttributionEvent(

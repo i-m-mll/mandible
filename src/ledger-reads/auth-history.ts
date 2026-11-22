@@ -49,7 +49,7 @@ export function listAuthHistorySummaries(db: Db, { limit = 50 }: { limit?: numbe
   const rows = db
     .prepare(
       `SELECT ${AUTH_HISTORY_SUMMARY_COLUMNS} FROM auth_requests INDEXED BY idx_auth_requests_history ` +
-        "WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'dismissed') " +
+        "WHERE status IN ('completed', 'failed', 'rejected', 'withdrawn', 'superseded', 'dismissed', 'returned') " +
         "ORDER BY resolved_at DESC LIMIT ?"
     )
     .all(limit) as Record<string, unknown>[];

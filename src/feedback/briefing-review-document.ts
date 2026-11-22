@@ -108,6 +108,7 @@ export function materializeBriefingComparison(db: Db, target: ReviewDocumentRefe
   if (target.kind === "artifact_version") {
     return { artifact_version_id: target.artifact_version_id, target, ...pinnedRoundDocument(db, target.artifact_version_id) };
   }
+  if (target.kind !== "git_file") throw new BriefingDocumentError("invalid briefing document binding", "invalid_comparison_target");
   const { target: actual, retain: _retain, ...document } = readGitComparison(db, target, target.commit);
   if (canonicalJson(actual) !== canonicalJson(target)) {
     throw new BriefingDocumentError("pinned comparison file identity changed", "document_integrity_failed");

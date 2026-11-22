@@ -28,3 +28,6 @@ export const NOTIFICATIONS_SCHEMA_SQL: readonly string[] = [
   "CREATE INDEX idx_notifications_subject ON notifications(subject_kind, subject_id, raised_at)",
   "CREATE INDEX idx_notifications_raised ON notifications(raised_at)",
 ];
+
+export const NOTICE_REVIEW_SUBMISSION_SQL =
+  "ALTER TABLE notifications ADD COLUMN review_submission_id TEXT REFERENCES briefing_submissions(id) ON DELETE RESTRICT";
