@@ -560,6 +560,12 @@ function listenForHealth(
   });
 }
 
+/** The socket a preview daemon listens on: one per instance, beside the production socket. */
+function previewSocketPath(instanceId: string): string {
+  const name = `preview-${createHash("sha256").update(instanceId).digest("hex").slice(0, 16)}.sock`;
+  return path.join(process.env.HOME ?? os.homedir(), ".cache", "mandible", "local-api", name);
+}
+
 /**
  * The environment the launcher is required to pin for an isolated preview.
  *
@@ -584,6 +590,7 @@ function previewContractEnv(details: {
     MANDIBLE_PID_FILE: details.pidFile,
     MANDIBLE_INSTANCE_ROLE: "preview",
     MANDIBLE_INSTANCE_ID: instanceId,
+    MANDIBLE_SOCKET: previewSocketPath(instanceId),
     MANDIBLE_INSTALLATION_ID: "authority_iab_test",
     MANDIBLE_PUBLIC_ORIGIN: `https://${instanceId}.mandible.localhost:19421`,
     MANDIBLE_BACKEND_GENERATION: "preview-generation",
@@ -1192,6 +1199,24 @@ describe("iab-preview launcher", () => {
       conversations: expect.stringContaining("whole"),
       conversationTitleConvergence: expect.stringContaining("before daemon start"),
     });
+  });
+
+  it("routes a CLI that exports instanceEnv to the preview daemon's own socket", () => {
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-socket-"));
+    tempRoots.push(previewBase);
+    const previewRoot = path.join(previewBase, "integration-test-preview");
+    const source = `
+      const launcher = await import(${JSON.stringify(pathToFileURL(SCRIPT).href)});
+      const env = launcher.previewInstanceEnv({ port: 1, dbCopy: ${JSON.stringify(path.join(previewRoot, "x.db"))},
+        sourceDb: "/nonexistent/source.db", pidFile: "/nonexistent/pid" });
+      process.stdout.write(JSON.stringify(env));
+    `;
+    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", source], {
+      cwd: process.cwd(), encoding: "utf8", env: { ...previewLauncherEnv(previewBase), MANDIBLE_SOCKET: "/elsewhere/other.sock" },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const env = JSON.parse(result.stdout);
+    expect(env.MANDIBLE_SOCKET).toBe(previewSocketPath(env.MANDIBLE_INSTANCE_ID));
   });
 
   it("seeds user preferences once, preserves preview edits, and rejects an unsafe target", () => {

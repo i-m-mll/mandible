@@ -6,7 +6,7 @@ import { parseProtectedRootDirtyAction } from "../auth-protected-root-dirty-acti
 import { AUTH_REQUEST_TYPES } from "../contracts.js";
 import { AuthQueue, AuthQueueError, publicationBlockerFor } from "../auth-queue.js";
 import { runtimeHandoffLockRefusal } from "../../scripts/runtime-handoff-lock.mjs";
-import { AuthActionValidationError } from "../auth-actions.js";
+import { AuthActionValidationError, normalizeAuthActionInputs } from "../auth-actions.js";
 import { listAuthExecutionAttempts } from "../auth-lifecycle.js";
 import { mergeChangeMessageRequirement, authDescriptionRequirement } from "../auth-change-message.js";
 import {
@@ -65,13 +65,25 @@ export function registerAuthRoutes(
       });
       return;
     }
-    const payload = parseAuthCheckPayload(readBody<Record<string, unknown>>(req));
+    const body = readBody<Record<string, unknown>>(req);
+    const payload = parseAuthCheckPayload(body);
     if (!payload) {
       res.status(400).json({ error: "Invalid auth check payload." });
       return;
     }
-    const report = (await authQueue.checkMergeIndependence(resolveAuthCheckPayload(db, payload)));
-    res.status(200).json({ check: report });
+    try {
+      const actions = normalizeAuthActionInputs(body.actions);
+      const resolved = resolveAuthCheckPayload(db, payload);
+      const report = (await authQueue.checkMergeIndependence(resolved));
+      const preview = await authQueue.previewIssueAccounting(resolved, report, actions);
+      res.status(200).json({
+        check: report,
+        issue_accounting: preview?.issue_accounting ?? null,
+        issue_accounting_refusal: preview && !preview.ok ? { message: preview.message, refusals: preview.refusals } : null,
+      });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
   }, { operation: { id: "post:/api/auth/check", effects: ["process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "allow" });
 
   app.post("/api/auth/request", (_req, res) => {
@@ -358,7 +370,7 @@ export function registerAuthRoutes(
       const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
       const passedOver = passedOverReply(db, authQueue, req, current.id);
-      const action = authQueue.addAction(req.params.id, authActionPayload(body), control.actor,
+      const action = await authQueue.addAction(req.params.id, authActionPayload(body), control.actor,
         numberField(body.expected_revision), numberField(body.expected_custody_generation));
       res.status(201).json({ ...passedOver, action });
     } catch (error) {
@@ -374,7 +386,7 @@ export function registerAuthRoutes(
       const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
       const passedOver = passedOverReply(db, authQueue, req, current.id);
-      const action = authQueue.updateAction(
+      const action = await authQueue.updateAction(
         req.params.id,
         req.params.actionId,
         authActionPayload(body),
@@ -396,7 +408,7 @@ export function registerAuthRoutes(
       const control = authMutationControl(db, req, res, current, body);
       if (!control) return;
       const passedOver = passedOverReply(db, authQueue, req, current.id);
-      const action = authQueue.deleteAction(req.params.id, req.params.actionId, control.actor,
+      const action = await authQueue.deleteAction(req.params.id, req.params.actionId, control.actor,
         numberField(body.expected_revision), numberField(body.expected_custody_generation));
       res.status(200).json({ ...passedOver, action_id: action.id, deleted: true });
     } catch (error) {

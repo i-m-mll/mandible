@@ -11,13 +11,15 @@ import { setDb, type Db } from "../src/db.js";
 import { triageLandedOpen } from "../src/landed-issues.js";
 import { LedgerOpenChildrenError, LedgerStore } from "../src/ledger/store.js";
 import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
-import type { AuthRequestInput } from "../src/types.js";
+import { authRequestSnapshot } from "../src/auth-request-snapshot.js";
+import type { AuthLifecycleActor, AuthRequestActionInput, AuthRequestInput } from "../src/types.js";
 import { getOperator, setupOperator } from "../src/users/store.js";
 import { authenticatedTestRouter } from "./helpers/authenticated-router.js";
 import {
   AUTH_MERGE_REVIEW, approveFixtureRequest, awaitFixtureResolution, commitOnBranch, createAuthCheckRepo,
-  createLedgerProject, createMigratedDb, git, publishFixtureExecution, registerWorkRepo, waitForStatus,
+  createLedgerProject, createMigratedDb, git, publishFixtureExecution, recordPassingCandidateAcceptance, registerWorkRepo, waitForStatus,
 } from "./helpers/auth-queue-fixtures.js";
+import { fixtureOperatorSigning, operatorCaller } from "./helpers/operator-signing-fixtures.js";
 import { createLedgerIssue, SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
 
 let db: Db;
@@ -71,6 +73,18 @@ function submit(head: string, patch: Partial<AuthRequestInput> = {}) {
     command: `mandible auth merge ${head} --into main`, repo: path.basename(repo), cwd: repo, target_repo_root: repo,
     base_branch: "main", head_branch: head, merge_head_sha: git(repo, ["rev-parse", head]), execution_mode: "daemon",
     ...patch });
+}
+
+async function editDecisions<T>(requestId: string, edit: (actor: AuthLifecycleActor, revision: number, generation: number) => Promise<T>): Promise<T> {
+  const request = (await queue.getRequest(requestId))!;
+  const actor = { user_id: request.requested_by_user_id!, evidence_method: "api_token" };
+  return edit(actor, queue.lifecycleRevision(requestId)!, queue.requestResponsibility(request).custody_generation);
+}
+
+function approveAsFixtureOperatorAt(requestId: string, revision: number) {
+  const internals = queue as unknown as { operatorSigning: unknown };
+  internals.operatorSigning ??= fixtureOperatorSigning(db);
+  return queue.approveAsOperator(requestId, operatorCaller(getOperator(db)!.id), revision);
 }
 
 const keepOpen = (target: { short_id: string }, remainder: string) =>
@@ -228,7 +242,7 @@ describe("landed issue accounting", () => {
     const request = await submit("feature/veto");
     const childClosure = queue.listActions(request.id).find((action) => action.target_issue_ref === child.short_id)!;
 
-    expect(() => queue.setActionVeto(request.id, childClosure.id, true)).toThrow("--supersedes");
+    expect(() => queue.setActionVeto(request.id, childClosure.id, true)).toThrow("mandible auth action add|edit|rm");
   });
 
   it("finds an issue whose unit wt merge resolved into the integration branch after that branch is gone", async () => {
@@ -267,16 +281,73 @@ describe("landed issue accounting", () => {
     expect(store.setIssueStatus(umbrella.id, "closed", "delivered", SYSTEM_ACTOR).status).toBe("closed");
   });
 
-  it("refuses staging a closure or remainder after submission, since only resubmission accounts again", async () => {
-    const undecided = issue("Partly delivered", "blocked");
-    commitOnBranch(repo, "feature/frozen", { "frozen.txt": "frozen\n" });
-    unit("wu-frozen", undecided, "feature/frozen");
-    const request = await submit("feature/frozen", { actions: [keepOpen(undecided, "Needs a measurement")] });
-    const other = issue("Unrelated");
-    expect(() => queue.addAction(request.id, { kind: "issue_close", target_issue_ref: other.short_id, payload: {} }))
-      .toThrow("--supersedes");
+  it("replaces a closure with a keep-open in place, keeping the candidate and refusing an approval of the earlier revision", async () => {
+    const partial = issue("Partly delivered", "blocked");
+    const finished = issue("Finished", "done");
+    commitOnBranch(repo, "feature/edit", { "edit.txt": "edit\n" });
+    unit("wu-edit", partial, "feature/edit");
+    unit("wu-finished", finished, "feature/edit");
+    const request = await submit("feature/edit", { issue_closures: [partial.short_id] });
+    recordPassingCandidateAcceptance(db, request.id);
+    const candidate = () => db.prepare(`SELECT merge_head_sha, merge_preflight_base_sha, merge_candidate_tree_sha, merge_candidate_pin_sha
+      FROM auth_requests WHERE id = ?`).get(request.id);
+    const acceptances = () => db.prepare("SELECT * FROM auth_candidate_acceptances WHERE auth_request_id = ?").all(request.id);
+    const [before, acceptedBefore, reviewed] = [candidate(), acceptances(), queue.lifecycleRevision(request.id)!];
+
+    await editDecisions(request.id, (actor, revision, generation) =>
+      queue.addAction(request.id, keepOpen(partial, "Needs a production measurement"), actor, revision, generation));
+
+    const edited = (await queue.getRequest(request.id))!;
+    expect(edited.issue_accounting).toMatchObject({
+      closing: [{ issue_id: finished.id, by: "done" }], held: [],
+      kept_open: [{ issue_id: partial.id, remainder: "Needs a production measurement" }],
+    });
+    expect(edited.issue_closures).toEqual([finished.short_id]);
+    expect(queue.listActions(request.id).map((action) => [action.kind, action.target_issue_ref]).sort())
+      .toEqual([["issue_close", finished.short_id], ["issue_keep_open", partial.short_id]]);
+    expect(candidate()).toEqual(before);
+    expect(acceptedBefore).toHaveLength(1);
+    expect(acceptances()).toEqual(acceptedBefore);
+    expect(queue.lifecycleRevision(request.id)).toBeGreaterThan(reviewed);
+    await expect(approveAsFixtureOperatorAt(request.id, reviewed)).rejects.toThrow("changed since it was shown");
+    await land(request.id);
+    expect(store.getIssue(partial.id)).toMatchObject({ status: "open", remainder: "Needs a production measurement" });
+    expect(store.getIssue(finished.id).status).toBe("closed");
+  });
+
+  it("refuses an edit that leaves a landed issue undecided, naming the command that decides it, and writes nothing", async () => {
+    const partial = issue("Partly delivered", "blocked");
+    commitOnBranch(repo, "feature/undecided", { "undecided.txt": "undecided\n" });
+    unit("wu-undecided", partial, "feature/undecided");
+    const request = await submit("feature/undecided", { actions: [keepOpen(partial, "Needs a measurement")] });
     const keep = queue.listActions(request.id).find((action) => action.kind === "issue_keep_open")!;
-    expect(() => queue.deleteAction(request.id, keep.id)).toThrow("--supersedes");
+    const snapshot = () => authRequestSnapshot(db, request.id);
+    const [before, revision] = [snapshot(), queue.lifecycleRevision(request.id)];
+
+    await expect(editDecisions(request.id, (actor, expected, generation) => queue.deleteAction(request.id, keep.id, actor, expected, generation)))
+      .rejects.toThrow(`--kind issue_close --issue ${partial.short_id}`);
+    expect(snapshot()).toBe(before);
+    expect(queue.lifecycleRevision(request.id)).toBe(revision);
+  });
+
+  it("auth check reports an undecided landed issue as refused, and with its deciding flag the accounting submission stores", async () => {
+    const partial = issue("Partly delivered", "blocked");
+    const finished = issue("Finished", "done");
+    commitOnBranch(repo, "feature/check", { "check.txt": "check\n" });
+    unit("wu-partial", partial, "feature/check");
+    unit("wu-finished", finished, "feature/check");
+    const preview = async (actions: AuthRequestActionInput[]) => {
+      const input = { repo: path.basename(repo), base_branch: "main", head_branch: "feature/check", cwd: repo };
+      return queue.previewIssueAccounting(input, await queue.checkMergeIndependence(input), actions);
+    };
+
+    const undecided = await preview([]);
+    expect(undecided).toMatchObject({ ok: false, refusals: [{ kind: "undecided", issues: [expect.objectContaining({ issue_id: partial.id })] }] });
+    expect(undecided!.ok ? "" : undecided!.message).toContain(`--closes-issue ${partial.short_id}`);
+    const keep = keepOpen(partial, "Needs a measurement");
+    const decided = await preview([keep]);
+    expect(decided).toMatchObject({ ok: true });
+    expect((await submit("feature/check", { actions: [keep] })).issue_accounting).toEqual(decided!.issue_accounting);
   });
 
   it("clears a remainder when its issue closes", () => {

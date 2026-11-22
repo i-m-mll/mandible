@@ -17,6 +17,12 @@ neither stops an existing process nor grants approval for protected effects.
 Liveness is informational for responsibility, while process and controller
 fences still protect execution.
 
+A session that started the holder has the holder's authority over the unit
+without custody moving: the main thread of a Claude session over its
+subagents' units, and any session over the units of a conversation whose
+recorded lineage descends from it. Such writes are recorded and answered with
+`authority_path: "ancestor"`; the unit keeps its holder and generation.
+
 Umbrella parent roles follow the same principle using an observed role checkpoint.
 A merge request follows its delivery work unit's responsibility; an unbound
 request has its own responsibility. See [Architecture](/docs/concepts/architecture)

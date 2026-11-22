@@ -37,14 +37,15 @@ def instance_preflight($method; $pathname):
   elif ((try operation_catalog_valid catch false) | not) then
     {preflight_error: "catalog", category: "operation"}
   else
-    (first(.operations.routes[]
+    (.instance.instance_id // "") as $instance_id
+    | (first(.operations.routes[]
       | select(.method == $method and (.path | route_matches($pathname)))) // null) as $route
     | if $route == null then
         {preflight_error: "operation", category: "operation"}
       elif $route.operationalMutationCategory == null or $route.operationalMutationCategory == "" or $route.operationalMutationCategory == "null" then
-        {preflight_error: "", category: ""}
+        {preflight_error: "", category: "", instance_id: $instance_id}
       else
-        {preflight_error: "", category: $route.operationalMutationCategory,
+        {preflight_error: "", category: $route.operationalMutationCategory, instance_id: $instance_id,
           role: .instance.role,
           policy: (if (.instance | has("allowed_effects")) then
             if (.instance.allowed_effects | index("maintenance:shared")) != null then "allow" else "reject" end

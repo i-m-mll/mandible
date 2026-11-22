@@ -231,7 +231,7 @@ describe('automatic accepted-package binding', () => {
       executor: async () => new Promise(() => {}), candidateAcceptanceExecutor: acceptanceExecutor });
     await expect(approveAsFixtureOperator(queue, first.id, operatorId)).rejects.toThrow('Accepted package selection is not ready');
     const revision = queue.listLifecycleEvents(first.id).at(-1)!.revision;
-    queue.addAction(first.id, { kind: 'checkpoint_add', target_issue_ref: issue.id,
+    await queue.addAction(first.id, { kind: 'checkpoint_add', target_issue_ref: issue.id,
       payload: { kind: 'accepted-release', payload: { acceptanceId: accepted.id, reference } } },
       { user_id: operatorId, credential_id: credentialId, evidence_method: 'api_token' }, revision, 1);
     expect(acceptedReleaseSelection(db, (await queue.getRequest(first.id))!, queue.listActions(first.id), false).selection.reference).toBe(reference);
@@ -334,9 +334,9 @@ describe('automatic accepted-package binding', () => {
         pin_sha: request.merge_candidate_pin_sha!, tree_sha: request.merge_candidate_tree_sha!,
         base_sha: request.merge_preflight_base_sha!, head_sha: request.merge_head_sha!,
       }, undefined, request.custody_work_unit_id!);
-      queue.updateAction(request.id, initial.id, { ...initial, payload: { kind: 'accepted-release', payload: { ...initial.payload.payload, reference } } }, actor, revision, 1);
+      await queue.updateAction(request.id, initial.id, { ...initial, payload: { kind: 'accepted-release', payload: { ...initial.payload.payload, reference } } }, actor, revision, 1);
     }
-    if (change === 'delete') queue.deleteAction(request.id, initial.id, actor, revision, 1);
+    if (change === 'delete') await queue.deleteAction(request.id, initial.id, actor, revision, 1);
     const before = releaseActions(request.id);
     advanceMainViaAuthorizedMerge(db, repo, 'feature/other', 'merge-other');
     await queue.refreshPendingCandidates();

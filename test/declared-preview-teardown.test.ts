@@ -196,7 +196,7 @@ describe("declared preview teardown", () => {
     try {
       await expect(submit(queue, [declare(`${HEAD}__absent`)])).rejects.toThrow(/no preview is recorded/);
       const id = await submit(queue, [declare(lane.branch)]);
-      expect(() => queue.addAction(id, declare(lane.branch))).toThrow(/already declared/);
+      await expect(queue.addAction(id, declare(lane.branch))).rejects.toThrow(/already declared/);
     } finally {
       await queue.dispose();
     }
