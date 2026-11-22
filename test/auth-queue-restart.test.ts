@@ -1,6 +1,6 @@
 import { configureSigningCredential, createInstalledServiceHookManager, AUTH_COMMAND_REVIEW, AUTH_MERGE_REVIEW } from "./helpers/auth-queue-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
-import { approveFixtureRequest, publishFixtureExecution } from "./helpers/auth-queue-fixtures.js";
+import { approveFixtureRequest, publishFixtureExecution, seedHistoricalAuthCompletion } from "./helpers/auth-queue-fixtures.js";
 /**
  * @vitest-environment node
  *
@@ -160,7 +160,7 @@ describe("auth queue", () => {
   });
 
   describe("self-merge restart drain", () => {
-    it.each(["verified receipt", "failed update", "changed base", "revoked key", "withdrawal"] as const)(
+    it.each(["verified receipt", "failed update", "changed base", "revoked key", "withdrawal", "abandoned publication", "uncertain executor"] as const)(
       "holds an exact signed approval from the first self-merge instruction through %s", async outcome => {
       const repo = createAuthCheckRepo();
       const foreignRepo = createAuthCheckRepo();
@@ -196,6 +196,10 @@ describe("auth queue", () => {
             executed.push({ id: options.request_id, signedMerge: options.env?.MANDIBLE_AUTH_SIGNED_MERGE_SHA });
             acknowledgeSelfStarted();
             await holdSelf;
+            if (outcome === "uncertain executor") {
+              throw Object.assign(new Error("The process group could not be settled."), { processGroupSettled: false });
+            }
+            if (outcome === "abandoned publication") throw new Error("The original daemon exited before publication.");
             return publishFixtureExecution(queue!, options);
           },
         });
@@ -228,6 +232,33 @@ describe("auth queue", () => {
         const starts = () => executed.map(run => run.id);
         expect(starts()).toEqual([selfMerge.id]);
 
+        if (outcome === "uncertain executor") {
+          releaseSelf();
+          await waitUntil(async () => (await queue!.getRequest(selfMerge.id))?.error?.includes("remains fenced") === true,
+            "the repository execution fence");
+          await queue.resumeHookConvergence();
+          expect(queue.isUpdateAdmissionClosed).toBe(true);
+          expect((await queue.getRequest(other.id))?.status).toBe("approved");
+          expect(starts()).toEqual([selfMerge.id]);
+          expect(restarted).toBe(false);
+          return;
+        }
+        if (outcome === "abandoned publication") {
+          await queue.dispose();
+          const recoveredAt = Date.now() + 6 * 60_000;
+          const successorExecutor = vi.fn(async options => publishFixtureExecution(queue!, options));
+          queue = new AuthQueue({ db, hookManager: createInstalledServiceHookManager(db), now: () => recoveredAt,
+            operatorSigning: authority, executor: successorExecutor });
+          await waitForStatus(queue, selfMerge.id, "pending");
+          await queue.withdraw(selfMerge.id, "Abandon the recovered update", { user_id: operatorId, evidence_method: "local_default", authority_path: "operator" },
+            queue.lifecycleRevision(selfMerge.id)!, queue.requestResponsibility(selfMerge).custody_generation);
+          expect(await waitForStatus(queue, other.id, "pending")).toMatchObject({
+            approved_at: null, execution_evidence_id: null, error: expect.stringContaining("ended without a verified receipt"),
+          });
+          expect(successorExecutor).not.toHaveBeenCalled();
+          return;
+        }
+
         releaseSelf();
         await waitForStatus(queue, selfMerge.id, "completed");
         if (outcome === "failed update") {
@@ -243,7 +274,7 @@ describe("auth queue", () => {
         await queue.dispose();
 
         const resumedHooks = createInstalledServiceHookManager(db);
-        db.prepare("UPDATE auth_hook_executions SET state = 'complete' WHERE auth_request_id = ?").run(selfMerge.id);
+        vi.spyOn(resumedHooks, "listRequestIdsWithRunnableHooks").mockReturnValue([]);
         const receipt = vi.spyOn(resumedHooks, "runtimeReceiptAccepted").mockResolvedValue(false);
         queue = new AuthQueue({ db, hookManager: resumedHooks, backgroundMaintenance: false, operatorSigning: authority,
           executor: async options => {
@@ -285,6 +316,49 @@ describe("auth queue", () => {
         db.close();
         fs.rmSync(repo, { recursive: true, force: true });
         fs.rmSync(foreignRepo, { recursive: true, force: true });
+      }
+    });
+
+    it("processes later approvals when another update receipt is unreadable", async () => {
+      const db = createMigratedDb();
+      const repo = createAuthCheckRepo();
+      const hooks = createInstalledServiceHookManager(db);
+      const failedExecutions = vi.fn();
+      const submit = (queue: AuthQueue, title: string) => queue.submit({ ...AUTH_COMMAND_REVIEW,
+        type: "config-change", command: `echo '${title}'`, title, cwd: repo, execution_mode: "daemon" });
+      const heldApproval = async (title: string) => {
+        const predecessor = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: failedExecutions });
+        try {
+          const owner = await submit(predecessor, `${title} update`);
+          await seedHistoricalAuthCompletion(predecessor, owner.id);
+          const gate = predecessor as unknown as { closeRestartAdmission(requestId: string): boolean };
+          gate.closeRestartAdmission(owner.id);
+          const request = await submit(predecessor, title);
+          expect(await approveFixtureRequest(predecessor, request.id)).toMatchObject({ status: "approved" });
+          return { owner, request };
+        } finally { await predecessor.dispose(); }
+      };
+      let queue: AuthQueue | undefined;
+      try {
+        const inaccessible = await heldApproval("Earlier");
+        const verified = await heldApproval("Later");
+        vi.spyOn(hooks, "runtimeReceiptAccepted").mockImplementation(async owner => {
+          if (owner === inaccessible.owner.id) throw new Error("The update journal is unavailable.");
+          return owner === verified.owner.id;
+        });
+        const execute = vi.fn(async () => ({
+          exit_code: 0, signal: null, stdout: "", stderr: "", output: "", started_at: Date.now(), finished_at: Date.now(),
+        }));
+        queue = new AuthQueue({ db, hookManager: hooks, backgroundMaintenance: false, executor: execute });
+        await queue.resumeHookConvergence();
+        expect(await waitForStatus(queue, inaccessible.request.id, "pending")).toMatchObject({ execution_evidence_id: null });
+        await waitForStatus(queue, verified.request.id, "completed");
+        expect(execute).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ request_id: verified.request.id }));
+        expect(failedExecutions).not.toHaveBeenCalled();
+      } finally {
+        await queue?.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
       }
     });
 
