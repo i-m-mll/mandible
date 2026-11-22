@@ -3,12 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { activateStagedRuntime, bindingDigest, COMMITTED_OBSERVATION_WINDOW_MS, handoffDirectory, runRuntimeHandoffWorker, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, cleanupRuntimeHandoff, scheduleRuntimeHandoffCleanup, runtimeHandoffCleanupWake, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
+import { activateStagedRuntime, bindingDigest, COMMITTED_OBSERVATION_WINDOW_MS, completePaintedRuntimeHandoff, handoffDirectory, previewPaintedRuntimeHandoff, runRuntimeHandoffWorker, readRuntimeHandoff, closeQuiescentRuntimeHandoff, acknowledgeRuntimeHandoff, runtimeHandoffNeedsAcknowledgment, cleanupRuntimeHandoff, scheduleRuntimeHandoffCleanup, runtimeHandoffCleanupWake, withRuntimeObservation } from '../scripts/runtime-handoff.mjs';
 import { acceptedInstallPaths, applicationRootIdentity } from '../scripts/accepted-app-install.mjs';
 import { assertInstalledApplicationVerification, installedFileIdentity, verifyApplicationRelease } from '../scripts/installed-release.mjs';
 import { stagedInstallPaths, prepareStagedApplication, installStagedApplication } from '../scripts/staged-app-install.mjs';
 import { serviceInstallationContext } from '../scripts/service-definitions.mjs';
-import { readBundleOwner } from '../scripts/bundle-services.mjs';
+import { adoptBundleRelease, readBundleOwner } from '../scripts/bundle-services.mjs';
 import { waitUntil } from './helpers/wait-until.js';
 import { assessRuntimeLogs } from '../scripts/runtime-log-assessment.mjs';
 import { RuntimeObservationError, withRuntimeCommands } from '../scripts/runtime-observation.mjs';
@@ -61,7 +61,7 @@ function fixture() {
   return { home, file, binding, journal };
 }
 
-async function exerciseVerifiedActivation(paint?: 'current' | 'wrong-epoch' | 'wrong-token' | 'empty-epoch') {
+async function exerciseVerifiedActivation(paint?: 'current' | 'wrong-epoch' | 'wrong-token' | 'empty-epoch' | 'recovery') {
   const f = fixture();
   const database = path.join(f.home, 'bound-ledger.db');
   const writer = new SqliteDatabase(database);
@@ -80,7 +80,7 @@ async function exerciseVerifiedActivation(paint?: 'current' | 'wrong-epoch' | 'w
     fs.mkdirSync(path.dirname(predecessorImage), { recursive: true });
     fs.writeFileSync(predecessorImage, 'old desktop');
   }
-  const binding = { ...installation, accountHome: f.home, domain: context.domain, backendLabel: context.backendLabel,
+  const binding = { ...installation, installationId: 'isolated-test', accountHome: f.home, domain: context.domain, backendLabel: context.backendLabel,
     gatewayLabel: context.gatewayLabel, bundleOwner: null, priorAppIdentity: applicationRootIdentity(f.binding.nativeApp),
     predecessorHandoffProtocol: 2, desktopWasRunning: Boolean(paint),
     ...(paint ? { acceptedRelease, priorDesktop: { identities: [
@@ -110,17 +110,20 @@ console.log(JSON.stringify({ schema: 'mandible-daemon-preflight@1', schemaVersio
   fs.writeFileSync(path.join(resources, 'release.json'), JSON.stringify(release));
   const { digest, verification } = verifyApplicationRelease(staging);
   const deadline = Date.now() + 15_000;
-  const journal = { schema: 'mandible-runtime-handoff@1', binding, bindingDigest: bindingDigest(binding), deadline,
+  const journal = { schema: 'mandible-runtime-handoff@1', binding, bindingDigest: bindingDigest(binding), deadline, database,
     phase: 'armed', bridgeInstalled: true, admission: { attemptId: 'verified-stage', publication: 'published' },
     attempt: { id: 'verified-stage', deadline, state: 'running',
       effects: { prepare: { stagePath: staging, stageIdentity: verification.identity } } } };
   fs.writeFileSync(f.file, JSON.stringify(journal));
   fs.writeFileSync(path.join(context.runtimeDir, 'handoff-active.json'), JSON.stringify({ journal: f.file, bindingDigest: journal.bindingDigest }));
   const backend = { pid: 43, startedAt: 'new-backend', runs: 1 };
+  const gateway = { pid: 44, startedAt: 'new-gateway', runs: 1 };
   const effects: string[] = [];
   let draining = true;
   let launchArgument: string | undefined;
   let retired = false;
+  let retirementRequested = false;
+  let aliveAfterSignal = false;
   const startupEpoch = paint === 'empty-epoch' ? '' : 'new-epoch';
   const options = {
     context,
@@ -140,7 +143,7 @@ console.log(JSON.stringify({ schema: 'mandible-daemon-preflight@1', schemaVersio
         expect(applicationRootIdentity(binding.nativeApp)).toEqual(verification.identity);
         assertInstalledApplicationVerification(path.join(binding.nativeApp, 'Contents/Resources'), readBundleOwner(context)?.verification);
       }
-      return JSON.stringify({ processes: { backend }, process: { ...backend, startupEpoch },
+      return JSON.stringify({ processes: { backend, gateway }, process: { ...backend, startupEpoch },
         health: { instance: { backend_generation: release.provenance.commit, db_path: database } } });
     },
   };
@@ -161,6 +164,13 @@ console.log(JSON.stringify({ schema: 'mandible-daemon-preflight@1', schemaVersio
     }
     if (paint && binary === '/bin/ps' && args.at(-1) === 'lstart=') {
       const process = [predecessor, successor].find(process => process.pid === Number(args[1]));
+      if (process === predecessor && paint === 'recovery' && retirementRequested && !retired) {
+        if (!aliveAfterSignal) {
+          aliveAfterSignal = true;
+          expect(JSON.parse(fs.readFileSync(f.file, 'utf8')).attempt.receipt).toBeUndefined();
+        } else retired = true;
+      }
+      if (process === predecessor && retired) return { status: 1 };
       if (process) return { status: 0, stdout: process.startedAt };
     }
     if (paint && binary === '/usr/sbin/lsof') {
@@ -172,11 +182,12 @@ console.log(JSON.stringify({ schema: 'mandible-daemon-preflight@1', schemaVersio
       const argument = args.at(-1);
       if (typeof argument !== 'string') throw new Error('Successor launch has no scope and token.');
       launchArgument = argument;
+      successor.startedAt = new Date().toISOString();
       const [scope, token] = launchArgument.split(':');
       expect(scope).toBe(path.basename(path.dirname(f.file)));
       fs.writeFileSync(path.join(path.dirname(f.file), `desktop-paint-${token}.json`), JSON.stringify({
         schema: 'mandible-desktop-paint@1',
-        token: paint === 'wrong-token' ? (token[0] === '0' ? '1' : '0') + token.slice(1) : token,
+        token: paint === 'wrong-token' || paint === 'recovery' ? (token[0] === '0' ? '1' : '0') + token.slice(1) : token,
         pid: successor.pid,
         startup_epoch: paint === 'wrong-epoch' ? 'old-epoch' : startupEpoch,
       }));
@@ -186,14 +197,54 @@ console.log(JSON.stringify({ schema: 'mandible-daemon-preflight@1', schemaVersio
     if (paint && binary === '/bin/kill') {
       expect(args).toEqual(['-TERM', String(predecessor.pid)]);
       expect(JSON.parse(fs.readFileSync(f.file, 'utf8')).attempt.effects.desktop.identity.pid).toBe(successor.pid);
-      retired = true;
+      retirementRequested = true;
+      if (paint !== 'recovery') retired = true;
       effects.push('desktop-retire');
       return { status: 0 };
     }
     return originalSpawn(binary, args, options);
-  } }, () => paint
-    ? runRuntimeHandoffWorker(f.file, { ...options, install: installStagedApplication, verifyPublication: async () => {} })
-    : withRuntimeObservation(journal, () => activateStagedRuntime(journal, options)));
+  } }, async () => {
+    if (!paint) return withRuntimeObservation(journal, () => activateStagedRuntime(journal, options));
+    const verified = await runRuntimeHandoffWorker(f.file, { ...options,
+      install: (current, context, input) => installStagedApplication(current, context, { ...input,
+        publishOwner: (app, owner) => adoptBundleRelease(context, app.release, owner, current.acceptedRelease.reference,
+          { until: input.until, verification: app.verification }) }),
+      verifyPublication: async () => {} });
+    if (paint !== 'recovery') return verified;
+    expect(verified.attempt.state).toBe('failed');
+    const token = verified.attempt.effects.desktop.token;
+    fs.writeFileSync(path.join(path.dirname(f.file), `desktop-paint-${token}.json`), JSON.stringify({
+      schema: 'mandible-desktop-paint@1', token, pid: successor.pid, startup_epoch: startupEpoch,
+    }));
+    const recoveryOptions = {
+      prepare: options.prepare,
+      verifyPublication: async () => {},
+      inspect: async (_binding, { assertHeld, expectedProcesses }) => {
+        assertHeld();
+        expect(expectedProcesses).toEqual({ backend, gateway });
+        return { processes: expectedProcesses, process: { ...backend, startupEpoch },
+          health: { instance: { backend_generation: release.provenance.commit, db_path: database } },
+          daemonLog: { path: 'daemon.log', dev: 1, ino: 2, size: 3 } };
+      },
+    };
+    const before = fs.readFileSync(f.file);
+    const preview = await previewPaintedRuntimeHandoff(verified, recoveryOptions);
+    expect(preview.predecessors).toEqual([predecessor.pid]);
+    expect(fs.readFileSync(f.file)).toEqual(before);
+    const wrongSuccessor = JSON.parse(before.toString());
+    wrongSuccessor.attempt.effects.desktop.observed = { ...preview.successor, imageInode: preview.successor.imageInode + 1 };
+    fs.writeFileSync(f.file, JSON.stringify(wrongSuccessor));
+    await expect(previewPaintedRuntimeHandoff(wrongSuccessor, recoveryOptions)).rejects.toThrow('exact successor desktop');
+    fs.writeFileSync(f.file, before);
+    const actor = { user_id: 'fixture-operator' };
+    await expect(completePaintedRuntimeHandoff(verified, { proof: 'f'.repeat(64), actor }, recoveryOptions))
+      .rejects.toThrow('changed after the dry run');
+    expect(fs.readFileSync(f.file)).toEqual(before);
+    const recovered = await completePaintedRuntimeHandoff(verified, { proof: preview.proof, actor }, recoveryOptions);
+    expect(recovered.attempt.receipt.attemptId).toBe(preview.attemptId);
+    expect(aliveAfterSignal && retired).toBe(true);
+    return recovered;
+  });
   return { activation, effects, binding, previous, context, digest, verification, backend, database, release, successor };
 }
 
@@ -222,6 +273,15 @@ it.each(['wrong-epoch', 'wrong-token', 'empty-epoch'] as const)('the activation 
   expect(activation.attempt).toMatchObject({ state: 'failed', lastObservation: { code: 'desktop_evidence_mismatch' } });
   expect(activation.attempt.receipt).toBeUndefined();
   expect(effects).toEqual(['handoff-remove', 'handoff-start', 'handoff-verify', 'desktop-open']);
+});
+
+it('completes a failed painted attempt after a read-only dry run without relaunching the successor or services', async () => {
+  const { activation, effects, successor } = await exerciseVerifiedActivation('recovery');
+  expect(activation.attempt).toMatchObject({ id: 'verified-stage', state: 'complete', fence: { reason: 'terminal-completion' },
+    receipt: { startup: { epoch: 'new-epoch' }, desktop: { identity: successor } } });
+  expect(activation.paintedRecovery).toMatchObject({ actor: { user_id: 'fixture-operator' },
+    observation: { code: 'desktop_evidence_mismatch' } });
+  expect(effects).toEqual(['handoff-remove', 'handoff-start', 'handoff-verify', 'desktop-open', 'desktop-retire']);
 });
 
 it('resumes an installed-before-launch interruption through the same recorded attempt and restores desktop intent', async () => {
