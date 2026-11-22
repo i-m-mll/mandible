@@ -41,15 +41,28 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(400);
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(3000);
+  const size = 100;
+  const item = (index: number) => ({
+    key: boundary.options.getItemKey(index), index, size, start: index * size, end: (index + 1) * size,
+  });
   boundary.engine = {
-    options: {}, isScrolling: false, range: { startIndex: 26, endIndex: 29 },
+    options: {}, isScrolling: false,
+    get range() {
+      const count = boundary.options?.count ?? 0;
+      return count ? { startIndex: Math.max(0, count - 4), endIndex: count - 1 } : null;
+    },
     get scrollOffset() { return boundary.options.getScrollElement()?.scrollTop ?? 0; },
-    measure: () => {}, getTotalSize: () => boundary.options.count * 100, cancelScroll: () => {},
-    getVirtualItems: () => Array.from({ length: Math.min(10, boundary.options.count) }, (_, index) => {
-      const row = boundary.options.count - 10 + index; return { key: boundary.options.getItemKey(row), index: row, size: 100, start: row * 100, end: (row + 1) * 100 };
-    }),
-    getVirtualItemForOffset: (offset: number) => ({ index: Math.min(29, Math.floor(offset / 100)) }),
-    getOffsetForIndex:(index:number)=>[index*100,'start'],
+    measure: () => {}, getTotalSize: () => boundary.options.count * size, cancelScroll: () => {},
+    getVirtualItems: () => {
+      const count = boundary.options.count;
+      const first = Math.max(0, count - 10);
+      return Array.from({ length: count - first }, (_, index) => item(first + index));
+    },
+    getVirtualItemForOffset: (offset: number) => {
+      const count = boundary.options.count;
+      return count ? item(Math.min(count - 1, Math.max(0, Math.floor(offset / size)))) : undefined;
+    },
+    getOffsetForIndex:(index:number)=>[index*size,'start'],
     isAtEnd: () => boundary.options.getScrollElement()?.scrollTop === 2600,
     scrollToEnd: () => { boundary.options.getScrollElement().scrollTop = 2600; },
     scrollToOffset: (offset: number) => { boundary.options.getScrollElement().scrollTop = offset; },
