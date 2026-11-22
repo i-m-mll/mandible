@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 // Import-graph reachability guard for the UI bundle.
 //
-// The UI ships from a single esbuild entry (`ui/src/app.tsx`). Modules that no
-// longer sit on that import graph are dead weight: their JS is tree-shaken away
-// but any CSS they `@import` (and any CSS file that is only referenced from
-// them) still ships in the eager `app.css`. This walker follows static imports,
-// re-exports and dynamic `import()` calls from the entry and reports every
-// module under `ui/src/` that it never reaches.
+// The UI ships from the app entry (`ui/src/app.tsx`) and the interface-notes
+// embed's entries (`ui/embed-build.mjs`). Modules that no longer sit on their
+// import graph are dead weight: their JS is tree-shaken away but any CSS they
+// `@import` (and any CSS file that is only referenced from them) still ships in
+// the eager `app.css`. This walker follows static imports, re-exports and
+// dynamic `import()` calls from the entries and reports every module under
+// `ui/src/` that it never reaches.
 //
 // Used by `bun run check` (scripts/check.mjs); also runnable directly:
 //   node scripts/ui-reachability.mjs [--json]
@@ -15,6 +16,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { embedBuildOptions } from '../ui/embed-build.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -117,10 +119,14 @@ function extractSpecifiers(source, fileName) {
 
 export function computeReachability({ repoRoot = REPO_ROOT } = {}) {
   const uiSrc = path.join(repoRoot, 'ui', 'src');
-  const entry = path.join(uiSrc, 'app.tsx');
+  const embedSrc = path.join(REPO_ROOT, 'ui', 'src');
+  const entries = [
+    path.join(uiSrc, 'app.tsx'),
+    ...Object.values(embedBuildOptions({ outdir: '' }).entryPoints).map((entry) => path.join(uiSrc, path.relative(embedSrc, entry))),
+  ];
   const toPosix = (absolutePath) => path.relative(repoRoot, absolutePath).split(path.sep).join('/');
   const reached = new Set();
-  const queue = [entry];
+  const queue = [...entries];
 
   while (queue.length > 0) {
     const current = queue.pop();
@@ -163,7 +169,7 @@ export function computeReachability({ repoRoot = REPO_ROOT } = {}) {
     .sort();
 
   return {
-    entry: toPosix(entry),
+    entries: entries.map(toPosix),
     reachedCount: [...reached].filter((file) => file.startsWith(uiSrc)).length,
     totalCount: allFiles.length,
     unreachable,
@@ -176,7 +182,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
     process.stdout.write(
-      `entry=${report.entry} reached=${report.reachedCount}/${report.totalCount}\n`,
+      `entries=${report.entries.join(',')} reached=${report.reachedCount}/${report.totalCount}\n`,
     );
     if (report.unreachable.length === 0) process.stdout.write('no unreachable modules\n');
     else {
