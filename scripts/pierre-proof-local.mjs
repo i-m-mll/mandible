@@ -47,6 +47,7 @@ export async function proveDiff(resources, port) {
           document.addEventListener("click", event => {
             if (event.target.textContent === "Open diff") performance.mark("diff-click");
             if (event.target.textContent === "Open request") performance.mark("request-click");
+            if (event.target.textContent === "Open Markdown comparison") performance.mark("markdown-click");
           }, { capture: true });
         });
         await page.route(`${origin}/diff-verify`, route => route.fulfill({
@@ -103,9 +104,33 @@ export async function proveDiff(resources, port) {
         }));
         assert.equal(request.files, 400);
         assert.equal(request.expanded, 0);
+        await page.getByRole("button", { name: "Open Markdown comparison" }).click();
+        const markdown = page.getByRole("textbox", { name: "Markdown comparison" });
+        await markdown.waitFor();
+        const markdownMountMs = await page.evaluate(() => performance.now() - performance.getEntriesByName("markdown-click")[0].startTime);
+        const nextChange = page.getByRole("button", { name: "Next change" });
+        const changedWords = new Set();
+        for (let change = 0; change < 20; change++) {
+          const word = `newword${10 + change * 32}`;
+          await nextChange.evaluate(button => button.click());
+          await page.locator(".cm-changedText").filter({ hasText: new RegExp(`^${word}$`) }).waitFor();
+          changedWords.add(word);
+        }
+        await markdown.focus();
+        await page.keyboard.press(process.platform === "darwin" ? "Meta+a" : "Control+a");
+        const copied = await markdown.evaluate(editor => {
+          const clipboard = new DataTransfer();
+          editor.dispatchEvent(new ClipboardEvent("copy", { clipboardData: clipboard, bubbles: true, cancelable: true }));
+          return clipboard.getData("text/plain");
+        });
+        const expected = Array.from({ length: 640 }, (_, line) => {
+          const word = line % 32 === 10 ? `newword${line}` : "context";
+          return `Line ${line}: ${word} ${"the fast blue rabbit walks past the slow red rabbit ".repeat(2)}🐇\r\n`;
+        }).join("");
+        assert.equal(copied, expected);
         assert.deepEqual(errors, []);
         results.push({ engine: engine.name(), firstVisibleMs: firstPaint, highlightedMs: marks.highlightedMs, ...domInfo, ranges,
-          lazyMainThreadBytes: lazy.filter(url => url !== worker).reduce((sum, url) => sum + bytes(url), 0), workerBytes: bytes(worker), request });
+          lazyMainThreadBytes: lazy.filter(url => url !== worker).reduce((sum, url) => sum + bytes(url), 0), workerBytes: bytes(worker), request, markdown: { bytes: Buffer.byteLength(copied), mountMs: markdownMountMs, changes: changedWords.size } });
       } catch (error) {
         console.error(engine.name(), await page.evaluate(() => ({ messages: window.messages, requests: window.requests, result: document.querySelector("output")?.textContent })));
         throw error;

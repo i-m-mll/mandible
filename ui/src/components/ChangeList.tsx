@@ -4,6 +4,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/ho
 import type { DiffFilePair, GitChangeFile } from '../../../src/contracts';
 import { quoteReviewLines } from '../../../src/feedback/review-ranges';
 import { diffFileKey, type DiffFileIdentity } from './diff-file-identity';
+import { appTip } from './shared/AppHoverTips';
+import { DetailPaneNotice } from './shared/DetailPaneNotice';
 import { CollapsiblePanel } from './shared/CollapsiblePanel';
 import { Icon } from './icons/Icon';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -111,7 +113,7 @@ function ChangeBody({ name, inputKey, load, mode, wrap, wholeFile, onLineSelecti
   }, [inputKey]);
 
   const input = useMemo(() => result?.kind === 'text' ? { ...result, kind: 'contents' as const } : result, [result]);
-  if (failed) return <div role="alert">File changes unavailable</div>;
+  if (failed) return <DetailPaneNotice severity="error" density="compact">File changes unavailable</DetailPaneNotice>;
   if (!input) return null;
   if (input.kind === 'binary') return <span class="change-list__badge">Binary</span>;
   const whitespaceOnly = knownWhitespace === undefined && input.kind === 'contents' && input.before.contents !== input.after.contents
@@ -172,13 +174,18 @@ export function ChangeInventoryList({
     <section class="change-list" aria-label={ariaLabel} data-diff-mode={view.mode}>
       {files.length > 0 && <div class="change-list__toolbar">
         <div role="group" aria-label="Diff layout">
-          {(['unified', 'split'] as const).map(mode => <button key={mode} type="button" aria-pressed={view.mode === mode}
-            onClick={() => setView(current => ({ ...current, mode }))}>{mode === 'unified' ? 'Unified' : 'Split'}</button>)}
+          {(['unified', 'split'] as const).map(mode => {
+            const label = mode === 'unified' ? 'Unified' : 'Split';
+            return <button key={mode} type="button" aria-pressed={view.mode === mode} aria-label={label}
+              {...appTip(label)} onClick={() => setView(current => ({ ...current, mode }))}>
+              <Icon name={mode === 'unified' ? 'diffUnified' : 'diffSplit'} />
+            </button>;
+          })}
         </div>
-        {!partial && <button type="button" aria-pressed={view.wholeFile}
-          onClick={() => setView(current => ({ ...current, wholeFile: !current.wholeFile }))}>Whole file</button>}
-        <button type="button" aria-pressed={view.wrap}
-          onClick={() => setView(current => ({ ...current, wrap: !current.wrap }))}>Wrap</button>
+        {!partial && <button type="button" aria-pressed={view.wholeFile} aria-label="Whole file" {...appTip('Whole file')}
+          onClick={() => setView(current => ({ ...current, wholeFile: !current.wholeFile }))}><Icon name="openMarkdown" /></button>}
+        <button type="button" aria-pressed={view.wrap} aria-label="Wrap" {...appTip('Wrap')}
+          onClick={() => setView(current => ({ ...current, wrap: !current.wrap }))}><Icon name="wrapLines" /></button>
       </div>}
       {files.map((file, index) => {
         const name = file.new_path ?? file.old_path ?? 'Changes';
@@ -195,7 +202,7 @@ export function ChangeInventoryList({
           onExpandedChange={next => setView(current => ({
             ...current, expanded: { ...current.expanded, [key]: next },
           }))}
-          title={<span class="change-list__path" title={name}
+          title={<span class="change-list__path" {...appTip(name)}
             ref={node => { if (node) headings.current.set(key, node); else headings.current.delete(key); }}>
             {file.old_path && file.new_path && file.old_path !== file.new_path ? `${file.old_path} → ${file.new_path}` : name}
           </span>}
@@ -208,7 +215,7 @@ export function ChangeInventoryList({
               <span class="change-list__del">−{file.deletions}</span>
             </>}
             {viewed !== undefined && viewed !== fileRevision && <span class="change-list__badge">Changed since viewed</span>}
-            <button type="button" class="change-list__viewed" title={`Viewed ${name}`}
+            <button type="button" class="change-list__viewed" {...appTip("Mark viewed")}
               aria-label={`Viewed ${name}`} aria-pressed={viewed === fileRevision}
               onClick={() => setView(current => {
                 const viewed = { ...current.viewed };

@@ -1,3 +1,4 @@
+import { DetailPaneNotice } from './shared/DetailPaneNotice';
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import {
   VirtualizedFile,
@@ -154,7 +155,7 @@ export function PierreFileDiff({ input, mode, wrap = true, wholeFile, ariaLabel,
   return (
     <div class="pierre-file-diff" ref={scroll} role="region" aria-label={ariaLabel} tabIndex={0} style={{ overflow: "auto", maxHeight: "65vh" }}>
       <div ref={content} />
-      {workerError && <div role="alert">{input.kind === "file" ? "File editor unavailable" : "Diff highlighting unavailable"}</div>}
+      {workerError && <DetailPaneNotice severity="warning" density="compact">{input.kind === "file" ? "File editor unavailable" : "Diff highlighting unavailable"}</DetailPaneNotice>}
     </div>
   );
 }

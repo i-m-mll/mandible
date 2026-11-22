@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, ArrowRightLeft, ArrowUp, ArrowUpRight, Bell, Bot, Bug, Check, CheckCheck, ChevronDown, ChevronRight, ChevronUp, ChevronsUp, Circle, CircleDot, CloudDownload, CloudUpload, Code, Copy, Download, Ellipsis, FilePenLine, FilePlus2, FileText, FileX2, GitFork, Globe, History, Image, Info, Lightbulb, Link, ListTodo, Menu, MessageSquare, MousePointer2, Paintbrush, Pencil, Play, Plus, Search, Settings, ShieldAlert, Square, SquareCheck, SquareTerminal, TriangleAlert, User, Workflow, X, type LucideIcon } from 'lucide-preact';
+import { Activity, ArrowDown, ArrowRightLeft, ArrowUp, ArrowUpRight, Bell, Bot, Bug, Check, CheckCheck, Columns2, ChevronDown, ChevronRight, ChevronUp, ChevronsUp, Circle, CircleDot, CloudDownload, CloudUpload, Code, Copy, Download, Ellipsis, FilePenLine, FilePlus2, FileText, FileX2, GitFork, Globe, History, Image, Info, Lightbulb, Link, ListTodo, Menu, MessageSquare, MousePointer2, Paintbrush, Pencil, Play, Plus, Rows2, Search, Settings, ShieldAlert, Square, SquareCheck, SquareTerminal, TriangleAlert, User, Workflow, WrapText, X, type LucideIcon } from 'lucide-preact';
 import type { IconSourceProps } from './types';
 
 function PaintbrushIcon({ size = 16, ...props }: IconSourceProps) {
@@ -77,6 +77,9 @@ export const lucideSet = {
   copyMessage: lucideIcon(Copy),
   copyLink: lucideIcon(Link),
   messageCopied: lucideIcon(Check),
+  diffUnified: lucideIcon(Rows2),
+  diffSplit: lucideIcon(Columns2),
+  wrapLines: lucideIcon(WrapText),
   openMarkdown: lucideIcon(FileText),
   selectMessage: lucideIcon(MousePointer2),
   messageSelected: lucideIcon(Check),
