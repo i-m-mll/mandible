@@ -20,6 +20,7 @@ export function compactAcceptanceResult(result) {
     cleanup_error: text(result.cleanup_error, 512), receipt: text(result.receipt, 512), secondary_errors: slice(result.secondary_errors, 8)?.map(value => text(value, 512)),
     subprocess: result.subprocess,
     checks: { readiness: checks.readiness, desktop_interaction: checks.desktop_interaction, health_coverage: checks.health_coverage,
+      startup_trace: checks.startup_trace,
       log_digest: checks.log_digest, log_bytes: checks.log_bytes, cleanup: checks.cleanup,
       initial_transport_error: checks.initial_transport_error,
       failure_logs: slice(checks.failure_logs, 4)?.map(log => ({ name: text(log?.name, 64), sha256: text(log?.sha256, 64),

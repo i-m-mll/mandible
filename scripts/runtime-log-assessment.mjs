@@ -10,6 +10,18 @@ const HEALTH_EVENTS = new Set([
   'daemon_memory_warning',
 ]);
 const MAX_RETAINED_HEALTH_EVENTS = 20;
+const STARTUP_EVENTS = new Map([['daemon', 'daemon_boot_phase'], ['desktop', 'desktop_startup']]);
+const MAX_STARTUP_PHASES = 24;
+
+function startupPhase(row) {
+  const at = Number.isSafeInteger(row.at_ms) ? row.at_ms : Date.parse(row.time);
+  if (!Number.isSafeInteger(at) || !Number.isFinite(row.elapsed_ms) || row.elapsed_ms < 0
+      || typeof row.phase !== 'string' || !/^[a-z][a-z0-9_]{0,47}$/.test(row.phase)) return null;
+  const epoch = row.startup_epoch;
+  return { phase: row.phase, at_ms: at, elapsed_ms: row.elapsed_ms,
+    ...(typeof epoch === 'string' && /^[\w-]{1,80}$/.test(epoch) ? { startup_epoch: epoch } : {}),
+    ...(['bootstrap', 'dashboard'].includes(row.frame) ? { frame: row.frame } : {}) };
+}
 
 function recordTime(summary, row) {
   const time = Date.parse(row.time);
@@ -39,6 +51,8 @@ export function assessRuntimeLogs(text, context) {
 export function createRuntimeLogAssessor({ process: source, shutdown } = {}) {
   const failures = [];
   const healthEvents = [];
+  const startupPhases = [];
+  let startupPhaseCount = 0;
   let healthEventCount = 0;
   let hardFailureCount = 0;
   const events = new Map();
@@ -73,6 +87,13 @@ export function createRuntimeLogAssessor({ process: source, shutdown } = {}) {
           && row.exit_code === 0 && time >= graceAt) completedAt = time;
     }
     const event = row.message || row.event || '';
+    if (source?.owned === true && Number.isInteger(source.pid) && row.pid === source.pid && event === STARTUP_EVENTS.get(source.role)) {
+      const phase = startupPhase(row);
+      if (phase) {
+        startupPhaseCount++;
+        if (startupPhases.length < MAX_STARTUP_PHASES) startupPhases.push(phase);
+      }
+    }
     if (event === 'server_started') started++;
     if (event === 'http_request' && typeof row.method === 'string' && typeof row.pathname === 'string') {
       requests++;
@@ -133,6 +154,7 @@ export function createRuntimeLogAssessor({ process: source, shutdown } = {}) {
     return {
       failures,
       diagnostics: { hard_failure_count: hardFailureCount,
+        ...(startupPhaseCount ? { startup: { pid: source.pid, phases: startupPhases, omitted: startupPhaseCount - startupPhases.length } } : {}),
         ...(boundedShutdown ? { gateway_shutdown: { pid: source.pid, signal: shutdown.signal, grace_seconds: shutdown.graceSeconds,
           requested_at: shutdown.requestedAt, exited_at: shutdown.exitedAt, exit_code: shutdown.exitCode,
           signal_at: signalAt, grace_started_at: graceAt, completed_at: completedAt,

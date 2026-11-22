@@ -221,6 +221,8 @@ Phase results, bounded stderr, cleanup outcome and the durable owned-run receipt
 available on failure. The finished application that ran supplies exact package
 evidence and retained release custody.
 
+The diagnostic result retains startup phases from the owned daemon and desktop processes. Their wall timestamps and startup epoch correlate daemon readiness with the native shell's first renderer frame. Each process also reports its own monotonic elapsed time. The packaged acceptance window stays hidden, so its first frame is an isolated rendering measurement. Installed outage and visible window timing come from an installed handoff and its client traces.
+
 ## Diagnostic replay
 
 For an authorized investigation, the same packaged execution pipeline can reuse

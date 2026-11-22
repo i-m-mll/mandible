@@ -738,7 +738,13 @@ async function main(startedAt) {
     });
     const logText = logSources.map(source => source.text).join('\n');
     result.checks.log_failures = logSources.flatMap(source => source.assessment.failures.map(line => `${source.name}: ${line}`));
-    result.checks.log_diagnostics = Object.fromEntries(logSources.map(source => [source.name, source.assessment.diagnostics]));
+    result.checks.log_diagnostics = {};
+    result.checks.startup_trace = {};
+    for (const { name, assessment } of logSources) {
+      const { startup, ...diagnostics } = assessment.diagnostics;
+      result.checks.log_diagnostics[name] = diagnostics;
+      if (startup) result.checks.startup_trace[name] = startup;
+    }
     if (result.status !== 'passed' && fs.existsSync(path.join(run, 'build.log'))) result.checks.build_failure_excerpt = fs.readFileSync(path.join(run, 'build.log'), 'utf8').split('\n').slice(-30).join('\n').slice(-8000);
     result.checks.log_digest = createHash('sha256').update(logText).digest('hex');
     result.checks.log_bytes = Buffer.byteLength(logText);
