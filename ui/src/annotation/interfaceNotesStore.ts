@@ -6,7 +6,7 @@ import {
   type InterfaceNotePin,
 } from '../../../src/interface-notes/contract';
 import { readPersistedViewState, writePersistedViewState } from '../hooks/usePersistedViewState';
-import { agentationAttachment, agentationText } from './agentationAdapter';
+import { agentationAttachment, agentationText, annotationElement } from './agentationAdapter';
 import { interfaceNoteWriteSettled, InterfaceNotesApiError, type InterfaceNoteDraft, type InterfaceNotesTransport } from './notesTransport';
 
 /**
@@ -237,8 +237,8 @@ function writeCache(): boolean {
   return changed;
 }
 
-function noteInput(annotation: Annotation, pageUrl: string, revision: string | null): InterfaceNoteDraft {
-  const { target } = agentationAttachment(annotation, 1, pageUrl, { width: window.innerWidth, height: window.innerHeight });
+function noteInput(annotation: Annotation, pageUrl: string, revision: string | null, element: Element | null = null): InterfaceNoteDraft {
+  const { target } = agentationAttachment(annotation, 1, pageUrl, { width: window.innerWidth, height: window.innerHeight }, element);
   return { id: annotation.id, text: agentationText(annotation), target: revision ? { ...target, revision } : target, pin: annotation };
 }
 
@@ -387,7 +387,7 @@ export function recordAdd(annotation: Annotation): void {
   const path = window.location.pathname;
   const pages = currentView();
   pages.set(path, new Map(pages.get(path)).set(annotation.id, annotation.comment));
-  record(annotation.id, { kind: 'create', input: noteInput(annotation, window.location.href, env().revision()), at: Date.now() });
+  record(annotation.id, { kind: 'create', input: noteInput(annotation, window.location.href, env().revision(), annotationElement(annotation)), at: Date.now() });
   emit();
   scheduleFlush();
 }

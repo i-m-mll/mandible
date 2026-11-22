@@ -72,7 +72,7 @@ export function validatedAnnotationTarget(value: unknown): AnnotationTarget {
 }
 
 const ANNOTATION_TEXT_FIELDS = [
-  "selector", "element_text", "element", "source_file", "react_components", "css_classes",
+  "selector", "element_text", "element", "source_file", "reference", "react_components", "css_classes",
   "computed_styles", "selected_text", "nearby_text", "revision",
 ] as const satisfies ReadonlyArray<Exclude<keyof AnnotationTarget, "url" | "rect" | "viewport">>;
 

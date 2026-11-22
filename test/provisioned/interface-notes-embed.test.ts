@@ -125,6 +125,18 @@ it('records the React components of the element a note is made on, and keeps Sen
   await tab.close();
 });
 
+it('takes Source and Reference from the nearest stamped ancestor of an element React gives no source for', async () => {
+  const { tab, created } = await openHost();
+  await tab.locator(LAUNCHER).click();
+  await tab.locator('#error-text').click();
+  await tab.getByPlaceholder('What should change?').fill('Where is this from?');
+  await tab.keyboard.press('Enter');
+  await expect.poll(() => created.find((note) => note.text === 'Where is this from?')).toBeTruthy();
+  expect(created.find((note) => note.text === 'Where is this from?')!.target)
+    .toMatchObject({ source_file: 'studio/ErrorBox.tsx:42', reference: 'error-7' });
+  await tab.close();
+});
+
 /** Covers the viewport with an element of the given kind, holding a heading `#cover-title`. */
 function cover(kind: 'modal' | 'overlay' | 'popover'): void {
   const element = document.createElement(kind === 'modal' ? 'dialog' : 'div');
