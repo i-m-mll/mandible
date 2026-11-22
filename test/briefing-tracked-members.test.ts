@@ -4,7 +4,8 @@ import { expect, it } from "vitest";
 import { computeAuthMergeReviewMetadata } from "../src/auth-context.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
-import { createBriefingBundle, replaceBriefingBundleLayout } from "../src/feedback/briefing-bundles.js";
+import type { Db } from "../src/db.js";
+import { createBriefingBundle, replaceBriefingBundleLayout, type BriefingBundleViewer } from "../src/feedback/briefing-bundles.js";
 import { configureBriefingGroup, createBriefingGroup, readBriefingGroup } from "../src/feedback/briefing-groups.js";
 import { publishBriefingFromArtifactVersion } from "../src/feedback/briefings.js";
 import { readRequestReview } from "../src/feedback/request-review.js";
@@ -23,8 +24,7 @@ import { operatorCaller } from "./helpers/operator-signing-fixtures.js";
 import { runCli, startStubDaemon, type StubDaemon } from "./helpers/cli-process.js";
 import { migratedFileDb } from "./helpers/ledger-fixtures.js";
 
-it("qualifies tracked paths by project and keeps reviewed pins and custody history across conversion", async () => {
-  const db = migratedFileDb(uniqueMissingPath("tracking-conversion.db"));
+function createConversionTransport(db: Db) {
   const queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false,
     executor: async () => { throw new Error("A native Briefing conversion must not start a shell command"); } });
   const operator = createUser(db, { slug: "operator", kind: "human", display_name: "Operator" });
@@ -42,62 +42,110 @@ it("qualifies tracked paths by project and keeps reviewed pins and custody histo
   } });
   registerBriefingRoutes(router, db, inlineLedgerReader(() => db));
   registerBriefingConversionRequests(router, db, queue);
-  let daemon: StubDaemon | undefined;
+  const connectAgent = () => startStubDaemon(({ method, url, headers, body }) =>
+    router.invoke({ method, url, credential: headers.authorization?.replace(/^Bearer /i, ""), body }));
+  return { agent, viewer, queue, router, connectAgent };
+}
+
+function commit(repo: string, subject: string) {
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-m", subject]);
+  return git(repo, ["rev-parse", "HEAD"]);
+}
+
+function seedMixedBriefingGroup(db: Db, viewer: BriefingBundleViewer) {
   const firstRepo = createAuthCheckRepo();
   const secondRepo = createAuthCheckRepo();
-  const commit = (repo: string, subject: string) => {
-    git(repo, ["add", "-A"]);
-    git(repo, ["commit", "-m", subject]);
-    return git(repo, ["rev-parse", "HEAD"]);
-  };
-  const register = (project_key: string, root: string) => {
+  const register = (projectKey: string, root: string) => {
     registerWorkRepo(db, root);
-    const project = addProject(db, { project_key });
+    const project = addProject(db, { project_key: projectKey });
     addOrUpdateCheckout(db, project.id, { root, default_branch: "main" });
     return project.id;
   };
   const first = register("first-project", firstRepo);
   const second = register("second-project", secondRepo);
   const source = "Text copied from the former source.\n";
+  writeFile(firstRepo, "shared.md", "First project text.\n");
+  writeFile(firstRepo, "legacy.md", "Existing custody file.\n");
+  writeFile(firstRepo, "source.md", source);
+  const oldBase = commit(firstRepo, "First project's original documents");
+  git(firstRepo, ["mv", "legacy.md", "current.md"]);
+  const firstBase = commit(firstRepo, "Record a protected rename");
+  writeFile(secondRepo, "shared.md", "Second project text.\n");
+  const secondBase = commit(secondRepo, "Second project's original document");
+  const version = recordArtifactVersion(db, { source_kind: "tracked_repo", project: first,
+    commit: oldBase, path: "legacy.md", custody_mode: "git" }).artifact_version;
+  const legacy = publishBriefingFromArtifactVersion(db, {
+    profile: "mandible-briefing.v3", title: "Existing custody file",
+    artifact_version_ref: version.id, responder_user_ids: [viewer.userId],
+  }).briefing_id;
+  const current = createBriefingBundle(db, { name: "Current", briefingRefs: [], viewer });
+  const pending = createBriefingBundle(db, { name: "Custody proposal", briefingRefs: [], viewer });
+  replaceBriefingBundleLayout(db, current.id, { layout: [
+    { kind: "tracked", project_ref: second, path: "shared.md" },
+    { kind: "subgroup", name: "Shared instructions", members: [
+      { kind: "tracked", project_ref: first, path: "renamed.md" },
+      { kind: "briefing", briefing_ref: legacy },
+      { kind: "tracked", project_ref: first, path: "shared.md" },
+      { kind: "tracked", project_ref: first, path: "copy.md" },
+      { kind: "tracked", project_ref: first, path: "source.md" },
+    ] },
+  ] }, viewer);
+  const group = createBriefingGroup(db, { key: "mixed-policy", name: "Mixed policy",
+    currentBundleRef: current.id, bundleRefs: [pending.id], viewer });
+  return { group, current, pending, first, firstRepo, firstBase, second, secondRepo, secondBase, source };
+}
+
+function agentConversionRequests(router: Router, groupId: string, baseRef: string) {
+  const endpoint = `/api/briefing-groups/${groupId}/tracking-conversion`;
+  const plan = async () => {
+    const response = await router.invoke({ method: "GET", url: endpoint, credential: "agent" });
+    expect(response.status).toBe(200);
+    return (response.body as { plan: { plan_digest: string } }).plan;
+  };
+  const requestConversion = (plan_digest: string) => router.invoke({
+    method: "POST", url: `${endpoint}/requests`, credential: "agent",
+    body: { expected_base_bundle_ref: baseRef, plan_digest },
+  });
+  return { plan, requestConversion };
+}
+
+function runAgentCli(daemon: StubDaemon, args: string[]) {
+  return runCli(args, { env: { ...daemon.env, MANDIBLE_TOKEN: "agent", MANDIBLE_NO_KEYCHAIN_TOKEN: "1" } });
+}
+
+async function submitCrossProjectProposals(queue: AuthQueue, userId: string,
+  { firstRepo, secondRepo, source }: ReturnType<typeof seedMixedBriefingGroup>) {
+  git(firstRepo, ["switch", "-c", "feature/review"]);
+  git(firstRepo, ["mv", "shared.md", "renamed.md"]);
+  writeFile(firstRepo, "copy.md", source);
+  writeFile(firstRepo, "source.md", "Different retained source text.\n");
+  const firstHead = commit(firstRepo, "Rename and copy");
+  git(firstRepo, ["switch", "main"]);
+  git(secondRepo, ["switch", "-c", "feature/review"]);
+  writeFile(secondRepo, "shared.md", "Second project edit.\n");
+  const secondHead = commit(secondRepo, "Edit the second project's shared path");
+  git(secondRepo, ["switch", "main"]);
+  const submit = async (project: string, repo: string, merge_head_sha: string, depends_on_ids: string[] = []) => {
+    const { changeReport } = await computeAuthMergeReviewMetadata(repo, "main", "feature/review");
+    return queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge", depends_on_ids, repo: project, cwd: repo, target_repo_root: repo,
+      command: "mandible auth merge feature/review --into main", title: "Review instructions",
+      base_branch: "main", head_branch: "feature/review", merge_head_sha, change_report: changeReport }, userId);
+  };
+  const firstRequest = await submit("first-project", firstRepo, firstHead);
+  const secondRequest = await submit("second-project", secondRepo, secondHead, [firstRequest.id]);
+  return { firstRequest, secondRequest };
+}
+
+it("qualifies tracked paths by project and keeps reviewed pins and custody history across conversion", async () => {
+  const db = migratedFileDb(uniqueMissingPath("tracking-conversion.db"));
+  const { agent, viewer, queue, router, connectAgent } = createConversionTransport(db);
+  let daemon: StubDaemon | undefined;
   try {
-    writeFile(firstRepo, "shared.md", "First project text.\n");
-    writeFile(firstRepo, "legacy.md", "Existing custody file.\n");
-    writeFile(firstRepo, "source.md", source);
-    const oldBase = commit(firstRepo, "First project's original documents");
-    git(firstRepo, ["mv", "legacy.md", "current.md"]);
-    const firstBase = commit(firstRepo, "Record a protected rename");
-    writeFile(secondRepo, "shared.md", "Second project text.\n");
-    const secondBase = commit(secondRepo, "Second project's original document");
-    const version = recordArtifactVersion(db, { source_kind: "tracked_repo", project: first,
-      commit: oldBase, path: "legacy.md", custody_mode: "git" }).artifact_version;
-    const legacy = publishBriefingFromArtifactVersion(db, {
-      profile: "mandible-briefing.v3", title: "Existing custody file",
-      artifact_version_ref: version.id, responder_user_ids: [viewer.userId],
-    }).briefing_id;
-    const current = createBriefingBundle(db, { name: "Current", briefingRefs: [], viewer });
-    const pending = createBriefingBundle(db, { name: "Custody proposal", briefingRefs: [], viewer });
-    replaceBriefingBundleLayout(db, current.id, { layout: [
-      { kind: "tracked", project_ref: second, path: "shared.md" },
-      { kind: "subgroup", name: "Shared instructions", members: [
-        { kind: "tracked", project_ref: first, path: "renamed.md" },
-        { kind: "briefing", briefing_ref: legacy },
-        { kind: "tracked", project_ref: first, path: "shared.md" },
-        { kind: "tracked", project_ref: first, path: "copy.md" },
-        { kind: "tracked", project_ref: first, path: "source.md" },
-      ] },
-    ] }, viewer);
-    const group = createBriefingGroup(db, { key: "mixed-policy", name: "Mixed policy",
-      currentBundleRef: current.id, bundleRefs: [pending.id], viewer });
-    const endpoint = `/api/briefing-groups/${group.id}/tracking-conversion`;
-    const plan = async () => {
-      const response = await router.invoke({ method: "GET", url: endpoint, credential: "agent" });
-      expect(response.status).toBe(200);
-      return (response.body as { plan: { plan_digest: string } }).plan;
-    };
-    const requestConversion = (plan_digest: string) => router.invoke({
-      method: "POST", url: `${endpoint}/requests`, credential: "agent",
-      body: { expected_base_bundle_ref: current.id.slice(0, 8), plan_digest },
-    });
+    const fixture = seedMixedBriefingGroup(db, viewer);
+    const { group, current, pending, first, firstBase, second, secondRepo, secondBase } = fixture;
+    const baseRef = current.id.slice(0, 8);
+    const { plan, requestConversion } = agentConversionRequests(router, group.id, baseRef);
     const backupDirectory = path.join(path.dirname(db.name), "backups");
     const beforePlan = db.prepare("SELECT total_changes() AS writes").get();
     const blocked = await plan();
@@ -109,20 +157,13 @@ it("qualifies tracked paths by project and keeps reviewed pins and custody histo
     });
     expect(db.prepare("SELECT total_changes() AS writes").get()).toEqual(beforePlan);
     expect(existsSync(backupDirectory)).toBe(false);
+
     const dismissal = configureBriefingGroup(db, group.id, { currentBundleRef: current.id, bundleRefs: [] }, viewer).group.history[0]!;
     const ready = await plan();
     expect(await requestConversion(blocked.plan_digest)).toMatchObject({
       status: 409, body: { code: "conversion_plan_drift" },
     });
-    const approve = (id: string) => queue.approveAsOperator(id, operatorCaller(operator.id), queue.lifecycleRevision(id)!);
-    const submitWithCli = async (planDigest: string) => {
-      const requested = await runCli(["briefing", "group", "convert", group.key, "--request",
-        "--expected-base", current.id.slice(0, 8), "--plan-digest", planDigest, "--json"], {
-        env: { ...daemon!.env, MANDIBLE_TOKEN: "agent", MANDIBLE_NO_KEYCHAIN_TOKEN: "1" },
-      });
-      expect(requested.status, requested.stderr).toBe(0);
-      return (JSON.parse(requested.stdout) as { request_id: string }).request_id;
-    };
+    const approve = (id: string) => queue.approveAsOperator(id, operatorCaller(viewer.userId), queue.lifecycleRevision(id)!);
     const stale = await requestConversion(ready.plan_digest);
     expect(stale.status).toBe(201);
     const staleId = (stale.body as { request_id: string }).request_id;
@@ -131,10 +172,13 @@ it("qualifies tracked paths by project and keeps reviewed pins and custody histo
     await waitForStatus(queue, staleId, "failed");
     expect(queue.getRequestExact(staleId)?.error).toMatch(/decide all custody proposals/i);
     expect(existsSync(backupDirectory)).toBe(false);
+
     configureBriefingGroup(db, group.id, { currentBundleRef: current.id, bundleRefs: [] }, viewer);
-    daemon = await startStubDaemon(({ method, url, headers, body }) =>
-      router.invoke({ method, url, credential: headers.authorization?.replace(/^Bearer /i, ""), body }));
-    const requestId = await submitWithCli((await plan()).plan_digest);
+    daemon = await connectAgent();
+    const requested = await runAgentCli(daemon, ["briefing", "group", "convert", group.key, "--request",
+      "--expected-base", baseRef, "--plan-digest", (await plan()).plan_digest, "--json"]);
+    expect(requested.status, requested.stderr).toBe(0);
+    const { request_id: requestId } = JSON.parse(requested.stdout) as { request_id: string };
     expect(queue.getRequestExact(requestId)).toMatchObject({ status: "pending", requested_by_user_id: agent.id,
       type: "config-change" });
     await expect(queue.approveAsOperator(requestId, operatorCaller(agent.id), queue.lifecycleRevision(requestId)!))
@@ -163,27 +207,9 @@ it("qualifies tracked paths by project and keeps reviewed pins and custody histo
       { kind: "tracked", tracked: { path: "copy.md", content: null } },
       { kind: "tracked", tracked: { path: "source.md" } },
     ] });
-    git(firstRepo, ["switch", "-c", "feature/review"]);
-    git(firstRepo, ["mv", "shared.md", "renamed.md"]);
-    writeFile(firstRepo, "copy.md", source);
-    writeFile(firstRepo, "source.md", "Different retained source text.\n");
-    const firstHead = commit(firstRepo, "Rename and copy");
-    git(firstRepo, ["switch", "main"]);
-    git(secondRepo, ["switch", "-c", "feature/review"]);
-    writeFile(secondRepo, "shared.md", "Second project edit.\n");
-    const secondHead = commit(secondRepo, "Edit the second project's shared path");
-    git(secondRepo, ["switch", "main"]);
-    const submit = async (project: string, repo: string, merge_head_sha: string, depends_on_ids: string[] = []) => {
-      const { changeReport } = await computeAuthMergeReviewMetadata(repo, "main", "feature/review");
-      return queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge", depends_on_ids, repo: project, cwd: repo, target_repo_root: repo,
-        command: "mandible auth merge feature/review --into main", title: "Review instructions",
-        base_branch: "main", head_branch: "feature/review", merge_head_sha, change_report: changeReport }, viewer.userId);
-    };
-    const firstRequest = await submit("first-project", firstRepo, firstHead);
-    const secondRequest = await submit("second-project", secondRepo, secondHead, [firstRequest.id]);
-    const shown = await runCli(["briefing", "group", "show", group.key, "--json"], {
-      env: { ...daemon.env, MANDIBLE_TOKEN: "agent", MANDIBLE_NO_KEYCHAIN_TOKEN: "1" },
-    });
+
+    const { firstRequest, secondRequest } = await submitCrossProjectProposals(queue, viewer.userId, fixture);
+    const shown = await runAgentCli(daemon, ["briefing", "group", "show", group.key, "--json"]);
     expect(shown.status, shown.stderr).toBe(0);
     const agentGroup = (JSON.parse(shown.stdout) as { group: typeof converted }).group;
     expect(agentGroup.current?.layout[0]).toMatchObject({ kind: "tracked",
@@ -204,6 +230,7 @@ it("qualifies tracked paths by project and keeps reviewed pins and custody histo
       members: [{ project_id: second, path: "shared.md" }],
       depends_on: [{ request_id: firstRequest.id, state: "pending" }],
     });
+
     const review = await readRequestReview(db, firstRequest, viewer.userId);
     expect(review.tracked_groups[0]?.members).toEqual(entries.find(entry => entry.request_id === firstRequest.id)?.members);
     expect(review.tracked_groups[0]?.documents[0]).toMatchObject({ project_id: second, commit_sha: secondBase, content: "Second project text.\n" });
@@ -211,8 +238,8 @@ it("qualifies tracked paths by project and keeps reviewed pins and custody histo
     expect(JSON.parse(frozen.snapshot_json)[0].documents[0]).toEqual({
       project_id: second, path: "shared.md", project_key: "second-project", commit_sha: secondBase,
     });
-    const pinned = db.prepare("SELECT tracked_snapshot_json FROM briefing_group_dispositions WHERE tracked_snapshot_json IS NOT NULL")
-      .get() as { tracked_snapshot_json: string };
+    const pinned = db.prepare("SELECT tracked_snapshot_json FROM briefing_group_dispositions WHERE id = ?")
+      .get(dismissal.id) as { tracked_snapshot_json: string };
     expect(JSON.parse(pinned.tracked_snapshot_json)[0].layout[0].tracked).toEqual(
       JSON.parse(frozen.snapshot_json)[0].documents[0],
     );
