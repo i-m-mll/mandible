@@ -22,6 +22,7 @@ pub fn host_initialization_script(startup_trace: bool) -> String {
         "framePresentation": presentation(),
         "sessionId": session_id,
         "startupTrace": startup_trace,
+        "handoverRoute": startup_trace,
     });
     format!("Object.defineProperty(window, '__MANDIBLE_NATIVE_HOST__', {{ value: Object.freeze({host}) }});")
 }

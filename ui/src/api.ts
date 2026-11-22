@@ -6,6 +6,8 @@ import type { ReviewAnnotationMutation } from '../../src/feedback/review-store';
 import type { CarriedReviewRange, ReviewDocumentReference } from "../../src/feedback/review-types";
 import { parseManagedChatDefaults, type ManagedChatDefaults } from "../../src/managed-chat-defaults";
 import { DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS, isBriefingEvent, OPERATOR_PROOF_WINDOW_MS, type DashboardBadgeCounts } from '../../src/contracts';
+import { parseAppPath } from '../../src/app-routes';
+import { PRODUCTION_ORIGIN } from '../../src/canonical-origin';
 import { queryClient } from './query/client';
 import { detailKeys, detailKeysForEvent } from './query/detailKeys';
 import { isSpaceDocumentQuery, projectionAffectedByEvent, spacePacketMatches } from './query/resourceInvalidation';
@@ -2871,6 +2873,7 @@ type TauriDesktopWindow = { setTheme: (theme: DesktopWindowTheme) => Promise<voi
 
 export type NativeHost = {
   kind: 'tauri';
+  handoverRoute?: boolean;
   platform: string;
   framePresentation: 'macos-overlay' | 'system';
   sessionId: string;
@@ -2995,6 +2998,14 @@ async function invokeDesktop<T>(command: string, args?: Record<string, unknown>)
     throw new Error('Desktop daemon controls are only available in the Tauri app.');
   }
   return invoke<T>(command, args);
+}
+
+export function reportDesktopDashboardRoute(href: string): void {
+  if (window.location.origin !== PRODUCTION_ORIGIN || !tauriGlobalWindow()?.__MANDIBLE_NATIVE_HOST__?.handoverRoute) return;
+  const route = new URL(href);
+  if (route.origin !== PRODUCTION_ORIGIN || parseAppPath(route.pathname).kind === 'not_found') return;
+  void invokeDesktop('desktop_route_observed', { href: route.href }).catch(error =>
+    console.warn('Could not preserve the desktop route', error));
 }
 
 export async function getDesktopDaemonStatus(): Promise<DesktopDaemonStatus | null> {

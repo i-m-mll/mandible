@@ -4,6 +4,7 @@ description = "Allows only the application commands used by the Mandible desktop
 commands.allow = [
   "desktop_frame_ready",
   "desktop_frame_painted",
+  "desktop_route_observed",
   "desktop_trace",
   "daemon_status",
   "daemon_get_launch_mode",

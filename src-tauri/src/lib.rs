@@ -481,8 +481,10 @@ async fn navigate_to_desktop_dashboard(app: AppHandle, fast_only: Option<bool>) 
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "desktop main window is unavailable".to_string())?;
-    let url = tauri::Url::parse(PRODUCTION_ORIGIN)
-        .map_err(|error| format!("invalid canonical dashboard origin: {error}"))?;
+    let url = desktop_startup::replacement_route(&app)?.unwrap_or(
+        tauri::Url::parse(PRODUCTION_ORIGIN)
+            .map_err(|error| format!("invalid canonical dashboard origin: {error}"))?,
+    );
     let operation_id = NEXT_DASHBOARD_NAVIGATION_ID.fetch_add(1, Ordering::Relaxed);
     let (completion, completed) = mpsc::channel();
     {
@@ -918,6 +920,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             desktop_startup::desktop_frame_ready,
             desktop_startup::desktop_frame_painted,
+            desktop_startup::desktop_route_observed,
             desktop_startup::desktop_trace,
             daemon_status,
             daemon_get_launch_mode,

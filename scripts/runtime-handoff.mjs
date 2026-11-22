@@ -8,6 +8,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { runSupervisedCommand } from './process-group-supervisor.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { runtimeEnvironment } from './runtime-environment.mjs';
+import { ownedDesktopRoute } from './desktop-route.mjs';
 import { readRuntimeHandoffLock, runtimeHandoffLockFile, runtimeHandoffLockRefusal, runtimeHandoffBindingDigest, readRuntimeHandoffRetirement } from './runtime-handoff-lock.mjs';
 import { RuntimeObservationError, observationPending, runtimeObservationAcceptance, runRuntimeCommand, runtimeNow, runtimeObservationTimeout, withRuntimeBudget } from './runtime-observation.mjs';
 import { authHookTimeoutMs } from '../src/auth-hook-timeout.ts';
@@ -279,6 +280,15 @@ function replacementPaint(journal, effect, process) {
   return true;
 }
 
+function predecessorDesktopRoute(journal, prior) {
+  const file = path.join(homeDirectory(journal.binding.home), 'desktop-route.json');
+  const metadata = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (!metadata?.isFile() || metadata.size > 8192) return null;
+  const observed = prior.filter(process => journal.binding.priorDesktop?.identities
+    .some(captured => sameDesktopImage(process, captured)));
+  return ownedDesktopRoute(JSON.parse(fs.readFileSync(file, 'utf8')), observed);
+}
+
 function retirePredecessorDesktop(journal, effect) {
   const identities = desktopIdentities(journal.binding.nativeApp);
   for (const process of identities) {
@@ -323,13 +333,18 @@ async function restoreDesktop(journal) {
       saveEffect(journal, "desktop", { kind: "closed", completedAt: Date.now() });
       return;
     }
-    saveEffect(journal, "desktop", { kind: "replaced", executionSha256, issuedAt: Date.now(), prior, token: randomBytes(16).toString("hex") });
+    const route = predecessorDesktopRoute(journal, prior);
+    saveEffect(journal, "desktop", { kind: "replaced", executionSha256, issuedAt: Date.now(), prior,
+      token: randomBytes(16).toString("hex"), ...(route ? { route } : {}) });
     effect = journal.attempt.effects.desktop;
   }
   const launchArgument = `${path.basename(directory)}:${effect.token}`;
   let candidates = desktopIdentities(binding.nativeApp, launchArgument).filter(process => process.installedImage);
   if (!candidates.length && !effect.launchedAt) {
     assertObservationLease(journal);
+    if (effect.route) atomic(path.join(directory, `desktop-route-${effect.token}.json`), {
+      schema: 'mandible-desktop-handover-route@1', token: effect.token, href: effect.route.href,
+    });
     const open = runRuntimeCommand("/usr/bin/open", ["-n", "-g", "--env", `MANDIBLE_HOME=${binding.home}`,
       "--stderr", path.join(directory, "desktop-successor.log"), binding.nativeApp, "--args", "--mandible-update-paint", launchArgument]);
     if (open.status !== 0) throw observationFailure("desktop_launch_failed", open.stderr || "Could not launch the installed desktop.");

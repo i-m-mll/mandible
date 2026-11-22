@@ -2,12 +2,15 @@ use serde::Deserialize;
 use serde_json::json;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 static STARTED: OnceLock<Instant> = OnceLock::new();
+static LAUNCH_IMAGE: OnceLock<LaunchImage> = OnceLock::new();
 static REPLACEMENT: OnceLock<Option<Replacement>> = OnceLock::new();
 const TRACE_LIMIT_BYTES: u64 = 1_048_576;
 
@@ -29,6 +32,18 @@ struct Frames {
 struct Replacement {
     scope: String,
     token: String,
+}
+
+struct LaunchImage {
+    at_ms: u128,
+    inode: u64,
+}
+
+#[derive(Deserialize)]
+struct ReplacementRoute {
+    schema: String,
+    token: String,
+    href: String,
 }
 
 fn runtime_dir() -> PathBuf {
@@ -66,6 +81,15 @@ pub fn start() {
     STARTED
         .set(Instant::now())
         .expect("desktop startup starts once");
+    #[cfg(unix)]
+    if let Ok(image) = std::env::current_exe().and_then(fs::metadata) {
+        LAUNCH_IMAGE
+            .set(LaunchImage {
+                at_ms: wall_time_ms(),
+                inode: image.ino(),
+            })
+            .ok();
+    }
     let path = trace_path();
     if fs::metadata(&path).is_ok_and(|file| file.len() >= TRACE_LIMIT_BYTES) {
         if let Err(error) = fs::rename(&path, path.with_extension("jsonl.1")) {
@@ -75,6 +99,55 @@ pub fn start() {
     trace("launch", None, None, None, None);
 }
 
+fn wall_time_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before Unix epoch")
+        .as_millis()
+}
+
+fn dashboard_route(href: &str) -> Result<tauri::Url, String> {
+    let url = tauri::Url::parse(href).map_err(|error| error.to_string())?;
+    if href.len() > 4_096
+        || !super::is_dashboard_origin(&url)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || matches!(
+            url.path_segments().and_then(|mut segments| segments.next()),
+            Some("api" | "dist" | "r")
+        )
+    {
+        return Err("The desktop handover route is outside the canonical dashboard".into());
+    }
+    Ok(url)
+}
+
+pub fn replacement_route(app: &AppHandle) -> Result<Option<tauri::Url>, String> {
+    let Some(update) = replacement() else {
+        return Ok(None);
+    };
+    if app.state::<FrameState>().frames.lock().unwrap().dashboard {
+        return Ok(None);
+    }
+    let file = replacement_directory(&runtime_dir(), update)?
+        .join(format!("desktop-route-{}.json", update.token));
+    let metadata = match fs::symlink_metadata(&file) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.is_file() || metadata.len() > 8_192 {
+        return Err("The desktop handover route must be an owned regular file".into());
+    }
+    let record: ReplacementRoute =
+        serde_json::from_slice(&fs::read(file).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+    if record.schema != "mandible-desktop-handover-route@1" || record.token != update.token {
+        return Err("The desktop handover route belongs to another launch".into());
+    }
+    dashboard_route(&record.href).map(Some)
+}
+
 pub fn trace(
     phase: &str,
     frame: Option<&str>,
@@ -82,12 +155,9 @@ pub fn trace(
     request_id: Option<&str>,
     web_at_ms: Option<u64>,
 ) {
-    let time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before Unix epoch");
     let record = json!({
         "event": "desktop_startup", "phase": phase, "pid": std::process::id(),
-        "at_ms": time.as_millis(), "elapsed_ms": STARTED.get().map(|start| start.elapsed().as_millis()),
+        "at_ms": wall_time_ms(), "elapsed_ms": STARTED.get().map(|start| start.elapsed().as_millis()),
         "frame": frame, "startup_epoch": startup_epoch, "request_id": request_id, "web_at_ms": web_at_ms,
     });
     let line = format!("{record}\n");
@@ -134,15 +204,20 @@ fn validate_frame_origin(window: &WebviewWindow, dashboard: bool) -> Result<bool
     Err("Desktop startup frame belongs to an untrusted origin".into())
 }
 
+fn replacement_directory(directory: &Path, replacement: &Replacement) -> Result<PathBuf, String> {
+    let parent = directory.join("handoff").join(&replacement.scope);
+    if !fs::symlink_metadata(&parent).is_ok_and(|entry| entry.is_dir()) {
+        return Err("Desktop replacement journal is unavailable".into());
+    }
+    Ok(parent)
+}
+
 fn publish_paint(
     directory: &Path,
     replacement: &Replacement,
     epoch: Option<&str>,
 ) -> Result<(), String> {
-    let parent = directory.join("handoff").join(&replacement.scope);
-    if !fs::symlink_metadata(&parent).is_ok_and(|entry| entry.is_dir()) {
-        return Err("Desktop replacement journal is unavailable".into());
-    }
+    let parent = replacement_directory(directory, replacement)?;
     let file = parent.join(format!("desktop-paint-{}.json", replacement.token));
     let pid = std::process::id();
     let temporary = parent.join(format!(".desktop-paint-{}-{pid}.tmp", replacement.token));
@@ -159,6 +234,36 @@ fn publish_paint(
     if result.is_err() {
         fs::remove_file(&temporary).ok();
     }
+    result.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn desktop_route_observed(window: WebviewWindow, href: String) -> Result<(), String> {
+    if validate_frame_origin(&window, true)? {
+        return Err("Candidate acceptance does not persist desktop routes".into());
+    }
+    let Some(launch) = LAUNCH_IMAGE.get() else {
+        return Ok(());
+    };
+    let url = dashboard_route(&href)?;
+    let runtime = runtime_dir();
+    let pid = std::process::id();
+    let temporary = runtime.join(format!(".desktop-route-{pid}-{}.tmp", launch.at_ms));
+    let evidence = json!({ "schema": "mandible-desktop-route@1", "pid": pid, "desktop_started_at_ms": launch.at_ms,
+        "image_inode": launch.inode, "href": url.as_str() });
+    let result = (|| -> std::io::Result<()> {
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&temporary)?;
+        let result = writeln!(file, "{evidence}")
+            .and_then(|()| fs::rename(&temporary, runtime.join("desktop-route.json")));
+        if result.is_err() {
+            fs::remove_file(&temporary).ok();
+        }
+        result
+    })();
     result.map_err(|error| error.to_string())
 }
 
@@ -263,4 +368,28 @@ pub fn desktop_trace(
         Some(at_ms),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dashboard_route;
+
+    #[test]
+    fn handover_routes_use_only_the_exact_dashboard_origin() {
+        assert!(dashboard_route(
+            "https://app.mandible.localhost:19420/issue/abcd?sidebar=hidden#note"
+        )
+        .is_ok());
+        for unsafe_route in [
+            "http://app.mandible.localhost:19420/issues",
+            "https://app.mandible.localhost:19421/issues",
+            "https://app.mandible.localhost.example:19420/issues",
+            "https://name:pass@app.mandible.localhost:19420/issues",
+            "https://app.mandible.localhost:19420/api/health",
+            "https://app.mandible.localhost:19420/r/issue/abcd",
+            "/issues",
+        ] {
+            assert!(dashboard_route(unsafe_route).is_err(), "{unsafe_route}");
+        }
+    }
 }
