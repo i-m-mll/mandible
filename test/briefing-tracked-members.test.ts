@@ -207,6 +207,16 @@ it("qualifies tracked paths by project and keeps reviewed pins and custody histo
     const review = await readRequestReview(db, firstRequest, viewer.userId);
     expect(review.tracked_groups[0]?.members).toEqual(entries.find(entry => entry.request_id === firstRequest.id)?.members);
     expect(review.tracked_groups[0]?.documents[0]).toMatchObject({ project_id: second, commit_sha: secondBase, content: "Second project text.\n" });
+    const frozen = db.prepare("SELECT snapshot_json FROM briefing_request_group_snapshots").get() as { snapshot_json: string };
+    expect(JSON.parse(frozen.snapshot_json)[0].documents[0]).toEqual({
+      project_id: second, path: "shared.md", project_key: "second-project", commit_sha: secondBase,
+    });
+    const pinned = db.prepare("SELECT tracked_snapshot_json FROM briefing_group_dispositions WHERE tracked_snapshot_json IS NOT NULL")
+      .get() as { tracked_snapshot_json: string };
+    expect(JSON.parse(pinned.tracked_snapshot_json)[0].layout[0].tracked).toEqual(
+      JSON.parse(frozen.snapshot_json)[0].documents[0],
+    );
+    expect(git(secondRepo, ["rev-parse", `refs/mandible/review/${secondBase}`])).toBe(secondBase);
     writeFile(secondRepo, "shared.md", "Second project protected update.\n");
     const secondCurrent = commit(secondRepo, "Advance the other protected branch");
     expect((await readRequestReview(db, firstRequest, viewer.userId)).tracked_groups).toEqual(review.tracked_groups);
@@ -218,6 +228,9 @@ it("qualifies tracked paths by project and keeps reviewed pins and custody histo
       kind: "tracked", tracked: { commit_sha: secondCurrent, content: "Second project protected update.\n" },
     });
     expect(db.prepare("SELECT COUNT(*) AS count FROM artifact_version").get()).toEqual({ count: 1 });
+    db.prepare("DELETE FROM ledger_project_checkouts WHERE project_id = ?").run(second);
+    const unavailable = await readRequestReview(db, firstRequest, viewer.userId);
+    expect(unavailable.tracked_groups[0]?.documents[0]).toMatchObject({ project_id: second, commit_sha: secondBase, content: null });
   } finally {
     await daemon?.close();
     await queue.dispose();

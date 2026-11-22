@@ -400,7 +400,9 @@ export function registerBriefingConversionRequests(server: RouteRegistrar, db: D
     }).strict(), reportingCategory: "briefing" }, fileRpc: "allow" });
 }
 
-export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: LedgerReader): void {
+export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: LedgerReader, allowTrackedReviewRetention = true): void {
+  const retentionAllowed = (req: RequestLike) => allowTrackedReviewRetention
+    && requireIdentity(req).effect_ceiling.includes("files:production");
   server.get("/api/briefing-destination-routes", (req, res) => {
     try {
       destinationPrincipal(db, req);
@@ -616,7 +618,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
         currentBundleRef: requestBody.current_bundle_ref as string | null,
         bundleRefs: requestBody.bundle_refs,
         placementOverride: placementOverride(req, requestBody, requireIdentity(req).user_id),
-      }, viewer);
+      }, { ...viewer, retainTrackedReviewRefs: retentionAllowed(req) });
       if (result.changed) broadcast(BRIEFING_EVENTS.groupConfigurationUpdated, { group_id: result.group.id });
       sendJson(res, 200, result);
     } catch (error) { handleError(res, error); }
@@ -653,7 +655,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
           ? requestBody.proposal_bundle_ref : "",
         authRequestRef: typeof requestBody.auth_request_ref === "string" ? requestBody.auth_request_ref : "",
         mergeHeadSha: typeof requestBody.merge_head_sha === "string" ? requestBody.merge_head_sha : "",
-      }, viewer);
+      }, { ...viewer, retainTrackedReviewRefs: retentionAllowed(req) });
       if (result.changed) broadcast(BRIEFING_EVENTS.groupProposalPromoted, {
         group_id: result.group.id,
         proposal_bundle_id: result.disposition.proposal.id,
@@ -683,7 +685,7 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
         decision: requestBody.decision,
         bindingDigest: typeof requestBody.binding_digest === "string" ? requestBody.binding_digest : "",
         destinationChanges: destinationChanges(requestBody.destination_changes),
-      }, principal.actor, principal.viewer);
+      }, principal.actor, { ...principal.viewer, retainTrackedReviewRefs: retentionAllowed(req) });
       if (result.changed) broadcast(result.disposition.kind === "accepted"
         ? BRIEFING_EVENTS.groupProposalAccepted : BRIEFING_EVENTS.groupProposalRejected, {
         group_id: result.group.id,
