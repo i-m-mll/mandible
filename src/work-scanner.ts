@@ -1140,7 +1140,9 @@ export class WorkScanner {
   private async runAsyncScan(skipRecent: boolean): Promise<ScanSummary> {
     const start = Date.now();
     const cachedRepos = this.getRepos();
-    if (skipRecent && cachedRepos.length > 0 && !cachedRepos.some((repo) => this.repoNeedsScan(repo, start))) {
+    const cachedRoots = new Set(cachedRepos.map((repo) => repo.root));
+    if (skipRecent && cachedRepos.length > 0 && this.resolveRepoRoots().every((root) => cachedRoots.has(root)) &&
+        !cachedRepos.some((repo) => this.repoNeedsScan(repo, start))) {
       const summary: ScanSummary = {
         scanned_repos: 0,
         branches_updated: 0,
@@ -1605,8 +1607,8 @@ export class WorkScanner {
     );
   }
 
-  // Cold discovery uses the same bounded Git probes as branch refresh.
-  private refreshRepoInfos(): Promise<void> {
+  /** Re-resolve the tracked repositories, as cold discovery does, using the same bounded Git probes as branch refresh. */
+  refreshRepoInfos(): Promise<void> {
     if (this.repoInfoRefresh) return this.repoInfoRefresh;
     const refresh = this.runRepoInfoRefresh().catch(error => {
       if (!this.stopped) this.repoDiscoveryStatus = "failed";
@@ -1795,10 +1797,24 @@ export class WorkScanner {
       return this.repoRootsOverride;
     }
     const config = readRepoConfig(this.configPath);
-    if (config.exists) {
-      return normalizeRoots(config.repos);
+    const roots = config.exists ? config.repos : discoverRepos(this.defaultRepoRoot);
+    return normalizeRoots([...roots, ...this.registeredCheckoutRoots()]);
+  }
+
+  /**
+   * Issue c8817ff — a checkout registered to a project is a tracked work
+   * repository, whether or not repos.json or the directory scan lists it.
+   */
+  private registeredCheckoutRoots(): string[] {
+    let rows: Array<{ root: string }>;
+    try {
+      rows = this.db.prepare("SELECT root FROM ledger_project_checkouts").all() as Array<{ root: string }>;
+    } catch {
+      // Lightweight scanner test databases can intentionally omit the project
+      // registry, as in registeredWorkRepoId.
+      return [];
     }
-    return normalizeRoots(discoverRepos(this.defaultRepoRoot));
+    return rows.map((row) => row.root).filter((root) => isGitDirectory(root));
   }
 
   private async isGitRepo(repoRoot: string): Promise<boolean> {
@@ -2055,6 +2071,8 @@ export class WorkScanner {
         return candidate;
       }
     }
-    return "";
+    // A default branch with no commits yet is the unborn branch HEAD names.
+    const head = (await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: repoRoot, signal: this.scanAbort.signal, absent_exit_codes: [1] }))?.trim();
+    return head && candidates.includes(head) ? head : "";
   }
 }

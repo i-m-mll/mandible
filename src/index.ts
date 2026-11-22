@@ -109,6 +109,7 @@ import { defaultCodexNativeArchiveAdapter } from "./conversation-control/codex-n
 import { installedResourceRoot, readInstalledRelease, verifyInstalledRelease } from "../scripts/installed-release.mjs";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import { startProtectedBranchGuardProjection } from "./protected-branch-guard.js";
+import { onProtectionInputsChanged } from "./protection-inputs.js";
 import { getMandibleConfigPath, getMandibleHomePath } from "./platform-paths.js";
 import { getOperator } from "./users/store.js";
 import type { Logger, StartupCommitInfo } from "./types.js";
@@ -296,6 +297,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       }
     },
   }));
+  // Issue c8817ff — a newly registered checkout becomes a tracked work repository at once.
+  onProtectionInputsChanged((reason) => {
+    if (reason !== "checkout:add" && reason !== "checkout:relocate") return;
+    workScanner.refreshRepoInfos().catch((error) => getDaemonLogger()("error", "work_repo_refresh_failed", { subsystem: "work-scanner", reason, error: String(error) }));
+  });
   registerTrashRoutes(router, db);
   // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
   const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager; conversationControl?: ConversationControlService } = { sessionRegistry };
