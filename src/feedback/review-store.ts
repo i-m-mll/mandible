@@ -3,7 +3,10 @@ import type { Db } from "../db.js";
 import { canonicalJson } from "../canonical-json.js";
 import { quoteReviewLines } from "./review-ranges.js";
 import { requestOriginJson } from "../request-origin.js";
-import type { ReviewAnnotation, ReviewDocumentBinding, ReviewDocumentReference, ReviewRange } from "./review-types.js";
+import type {
+  ReviewAnnotation, ReviewDocumentBinding, ReviewDocumentReference, ReviewRange,
+  ReviewThreadActor, ReviewThreadEvent, ReviewThreadMutation,
+} from "./review-types.js";
 
 export type ReviewRoundOwner = { kind: "briefing"; briefing_id: string }
   | { kind: "request_revision"; auth_request_id: string };
@@ -63,6 +66,44 @@ export function reviewSubmissionAnnotations(db: Db, submissionId: string): Revie
     WHERE a.submission_id = ? ORDER BY e.created_at, e.rowid`).all(submissionId) as ReviewAnnotation[];
 }
 
+export function reviewThreadEvents(db: Db, commentIds: readonly string[]) {
+  const threads = new Map<string, ReviewThreadEvent[]>();
+  if (!commentIds.length) return threads;
+  const rows = db.prepare(`SELECT id, comment_id, round_id, operation, body, actor_role, actor_user_id, created_at
+    FROM review_thread_events WHERE comment_id IN (SELECT value FROM json_each(?)) ORDER BY sequence`)
+    .all(JSON.stringify(commentIds)) as Array<ReviewThreadEvent & { comment_id: string }>;
+  for (const { comment_id, ...event } of rows) {
+    const thread = threads.get(comment_id) ?? [];
+    thread.push(event);
+    threads.set(comment_id, thread);
+  }
+  return threads;
+}
+
+export function reviewThreadResolved(events: readonly ReviewThreadEvent[]): boolean {
+  return events.filter(event => event.operation === "resolve" || event.operation === "reopen").at(-1)?.operation === "resolve";
+}
+
+/** Append in the caller's transaction after authorizing the actor and comment. */
+export function appendReviewThreadEvent(db: Db, commentId: string, roundId: string, actor: ReviewThreadActor,
+  mutation: ReviewThreadMutation, now: number,
+): { ok: true; id: string } | { ok: false; reason: "thread_state_conflict" } {
+  const events = reviewThreadEvents(db, [commentId]).get(commentId) ?? [];
+  const resolved = reviewThreadResolved(events);
+  if ((mutation.operation === "resolve" && resolved) || (mutation.operation === "reopen" && !resolved)
+      || (mutation.operation === "address" && (resolved
+        || events.some(event => event.operation === "address" && event.round_id === roundId)))) {
+    return { ok: false, reason: "thread_state_conflict" };
+  }
+  const id = randomUUID();
+  db.prepare(`INSERT INTO review_thread_events
+    (id, comment_id, round_id, operation, body, actor_user_id, actor_role, actor_session_id, created_at, request_origin_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, commentId, roundId, mutation.operation, mutation.operation === "reply" ? mutation.body : null,
+      actor.user_id, actor.role, actor.role === "requester" ? actor.session_id : null, now, requestOriginJson());
+  return { ok: true, id };
+}
+
 export type ReviewAnnotationMutation =
   | { operation: "retract"; annotation_event_id: string }
   | (ReviewRange & ({ operation: "set"; kind: "comment"; body: string }
@@ -79,6 +120,9 @@ export function appendReviewAnnotation(db: Db, actor: ReviewActor, document: { i
       AND NOT EXISTS (SELECT 1 FROM briefing_annotation_events r WHERE r.retracts_event_id = e.id)`)
       .get(mutation.annotation_event_id, actor.roundId, document.id, actor.actorUserId);
     if (!target) return { ok: false, reason: "stale_annotation" };
+    if (db.prepare("SELECT 1 FROM review_thread_events WHERE comment_id = ? LIMIT 1").get(mutation.annotation_event_id)) {
+      return { ok: false, reason: "stale_annotation" };
+    }
     db.prepare(`INSERT INTO briefing_annotation_events
       (request_origin_json, id, round_id, briefing_id, document_binding_id, operation, retracts_event_id, actor_user_id, created_at)
       VALUES (?, ?, ?, ?, ?, 'retract', ?, ?, ?)`)

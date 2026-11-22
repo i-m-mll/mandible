@@ -236,3 +236,31 @@ export const REQUEST_REVIEW_ROUND_MIGRATION_SQL = [
   ...roundTriggers,
   requestRoundIndex,
 ];
+
+export const REVIEW_THREAD_SCHEMA_SQL = [
+  `CREATE TABLE review_thread_events (
+    sequence INTEGER PRIMARY KEY,
+    id TEXT NOT NULL UNIQUE,
+    comment_id TEXT NOT NULL REFERENCES briefing_annotation_events(id) ON DELETE RESTRICT,
+    round_id TEXT NOT NULL REFERENCES review_rounds(id) ON DELETE RESTRICT,
+    operation TEXT NOT NULL,
+    body TEXT,
+    actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    actor_role TEXT NOT NULL CHECK(actor_role IN ('requester', 'operator')),
+    actor_session_id TEXT,
+    created_at INTEGER NOT NULL,
+    ${ledgerOriginColumnSql},
+    CHECK((actor_role = 'requester' AND actor_session_id IS NOT NULL AND operation IN ('reply', 'address'))
+      OR (actor_role = 'operator' AND actor_session_id IS NULL AND operation IN ('reply', 'resolve', 'reopen'))),
+    CHECK((operation = 'reply' AND body IS NOT NULL AND trim(body) != '')
+      OR (operation != 'reply' AND body IS NULL))
+  )`,
+  "CREATE INDEX idx_review_thread_events_comment ON review_thread_events(comment_id)",
+  `CREATE TRIGGER review_thread_events_comment_only BEFORE INSERT ON review_thread_events
+    WHEN NOT EXISTS (SELECT 1 FROM briefing_annotation_events
+      WHERE id = NEW.comment_id AND operation = 'set' AND annotation_kind = 'comment')
+    BEGIN SELECT RAISE(ABORT, 'Review thread events require a root comment'); END`,
+  ...["UPDATE", "DELETE"].map(operation => `CREATE TRIGGER review_thread_events_immutable_${operation.toLowerCase()}
+    BEFORE ${operation} ON review_thread_events
+    BEGIN SELECT RAISE(ABORT, 'Review thread events are immutable'); END`),
+];

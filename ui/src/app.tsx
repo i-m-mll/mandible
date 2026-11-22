@@ -9,7 +9,7 @@ import type { ChromeAppearanceTheme } from './chrome-appearance';
 import { useNativeWindowPresentation } from './native-window-presentation';
 import { browserResourceKeys, refreshBrowserResources } from './query/browserResources';
 import { invalidateActivityTargets } from './query/activityTargets';
-import { BRIEFING_EVENT_VALUES, DASHBOARD_BADGE_COUNTS } from '../../src/contracts';
+import { BRIEFING_EVENT_VALUES, DASHBOARD_BADGE_COUNTS, DOMAIN_EVENTS } from '../../src/contracts';
 import { render, type ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
@@ -1551,6 +1551,9 @@ function App(): JSX.Element {
       client.on('auth:resolved', authResolvedHandler),
       client.on('auth:finalized', handler),
       client.on('auth:lifecycle', handler),
+      client.on(DOMAIN_EVENTS.AUTH_REVIEW_UPDATED, (payload) => {
+        window.dispatchEvent(new CustomEvent(DOMAIN_EVENTS.AUTH_REVIEW_UPDATED, { detail: payload.data }));
+      }),
       client.on('auth:approval_phase', (payload) => {
         window.dispatchEvent(new CustomEvent('auth:approval_phase', { detail: payload.data }));
       }),

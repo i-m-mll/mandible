@@ -42,6 +42,21 @@
   white-space: pre-wrap;
 }
 
+.review-comments__thread {
+  display: grid;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding-inline-start: 0.5rem;
+  border-inline-start: 2px solid var(--border-muted);
+}
+
+.review-comments__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
 .review-range {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }

@@ -1,7 +1,8 @@
 import { computeAuthMergeReviewMetadata } from "../src/auth-context.js";
 import type { RequestReview } from "../src/feedback/request-review.js";
 import { createOutcomeReporter } from "../src/notices/report.js";
-import { fileRpc, runCli } from "./helpers/cli-process.js";
+import { normalizeAmbientProviderIdentity } from "../src/ambient-provider-identity.js";
+import { fileRpc, runCli, startStubDaemon } from "./helpers/cli-process.js";
 import { createAuthCheckRepo, commitOnBranch, git, writeFile, registerWorkRepo } from "./helpers/auth-queue-fixtures.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
@@ -28,7 +29,7 @@ import type { AuthLifecycleActor, AuthRequestInput } from "../src/types.js";
 import { addCredential, createUser, getOperator } from "../src/users/store.js";
 import { createLedgerIssue, createLedgerProject, createMigratedDb } from "./helpers/auth-queue-fixtures.js";
 
-function requesterFixture(root = process.cwd()) {
+function requesterFixture(root = process.cwd(), exactReviewRequester?: string) {
   const db = createMigratedDb();
   const operator = getOperator(db)!;
   const credential = addCredential(db, operator.id, {
@@ -39,6 +40,11 @@ function requesterFixture(root = process.cwd()) {
     type: "api_token",
     fingerprint: `other-${crypto.randomUUID()}`,
   });
+  const reviewRequester = exactReviewRequester
+    ? createUser(db, { slug: "review-requester", kind: "agent", display_name: "Review Requester" }) : operator;
+  const reviewCredential = exactReviewRequester ? addCredential(db, reviewRequester.id, {
+    type: "api_token", fingerprint: `review-${crypto.randomUUID()}`,
+  }) : credential;
   const actor: AuthLifecycleActor = {
     user_id: operator.id,
     evidence_method: "api_token",
@@ -56,11 +62,12 @@ function requesterFixture(root = process.cwd()) {
     base_branch: "main",
     head_branch: "feature/original",
     requester_evidence_method: "api_token",
-    requester_credential_id: credential.id,
+    requester_credential_id: reviewCredential.id,
+    session_id: exactReviewRequester,
     require_delivery_custody: true,
     issue_references: ["f15617a"],
     ...patch,
-  }, operator.id));
+  }, reviewRequester.id));
   };
   const submit = async (patch: Partial<AuthRequestInput> = {}) => {
     const head = patch.head_branch ?? "feature/original";
@@ -69,24 +76,26 @@ function requesterFixture(root = process.cwd()) {
         (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
          ledger_issue_id, owner_user_id, responsibility_session_id, custody_generation)
         VALUES (?, 'f15617a', ?, ?, 'solo', 'committed', 1, 1, ?, ?, ?, 1)`)
-        .run(crypto.randomUUID(), project.project.project_key, head, issue.id, operator.id, null);
+        .run(crypto.randomUUID(), project.project.project_key, head, issue.id, reviewRequester.id, exactReviewRequester ?? null);
     }
     return submitExisting(patch);
   };
-  return { db, queue, operator, credential, otherCredential, actor, submit, submitExisting, operatorSigning };
+  return { db, queue, operator, credential, otherCredential, actor, submit, submitExisting, operatorSigning, reviewRequester, reviewCredential };
 }
 
 describe("auth request immutable lifecycle", () => {
 
-  it("freezes a return, keeps its quoted review through replacement, and compares pinned heads", async () => {
+  it("carries returned comment threads through replacement and compares pinned heads", async () => {
     const repo = createAuthCheckRepo();
-    const { db, queue, operator, credential, submit, operatorSigning } = requesterFixture(repo);
+    const session = "agent:claude:review-requester:review-requester";
+    const { db, queue, operator, credential, submit, operatorSigning, reviewRequester, reviewCredential } = requesterFixture(repo, session);
     registerWorkRepo(db, repo);
     setDb(db);
     const router = authenticatedTestRouter(operator, { credentialId: credential.id });
+    const agentRouter = authenticatedTestRouter(reviewRequester, { credentialId: reviewCredential.id });
     registerAuthRoutes(router, queue, inlineLedgerReader(() => queue.db));
+    registerAuthRoutes(agentRouter, queue, inlineLedgerReader(() => queue.db));
     const branch = "feature/original";
-    const session = "agent:claude:review-requester:review-requester";
     git(repo, ["checkout", "main"]);
     writeFile(repo, "notes.md", "# Notes\n\nReview the base note.\n");
     git(repo, ["add", "notes.md"]);
@@ -109,6 +118,15 @@ describe("auth request immutable lifecycle", () => {
       try { return await runCli(["auth", "review", "show", id.slice(0, 8)], { env: rpc.env }); }
       finally { await rpc.responder.stop(); }
     };
+    const context = { provider: "claude", agent_id: "review-requester", session_id: "review-requester" };
+    const agentCli = await startStubDaemon(async ({ method, url, body, headers }) => {
+      const signal = headers["x-mandible-execution-context"];
+      const ambient_identity = typeof signal === "string" ? normalizeAmbientProviderIdentity(JSON.parse(signal)) : null;
+      return agentRouter.invoke({ method, url, body, ambient_identity });
+    });
+    const requestCommand = (args: string[]) => runCli(["auth", "review", ...args], {
+      env: { ...agentCli.env, MANDIBLE_EXECUTION_CONTEXT: JSON.stringify(context), MANDIBLE_NO_KEYCHAIN_TOKEN: "1" },
+    });
 
     try {
       const request = await submit(await candidate());
@@ -161,9 +179,13 @@ describe("auth request immutable lifecycle", () => {
       expect(first.stdout).toContain("Review the base note");
       expect(first.stdout).toContain("script.txt (after) lines 2–2");
       expect(first.stdout).toContain("Keep this check visible.");
+      const commentId = (code.body as { annotation_event_id: string }).annotation_event_id;
+      expect(first.stdout).toContain(`Comment ${commentId.slice(0, 8)} [open]`);
+      const reply = await requestCommand(["reply", request.id.slice(0, 8), commentId.slice(0, 8), "--message", "I will remove the outdated check."]);
+      expect(reply.status, reply.stderr).toBe(0);
 
       git(repo, ["checkout", branch]);
-      writeFile(repo, "script.txt", "first line\na\ncheck this line\nz\n");
+      writeFile(repo, "script.txt", "first line\na\nz\n");
       git(repo, ["add", "script.txt"]);
       git(repo, ["commit", "-m", "Address the review"]);
       git(repo, ["checkout", "main"]);
@@ -171,18 +193,44 @@ describe("auth request immutable lifecycle", () => {
         expected_revision: readBefore.precondition.expected_revision + 1, expected_custody_generation: readBefore.precondition.expected_custody_generation });
       const next = await read(replacement.id);
       expect(next.versions.map(version => [version.id, version.status])).toEqual([[request.id, "superseded"], [replacement.id, "pending"]]);
-      expect(next.annotations.map(annotation => [annotation.body, annotation.anchor.status, annotation.anchor.start_offset]))
-        .toEqual([["Explain the original wording.", "preserved", 9], ["Keep this check visible.", "preserved", 2]]);
+      expect(next.annotations).toMatchObject([
+        { body: "Explain the original wording.", anchor: { status: "preserved", start_offset: 9 } },
+        { annotation_event_id: commentId, document_binding_id: lines.id, anchor: { status: "detached" },
+          thread: { resolved: false, events: [{ operation: "reply", actor_role: "requester", body: "I will remove the outdated check." }] } },
+      ]);
+      const addressed = await requestCommand(["address", replacement.id.slice(0, 8), commentId.slice(0, 8)]);
+      expect(addressed.status, addressed.stderr).toBe(0);
+      const threadPath = `/api/auth/request/${replacement.id}/review/thread-events`;
+      const resolve = { ...next.precondition, comment_id: commentId, mutation: { operation: "resolve" } };
+      const impersonation = await agentRouter.invoke({ method: "POST", url: threadPath, ambient_identity: context, body: resolve });
+      expect(impersonation.status).toBe(403);
+      expect((await invoke("POST", threadPath, resolve)).status).toBe(201);
+      const resolvedThread = (await read(replacement.id)).annotations.find(note => note.annotation_event_id === commentId)?.thread;
+      expect(resolvedThread).toMatchObject({ resolved: true, events: [
+        { operation: "reply", actor_role: "requester" },
+        { operation: "address", actor_role: "requester", request_ref: next.versions.at(-1)?.short_id },
+        { operation: "resolve", actor_role: "operator" },
+      ] });
       const compared = await invoke("GET", `/api/auth/request/${replacement.id}/review/changes?against=${request.id}`);
       expect(compared.status, JSON.stringify(compared.body)).toBe(200);
       expect(compared.body).toMatchObject({
         comparison: { merge_base_sha: request.merge_head_sha, head_sha: replacement.merge_head_sha },
-        files: [{ old_path: "script.txt", new_path: "script.txt", additions: 1, deletions: 0 }],
+        files: [{ old_path: "script.txt", new_path: "script.txt", additions: 1, deletions: 1 }],
       });
       const second = await command(request.id);
       expect(second.status, second.stderr).toBe(0);
       expect(second.stdout).toContain("superseded");
       expect(second.stdout).toContain("Explain the original wording.");
+      expect(second.stdout).toContain(`Comment ${commentId.slice(0, 8)} [resolved]`);
+      const reopened = await invoke("POST", threadPath, { ...resolve, mutation: { operation: "reopen" } });
+      expect(reopened.status).toBe(201);
+      const operatorReply = await invoke("POST", threadPath, { ...resolve,
+        mutation: { operation: "reply", body: "Please explain the replacement check." } });
+      expect(operatorReply.status).toBe(201);
+      const historicalThread = (await read(request.id)).annotations.find(note => note.annotation_event_id === commentId)?.thread;
+      expect(historicalThread?.resolved).toBe(false);
+      expect(historicalThread?.events.at(-1)).toMatchObject({ operation: "reply", actor_role: "operator",
+        body: "Please explain the replacement check." });
 
       const unbound = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change", command: "echo revise", title: "Empty review", session_id: session }, operator.id);
       const unboundUrl = `/api/auth/request/${unbound.id}`;
@@ -203,6 +251,7 @@ describe("auth request immutable lifecycle", () => {
       expect(durable.body).toMatchObject({ submission_id: (emptyReturn.body as { submission_id: string }).submission_id,
         delivered: true, responsibility: { custody_generation: 1 } });
     } finally {
+      await agentCli.close();
       await queue.dispose();
       db.close();
     }

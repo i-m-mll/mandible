@@ -34,7 +34,7 @@ import {
   AttributionReadResolver,
   authAttributionReadFields,
 } from "../identity/read-projection.js";
-import { ClientAuthzError, requireAttribution, requireOperator } from "../client-auth/authz.js";
+import { ClientAuthzError, isUserRequest, requireAttribution, requireOperator } from "../client-auth/authz.js";
 import { SignedActionRefused, sendSigningRefusal } from "../operator-signing/http.js";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -96,6 +96,13 @@ export function registerAuthRoutes(
     round_id: z.string().min(1),
     annotation_event_ids: z.array(z.string().min(1)),
     reason: z.string().optional(),
+  });
+  const reviewThread = reviewPrecondition.extend({
+    comment_id: z.string().regex(/^[0-9a-f]{8}[0-9a-f-]*$/),
+    mutation: z.discriminatedUnion("operation", [
+      z.object({ operation: z.literal("reply"), body: z.string().trim().min(1) }),
+      z.object({ operation: z.enum(["address", "resolve", "reopen"]) }),
+    ]),
   });
   app.post("/api/auth/check", async (req, res) => {
     if (!authQueue.externalEffectsAllowed) {
@@ -413,7 +420,9 @@ export function registerAuthRoutes(
       if (!request) { res.status(404).json({ error: "Auth request not found." }); return; }
       const precondition = { expected_revision: authQueue.lifecycleRevision(request.id),
         expected_custody_generation: authQueue.requestResponsibility(request).custody_generation };
-      res.json({ ...await readRequestReview(db, request, requireAttribution(db, req).user_id), precondition, status: request.status });
+      const viewer = requireAttribution(db, req);
+      res.json({ ...await readRequestReview(db, request, isUserRequest(db, req) ? viewer.user_id : null),
+        precondition, status: request.status });
     } catch (error) { handleQueueError(error, res); }
   }, { operation: { id: "get:/api/auth/request/:id/review", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
@@ -445,6 +454,17 @@ export function registerAuthRoutes(
       res.status(201).json({ annotation_event_id: id });
     } catch (error) { handleQueueError(error, res); }
   }, { authenticated: true }), { operation: { id: "post:/api/auth/request/:id/review/annotations", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "deny" });
+
+  app.post("/api/auth/request/:id/review/thread-events", (req, res) => {
+    try {
+      const input = reviewThread.safeParse(readBody(req));
+      if (!input.success) { res.status(400).json({ error: "Invalid review thread event." }); return; }
+      const actor = isUserRequest(db, req) ? authReviewOperator(db, req) : requestLifecycleActor(db, req, res);
+      if (!actor) return;
+      const id = authQueue.mutateRequestReviewThread(req.params.id, actor, input.data);
+      res.status(201).json({ event_id: id });
+    } catch (error) { handleQueueError(error, res); }
+  }, { operation: { id: "post:/api/auth/request/:id/review/thread-events", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write"] : ["auth:protected"], requestSchema: null, reportingCategory: "auth" }, fileRpc: "allow" });
 
   app.post("/api/auth/request/:id/return", globalCapabilityRoute("approve_auth", (req, res) => {
     try {
@@ -1439,6 +1459,9 @@ function isHttpError(error: unknown): error is { status: number; message: string
 
 function authReviewOperator(db: Db, req: RequestLike): AuthLifecycleActor {
   const identity = requireOperator(db, req);
+  if (!isUserRequest(db, req)) {
+    throw new ClientAuthzError(403, "operator_required", "Only the local operator may act as the reviewer.");
+  }
   return { user_id: identity.user_id, evidence_method: identity.method, credential_id: identity.credential_id,
     authority_path: "operator" };
 }
