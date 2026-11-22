@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { authGitEnv } from "../auth-context.js";
 import { childOutput, observeChild } from "../child-observation.js";
 import { buildCommit, writeCommitObject } from "../commit-object.js";
+import { Buffer } from "node:buffer";
 import type { GitFileObject } from "../contracts.js";
 import { isGitObjectId } from "../git-change-review.js";
 import type { ReviewChangeEdit } from "./request-draft-types.js";
@@ -16,6 +17,17 @@ export function changeEditRef(requestId: string, sha: string): string {
 
 type FileEdit = { path: string; object: GitFileObject; text: string };
 
+export async function readChangeEditFile(root: string, head: string, path: string): Promise<{ object: GitFileObject; text: string } | null> {
+  if (!isGitObjectId(head)) throw new Error("Invalid review head.");
+  const git = (args: string[]) => childOutput("git", args, { cwd: root, env: gitEnv() });
+  const entry = await git(["ls-tree", "-z", head, "--", path]);
+  const match = /^(100644|100755) blob ([a-f0-9]+)\t/.exec(entry.toString("utf8"));
+  if (!match || !entry.subarray(match[0].length).equals(Buffer.from(path + "\0"))) return null;
+  const oid = match[2]!;
+  const bytes = await git(["cat-file", "blob", oid]);
+  return { object: { mode: match[1]!, oid }, text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes) };
+}
+
 async function inScratch<T>(f: (directory: string) => Promise<T>): Promise<T> {
   const directory = await mkdtemp(join(tmpdir(), "mandible-review-"));
   try { return await f(directory); }
@@ -23,18 +35,18 @@ async function inScratch<T>(f: (directory: string) => Promise<T>): Promise<T> {
 }
 
 export async function buildChangeEdit(
-  root: string, requestId: string, head: string, createdAt: number, files: readonly FileEdit[],
+  root: string, requestId: string, head: string, createdAt: number, files: readonly FileEdit[], start = head,
 ): Promise<ReviewChangeEdit> {
   return inScratch(async directory => {
-    if (!isGitObjectId(head)) throw new Error("Invalid review head.");
+    if (!isGitObjectId(head) || !isGitObjectId(start)) throw new Error("Invalid review head.");
     const env = { ...gitEnv(), GIT_INDEX_FILE: join(directory, "index") };
     const git = (args: string[], input?: string) => childOutput("git", args, {
       cwd: root, env, encoding: "utf8", input,
     });
-    await git(["read-tree", head]);
+    await git(["read-tree", start]);
     const entries: string[] = [];
     for (const { path, object, text } of files) {
-      const entry = await git(["ls-tree", "-z", head, "--", path]);
+      const entry = await git(["ls-tree", "-z", start, "--", path]);
       if (entry !== `${object.mode} blob ${object.oid}\t${path}\0`) {
         throw new Error(`Reviewed file differs at the pinned head: ${path}`);
       }

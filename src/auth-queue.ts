@@ -1,5 +1,5 @@
 import { canonicalJson } from "./canonical-json.js";
-import { changeEditRef } from "./feedback/change-edit-git.js";
+import { changeEditRef, readChangeEditFile } from "./feedback/change-edit-git.js";
 import { collectAuthMergeReview } from "./auth-change-report.js";
 import {
   appendRequestNarrativeAnswer, ensureRequestReviewRound, readRequestReviewSource, requestNarrativeAnswerMembers,
@@ -1998,7 +1998,7 @@ export class AuthQueue {
         ? (await this.checkMergeIndependence({
             ...payload,
             request_id: predecessor?.id ?? null,
-          }))
+          }, predecessor ? payload.head_branch : undefined))
         : {
             status: "unknown",
             repo: payload.repo ?? null,
@@ -2266,8 +2266,10 @@ export class AuthQueue {
         : new Map<number, string>();
       const priorDrafts = predecessor ? requestOwnedDrafts(this.db, predecessor.id) : [];
       const priorDraftStamps = canonicalJson(priorDrafts.map(({ actor_user_id, path, generation }) => ({ actor_user_id, path, generation })));
-      const carriedDrafts = predecessor && priorDrafts.some(draft => draft.text !== null)
-        ? await carryRequestDrafts(predecessor, request, priorDrafts) : [];
+      const carriedDrafts = predecessor && (predecessor.merge_effective_head_sha || priorDrafts.some(draft => draft.text !== null))
+        ? await carryRequestDrafts(this.db, predecessor, request, priorDrafts).catch(error => {
+          throw new AuthQueueError("lifecycle_conflict", `Unable to carry review edits: ${errorMessage(error) ?? "Git evidence could not be read"}`);
+        }) : [];
       let insertionQueue: { requests: AuthRequest[]; assertCurrent(): void } | undefined;
       const insertRequest = this.db.transaction(() => {
         assertSubmission();
@@ -2394,8 +2396,9 @@ export class AuthQueue {
       const review = request.change_report && request.target_repo_root
         ? { cwd: request.target_repo_root, comparison: request.change_report.comparison }
         : null;
+      let retainedReview = false;
       if (review) {
-        try { await retainReviewRevision(review.cwd, request.id, review.comparison); }
+        try { retainedReview = await retainReviewRevision(review.cwd, request.id, review.comparison); }
         catch {
           throw new AuthQueueError("merge_check_failed", "Unable to retain the reviewed Git revision.");
         }
@@ -2415,7 +2418,7 @@ export class AuthQueue {
         request = this.requireRequest(request.id);
       } catch (error) {
         await this.dropMergeCandidate(request);
-        if (review) {
+        if (review && retainedReview) {
           try { await releaseUnpublishedReviewRevision(review.cwd, request.id, review.comparison); }
           catch (cleanupError) {
             authLog("warn", "auth_unpublished_review_retained", { auth_request_id: request.id, error: errorMessage(cleanupError) });
@@ -3186,8 +3189,8 @@ export class AuthQueue {
     return result;
   }
 
-  async checkMergeIndependence(input: AuthMergeCheckInput): Promise<AuthMergeCheckReport> {
-    return this.checkEffectiveMergeIndependence(input);
+  async checkMergeIndependence(input: AuthMergeCheckInput, proposedHead?: string): Promise<AuthMergeCheckReport> {
+    return this.checkEffectiveMergeIndependence(input, proposedHead);
   }
 
   private async checkEffectiveMergeIndependence(input: AuthMergeCheckInput, proposedEdit?: string): Promise<AuthMergeCheckReport> {
@@ -5403,6 +5406,8 @@ export class AuthQueue {
     if (frozenHead && !root) return fail("missing_review_object_store");
     const effectiveHead = frozenHead ?? requesterHead;
     const editRef = frozenHead ? changeEditRef(request.id, frozenHead) : null;
+    const priorHead = request.merge_effective_head_sha;
+    const priorEditRef = priorHead && priorHead !== frozenHead ? changeEditRef(request.id, priorHead) : null;
     this.assertPublication(request, undefined, targetHeadSha);
     const candidate = await this.mergeTree(cwd, targetHeadSha, effectiveHead);
     if (candidate.status !== "clean" || !candidate.tree) return fail(candidate.message);
@@ -5428,12 +5433,12 @@ export class AuthQueue {
     const git = (args: string[], input?: string) => childOutput("git", args, { cwd, input, env: authGitEnv(), timeout: 5_000 });
     try {
       if (retained && root) {
-        await retainReviewRevision(root, request.id, retained);
-        retainedRevision = true;
+        retainedRevision = await retainReviewRevision(root, request.id, retained);
       }
       await git(["update-ref", "--stdin"], [
         `verify ${baseRef} ${targetHeadSha}`, `verify ${sourceRef} ${requesterHead}`,
         ...(editRef ? [`verify ${editRef} ${frozenHead}`] : []),
+        ...(priorEditRef ? [`verify ${priorEditRef} ${priorHead}`] : []),
         `update ${candidateRef} ${pinSha} ${priorPin}`,
       ].join("\n") + "\n");
       swapped = true;
@@ -5681,12 +5686,24 @@ export class AuthQueue {
     return frozen.submission.submission_id;
   }
 
+  private async assertFrozenDraftBytes(request: AuthRequest, drafts: readonly RequestReviewDraft[], editSha: string): Promise<void> {
+    if (!request.merge_effective_head_sha) return;
+    const root = request.target_repo_root!;
+    const merged = await this.mergeTree(root, request.merge_preflight_base_sha!, editSha);
+    if (merged.status !== "clean" || !merged.tree) throw new AuthQueueError("lifecycle_conflict", "The new review edits conflict with the protected base.");
+    for (const draft of drafts) {
+      if (draft.text === null) continue;
+      const file = await readChangeEditFile(root, merged.tree, draft.path);
+      if (file?.text !== draft.text) throw new AuthQueueError("lifecycle_conflict", `The new review draft for ${draft.path} overlaps the protected base.`);
+    }
+  }
+
   async freezeRequestReview(id: string, actor: AuthLifecycleActor, input: ReviewFreezeInput): Promise<AuthRequest> {
     const finishObservation = this.beginObservation();
     try {
       this.requireExternalEffects("Review change-edit preparation");
       const { request, drafts } = this.readReviewFreezeSnapshot(id, actor, input);
-      if (!isAuthMergeCommand(request) || request.execution_mode === "remote" || request.merge_effective_head_sha ||
+      if (!isAuthMergeCommand(request) || request.execution_mode === "remote" ||
           !request.cwd || !request.base_branch || !request.head_branch) {
         throw new AuthQueueError("invalid_status", "This request cannot freeze review edits.");
       }
@@ -5704,6 +5721,7 @@ export class AuthQueue {
           if (!prepared.ok) throw new AuthQueueError("lifecycle_conflict", prepared.reason);
           const edit = prepared.changeEdit;
           if (!edit) throw new AuthQueueError("invalid_status", "There are no review edits to freeze.");
+          await this.assertFrozenDraftBytes(request, drafts, edit.commit_sha);
           const report = await this.checkEffectiveMergeIndependence({
             request_id: request.id, repo: context.repo, cwd: context.cwd, base_branch, head_branch,
           }, edit.commit_sha);
@@ -5734,6 +5752,7 @@ export class AuthQueue {
     if (initial.drafts.some(draft => draft.text !== null)) this.requireExternalEffects("Review change-edit preparation");
     const prepared = await prepareRequestReviewChangeEdit(this.db, initial.request, initial.drafts);
     if (!prepared.ok) throw new AuthQueueError("lifecycle_conflict", prepared.reason);
+    if (prepared.changeEdit) await this.assertFrozenDraftBytes(initial.request, initial.drafts, prepared.changeEdit.commit_sha);
     const result = this.db.transaction(() => {
       const { request } = readSnapshot();
       const now = this.now();
