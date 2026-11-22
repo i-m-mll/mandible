@@ -23,7 +23,7 @@ export async function approveWithTestOperator(queue: AuthQueue, request: AuthReq
 /** Publish the merge commit the request's approval signed, as the executor does. */
 export function publishTestCandidate(db: Db, repo: string, request: AuthRequest): { mergeSha: string; output: string } {
   const base = request.merge_preflight_base_sha;
-  const head = request.merge_head_sha;
+  const head = request.merge_effective_head_sha ?? request.merge_head_sha;
   const tree = request.merge_candidate_tree_sha;
   if (!base || !head || !tree || !request.base_branch) throw new Error("Fixture requires a reviewed candidate.");
   const signed = request.execution_evidence_id ? getAttributionEvidence(db, request.execution_evidence_id)?.details.signed_commit_sha : null;

@@ -21,14 +21,18 @@ export const navigationRequest: AuthRequest = {
   issue_references: ['review-reference'],
 };
 
-export function RoutedAuthReview({ requests = [navigationRequest], active = true, sidebarHidden = true }: { requests?: AuthRequest[]; active?: boolean; sidebarHidden?: boolean }) {
+export function RoutedAuthReview({ requests = [navigationRequest], history = [], active = true, sidebarHidden = true, instance, onRefresh }: {
+  requests?: AuthRequest[]; history?: AuthRequest[]; active?: boolean; sidebarHidden?: boolean;
+  instance?: import('../../src/types').InstanceInfo;
+  onRefresh?: (signal: AbortSignal) => Promise<void>;
+}) {
   // Stands in for the resolver: every request the fixture serves opens by its entity path.
   useMemo(() => {
-    for (const request of requests) {
+    for (const request of [...requests, ...history]) {
       const ref = shortRouteId(request.id);
       if (!queryClient.getQueryData(entityRouteKey('auth', ref))) rememberEntityRoute('auth', ref, { id: request.id });
     }
-  }, [requests]);
+  }, [requests, history]);
   const navigation = useAppHistory();
   const route = routeFromUrl(new URL(navigation.href));
   const authRoute = useRef(route);
@@ -40,7 +44,7 @@ export function RoutedAuthReview({ requests = [navigationRequest], active = true
   }, []);
   return <AppShellProvider value={{ active: true, noticeHost, registerMainNoticeHost, rightSidebar: null, registerRightSidebar: () => () => undefined,
     registerInitialRouteLoad: () => undefined, updateRightSidebar: () => undefined }}>
-    <AuthQueueView queue={requests} historyQueue={[]} outputs={{}} entityRef={authRoute.current.entity?.ref ?? null}
+    <AuthQueueView queue={requests} historyQueue={history} instance={instance} onRefreshAuthProjection={onRefresh} outputs={{}} entityRef={authRoute.current.entity?.ref ?? null}
       reviewRouteParams={authRoute.current.params} reviewRouteActive={active} sidebarHidden={sidebarHidden} onApprove={() => undefined} onReject={() => undefined} onRetry={() => undefined} />
   </AppShellProvider>;
 }

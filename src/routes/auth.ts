@@ -61,6 +61,7 @@ export function registerAuthRoutes(
   app: RouteRegistrar,
   authQueue: AuthQueue,
   reader: LedgerReader,
+  allowTrackedReviewRetention = true,
 ): AuthQueue {
   const db = authQueue.db;
   const outcomeReport = createOutcomeReporter(db);
@@ -452,7 +453,10 @@ export function registerAuthRoutes(
         expected_custody_generation: authQueue.requestResponsibility(request).custody_generation };
       const viewer = requireAttribution(db, req);
       const proof_digest = authQueue.reviewApprovalProof(request);
-      res.json({ ...await readRequestReview(db, request, isUserRequest(db, req) ? viewer.user_id : null),
+      const retainTrackedReviews = allowTrackedReviewRetention && authQueue.externalEffectsAllowed
+        && req.client_identity?.effect_ceiling.includes("files:production");
+      res.json({ ...await readRequestReview(db, request, isUserRequest(db, req) ? viewer.user_id : null,
+        Boolean(retainTrackedReviews)),
         precondition, status: request.status, proof_digest });
     } catch (error) { handleQueueError(error, res); }
   }, { operation: { id: "get:/api/auth/request/:id/review", effects: ["ledger:read", "ledger:write", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });

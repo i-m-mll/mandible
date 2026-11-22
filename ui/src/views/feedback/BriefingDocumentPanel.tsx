@@ -1,15 +1,19 @@
+import { EditorState } from '@codemirror/state';
 import { standingNoteSidebarEntry } from '../../components/shared/StandingNoteReview';
 import { createPortal } from 'preact/compat';
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   postBriefingAnnotations, type BriefingAnnotation, type BriefingAnnotationOperation,
   type BriefingDirectiveItem, type BriefingResponseValue, type BriefingRoundProjection,
 } from '../../api';
 import { Icon } from '../../components/icons/Icon';
 import {
-  MarkdownDocument, type MarkdownDirectiveRenderer, type MarkdownDocumentHandle, type MarkdownSelection,
+  isLargeMarkdownDocument, MarkdownDocument, type MarkdownDirectiveRenderer, type MarkdownDocumentHandle, type MarkdownSelection,
   type MarkdownSourceRange,
 } from '../../components/MarkdownDocument';
+import { externalSourceUpdate, markdownEditorRange, markdownValue } from '../../components/markdown/source';
+import { appTip } from '../../components/shared/AppHoverTips';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { ContextualAction } from '../../components/shared/ContextualAction';
 import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import { ReviewCommentsSidebar, type ReviewSidebarComment } from '../../components/shared/ReviewCommentsSidebar';
@@ -26,11 +30,15 @@ export type BriefingDocumentPanelProps = {
   draft?: Record<string, BriefingResponseValue | null>;
   validationErrors?: Record<string, string>;
   onDirectiveValue?(itemId: string, value: BriefingResponseValue | null): void;
-  onContentGateChange?(reason: string): void;
+  onContentGateChange?(reason: string | null): void;
   onDocumentFailureChange?(message: string | null): void;
+  onAnnotationEditChange?(editing: boolean): void;
 };
 
-type AnnotationEditor = MarkdownSelection & { annotation: BriefingAnnotation | null };
+type AnnotationEditor = MarkdownSelection & {
+  annotation: BriefingAnnotation | null;
+  kind: BriefingAnnotation['annotation_kind'];
+};
 const EMPTY_VALUES = {};
 
 async function sha256(value: string): Promise<string> {
@@ -64,11 +72,11 @@ async function verifyDirectives(source: string, items: readonly BriefingDirectiv
 
 function annotationActor(annotation: BriefingAnnotation): string {
   return annotation.presentation?.actor?.display_name || annotation.presentation?.actor?.slug
-    || (annotation.presentation?.source === 'current_draft' ? 'You' : 'Unknown user');
+    || (annotation.presentation?.source === 'current_draft' ? 'You' : 'Reviewer');
 }
 
 export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, draftIdentity, onRefresh,
-  draft = EMPTY_VALUES, validationErrors = EMPTY_VALUES, onDirectiveValue, onContentGateChange, onDocumentFailureChange,
+  draft = EMPTY_VALUES, validationErrors = EMPTY_VALUES, onDirectiveValue, onContentGateChange, onDocumentFailureChange, onAnnotationEditChange,
 }: BriefingDocumentPanelProps): JSX.Element | null {
   const document = round.document;
   const standingNotes = round.standing_notes;
@@ -79,13 +87,13 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [selectedCommentId, setSelectedCommentId] = useState<string | null>(null);
   const [editor, setEditor] = useState<AnnotationEditor | null>(null);
-  const [kind, setKind] = useState<BriefingAnnotation['annotation_kind']>('comment');
   const [body, setBody] = useState('');
   const [replacement, setReplacement] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const contentRef = useRef<HTMLElement>(null);
   const documentRef = useRef<MarkdownDocumentHandle>(null);
+  const selectionToRestore = useRef<MarkdownSourceRange | null>(null);
 
   const directives = useMemo(() => [...round.items].sort((a, b) =>
     (a.directive?.start_offset ?? 0) - (b.directive?.start_offset ?? 0)), [round.items]);
@@ -104,7 +112,7 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
     setSelection(null);
     setSelectedCommentId(null);
     setStatus(null);
-  }, [roundKey]);
+  }, [roundKey, documentKey]);
 
   useEffect(() => {
     if (!document) return;
@@ -146,17 +154,65 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
   const failure = currentDocument?.documentError || currentDocument?.directiveError || currentComparison?.error
     || (round.directive_binding?.status !== 'valid' ? round.directive_binding?.reason || 'The pinned document binding is unavailable.' : null);
   const ready = currentDocument !== null && currentDocument.directiveKey === directiveKey && currentComparison !== null && !failure;
-  const contentGate = failure ?? (ready ? '' : 'Verifying pinned document…');
+  const contentGate = failure ?? (ready ? '' : null);
   const canInteract = canMutate && ready && !busy;
   useEffect(() => onContentGateChange?.(contentGate), [contentGate, onContentGateChange]);
   useEffect(() => onDocumentFailureChange?.(failure), [failure, onDocumentFailureChange]);
   useEffect(() => () => onDocumentFailureChange?.(null), [onDocumentFailureChange]);
 
-  const openEditor = (range: MarkdownSelection, annotation: BriefingAnnotation | null = null) => {
-    setEditor({ ...range, annotation });
-    setKind(annotation?.annotation_kind ?? 'comment');
-    setBody(annotation?.body ?? '');
-    setReplacement(annotation?.replacement_text ?? range.quote);
+  const inline = editor?.kind === 'suggest_replacement' ? editor : null;
+  const source = document?.source ?? '';
+  const prefix = inline ? source.slice(0, inline.start) : '';
+  const suffix = inline ? source.slice(inline.end) : '';
+  const previewSource = inline ? prefix + replacement + suffix : source;
+  const mayReplace = source.length > 0 && !isLargeMarkdownDocument(source);
+  const delta = inline ? replacement.length - inline.quote.length : 0;
+  const workingRange = (range: MarkdownSourceRange): MarkdownSourceRange | null => {
+    if (!inline || range.end <= inline.start) return range;
+    if (range.start >= inline.end) return { start: range.start + delta, end: range.end + delta };
+    return null;
+  };
+  const replacementRange = useRef({ start: 0, end: 0 });
+  const editStart = inline?.start ?? 0;
+  const tailLength = suffix.length;
+  const inlineEditing = inline !== null;
+  const editingExtension = useMemo(() => inlineEditing ? EditorState.changeFilter.of(transaction => {
+    if (!transaction.docChanged || transaction.annotation(externalSourceUpdate)) return true;
+    const state = transaction.startState;
+    const { from, to } = markdownEditorRange(state, {
+      start: editStart, end: markdownValue(state).length - tailLength,
+    });
+    let allowed = true;
+    transaction.changes.iterChangedRanges((start, end) => { allowed &&= start >= from && end <= to; });
+    return allowed;
+  }) : undefined, [editStart, inlineEditing, tailLength]);
+
+  useEffect(() => {
+    onAnnotationEditChange?.(inlineEditing);
+    return () => onAnnotationEditChange?.(false);
+  }, [inlineEditing, onAnnotationEditChange]);
+
+  useLayoutEffect(() => {
+    const target = inlineEditing ? replacementRange.current : selectionToRestore.current;
+    selectionToRestore.current = null;
+    if (!target) return;
+    const frame = requestAnimationFrame(() => documentRef.current?.select(target, inlineEditing));
+    return () => cancelAnimationFrame(frame);
+  }, [inlineEditing]);
+
+  const closeEditor = () => {
+    if (inline) selectionToRestore.current = inline;
+    setEditor(null);
+    setStatus(null);
+  };
+  const openEditor = (range: MarkdownSelection, annotation: BriefingAnnotation | null = null,
+    kind: BriefingAnnotation['annotation_kind'] = annotation?.annotation_kind ?? 'comment', note = annotation?.body ?? '') => {
+    if (!canInteract || (kind === 'suggest_replacement' && !mayReplace) || source.slice(range.start, range.end) !== range.quote) return;
+    const proposed = annotation?.replacement_text ?? range.quote;
+    replacementRange.current = { start: range.start, end: range.start + proposed.length };
+    setEditor({ ...range, annotation, kind });
+    setBody(note);
+    setReplacement(proposed);
     setStatus(null);
   };
 
@@ -170,7 +226,8 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
   };
   const viewAnchor = (range: MarkdownSourceRange, id: string) => {
     openComment(id);
-    documentRef.current?.select(range);
+    const visible = workingRange(range);
+    if (visible) documentRef.current?.select(visible);
   };
   const describe = (entry: BriefingAnnotation) => entry.annotation_kind === 'suggest_replacement'
     ? <><del>{entry.quote}</del> <ins>{entry.replacement_text}</ins>{entry.body && <div>{entry.body}</div>}</>
@@ -184,7 +241,7 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
     ...(round.annotations ?? []).map((annotation) => ({
       id: annotation.annotation_event_id, quote: annotation.quote,
       range: currentRange(annotation), author: annotationActor(annotation), content: describe(annotation),
-      ...(canInteract && annotation.presentation?.source === 'current_draft' ? { edit: () => openExisting(annotation) } : {}),
+      ...(canInteract && !inline && annotation.presentation?.source === 'current_draft' ? { edit: () => openExisting(annotation) } : {}),
     })),
     ...(round.carried_annotations ?? []).map((annotation) => ({
       id: annotation.annotation_event_id, quote: annotation.quote,
@@ -203,18 +260,32 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
       anchor.status === 'detached' ? [] : [{ start: anchor.start_offset, end: anchor.end_offset,
         id: annotation_event_id, className: 'review-range' }]),
   ], [round.annotations, round.carried_annotations, standingRanges]);
+  const visibleDecorations = inline ? decorations.flatMap(decoration => {
+    const range = workingRange(decoration);
+    return range ? [{ ...decoration, ...range }] : [];
+  }) : decorations;
+  if (inline && replacement.length) visibleDecorations.push({
+    start: inline.start, end: inline.start + replacement.length, id: 'briefing-inline-replacement', className: 'review-range',
+  });
   const validSelection = selection && selection.start < selection.end
     && document?.source.slice(selection.start, selection.end) === selection.quote ? selection : null;
 
-  const directiveItemsRef = useRef(directives);
-  directiveItemsRef.current = directives;
+  const directiveItemsRef = useRef({ directives, workingRange, inlineEditing });
+  directiveItemsRef.current = { directives, workingRange, inlineEditing };
   const directiveHosts = useRef(new Map<HTMLElement, string>());
   const [, setHostsRevision] = useState(0);
   const allowlist = useMemo(() => {
+    const locate = (node: Parameters<MarkdownDirectiveRenderer>[0]) => {
+      const { directives, workingRange } = directiveItemsRef.current;
+      return directives.find(({ directive }) => {
+        if (!directive || directive.key !== node.attributes.key) return false;
+        const range = workingRange({ start: directive.start_offset, end: directive.end_offset });
+        return range?.start === node.start && range.end === node.end;
+      });
+    };
     const render: MarkdownDirectiveRenderer = (node, owner) => {
       const element = owner.createElement('div');
-      const item = directiveItemsRef.current.find((candidate) => candidate.directive && candidate.directive.key === node.attributes.key
-        && candidate.directive.start_offset === node.start && candidate.directive.end_offset === node.end);
+      const item = locate(node);
       if (!item) {
         element.textContent = node.quote;
         return element;
@@ -226,6 +297,7 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
         queueMicrotask(() => setHostsRevision((value) => value + 1));
       } };
     };
+    render.accepts = (node) => !directiveItemsRef.current.inlineEditing || Boolean(locate(node));
     return new Map([['spec-item', render]]);
   }, []);
 
@@ -239,7 +311,7 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
         throw new Error('The annotation service returned an ambiguous event result.');
       }
       await onRefresh();
-      setEditor(null);
+      closeEditor();
       setCommentsOpen(true);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -250,7 +322,8 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
   };
 
   const save = async () => {
-    if (!editor || !canInteract) return;
+    if (!editor || !canInteract || source.slice(editor.start, editor.end) !== editor.quote) return;
+    const { kind } = editor;
     if (kind === 'comment' && !body.trim()) {
       setStatus('Comment text is required.');
       return;
@@ -269,17 +342,48 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
     <section ref={contentRef} className="briefing-document__content" aria-label="Briefing document">
       {currentDocument && !currentDocument.documentError && (
         <>
-          <div className="briefing-document__review-toolbar">
-            <ContextualAction aria-label="Comment on selection" title="Comment on selection"
-              disabled={!canInteract || !validSelection} onClick={() => validSelection && openEditor(validSelection)}>
-              <Icon name="comment" />
-            </ContextualAction>
-          </div>
-          <div className={`briefing-document__review${commentsOpen ? ' briefing-document__review--with-comments' : ''}`}>
-            <MarkdownDocument key={roundKey} documentRef={documentRef} value={document.source}
-              comparison={currentComparison ? currentComparison.text : comparison?.text} comparisonLayout="full-document" readOnly ariaLabel="Pinned briefing document"
-              directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} decorations={decorations}
-              onSelectionChange={setSelection} onDecorationClick={openComment} />
+          {inline ? (
+            <form className="briefing-document__review-toolbar briefing-document__inline-replacement" aria-label="Text replacement"
+              onSubmit={event => { event.preventDefault(); void save(); }}>
+              <textarea aria-label="Note (optional)" placeholder="Add a note" rows={2} value={body} disabled={!canInteract}
+                onInput={event => setBody(event.currentTarget.value)} />
+              {inline.annotation && <ContextualAction presentation="compact" aria-label="Delete replacement" {...appTip('Delete replacement')}
+                disabled={!canInteract} onClick={() => void mutate([{ operation: 'retract', annotation_event_id: inline.annotation!.annotation_event_id }])}>
+                <Icon name="discard" />
+              </ContextualAction>}
+              <ContextualAction presentation="compact" aria-label="Cancel replacement" {...appTip('Cancel replacement')}
+                disabled={busy} onClick={closeEditor}><Icon name="dismiss" /></ContextualAction>
+              <ContextualAction presentation="compact" type="submit" aria-label="Save replacement" {...appTip('Save replacement')}
+                disabled={!canInteract || (replacement === inline.quote && !body.trim())}><Icon name="keep" /></ContextualAction>
+            </form>
+          ) : (
+            <div className="briefing-document__review-toolbar">
+              <ContextualAction presentation="compact" aria-label="Comment on selection" {...appTip('Comment on selection')}
+                disabled={!canInteract || !validSelection} onClick={() => validSelection && openEditor(validSelection)}>
+                <Icon name="comment" />
+              </ContextualAction>
+              <ContextualAction presentation="compact" aria-label="Edit selected text" {...appTip('Edit selected text')}
+                disabled={!canInteract || !mayReplace || !validSelection}
+                onClick={() => validSelection && openEditor(validSelection, null, 'suggest_replacement')}>
+                <Icon name="editAnnotation" />
+              </ContextualAction>
+            </div>
+          )}
+          {inline && status && <DetailPaneNotice severity="error" density="compact">{status}</DetailPaneNotice>}
+          <div key="review-document" className={`briefing-document__review${commentsOpen ? ' briefing-document__review--with-comments' : ''}`}>
+            <MarkdownDocument key={roundKey} documentRef={documentRef} value={previewSource}
+              comparison={currentComparison ? currentComparison.text : comparison?.text} comparisonLayout="full-document"
+              readOnly={!inline || !canInteract} ariaLabel="Pinned briefing document" editingExtension={editingExtension}
+              directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} decorations={visibleDecorations}
+              onChange={inline ? value => {
+                if (value.startsWith(prefix) && value.endsWith(suffix)) setReplacement(value.slice(prefix.length, value.length - suffix.length));
+              } : undefined}
+              onSelectionChange={inline ? undefined : setSelection}
+              onKeyDown={event => {
+                if (!inline || busy || event.key !== 'Escape') return false;
+                closeEditor();
+                return true;
+              }} onDecorationClick={openComment} />
             <ReviewCommentsSidebar comments={comments} open={commentsOpen} setOpen={setCommentsOpen}
               onNavigate={viewAnchor} selectedId={selectedCommentId} />
           </div>
@@ -289,39 +393,25 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
             const current = Object.hasOwn(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
             return createPortal(
               <BriefingDirectiveControls key={`${itemId}:${draftIdentity ?? ''}`} item={{ ...item, directive: item.directive }} source={document.source}
-                current={current} canInteract={canInteract} validationError={validationErrors[item.id]} decorations={decorations}
+                current={current} canInteract={canInteract && !inline} validationError={validationErrors[item.id]} decorations={decorations}
                 onDirectiveValue={onDirectiveValue} onSelect={setSelection} onComment={openEditor} onDecorationClick={openComment} />,
               element,
             );
           })}
         </>
       )}
-      <DetailPaneModal open={editor !== null} onClose={() => setEditor(null)}
+      <DetailPaneModal open={editor?.kind === 'comment'} onClose={closeEditor}
         titleId="briefing-annotation-editor-title" title={editor?.annotation ? 'Edit annotation' : 'Add annotation'}
+        headerActions={editor && !editor.annotation && mayReplace ? <ContextualAction presentation="compact" aria-label="Edit text" {...appTip('Edit text')}
+          disabled={!canInteract} onClick={() => openEditor(editor, null, 'suggest_replacement', body)}><Icon name="editAnnotation" /></ContextualAction> : undefined}
         closeLabel="Close annotation editor" embeddedFallback={{ scrollOwnerRef: contentRef }}
         scrollLockClassName="detail-pane-shell__body--overlay-open"
         className="briefing-document__annotation-modal" panelClassName="briefing-document__popover">
         {editor && (
           <div className="briefing-document__popover-content">
             <blockquote>{editor.quote}</blockquote>
-            <div className="briefing-document__tabs" role="tablist" aria-label="Text review action">
-              {(['comment', 'suggest_replacement'] as const).map((option) => (
-                <button key={option} type="button" role="tab" data-annotation-kind={option}
-                  aria-selected={kind === option} tabIndex={kind === option ? 0 : -1} onClick={() => setKind(option)}
-                  onKeyDown={(event) => {
-                    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-                    event.preventDefault();
-                    const next = event.key === 'ArrowLeft' || event.key === 'Home' ? 'comment' : 'suggest_replacement';
-                    setKind(next);
-                    event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`[data-annotation-kind="${next}"]`)?.focus();
-                  }}>{option === 'comment' ? 'Comment' : 'Edit text'}</button>
-              ))}
-            </div>
-            {kind === 'suggest_replacement' && <label><span>Replacement</span>
-              <textarea value={replacement} onInput={(event) => setReplacement(event.currentTarget.value)} disabled={!canInteract} />
-            </label>}
             <label>
-              <span className={kind === 'comment' ? 'sr-only' : ''}>{kind === 'comment' ? 'Comment' : 'Note (optional)'}</span>
+              <span className="sr-only">Comment</span>
               <textarea value={body} onInput={(event) => setBody(event.currentTarget.value)} disabled={!canInteract} />
             </label>
             {status && <p className="briefing-document__popover-status" role="status">{status}</p>}
@@ -333,7 +423,7 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
                 )}
               </div>
               <div className="briefing-document__popover-primary-actions">
-                <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => setEditor(null)}>Cancel</button>
+                <button type="button" className="btn btn--ghost" disabled={busy} onClick={closeEditor}>Cancel</button>
                 <button type="button" className="btn btn--primary" disabled={!canInteract} onClick={() => void save()}>Save</button>
               </div>
             </div>

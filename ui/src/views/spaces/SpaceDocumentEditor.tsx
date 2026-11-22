@@ -33,6 +33,7 @@ import {
   addressIn, blockAt, insertBlock, itemFrame, moveSection, separator, spaceBlocks, todoFrame,
 } from './document-model';
 import { SpaceDocumentRecovery } from './document-recovery';
+import { spaceFrameEditing, spaceFramePreview } from './frame-editing';
 import { useSpaceDocumentDraft } from './useSpaceDocumentDraft';
 import './SpaceDocumentEditor.css';
 
@@ -179,6 +180,9 @@ function SavedSpaceEditor({ spaceId, projectId, factPacket, instance = null, fet
     }
     editor.current?.edit(edits, range);
   }, [draft.source, draft.latest, draft.conflict, editable, legacy, legacyBases.data, spaceId]);
+
+  const frameEditing = useMemo(() => spaceFrameEditing(spaceId, new Set(factPacket?.items.map(item => item.id))),
+    [spaceId, factPacket?.items]);
 
   const directives = useMemo(() => {
     const renderer: MarkdownDirectiveRenderer = (directive, document) => {
@@ -393,7 +397,7 @@ function SavedSpaceEditor({ spaceId, projectId, factPacket, instance = null, fet
       <div ref={scroller} className="space-document__scroller" onScroll={scroll}
         onDragOver={event => { if (dragged.current) event.preventDefault(); }} onDrop={placeDrop}>
         <MarkdownDocument {...standing.documentProps} ariaLabel="Space document" value={draft.source} readOnly={!editable}
-          directives={directives} comparison={draft.conflict && reviewedGeneration !== null ? draft.latest.source : undefined}
+          directives={directives} previewPolicy={spaceFramePreview} editingExtension={frameEditing} comparison={draft.conflict && reviewedGeneration !== null ? draft.latest.source : undefined}
           onChange={draft.onChange} onSelectionChange={range => {
             setSelection(range);
             standing.documentProps.onSelectionChange(range);

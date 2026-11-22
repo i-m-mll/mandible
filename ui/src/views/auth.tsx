@@ -1589,7 +1589,7 @@ function AuthRequestDetail({
               navigateAuthReviewView(fullId, 'diff', { oldPath: file.old_path, newPath: file.new_path });
             }} /> : <ChangeList
             files={changeReport?.files}
-            patch={authType === 'merge' || review.against ? undefined : diffRaw}
+            patch={authType === 'merge' || review.against || changeReport ? undefined : diffRaw}
             emptyLabel={authType === 'merge' && request.change_report === null ? 'Change inventory unavailable' : undefined}
             scope={`auth:${getAuthId(request)}`}
             revision={changeReport?.comparison.head_sha}

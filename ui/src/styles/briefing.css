@@ -96,37 +96,20 @@
   gap: var(--space-3);
 }
 
-.briefing-document__tabs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-inset);
-}
-
-.briefing-document__tabs button {
-  min-height: 2rem;
+.briefing-document__inline-replacement {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  align-items: center;
+  gap: var(--space-1);
   padding: var(--space-1) var(--space-2);
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: var(--text-sm);
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.briefing-document__tabs button[aria-selected='true'] {
-  border-color: var(--border-faint);
   background: var(--surface-card);
-  color: var(--text-primary);
 }
 
-.briefing-document__tabs button:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 1px;
+.briefing-document__inline-replacement textarea {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
 }
 
 .briefing-document__popover-actions {

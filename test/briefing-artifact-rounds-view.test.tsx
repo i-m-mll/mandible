@@ -382,7 +382,8 @@ describe('artifact-backed Briefing rounds', () => {
     fireEvent.keyDown(latestSubmit, { key: 'Enter' });
     fireEvent.click(latestSubmit);
     expect(calls.some((call) => call.method === 'POST')).toBe(false);
-    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Dismiss' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(calls.some((call) => call.method === 'POST')).toBe(false);
     await waitFor(() => expect(latestSubmit.getAttribute('aria-disabled')).toBe('false'));
     fireEvent.click(latestSubmit);
@@ -422,7 +423,8 @@ describe('artifact-backed Briefing rounds', () => {
     }));
     window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({ ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE, selectedCollectionId: 'briefing:briefing-1' }));
     render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
-    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Dismiss' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     const submit = screen.getByRole('button', { name: 'Submit' });
     await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
     fireEvent.click(submit);

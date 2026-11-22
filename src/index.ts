@@ -77,7 +77,7 @@ import { registerTimelineRoutes } from "./routes/timeline.js";
 import { workerLedgerReaderPool } from "./ledger-reads/index.js";
 import { registerSpacesRoutes } from "./routes/spaces.js";
 // Umbrella 99b74d6 / issue ce22a3a — briefing review store, ingest, and sweep.
-import { registerBriefingRoutes } from "./routes/briefing.js";
+import { registerBriefingConversionRequests, registerBriefingRoutes } from "./routes/briefing.js";
 // Umbrella 99b74d6 / issue ce83a84 — human-initiated agent dispatch.
 import { registerAgentDispatchRoutes } from "./routes/agent-dispatch.js";
 // Issue 0bc2279 — executor task inventory receipts and read-only projection.
@@ -283,7 +283,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     candidateAcceptanceExecutor: instance.role === "main" && operationalMutationsAllowed ? runCandidateAcceptance : null,
     outcomeReporter: createOutcomeReporter(db),
   });
-  registerAuthRoutes(router, authQueue, ledgerReader);
+  const allowTrackedReviewRetention = operationalMutationsAllowed && instance.allowed_effects.includes("files:production");
+  registerAuthRoutes(router, authQueue, ledgerReader, allowTrackedReviewRetention);
   registerNoticeRoutes(router, authQueue.notices!);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
     config_path: instance.role === "preview"
@@ -374,7 +375,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerTimelineRoutes(router, ledgerReader);
   registerSpacesRoutes(router);
   // Issue: ce22a3a — briefing ingestion, review queue, and decision routes
-  registerBriefingRoutes(router, db, ledgerReader);
+  registerBriefingRoutes(router, db, ledgerReader, allowTrackedReviewRetention);
+  registerBriefingConversionRequests(router, db, authQueue);
   // Issue: ce83a84 — human-only agent dispatch (preview, dispatch, events)
   registerAgentDispatchRoutes(router, db);
   // Issue: 0bc2279 — executor task inventory (registered-publisher POST, read projection)

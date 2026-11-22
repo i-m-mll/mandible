@@ -82,8 +82,8 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
   try {
     writeFile(repo, "docs/notes.md", requesterText.replace("Requester change.", "Original proposal."));
     git(repo, ["add", "docs/notes.md"]); git(repo, ["commit", "-m", "Original notes"]);
-    commitOnBranch(repo, branch, { "docs/notes.md": requesterText });
-    const requester = git(repo, ["rev-parse", branch]);
+    commitOnBranch(repo, branch, { "docs/notes.md": requesterText, "docs/summary.md": "Requester summary.\n" });
+    let requester = git(repo, ["rev-parse", branch]);
     writeFile(repo, "docs/notes.md", requesterText
       .replace("Requester change.", "Original proposal.").replace("Base wording.", "Independent protected update."));
     git(repo, ["add", "docs/notes.md"]); git(repo, ["commit", "-m", "Independent protected update"]);
@@ -108,14 +108,16 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
     });
     expect(refused.status, refused.stderr).not.toBe(0);
 
-    const { changeReport } = await computeAuthMergeReviewMetadata(repo, "main", branch);
-    const request = await queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge",
+    const submitReview = async (predecessor?: string) => queue.submit({ ...AUTH_MERGE_REVIEW, type: "merge",
       command: `mandible auth merge ${branch} --into main`, title: "Freeze edits",
       cwd: repo, target_repo_root: repo, repo: "frozen-fixture", base_branch: "main", head_branch: branch,
-      merge_head_sha: requester, change_report: changeReport,
+      merge_head_sha: requester, change_report: (await computeAuthMergeReviewMetadata(repo, "main", branch)).changeReport,
+      ...(predecessor ? { supersedes_request_id: predecessor, expected_revision: queue.lifecycleRevision(predecessor)!,
+        expected_custody_generation: queue.requestResponsibility(queue.getRequestExact(predecessor)!).custody_generation } : {}),
       narrative: ['Clarify the instruction.', ':::change{path="docs/notes.md"}\nRequester change.\n:::',
         ':::spec-item{key="context" type="verdict" required="false"}\nKeep this explanation?\n:::\n'].join("\n\n"),
     }, credential.operatorId);
+    let request = await submitReview();
     const caller = operatorCaller(credential.operatorId);
     const actor = { user_id: credential.operatorId, evidence_method: "local_default", authority_path: "operator" as const };
     const first = await readRequestReview(db, request, actor.user_id);
@@ -145,20 +147,24 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
     });
     const old = await edit(0, editedText.replace("Operator", "Draft"));
     const current = await edit(old.generation, editedText);
-    await expect(queue.approveAsOperator(request.id, caller, expected_revision, firstProof)).rejects.toThrow(/freeze the review drafts/i);
-    const freeze = (generation: number) => queue.freezeRequestReview(request.id, actor, {
-      ...input, ...firstProof, draft_snapshot: [{ path: current.path, generation }],
+    const summary = await queue.mutateRequestReviewDraft(request.id, actor, {
+      ...input, round_id: first.round.id, path: "docs/summary.md", expected_generation: 0,
+      mutation: { operation: "save", text: "Operator summary.\n" },
     });
-    await expect(freeze(old.generation)).rejects.toThrow(/drafts changed/i);
-    const frozen = await freeze(current.generation);
-    const revision = queue.lifecycleRevision(request.id)!;
+    await expect(queue.approveAsOperator(request.id, caller, expected_revision, firstProof)).rejects.toMatchObject({ code: "lifecycle_conflict" });
+    const freeze = (generation: number) => queue.freezeRequestReview(request.id, actor, {
+      ...input, ...firstProof, draft_snapshot: [{ path: current.path, generation }, { path: summary.path, generation: summary.generation }],
+    });
+    await expect(freeze(old.generation)).rejects.toMatchObject({ code: "lifecycle_conflict" });
+    let frozen = await freeze(current.generation);
+    let revision = queue.lifecycleRevision(request.id)!;
     const freezeEvent = queue.listLifecycleEvents(request.id).find(event => event.revision === revision)!;
     expect(db.prepare("SELECT response_event_id FROM briefing_submission_answers WHERE submission_id = ?")
       .all(freezeEvent.review_submission_id!)).toEqual([{ response_event_id: firstAnswer }]);
-    const reviewed = await readRequestReview(db, frozen, actor.user_id);
+    let reviewed = await readRequestReview(db, frozen, actor.user_id);
     expect(reviewed.drafts).toEqual([]);
     expect(reviewed.versions.map(version => version.head)).toEqual([requester, frozen.merge_candidate_pin_sha]);
-    const effective = frozen.merge_effective_head_sha!;
+    let effective = frozen.merge_effective_head_sha!;
     const ref = changeEditRef(request.id, effective);
     expect(git(repo, ["rev-list", "--parents", "-n", "1", ref])).toBe(`${effective} ${requester}`);
     expect(git(repo, ["show", "--format=%G?", "--no-patch", effective])).toBe("N");
@@ -167,26 +173,80 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
     expect(file).toMatchObject({ operator_edited: true });
     expect(git(repo, ["cat-file", "blob", file.new_object!.oid])).toBe(mergedText.trimEnd());
     expect(git(repo, ["cat-file", "blob", file.old_object!.oid])).toContain("Independent protected update.");
-    await expect(queue.approveAsOperator(request.id, caller, revision, firstProof)).rejects.toThrow(/proof changed/i);
-    const proof = { proof_digest: queue.reviewApprovalProof(frozen), round_id: reviewed.round.id, annotation_event_ids: [] };
+    await expect(queue.approveAsOperator(request.id, caller, revision, firstProof)).rejects.toMatchObject({ code: "lifecycle_conflict" });
+    let proof = { proof_digest: queue.reviewApprovalProof(frozen), round_id: reviewed.round.id, annotation_event_ids: [] };
     git(repo, ["update-ref", ref, requester, effective]);
-    try { await expect(queue.approveAsOperator(request.id, caller, revision, proof)).rejects.toThrow(/change edit ref changed/i); }
+    try { await expect(queue.approveAsOperator(request.id, caller, revision, proof)).rejects.toMatchObject({ code: "merge_check_failed" }); }
     finally { git(repo, ["update-ref", ref, effective, requester]); }
     expect(signer.touches).toHaveLength(0);
     expect(git(repo, ["rev-parse", "main"])).toBe(base);
+    const reviewInput = async (requestId: string) => {
+      const shown = await readRequestReview(db, queue.getRequestExact(requestId)!, actor.user_id);
+      return { expected_revision: queue.lifecycleRevision(requestId)!,
+        expected_custody_generation: queue.requestResponsibility(queue.getRequestExact(requestId)!).custody_generation,
+        round_id: shown.round.id, annotation_event_ids: [],
+        draft_snapshot: shown.drafts.map(({ path, generation }) => ({ path, generation })),
+      };
+    };
+    const supersede = async (step: number, expectedText: string) => {
+      git(repo, ["checkout", branch]);
+      writeFile(repo, `requester-${step}.txt`, "A later independent requester change.\n");
+      git(repo, ["add", `requester-${step}.txt`]);
+      git(repo, ["commit", "-m", `Requester revision ${step}`]);
+      requester = git(repo, ["rev-parse", branch]);
+      git(repo, ["checkout", "main"]);
+      request = await submitReview(request.id);
+      const carried = await readRequestReview(db, request, actor.user_id);
+      expect(carried.drafts).toMatchObject([
+        { path: "docs/notes.md", text: expectedText, conflict: null },
+        { path: "docs/summary.md", text: "Operator summary.\n", conflict: null },
+      ]);
+      return queue.freezeRequestReview(request.id, actor, await reviewInput(request.id));
+    };
+    frozen = await supersede(1, editedText);
+    const returnText = mergedText.replace("Operator change.", "Operator returned change.");
+    await queue.mutateRequestReviewDraft(request.id, actor, {
+      ...await reviewInput(request.id), path: "docs/notes.md", expected_generation: 0,
+      mutation: { operation: "save", text: returnText },
+    });
+    const returned = await queue.returnRequestReview(request.id, actor, {
+      ...await reviewInput(request.id), reason: "Confirm the wording.",
+    });
+    const returnedEdit = submittedChangeEdit(db, returned.submission_id)!;
+    expect(returnedEdit.commit_sha).not.toBe(frozen.merge_effective_head_sha);
+    expect(git(repo, ["show", `${returnedEdit.ref}:docs/notes.md`])).toBe(editedText.replace("Operator change.", "Operator returned change.").trimEnd());
+    frozen = await supersede(2, editedText.replace("Operator change.", "Operator returned change."));
+    const priorHead = frozen.merge_effective_head_sha;
+    const priorProof = { proof_digest: queue.reviewApprovalProof(frozen), round_id: (await reviewInput(request.id)).round_id,
+      annotation_event_ids: [] };
+    const finalText = returnText.replace("returned change.", "returned wording.");
+    const amend = await queue.mutateRequestReviewDraft(request.id, actor, {
+      ...await reviewInput(request.id), path: "docs/notes.md", expected_generation: 0, mutation: { operation: "save", text: finalText },
+    });
+    frozen = await queue.freezeRequestReview(request.id, actor, {
+      ...await reviewInput(request.id), draft_snapshot: [{ path: amend.path, generation: amend.generation }],
+    });
+    revision = queue.lifecycleRevision(request.id)!;
+    await expect(queue.approveAsOperator(request.id, caller, revision, priorProof)).rejects.toMatchObject({ code: "lifecycle_conflict" });
+    reviewed = await readRequestReview(db, frozen, actor.user_id);
+    effective = frozen.merge_effective_head_sha!;
+    expect(effective).not.toBe(priorHead);
+    expect(git(repo, ["show", `${effective}:docs/notes.md`])).toBe(editedText.replace("Operator change.", "Operator returned wording.").trimEnd());
+    expect(git(repo, ["rev-list", "--parents", "-n", "1", effective])).toBe(`${effective} ${requester}`);
+    proof = { proof_digest: queue.reviewApprovalProof(frozen), round_id: reviewed.round.id, annotation_event_ids: [] };
     const binding = reviewed.round.bindings.find(item => item.source.kind === "request_file"
       && item.source.side === "after" && item.source.path === "docs/notes.md")!;
-    const quote = "Operator change.";
+    const quote = "Operator returned wording.";
     const annotation = await queue.annotateRequestReview(request.id, actor, {
       ...input, expected_revision: revision, document_binding_id: binding.id,
-      mutation: { operation: "set", kind: "comment", start_offset: mergedText.indexOf(quote),
-        end_offset: mergedText.indexOf(quote) + quote.length, quote, body: "Accept this wording." },
+      mutation: { operation: "set", kind: "comment", start_offset: finalText.indexOf(quote),
+        end_offset: finalText.indexOf(quote) + quote.length, quote, body: "Accept this wording." },
     });
-    await expect(queue.approveAsOperator(request.id, caller, revision, proof)).rejects.toThrow(/review changed/i);
+    await expect(queue.approveAsOperator(request.id, caller, revision, proof)).rejects.toMatchObject({ code: "lifecycle_conflict" });
     const finalAnswer = answer(reviewed.round.id, revision, "dismiss");
     const proofWithComment = { ...proof, annotation_event_ids: [annotation] };
     await expect(queue.approveAsOperator(request.id, caller, revision, proofWithComment))
-      .rejects.toThrow(/narrative answers changed/i);
+      .rejects.toMatchObject({ code: "stale_answer" });
     expect(signer.touches).toHaveLength(0);
     await queue.approveAsOperator(request.id, caller, revision, { ...proofWithComment, answer_event_ids: [finalAnswer] });
     await waitForStatus(queue, request.id, "completed");
@@ -194,7 +254,8 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
     const landed = git(repo, ["rev-parse", "main"]);
     expect(signer.touches).toHaveLength(1);
     expect(git(repo, ["rev-list", "--parents", "-n", "1", landed])).toBe(`${landed} ${base} ${effective}`);
-    expect(git(repo, ["show", `${landed}:docs/notes.md`])).toBe(mergedText.trimEnd());
+    expect(git(repo, ["show", `${landed}:docs/notes.md`])).toBe(finalText.trimEnd());
+    expect(git(repo, ["show", `${landed}:docs/summary.md`])).toBe("Operator summary.");
     expect(await verifyMergeCommitSignature(db, repo, landed)).toMatchObject({ verified: true, credential_id: credential.credentialId });
     const approval = queue.listLifecycleEvents(request.id).find(event => event.event_type === "approved")!;
     expect(submittedChangeEdit(db, approval.review_submission_id!)).toMatchObject({ commit_sha: effective, parent_sha: requester });
@@ -203,9 +264,9 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
       .toEqual(reviewed.round.bindings.map(binding => binding.id).sort());
     const completed = await readRequestReview(db, queue.getRequestExact(request.id)!, actor.user_id);
     expect(hookManager.getRun(request.id, hook.id)).toMatchObject({ state: "complete" });
-    expect(readFileSync(installed, "utf8")).toBe(mergedText);
+    expect(readFileSync(installed, "utf8")).toBe(finalText);
     const currentGroup = readBriefingGroup(db, group.id, viewer);
-    expect(currentGroup.current!.layout[0]).toMatchObject({ kind: "tracked", tracked: { commit_sha: landed, content: mergedText } });
+    expect(currentGroup.current!.layout[0]).toMatchObject({ kind: "tracked", tracked: { commit_sha: landed, content: finalText } });
     expect(completed.tracked_group_history[0]?.groups).toEqual(first.tracked_groups);
     expect(completed.tracked_groups[0]?.documents[0]?.commit_sha).toBe(base);
     expect(completed.narrative_questions[0]?.effective_response)

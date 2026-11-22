@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
 import type { TrackedBriefingDocument } from '../../../../src/contracts';
+import { isMarkdownFile } from '../../../../src/presentation/markdown-file';
 import { MarkdownDocument, PlainTextDocument } from '../../components/MarkdownDocument';
 import { CollapsiblePanel } from '../../components/shared/CollapsiblePanel';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
@@ -18,7 +19,7 @@ export function TrackedBriefingDocumentPanel({ document, showCommit, pending, ch
   children?: ComponentChildren;
 }) {
   const { path, project_key, content, commit_sha } = document;
-  const Document = /\.(?:md|markdown)$/i.test(path) ? MarkdownDocument : PlainTextDocument;
+  const Document = isMarkdownFile(path) ? MarkdownDocument : PlainTextDocument;
   return (
     <TrackedBriefingDisclosure title={<>
       {path} · {project_key}

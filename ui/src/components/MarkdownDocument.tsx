@@ -28,6 +28,7 @@ export type MarkdownDocumentHandle = {
 };
 
 type MarkdownDocumentProps = {
+  editingExtension?: import('@codemirror/state').Extension;
   value: string;
   readOnly: boolean;
   ariaLabel: string;
@@ -125,6 +126,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
     comparison: new Compartment(),
     directives: new Compartment(),
     previewPolicy: new Compartment(),
+    editing: new Compartment(),
   }).current;
   const activeComparison = useRef({ value: props.comparison, layout: props.comparisonLayout });
   const readOnly = props.readOnly || (props.syntax === 'markdown' && isLargeMarkdownDocument(props.value));
@@ -158,7 +160,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
         doc: initial.value,
         extensions: [
           exactMarkdownSource(initial.value),
-          history(), rangeDecorations,
+          history(), rangeDecorations, compartments.editing.of(initial.editingExtension ?? []),
           compartments.directives.of(initial.directives ? markdownDirectives.of(initial.directives) : []),
           compartments.previewPolicy.of(initial.previewPolicy ? markdownPreviewPolicy.of(initial.previewPolicy) : []),
           initial.syntax === 'markdown' ? [
@@ -232,9 +234,10 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
       effects: [
         compartments.directives.reconfigure(props.directives ? markdownDirectives.of(props.directives) : []),
         compartments.previewPolicy.reconfigure(props.previewPolicy ? markdownPreviewPolicy.of(props.previewPolicy) : []),
+        compartments.editing.reconfigure(props.editingExtension ?? []),
       ],
     });
-  }, [props.directives, props.previewPolicy]);
+  }, [props.directives, props.previewPolicy, props.editingExtension]);
 
   useLayoutEffect(() => {
     const editor = view.current;

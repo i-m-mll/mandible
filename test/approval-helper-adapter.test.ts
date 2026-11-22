@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, expect, it } from "vitest";
 import { HelperOperatorSigner } from "../src/operator-signing/signer.js";
+import { waitUntil } from "./helpers/wait-until.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-helper-adapter-"));
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -38,9 +39,11 @@ it("maps closed-set results and turns anything else into failed", async () => {
 
 it("kills the helper and reports cancelled when the caller aborts", async () => {
   const file = path.join(dir, "slow");
-  fs.writeFileSync(file, "#!/bin/sh\nsleep 30\n", { mode: 0o700 });
+  const received = `${file}.in`;
+  fs.writeFileSync(file, `#!/bin/sh\ncat > "${received}.partial"\nmv "${received}.partial" "${received}"\nexec /bin/sleep 30\n`, { mode: 0o700 });
   const controller = new AbortController();
   const pending = new HelperOperatorSigner(file).sign(request, controller.signal);
-  setTimeout(() => controller.abort(), 50);
+  await waitUntil(() => fs.existsSync(received), "the approval helper to read the request");
+  controller.abort();
   expect(await pending).toEqual({ result: "cancelled" });
 });

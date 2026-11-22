@@ -1,5 +1,22 @@
+.detail-pane-shell__body:has(.review-comments) {
+  container-type: size;
+}
+
 .review-comments {
+  position: sticky;
+  inset-block-start: 0;
+  align-self: start;
   min-width: 0;
+}
+
+.review-comments .review-comments__scroll {
+  max-height: min(500px, calc(100cqh - 4rem));
+  overscroll-behavior: contain;
+}
+
+.review-comments__quote[aria-current="true"] {
+  border-inline-start-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .review-comments__list {

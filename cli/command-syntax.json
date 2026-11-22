@@ -339,6 +339,15 @@
         ]
       }
     },
+    "auth.review.approval": {
+      "route": ["auth", "review", "approval"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "request","value": {"type": "string"}}
+        ]
+      }
+    },
     "auth.review.reply": {
       "route": ["auth", "review", "reply"],
       "grammar": {
@@ -379,7 +388,10 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "request","value": {"type": "string"}},
-          {"kind": "option","names": ["--revision"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]}
+          {"kind": "choice","items": [
+            {"kind": "option","names": ["--revision"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 0}}]},
+            {"kind": "option","names": ["--review"],"values": [{"kind": "argument","name": "file","value": {"type": "string"}}]}
+          ]}
         ]
       }
     },
@@ -1337,7 +1349,7 @@
         "items": [
           {"kind": "argument","name": "group-ref","value": {"type": "string"}},
           {"kind": "optional","item": {"kind": "sequence","items": [
-            {"kind": "option","names": ["--apply"],"values": []},
+            {"kind": "option","names": ["--request"],"values": []},
             {"kind": "option","names": ["--expected-base"],"values": [{"kind": "argument","name": "bundle-ref","value": {"type": "string"}}]},
             {"kind": "option","names": ["--plan-digest"],"values": [{"kind": "argument","name": "sha256","value": {"type": "string"}}]}
           ]}},
