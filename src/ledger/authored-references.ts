@@ -42,6 +42,19 @@ export function parseAuthoredReferences(
   return references;
 }
 
+/** Preserve offsets while shielding authored references from colon-based Markdown directives. */
+export function maskAuthoredReferenceColons(source: string): string {
+  const references = parseAuthoredReferences(source);
+  if (!references.length) return source;
+  const masked = source.split("");
+  for (const { start, end } of references) {
+    for (let index = start; index < end; index += 1) {
+      if (masked[index] === ":") masked[index] = "：";
+    }
+  }
+  return masked.join("");
+}
+
 /**
  * Target of an `[issue:...]` ref: `<id>`, `<project>/<id>`, or either form
  * followed by `#<n>`, where `<n>` is a comment ordinal with the same meaning as
