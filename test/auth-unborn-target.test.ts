@@ -1,8 +1,8 @@
 /**
- * Issue c8817ff — a protected branch with no commits yet receives its first
- * history only through an auth request. The reviewed result is an
- * approval-signed commit whose only parent is the reviewed head, and its
- * publication creates the branch.
+ * Issue c8817ff — a new repository, registered as a project checkout while its
+ * protected branch has no commits, receives its first history only through an
+ * auth request. The reviewed result is an approval-signed commit whose only
+ * parent is the reviewed head, and its publication creates the branch.
  */
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -17,12 +17,13 @@ import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setDb } from "../src/db.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
+import { registerProjectRoutes } from "../src/routes/projects.js";
 import { Router } from "../src/server.js";
 import { getOperator } from "../src/users/store.js";
+import { WorkScanner } from "../src/work-scanner.js";
 import { MERGE_CHANGE_MESSAGE } from "./helpers/auth-delivery-fixtures.js";
 import {
-  configureSigningCredential, createLedgerIssue, createLedgerProject, createMigratedDb, createNoopHookManager, git,
-  registerWorkRepo,
+  configureSigningCredential, createLedgerIssue, createMigratedDb, createNoopHookManager, git,
 } from "./helpers/auth-queue-fixtures.js";
 import { approveAsFixtureOperator } from "./helpers/operator-signing-fixtures.js";
 import { waitUntil } from "./helpers/wait-until.js";
@@ -33,6 +34,7 @@ let root: string;
 let repo: string;
 let db: ReturnType<typeof createMigratedDb>;
 let queue: AuthQueue | undefined;
+let scanner: WorkScanner | undefined;
 
 beforeEach(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-unborn-")));
@@ -49,6 +51,8 @@ beforeEach(() => {
 afterEach(async () => {
   await queue?.dispose();
   queue = undefined;
+  await scanner?.stop();
+  scanner = undefined;
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -63,11 +67,27 @@ function commitFeature(branch: string, file: string, content: string): string {
   return commit;
 }
 
-it("creates an unborn protected branch from the approved head", async () => {
+it("creates the protected branch of a newly registered unborn repository from the approved head", async () => {
   const { operatorId } = configureSigningCredential(db, repo);
   fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), "\n.mandible-test-signing-key*\n");
-  registerWorkRepo(db, repo);
-  const project = createLedgerProject(db, repo);
+  const authenticator = new ClientAuthenticator(db, { secretsDir: path.join(root, "secrets") });
+  const { token } = authenticator.mintApiToken(getOperator(db)!.id);
+  const router = new Router({ clientAuth: authenticator });
+  // The tracked-repository list exists and predates the project, as on a configured machine.
+  const reposJson = path.join(root, "repos.json");
+  fs.writeFileSync(reposJson, JSON.stringify({ repos: [] }));
+  scanner = new WorkScanner({ db, config_path: reposJson, config_root: root });
+  registerProjectRoutes(router, null);
+  const call = (method: "POST", url: string, body: Record<string, unknown>) =>
+    router.invoke({ method, url, body, credential: token, transport: "http" });
+
+  // `mandible project add --key unborn --root <repo>`, then the daemon's refresh on checkout:add.
+  const added = await call("POST", "/api/projects", { key: "unborn" });
+  expect(added.status, JSON.stringify(added.body)).toBe(201);
+  const registered = await call("POST", "/api/projects/unborn/checkouts", { root: repo });
+  expect(registered.status, JSON.stringify(registered.body)).toBe(200);
+  await scanner.refreshRepoInfos();
+  const project = { project: (added.body as { project: { id: string; project_key: string } }).project };
   const issue = createLedgerIssue(db, project.project.id, "c8817ff", "Unborn target");
   db.prepare(`INSERT INTO work_units
     (id, issue_id, repo_id, branch, kind, state, created_at, activated_at,
@@ -93,9 +113,6 @@ it("creates an unborn protected branch from the approved head", async () => {
       return result;
     },
   });
-  const authenticator = new ClientAuthenticator(db, { secretsDir: path.join(root, "secrets") });
-  const { token } = authenticator.mintApiToken(getOperator(db)!.id);
-  const router = new Router({ clientAuth: authenticator });
   registerAuthRoutes(router, queue, inlineLedgerReader(() => queue!.db));
 
   const submitted = await router.invoke({
