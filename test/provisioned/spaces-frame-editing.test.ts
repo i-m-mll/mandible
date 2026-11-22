@@ -16,7 +16,7 @@ import { testRuntimeRoot } from '../helpers/runtime-isolation';
 import { migrateFixtureThrough } from '../helpers/schema-snapshot';
 import type {} from './fixtures/spaces-frame-editing-fixture';
 
-it('saves visible caret edits, pasted addresses and orphaned children in a migrated Space', async () => {
+it('recovers a legacy draft and saves caret edits, pasted addresses and orphaned children in a migrated Space', async () => {
   const directory = mkdtempSync(join(testRuntimeRoot, 'spaces-frame-editing-'));
   const db = migrateFixtureThrough(248);
   const space = createSpace(db, { title: 'Frame editing', default_renderer: 'document' });
@@ -24,9 +24,9 @@ it('saves visible caret edits, pasted addresses and orphaned children in a migra
     (id,space_id,parent_id,block_type,sort_key,markdown,metadata_json,created_at,updated_at)
     VALUES (?,?,?,'paragraph',?,?,'{"original":true}',3,9)`);
   const parentText = 'Alpha';
-  const childText = 'Child 😀\r\nkeeps its lines';
+  const childText = 'Recovered child 😀\r\nkeeps its lines';
   insert.run('parent', space.id, null, 'a', parentText);
-  insert.run('child', space.id, 'parent', 'b', childText);
+  insert.run('child', space.id, 'parent', 'b', 'Child 😀\r\nkeeps its lines');
   migrate(db);
   setDb(db);
   const instance = {
@@ -66,15 +66,24 @@ it('saves visible caret edits, pasted addresses and orphaned children in a migra
     const context = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] });
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
-    await page.goto(server.url.href);
-    const editor = page.getByRole('textbox', { name: 'Space document' });
-    await editor.getByText(parentText).waitFor();
+    const legacyKey = `mandible.spaces.blockEditor:_:${space.id}`;
+    await page.addInitScript(({ key, markdown }) => {
+      localStorage.setItem(key, JSON.stringify({ editingId: 'child', drafts: { child: markdown } }));
+    }, { key: legacyKey, markdown: childText });
     const saved = (fullEdit?: string) => page.waitForResponse(response => response.request().method() === 'PATCH'
       && response.url().endsWith(documentPath) && (!fullEdit || response.request().postDataJSON().source.includes(fullEdit)));
     const read = () => {
       const document = getSpaceDocument(db, space.id);
       return parseSpaceSource(space.id, document.source, document.generation).map(span => span.block);
     };
+    const recoverySaved = saved(childText);
+    await page.goto(server.url.href);
+    const editor = page.getByRole('textbox', { name: 'Space document' });
+    await editor.getByText('Recovered child 😀', { exact: true }).waitFor();
+    expect((await recoverySaved).ok()).toBe(true);
+    expect(read()[1]).toMatchObject({ id: 'child', parent_id: 'parent', markdown: childText });
+    await page.waitForFunction(key => localStorage.getItem(key) === null, legacyKey);
+
     const editedParent = '!A\n:::\n!l!p!h!a!';
     const editsSaved = saved(editedParent);
     for (let offset = parentText.length; offset >= 0; offset--) {
