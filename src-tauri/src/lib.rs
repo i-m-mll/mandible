@@ -14,6 +14,8 @@ use tauri::webview::PageLoadEvent;
 use tauri::{command, AppHandle, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 mod acceptance;
+mod desktop_probe;
+mod desktop_startup;
 mod native_preview;
 
 #[derive(Clone, Default)]
@@ -373,9 +375,12 @@ fn launch_native_ca_setup(handle: AppHandle, active: Arc<AtomicBool>) {
 }
 
 #[command]
-fn daemon_status(app: AppHandle) -> Result<DaemonStatus, String> {
-    let config = read_desktop_config(&app)?;
-    run_local_runtime(&app, "status", &config)
+async fn daemon_status(app: AppHandle) -> Result<DaemonStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_local_runtime(&app, "status", &read_desktop_config(&app)?)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[command]
@@ -393,12 +398,15 @@ fn daemon_set_launch_mode(app: AppHandle, launch_mode: String) -> Result<DaemonS
 }
 
 #[command]
-fn daemon_start(app: AppHandle) -> Result<DaemonStatus, String> {
-    let _guard = DAEMON_CONTROL_LOCK
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let config = read_desktop_config(&app)?;
-    run_local_runtime(&app, "start", &config)
+async fn daemon_start(app: AppHandle) -> Result<DaemonStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = DAEMON_CONTROL_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        run_local_runtime(&app, "start", &read_desktop_config(&app)?)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[command]
@@ -420,8 +428,12 @@ fn daemon_restart(app: AppHandle) -> Result<DaemonStatus, String> {
 }
 
 #[command]
-fn daemon_background_settings(app: AppHandle) -> Result<DaemonStatus, String> {
-    run_local_runtime(&app, "background-settings", &read_desktop_config(&app)?)
+async fn daemon_background_settings(app: AppHandle) -> Result<DaemonStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_local_runtime(&app, "background-settings", &read_desktop_config(&app)?)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[command]
@@ -441,12 +453,30 @@ fn navigate_to_desktop_bootstrap(app: AppHandle, skip_auto_start: bool) -> Resul
 }
 
 #[command]
-async fn navigate_to_desktop_dashboard(app: AppHandle) -> Result<(), String> {
-    let status = run_local_runtime(&app, "status", &read_desktop_config(&app)?)?;
-    if !status.dashboard_ready || !admits_native_command_origin(&status.dashboard_origin) {
-        return Err(status
-            .detail
-            .unwrap_or_else(|| "The trusted local dashboard is not ready.".to_string()));
+async fn navigate_to_desktop_dashboard(app: AppHandle, fast_only: Option<bool>) -> Result<(), String> {
+    require_production_context(&app)?;
+    let config_app = app.clone();
+    let probe = tauri::async_runtime::spawn_blocking(move || desktop_probe::probe(&mandible_home()))
+        .await
+        .map_err(|error| error.to_string())?;
+    match probe {
+        Ok(epoch) => desktop_startup::probe_ready(&app, epoch),
+        Err(reason) => {
+            desktop_startup::trace("probe_unavailable", None, None, None, None);
+            if fast_only == Some(true) {
+                return Err(reason);
+            }
+            let trusted = tauri::async_runtime::spawn_blocking(move || {
+                let status = run_local_runtime(&config_app, "status", &read_desktop_config(&config_app)?)?;
+                if status.dashboard_ready && admits_native_command_origin(&status.dashboard_origin) {
+                    return Ok(());
+                }
+                Err(status.detail.unwrap_or_else(|| "The trusted local dashboard is not ready.".to_string()))
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+            trusted?;
+        }
     }
     let window = app
         .get_webview_window("main")
@@ -725,6 +755,7 @@ fn native_context() -> tauri::Context<tauri::Wry> {
 }
 
 pub fn run() {
+    desktop_startup::start();
     let preview = native_preview::configuration()
         .expect("invalid native preview configuration; production bootstrap refused");
     let launch_context = NativeLaunchContext(preview.clone());
@@ -780,9 +811,10 @@ pub fn run() {
     }
     let mut app = builder
         .manage(launch_context)
+        .manage(desktop_startup::FrameState::default())
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("native-host")
-                .js_init_script(native_frame::host_initialization_script())
+                .js_init_script(native_frame::host_initialization_script(preview.is_none()))
                 .build(),
         )
         .plugin(
@@ -828,6 +860,7 @@ pub fn run() {
             // default to the system light color before the webview paints.
             // Bug: d41755b — white title bar in Tauri app on macOS
             if let Some(window) = app.get_webview_window("main") {
+                desktop_startup::trace("window_created", None, None, None, None);
                 let dark = tauri::window::Color(11, 15, 20, 255);
                 let _ = window.set_background_color(Some(dark));
                 #[cfg(target_os = "macos")]
@@ -883,6 +916,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            desktop_startup::desktop_frame_ready,
+            desktop_startup::desktop_frame_painted,
+            desktop_startup::desktop_trace,
             daemon_status,
             daemon_get_launch_mode,
             daemon_set_launch_mode,
