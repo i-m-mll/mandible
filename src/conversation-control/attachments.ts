@@ -13,6 +13,7 @@ export type AnnotationTarget = {
   element_text?: string;
   element?: string;
   source_file?: string;
+  reference?: string;
   react_components?: string;
   css_classes?: string;
   computed_styles?: string;
@@ -44,6 +45,7 @@ export function annotationContextFields(target: AnnotationTarget): Array<{ label
     { label: "Element", value: target.element },
     { label: "Location", value: target.selector },
     { label: "Source", value: target.source_file },
+    { label: "Reference", value: target.reference },
     { label: "React", value: target.react_components },
     { label: "Selected text", value: target.selected_text },
     { label: "Element text", value: target.element_text === target.selected_text || target.element_text === target.nearby_text ? undefined : target.element_text },

@@ -74,6 +74,8 @@ async function load() {
 describe('interface notes store', () => {
   beforeEach(() => {
     vi.resetModules();
+    // jsdom has no hit testing; a note's element is found only in a browser (test/provisioned/interface-notes-embed.test.ts).
+    document.elementsFromPoint = () => [];
     window.localStorage.clear();
     window.history.replaceState(null, '', '/issues');
     daemon.notes.clear();

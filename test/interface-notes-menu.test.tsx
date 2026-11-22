@@ -44,6 +44,8 @@ let db: Db;
 let root: string;
 
 beforeEach(() => {
+  // jsdom has no hit testing; a note's element is found only in a browser (test/provisioned/interface-notes-embed.test.ts).
+  document.elementsFromPoint = () => [];
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'mandible-notes-menu-'));
   db = migratedMemoryDb();
   setDb(db);
