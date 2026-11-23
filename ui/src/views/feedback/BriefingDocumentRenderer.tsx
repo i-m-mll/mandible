@@ -1,4 +1,4 @@
-import { ArrowUp, Check, ChevronLeft, ChevronRight, Clipboard, Download, Pencil, Trash2 } from 'lucide-preact';
+import { Check, ChevronLeft, ChevronRight, Pencil } from 'lucide-preact';
 import { ChoiceDropdown } from '../../components/shared/ChoiceDropdown';
 import { DetailPaneIconAction } from '../../components/shared/DetailPaneIconAction';
 import { DocumentChangeActions } from '../../components/shared/DocumentChangeActions';
@@ -29,6 +29,7 @@ import {
   type InstanceInfo,
 } from '../../api';
 import { useRouteLoad, useViewActive } from '../../app-shell';
+import { appTip } from '../../components/shared/AppHoverTips';
 import { DetailHeaderIdentity } from '../../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
 import { DetailPaneMenuTrigger } from '../../components/shared/DetailPaneMenuTrigger';
@@ -353,12 +354,18 @@ export function BriefingDocumentRenderer({
     && currentAnswerIds.every((id) => round.latest_frozen_membership!.answer_event_ids.includes(id))
     && currentAnnotationIds.every((id) => round.latest_frozen_membership!.annotation_event_ids.includes(id)));
   const emptyNoChange = !draftDiffers && currentAnswerIds.length === 0 && currentAnnotationIds.length === 0;
-  const sendRestriction = !canMutate || round?.directive_binding?.status !== 'valid' || contentGate !== ''
-    ? 'Send unavailable'
-    : pendingSuggestion || busy || clearBusy ? 'Saving…'
-      : requiredIncomplete ? 'Answers required'
-        : emptyNoChange || (!draftDiffers && frozenMatches) ? 'Nothing to send' : null;
-  const submitDisabled = sendRestriction !== null;
+  const submitReason = !canMutate
+    ? (round?.directive_binding?.reason || 'Submitting is unavailable for the current identity or instance.')
+    : round?.directive_binding?.status !== 'valid'
+      ? (round?.directive_binding?.reason || 'The directive binding is unavailable.')
+      : contentGate
+        || (pendingSuggestion ? 'Save or cancel the suggestion before submitting.'
+          : requiredIncomplete ? 'Complete the required directives before submitting.'
+          : emptyNoChange ? 'Add an answer or annotation before submitting.'
+            : !draftDiffers && frozenMatches ? 'No answer or annotation changes since your latest submission.'
+              : null);
+
+  const submitDisabled = contentGate === null || busy || clearBusy || Boolean(submitReason);
 
   const submit = async () => {
     if (!round || !canMutate || busy || clearBusy || pendingSuggestion || contentGate !== '') return;
@@ -663,6 +670,7 @@ export function BriefingDocumentRenderer({
       className="briefing-detail"
       headerClassName="briefing-detail__header"
       bodyClassName="briefing-detail__body"
+      footerClassName="briefing-detail__footer"
       headerRef={headerRef}
       ariaBusy={load.loading}
       notice={load.error || exportError || mutationError || (round && !round.valid) || documentFailure ? (
@@ -684,7 +692,8 @@ export function BriefingDocumentRenderer({
             canonicalRef: briefingId,
             copyLabel: 'Copy Briefing reference',
           }}
-          title={title}
+          title={<span {...appTip(title)}>{title}</span>}
+          supportingMetadata={description ? <p className="briefing-detail__description">{description}</p> : undefined}
           state={round && selectedIsNewest
             ? (round.publication_mode === 'published-report' ? 'Current report' : 'Latest')
             : undefined}
@@ -715,10 +724,10 @@ export function BriefingDocumentRenderer({
                 (round.annotations?.length ?? 0) + (round.carried_annotations?.length ?? 0)
                 + (round.standing_notes?.filter(note => !note.resolved).length ?? 0)
               } />}
-              <DetailPaneMenuTrigger buttonRef={actionsTriggerRef} label="More" expanded={actionsOpen}
+              <DetailPaneMenuTrigger buttonRef={actionsTriggerRef} label="Briefing actions" expanded={actionsOpen}
                 onClick={() => { setBranchPicker(false); setActionsOpen(open => !open); }} />
               {actionsOpen ? (
-                <div ref={actionsMenuRef} className="detail-pane-menu app-anchored-menu"
+                <div ref={actionsMenuRef} className="briefing-detail__actions-menu app-anchored-menu"
                   role="menu" popover="manual" style={actionsMenuStyle}>
                   {branchPicker ? <>
                     <button type="button" className="detail-pane-menu__item" role="menuitem" onClick={() => setBranchPicker(false)}><ChevronLeft className="app-icon" aria-hidden="true" />Compare with</button>
@@ -728,6 +737,19 @@ export function BriefingDocumentRenderer({
                       {branch.name}{comparisonCommit === branch.commit && <Check className="app-icon" aria-hidden="true" />}
                     </button>)}
                   </> : <>
+                    {userKind === 'human' ? (
+                      <button type="button" role="menuitem" onClick={openRename}>Rename Briefing</button>
+                    ) : null}
+                    <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Metadata</button>
+                    {round.latest_submission_for_actor ? (
+                      <button type="button" role="menuitem" disabled={exportBusy} onClick={() => void exportReviewedMarkdown()}>
+                        {exportBusy ? 'Exporting reviewed Markdown…' : 'Export reviewed Markdown'}
+                      </button>
+                    ) : null}
+                    {artifactVersionRef ? (
+                      <a role="menuitem" href={artifactDetailHref(displayResourceRef(artifactVersionRef))}
+                        onClick={() => setActionsOpen(false)}>Go to artifact version</a>
+                    ) : null}
                     {defaultComparisonLabel && (defaultComparison || displayContext?.proposalBundleId && comparisonChoice) &&
                       <button type="button" className="detail-pane-menu__item" role="menuitemradio" aria-checked={!comparisonChoice} onClick={() => chooseComparison('')}>
                         Compare with {defaultComparisonLabel}{!comparisonChoice && <Check className="app-icon" aria-hidden="true" />}
@@ -744,79 +766,54 @@ export function BriefingDocumentRenderer({
                       onClick={() => { setShowSource(current => !current); setActionsOpen(false); }}>
                       Show source{showSource && <Check className="app-icon" aria-hidden="true" />}
                     </button>}
-                    <button type="button" className="detail-pane-menu__item" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Details</button>
                   </>}
                 </div>
               ) : null}
-              {round.valid && !round.selected_submission_overlay && <DetailPaneIconAction className="briefing-send" label={pendingAnnotations.length ? `Send (${pendingAnnotations.length})` : 'Send'}
-                tip={sendRestriction ?? 'Send'} aria-disabled={submitDisabled} aria-busy={busy}
-                onClick={() => { if (!submitDisabled) void submit(); }}>
-                <ArrowUp className="app-icon" aria-hidden="true" />
-                {pendingAnnotations.length > 0 && <span className="sidebar-search-filter__badge" aria-hidden="true">{pendingAnnotations.length}</span>}
-              </DetailPaneIconAction>}
             </>
           ) : undefined}
           actionsLabel="Briefing actions"
         />
       )}
-      overlays={(
-        <>
-          <DetailPaneModal
-            open={renameOpen}
-            onClose={() => { if (!renameBusy) setRenameOpen(false); }}
-            titleId="briefing-rename-title"
-            title="Rename Briefing"
-            closeLabel="Close Rename Briefing"
-            excludeAboveRef={headerRef}
-            scrollOwnerSelector=".feedback-collection-shell__content"
-            panelClassName="briefing-detail__rename"
-          >
-            <form className="briefing-detail__rename-form" onSubmit={(event) => void renameBriefing(event)}>
-              <label htmlFor="briefing-rename-input">Briefing title</label>
-              <input id="briefing-rename-input" autoFocus value={renameTitle}
-                disabled={renameBusy} onInput={(event) => setRenameTitle(event.currentTarget.value)} />
-              {renameError ? <DetailPaneNotice severity="error" title="Briefing rename failed">{renameError}</DetailPaneNotice> : null}
-              <div className="briefing-detail__rename-actions">
-                <button type="button" className="btn btn--ghost btn--sm" disabled={renameBusy} onClick={() => setRenameOpen(false)}>Cancel</button>
-                <button type="submit" className="briefing-primary" disabled={renameBusy || !renameTitle.trim() || renameTitle.trim() === title}>
-                  {renameBusy ? 'Saving…' : 'Save'}
+      footer={round?.valid ? {
+        content: (
+          <div className="briefing-footer-content">
+            <div className="briefing-footer-actions">
+              {resultId ? (
+                <button type="button" className="btn btn--sm btn--success briefing-copy-result" onClick={() => void copyResultId()}>
+                  {resultCopied ? 'Copied result ID' : 'Copy result ID'}
                 </button>
-              </div>
-            </form>
-          </DetailPaneModal>
-          <DetailPaneModal
-            open={metadataOpen}
-            onClose={() => setMetadataOpen(false)}
-            titleId="briefing-metadata-title"
-            title="Briefing metadata"
-            closeLabel="Close Briefing metadata"
-            excludeAboveRef={headerRef}
-            scrollOwnerSelector=".feedback-collection-shell__content"
-            panelClassName="briefing-detail__metadata"
-          >
-            {description && <p>{description}</p>}
-            <div className="detail-pane-header__actions">
-              {userKind === 'human' && <DetailPaneIconAction label="Rename" onClick={() => { setMetadataOpen(false); openRename(); }}>
-                <Pencil className="app-icon" aria-hidden="true" />
-              </DetailPaneIconAction>}
-              {round?.latest_submission_for_actor && <DetailPaneIconAction label="Export reviewed Markdown" disabled={exportBusy}
-                onClick={() => void exportReviewedMarkdown()}><Download className="app-icon" aria-hidden="true" /></DetailPaneIconAction>}
-              {resultId && <DetailPaneIconAction label={resultCopied ? 'Copied result ID' : 'Copy result ID'} onClick={() => void copyResultId()}>
-                <Clipboard className="app-icon" aria-hidden="true" />
-              </DetailPaneIconAction>}
-              {(round?.selected_submission_overlay || pendingAnnotations.length > 0 || draftDiffers) && <DetailPaneIconAction
-                label={round?.selected_submission_overlay ? 'Return to draft' : 'Delete drafts'}
-                disabled={busy || pendingSuggestion || clearBusy || (!round?.selected_submission_overlay && !canMutate)}
-                onClick={() => { setMetadataOpen(false); requestClear(); }}><Trash2 className="app-icon" aria-hidden="true" /></DetailPaneIconAction>}
+              ) : null}
+              <button
+                type="button"
+                className="briefing-primary"
+                aria-disabled={submitDisabled}
+                aria-busy={busy}
+                aria-describedby={submitReason ? 'briefing-submit-reason' : undefined}
+                {...appTip(submitReason ?? undefined)}
+                onClick={(event) => { if (submitDisabled && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
+                onKeyDown={(event) => {
+                  if (!submitReason || !requiredIncomplete || (event.key !== 'Enter' && event.key !== ' ')) return;
+                  event.preventDefault();
+                  void submit();
+                }}
+              >
+                Submit
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm briefing-clear"
+                disabled={busy || clearBusy || pendingSuggestion || (!round.selected_submission_overlay && pendingAnnotations.length > 0 && !canMutate)}
+                onClick={requestClear}
+              >
+                Clear
+              </button>
+              {submitReason ? <span id="briefing-submit-reason" className="sr-only">{submitReason}</span> : null}
             </div>
-            <dl>
-              <div><dt>Round occurrence</dt><dd>{selectedSummary ? roundLabels.get(selectedSummary.id) : 'Unavailable'}</dd></div>
-              {round ? <div><dt>Round ID</dt><dd><DetailHeaderIdentity shortId={shortRouteId(round.selected_round_id)} copyValue={round.selected_round_id} copyLabel="Copy full round ID" /></dd></div> : null}
-              {artifactVersionRef ? <div><dt>Pinned artifact version</dt><dd><DetailHeaderIdentity shortId={displayResourceRef(artifactVersionRef)} copyValue={artifactVersionRef} copyLabel="Copy exact artifact-version ref" /> <a href={artifactDetailHref(displayResourceRef(artifactVersionRef))}>Open artifact</a></dd></div> : null}
-            </dl>
-            {round && round.submission_overlays.length > 0 && (
+            {round.submission_overlays.length === 0 ? (
+              <div className="briefing-submission-shelf briefing-submission-shelf--inactive">Annotation sets (0)</div>
+            ) : (
               <details className="briefing-submission-shelf">
-                <summary>History</summary>
+                <summary>Annotation sets ({round.submission_overlays.length})</summary>
                 <div ref={shelfBodyRef} className="briefing-submission-shelf__body">
                   <table role="grid" aria-label="Annotation sets for this round">
                     <thead>
@@ -857,6 +854,49 @@ export function BriefingDocumentRenderer({
                 </div>
               </details>
             )}
+          </div>
+        ),
+      } : undefined}
+      overlays={(
+        <>
+          <DetailPaneModal
+            open={renameOpen}
+            onClose={() => { if (!renameBusy) setRenameOpen(false); }}
+            titleId="briefing-rename-title"
+            title="Rename Briefing"
+            closeLabel="Close Rename Briefing"
+            excludeAboveRef={headerRef}
+            scrollOwnerSelector=".feedback-collection-shell__content"
+            panelClassName="briefing-detail__rename"
+          >
+            <form className="briefing-detail__rename-form" onSubmit={(event) => void renameBriefing(event)}>
+              <label htmlFor="briefing-rename-input">Briefing title</label>
+              <input id="briefing-rename-input" autoFocus value={renameTitle}
+                disabled={renameBusy} onInput={(event) => setRenameTitle(event.currentTarget.value)} />
+              {renameError ? <DetailPaneNotice severity="error" title="Briefing rename failed">{renameError}</DetailPaneNotice> : null}
+              <div className="briefing-detail__rename-actions">
+                <button type="button" className="btn btn--ghost btn--sm" disabled={renameBusy} onClick={() => setRenameOpen(false)}>Cancel</button>
+                <button type="submit" className="briefing-primary" disabled={renameBusy || !renameTitle.trim() || renameTitle.trim() === title}>
+                  {renameBusy ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </form>
+          </DetailPaneModal>
+          <DetailPaneModal
+            open={metadataOpen}
+            onClose={() => setMetadataOpen(false)}
+            titleId="briefing-metadata-title"
+            title="Briefing metadata"
+            closeLabel="Close Briefing metadata"
+            excludeAboveRef={headerRef}
+            scrollOwnerSelector=".feedback-collection-shell__content"
+            panelClassName="briefing-detail__metadata"
+          >
+            <dl>
+              <div><dt>Round occurrence</dt><dd>{selectedSummary ? roundLabels.get(selectedSummary.id) : 'Unavailable'}</dd></div>
+              {round ? <div><dt>Round ID</dt><dd><DetailHeaderIdentity shortId={shortRouteId(round.selected_round_id)} copyValue={round.selected_round_id} copyLabel="Copy full round ID" /></dd></div> : null}
+              {artifactVersionRef ? <div><dt>Pinned artifact version</dt><dd><DetailHeaderIdentity shortId={displayResourceRef(artifactVersionRef)} copyValue={artifactVersionRef} copyLabel="Copy exact artifact-version ref" /></dd></div> : null}
+            </dl>
           </DetailPaneModal>
           <DetailPaneModal
             open={clearConfirmOpen}
