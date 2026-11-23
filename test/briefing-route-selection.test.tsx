@@ -100,13 +100,15 @@ describe('Briefing route intent', () => {
     expect(screen.getByTestId('document').getAttribute('data-round')).toBe('linked-round');
   });
 
-  it('resolves group keys, and lets the Briefing identity own conflicting group context', async () => {
+  it('keeps an open group until the explicit document replaces it', async () => {
     query.data = snapshot(); query.isFetching = false;
     const view = render(<BriefingView instance={null} initialGroupKey="policy-health" />);
-    expect(screen.getByTestId('group').getAttribute('data-group')).toBe('group-uuid');
+    const openGroup = screen.getByTestId('group');
+    expect(openGroup.getAttribute('data-group')).toBe('group-uuid');
     view.rerender(<BriefingView instance={null} initialGroupKey="policy-health" entityRef="target-one" />);
-    expect(screen.queryByTestId('group')).toBeNull();
+    expect(screen.getByTestId('group')).toBe(openGroup);
     await waitFor(() => expect(screen.getByTestId('document').getAttribute('data-briefing')).toBe('target-one'));
+    expect(screen.queryByTestId('group')).toBeNull();
     expect(screen.getByTestId('document').getAttribute('data-round')).toBe('latest');
   });
 

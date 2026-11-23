@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../query/client';
 import { ROUTE_DATA_FRESH_MS } from '../query/policy';
 import { browserResourceKeys } from '../query/browserResources';
-import { useEffect, useMemo } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'preact/hooks';
 
 import {
   getBriefing,
@@ -63,13 +63,13 @@ function replaceBriefingGroupRoute(groupKey: string): void {
   replaceRoute(routeWithParams({ kind: 'view', tab: 'briefing' }, { group: groupKey }, BRIEFING_ROUTE_PARAMS));
 }
 
-function briefingTargetQuery(ref: string, roundId: string | null) {
+function briefingTargetQuery(ref: string, roundId: string | null, displayContext?: BriefingDisplayContext) {
   return {
-    queryKey: browserResourceKeys.briefingProjection(ref, roundId, null),
+    queryKey: browserResourceKeys.briefingProjection(ref, roundId, null, displayContext),
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
-      const projection = await getBriefing(ref, roundId, null, signal);
+      const projection = await getBriefing(ref, roundId, null, signal, displayContext);
       if (projection.briefing_id !== ref) {
-        queryClient.setQueryData(browserResourceKeys.briefingProjection(projection.briefing_id, roundId, null), projection);
+        queryClient.setQueryData(browserResourceKeys.briefingProjection(projection.briefing_id, roundId, null, displayContext), projection);
       }
       return projection;
     },
@@ -118,12 +118,14 @@ function resolveBriefingSelection(
   };
 }
 
+type BriefingDisplayContext = { groupId: string; proposalBundleId: string | null };
+
 function briefingDisplayContext(
-  selected: FeedbackCollection | null,
+  briefingId: string | null,
   groups: readonly BriefingGroup[],
   viewState: BriefingCollectionViewState,
-): { groupId: string; proposalBundleId: string | null } | undefined {
-  if (!selected) return undefined;
+): BriefingDisplayContext | undefined {
+  if (!briefingId) return undefined;
   const groupBundleOwners = indexBriefingGroupBundleOwners(groups);
   for (const group of groups) {
     const projection = resolveBriefingGroupProjection(
@@ -131,7 +133,7 @@ function briefingDisplayContext(
       viewState.selectedGroupUpdateIds[group.id],
       groupBundleOwners,
     );
-    if (projection.layoutSource?.members.some((member) => member.briefing.id === selected.id)) {
+    if (projection.layoutSource?.members.some((member) => member.briefing.collectionId === briefingId)) {
       return { groupId: group.id, proposalBundleId: projection.selectedUpdate?.id ?? null };
     }
   }
@@ -160,7 +162,8 @@ export function InvalidBriefingsNotice({ rows }: { rows: readonly InvalidBriefin
 export function BriefingView({ instance, entityRef = null, initialRoundId, initialGroupKey, sidebarHidden = false, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const routeResolution = useEntityRoute('briefing', entityRef);
-  const initialBriefingId = routeResolution.status === 'resolved' && typeof routeResolution.entity.id === 'string'
+  const initialBriefingId = routeResolution.status === 'resolved' && routeResolution.ref === entityRef
+    && typeof routeResolution.entity.id === 'string'
     ? routeResolution.entity.id : null;
   const viewActive = useViewActive();
   const [viewState, setViewState] = useBriefingCollectionViewState();
@@ -177,8 +180,12 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
   const { briefings, bundles, groups, invalidBriefings } = sidebar;
   const error = sidebarQuery.error instanceof ApiError && sidebarQuery.error.code === 'local_access_unavailable' ? null : sidebarQuery.error?.message ?? null;
   const sidebarLoaded = sidebarQuery.data !== undefined;
+  const initialDisplayContext = useMemo(
+    () => briefingDisplayContext(initialBriefingId, groups, viewState),
+    [initialBriefingId, groups, viewState.selectedGroupUpdateIds],
+  );
   const explicitBriefingQuery = useQuery({
-    ...briefingTargetQuery(initialBriefingId ?? '', initialRoundId ?? null),
+    ...briefingTargetQuery(initialBriefingId ?? '', initialRoundId ?? null, initialDisplayContext),
     enabled: viewActive && Boolean(initialBriefingId),
     staleTime: ROUTE_DATA_FRESH_MS,
     refetchOnWindowFocus: true,
@@ -188,7 +195,7 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
   }, []);
   useRouteLoad((register) => {
     if (initialBriefingId && explicitBriefingQuery.isStale) register(explicitBriefingQuery.refetch({ cancelRefetch: false }));
-  }, [initialBriefingId, initialRoundId]);
+  }, [initialBriefingId, initialRoundId, initialDisplayContext]);
 
   const hasExplicitTarget = Boolean(entityRef || initialGroupKey);
   const explicitError = explicitBriefingQuery.error;
@@ -203,14 +210,23 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
     ? { briefing: explicitBriefing, group: null, roundId: initialRoundId ?? null, status: explicitBriefing ? 'resolved' : 'not-found' }
     : entityRef ? { briefing: null, group: null, roundId: null, status: 'empty' as const }
     : resolveBriefingSelection(sidebar, viewState, { group: initialGroupKey });
+  const entityResolutionPending = routeResolution.status === 'resolving'
+    || (routeResolution.status === 'resolved' && routeResolution.ref !== entityRef);
   const routeStatus = initialBriefingId
     ? explicitBriefing ? 'resolved' : explicitError ? 'error' : 'resolving'
+    : entityRef ? entityResolutionPending ? 'resolving' : 'error'
     : hasExplicitTarget && selection.status !== 'resolved'
     ? sidebarQuery.error ? 'error' : !sidebarLoaded || sidebarQuery.isFetching ? 'resolving' : selection.status
     : selection.status;
-  const selected = selection.briefing;
-  const selectedGroup = selection.group;
-  const explicitRoundId = selection.roundId;
+  const lastResolvedSelection = useRef<typeof selection | null>(null);
+  useLayoutEffect(() => {
+    if (!appShell.active || routeStatus === 'resolving') return;
+    lastResolvedSelection.current = routeStatus === 'resolved' ? selection : null;
+  }, [appShell.active, routeStatus, selection]);
+  const displayedSelection = routeStatus === 'resolving' ? lastResolvedSelection.current : selection;
+  const selected = displayedSelection?.briefing ?? null;
+  const selectedGroup = displayedSelection?.group ?? null;
+  const explicitRoundId = displayedSelection?.roundId ?? null;
   const selectedCollectionId = selected?.id ?? null;
   const selectedGroupId = selectedGroup?.id ?? null;
   useEffect(() => {
@@ -236,7 +252,7 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
     && briefingGroupOwnsPendingChange(selectedGroup, requestedGroupUpdateId, groupBundleOwners)
     ? requestedGroupUpdateId : null;
   const selectedDisplayContext = useMemo(
-    () => briefingDisplayContext(selected, groups, viewState),
+    () => briefingDisplayContext(selected?.collectionId ?? null, groups, viewState),
     [groups, selected, viewState.selectedGroupUpdateIds],
   );
 
@@ -322,12 +338,11 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
       ) : null}
       <InvalidBriefingsNotice rows={invalidBriefings} />
     </>}>
-      {isUnopenedEntityRoute(routeResolution) && (routeResolution.status !== 'resolving' || !selected) ? (
+      {isUnopenedEntityRoute(routeResolution) && routeResolution.status !== 'resolving' ? (
         <EntityRouteState kind="briefing" resolution={routeResolution} />
-      ) : hasExplicitTarget && routeStatus !== 'resolved' ? (
-        <div role={routeStatus === 'resolving' ? 'status' : 'alert'} data-route-state={routeStatus}>
-          {routeStatus === 'resolving' ? 'Resolving Briefing link…'
-            : routeStatus === 'ambiguous' ? 'This Briefing reference matches more than one item. Open a link with a longer reference.'
+      ) : hasExplicitTarget && routeStatus !== 'resolved' && routeStatus !== 'resolving' ? (
+        <div role="alert" data-route-state={routeStatus}>
+          {routeStatus === 'ambiguous' ? 'This Briefing reference matches more than one item. Open a link with a longer reference.'
               : routeStatus === 'error' ? `The Briefing link could not be resolved: ${(initialBriefingId ? explicitError : sidebarQuery.error)?.message}`
                 : 'The linked Briefing could not be found.'}
         </div>
@@ -341,7 +356,7 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
           onRefresh={() => { void sidebarQuery.refetch(); }}
           onSelectBriefing={selectBriefing}
         />
-      ) : !selected ? sidebarLoaded && !error ? <p className="briefing-empty briefing-empty--selection">No Briefings in this view.</p> : null : (
+      ) : selected ? (
         <BriefingDocumentRenderer
           key={`${selected.collectionId}:${explicitRoundId ?? 'latest'}`}
           briefingId={selected.collectionId}
@@ -354,7 +369,9 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
           onRoundChange={selectRound}
           onTitleChange={updateSelectedTitle}
         />
-      )}
+      ) : routeStatus === 'resolving' ? (
+        <EntityRouteState kind="briefing" resolution={{ status: 'resolving' }} />
+      ) : sidebarLoaded && !error ? <p className="briefing-empty briefing-empty--selection">No Briefings in this view.</p> : null}
     </CollectionShell>
   );
 }
@@ -378,10 +395,9 @@ export async function warmInitialData(params: Record<string, string>): Promise<v
   if (!selection.briefing) return;
 
   const briefingId = selection.briefing.collectionId;
-  const displayContext = briefingDisplayContext(selection.briefing, sidebar.groups, viewState);
+  const displayContext = briefingDisplayContext(briefingId, sidebar.groups, viewState);
   await queryClient.fetchQuery({
-    queryKey: browserResourceKeys.briefingProjection(briefingId, selection.roundId, null, displayContext),
-    queryFn: ({ signal }) => getBriefing(briefingId, selection.roundId, null, signal, displayContext),
+    ...briefingTargetQuery(briefingId, selection.roundId, displayContext),
     gcTime: WARMED_QUERY_GC_TIME_MS,
   });
 }
