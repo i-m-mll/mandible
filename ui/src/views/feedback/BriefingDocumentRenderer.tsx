@@ -317,9 +317,8 @@ export function BriefingDocumentRenderer({
     setStatus(null);
   };
 
-  const canMutate = Boolean(
-    !load.loading
-    && load.error === null
+  const canEditRound = Boolean(
+    load.error === null
     && round?.valid
     && !round.selected_submission_overlay
     && round.briefing_id === briefingId
@@ -335,6 +334,7 @@ export function BriefingDocumentRenderer({
     && round.directive_binding?.status === 'valid'
     && instance?.allowed_effects?.includes('ledger:write') === true,
   );
+  const canMutate = canEditRound && !load.loading;
   const requiredIncomplete = Boolean(round?.items.some((item) => item.item_kind === 'item' && item.revision.required && !meaningful(draft[item.id] ?? null)));
   const draftDiffers = Boolean(round?.items.some((item) => item.item_kind === 'item'
     && !responseValuesEqual(draft[item.id] ?? null, item.effective_response?.value ?? null)));
@@ -646,7 +646,7 @@ export function BriefingDocumentRenderer({
               {round.document ? (
                 <BriefingDocumentPanel key={`${round.selected_round_id}:${selectedOverlayId ?? ''}`}
                   briefingId={briefingId} roundId={round.selected_round_id} round={round}
-                  canMutate={canMutate && !busy && !clearBusy} draftIdentity={draftScope}
+                  canMutate={canEditRound && !busy && !clearBusy} draftIdentity={draftScope}
                   documentRef={documentRef} comments={comments} showChanges={showChanges} showSource={showSource}
                   suggesting={suggesting} onSuggest={() => setSuggesting(true)} onChangePosition={setChangePosition}
                   onRefresh={() => reconcile(selectedOverlayId)} draft={draft}
@@ -705,7 +705,7 @@ export function BriefingDocumentRenderer({
             <>
               {round.document?.comparison_base && <DocumentChangeActions shown={showChanges} position={changePosition}
                 onToggle={() => setShowChanges(current => !current)} onStep={direction => documentRef.current?.moveChange(direction)} />}
-              {canMutate && round.document?.source && !isLargeMarkdownDocument(round.document.source) && (
+              {canEditRound && round.document?.source && !isLargeMarkdownDocument(round.document.source) && (
                 <DetailPaneIconAction label="Suggest edits" aria-pressed={suggesting} disabled={contentGate !== ''}
                   onClick={() => setSuggesting(current => !current)}>
                   <Pencil className="app-icon" aria-hidden="true" />

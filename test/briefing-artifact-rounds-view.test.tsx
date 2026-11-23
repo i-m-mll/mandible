@@ -155,6 +155,49 @@ afterEach(async () => {
 });
 
 describe('artifact-backed Briefing rounds', () => {
+  it('keeps the focused suggestion editor editable during a round refresh', async () => {
+    const payload = typedDetail(ROUND_ONE);
+    const response = () => new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+    let startRefresh: (() => void) | undefined;
+    let finishRefresh: (() => void) | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/client-auth/whoami') {
+        return new Response(JSON.stringify({ authenticated: true, user: { id: 'human-1', kind: 'human' } }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (!url.startsWith('/api/briefings/briefing-typed')) throw new Error(`unexpected ${url}`);
+      if (!startRefresh) return response();
+      return new Promise<Response>(resolve => {
+        finishRefresh = () => resolve(response());
+        startRefresh?.();
+      });
+    }));
+
+    render(<AppShellProvider value={{ noticeHost: null, active: true, rightSidebar: null,
+      registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}>
+      <BriefingDocumentRenderer briefingId="briefing-typed" roundId={ROUND_ONE} instance={COPIED_PREVIEW_INSTANCE} />
+    </AppShellProvider>);
+    const toggle = await screen.findByRole('button', { name: 'Suggest edits' });
+    await waitFor(() => expect((toggle as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(toggle);
+    const editor = screen.getByLabelText('Pinned briefing document');
+    await waitFor(() => expect(editor.getAttribute('contenteditable')).toBe('true'));
+    editor.focus();
+
+    let refresh: Promise<void> | undefined;
+    try {
+      await act(async () => {
+        const started = new Promise<void>(resolve => { startRefresh = resolve; });
+        refresh = refreshBrowserResources(queryClient, [browserResourceKeys.briefings]);
+        await started;
+      });
+      expect(editor.getAttribute('contenteditable')).toBe('true');
+      expect(document.activeElement).toBe(editor);
+    } finally { finishRefresh?.(); }
+    await refresh;
+    expect(document.activeElement).toBe(editor);
+  });
+
   it.each([
     ['retained', 'briefing:briefing-1'],
     ['default', null],
