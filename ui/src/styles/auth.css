@@ -2093,10 +2093,6 @@
   min-width: 0;
 }
 
-.auth-review__narrative .document-comment-surface__layout:not(:has(> :is(.document-comments__margin, .document-comments__composer))) > .document-comment-surface__text {
-  max-inline-size: none;
-}
-
 .auth-review__narrative-change {
   margin-block: var(--space-2);
   padding: var(--space-2);

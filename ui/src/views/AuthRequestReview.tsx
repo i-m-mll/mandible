@@ -275,7 +275,10 @@ export function authReviewMarkdownMarks(review: AuthRequestReviewState, binding?
     ? [{ ...thread.range, id: thread.id, className: 'review-range' }] : []);
 }
 
-export function AuthReviewMarkdown({ review, binding, value, comparison, operatorComparison, label, wholeFile, directives, previewPolicy, span, onEdit, draft, headerControls, embedded = [] }: {
+export function AuthReviewMarkdown({
+  review, binding, value, comparison, operatorComparison, label, wholeFile, directives, previewPolicy,
+  span, onEdit, draft, headerControls, embedded = [], readingMeasure,
+}: {
   review: AuthRequestReviewState;
   binding?: Binding;
   value: string;
@@ -290,6 +293,7 @@ export function AuthReviewMarkdown({ review, binding, value, comparison, operato
   draft?: Pick<AuthReviewFileDraft, 'source' | 'writable' | 'change'>;
   headerControls?: boolean;
   embedded?: readonly TextSpan[];
+  readingMeasure?: Parameters<typeof DocumentCommentSurface>[0]['readingMeasure'];
 }) {
   const localDocument = useRef<MarkdownDocumentHandle>(null);
   const document = headerControls ? review.fileDocument : localDocument;
@@ -333,7 +337,7 @@ export function AuthReviewMarkdown({ review, binding, value, comparison, operato
     decorations={draft ? undefined : authReviewMarkdownMarks(review, binding, span)} onChange={draft?.change}
     onDecorationClick={review.comments.select} onSelectionChange={setSelected} />;
   return <div ref={container}>{binding ? <DocumentCommentSurface controller={review.comments} selection={selection}
-    threads={draft ? [] : threads} documentRef={document} drawer={false}
+    threads={draft ? [] : threads} documentRef={document} drawer={false} readingMeasure={readingMeasure}
     navigationKey={`auth.${binding.id}.${span?.start ?? 0}`}>{contents}</DocumentCommentSurface> : contents}</div>;
 }
 

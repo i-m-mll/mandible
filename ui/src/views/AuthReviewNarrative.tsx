@@ -97,7 +97,7 @@ export function AuthReviewNarrative({ id, review, onFile }: {
 
   return <div className="auth-review__narrative">
     <AuthReviewMarkdown review={review} binding={binding} value={source} label="Review narrative"
-      directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW}
+      directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} readingMeasure="document"
       embedded={data.narrative_questions.map(({ directive }) => ({ start: directive.body_start_offset, end: directive.body_end_offset }))} />
     {[...hosts.current].map(([element, offset]) => {
       const embed = byOffset.get(offset);
