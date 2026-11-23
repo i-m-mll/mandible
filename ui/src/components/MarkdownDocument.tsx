@@ -11,6 +11,8 @@ import {
 import { comparisonInput, expandUnchanged, renderedChanges, renderedMarkdownSelection, setChangePosition } from './markdown/rendered-changes';
 import { markdownPreview, markdownDirectives, markdownPreviewPolicy, type MarkdownDirectives, type MarkdownPreviewPolicy } from './markdown/preview';
 import { markdownSyntax } from './markdown/syntax';
+import { Icon } from './icons/Icon';
+import { appTip } from './shared/AppHoverTips';
 import './MarkdownDocument.css';
 
 export type { MarkdownDirective, MarkdownDirectiveRenderer, MarkdownDirectives } from './markdown/preview';
@@ -36,6 +38,7 @@ type MarkdownDocumentProps = {
   operatorComparison?: string;
   operatorAnnotations?: readonly (MarkdownSourceRange & { id: string })[];
   showSource?: boolean;
+  changeNavigation?: boolean;
   onChangePosition?: (position: MarkdownChangePosition) => void;
   comparisonLayout?: 'full-document';
   onChange?: (value: string, edits: readonly MarkdownSourceEdit[]) => void;
@@ -149,6 +152,18 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
     latest.current.onChangePosition?.({ index: positions.length ? selected + 1 : 0, total: positions.length });
   };
 
+  const moveChange: MarkdownDocumentHandle['moveChange'] = direction => {
+    const editor = view.current;
+    if (!editor) return;
+    const { selected, positions } = editor.state.field(renderedChanges).changes;
+    if (positions.length === 0) return;
+    const index = (selected + direction + positions.length) % positions.length;
+    editor.dispatch({ effects: [
+      setChangePosition.of(index),
+      EditorView.scrollIntoView(positions[index], { y: 'center' }),
+    ] });
+  };
+
   useImperativeHandle(props.documentRef ?? null, () => ({
     select(range, focus = true) {
       const editor = view.current;
@@ -192,17 +207,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
       editor.dispatch({ effects: compartments.history.reconfigure([]) });
       editor.dispatch({ effects: compartments.history.reconfigure(history()) });
     },
-    moveChange(direction) {
-      const editor = view.current;
-      if (!editor) return;
-      const { selected, positions } = editor.state.field(renderedChanges).changes;
-      if (positions.length === 0) return;
-      const index = (selected + direction + positions.length) % positions.length;
-      editor.dispatch({ effects: [
-        setChangePosition.of(index),
-        EditorView.scrollIntoView(positions[index], { y: 'center' }),
-      ] });
-    },
+    moveChange,
     positionAt(x, y) {
       const editor = view.current;
       const pos = editor?.posAtCoords({ x, y }, false);
@@ -320,6 +325,14 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
 
   return (
     <div className={`markdown-document${props.showSource ? ' markdown-document--source' : ''}`}>
+      {props.changeNavigation && (props.comparison !== undefined || props.operatorComparison !== undefined) && (
+        <div className="markdown-document__navigation">
+          <button type="button" className="btn btn--ghost btn--sm" aria-label="Previous change" {...appTip('Previous change')}
+            onClick={() => moveChange(-1)}><Icon name="disclosureLess" /></button>
+          <button type="button" className="btn btn--ghost btn--sm" aria-label="Next change" {...appTip('Next change')}
+            onClick={() => moveChange(1)}><Icon name="disclosureMore" /></button>
+        </div>
+      )}
       <div ref={mount} />
     </div>
   );
