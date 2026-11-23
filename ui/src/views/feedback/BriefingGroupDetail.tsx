@@ -212,8 +212,9 @@ export function BriefingGroupDetail({
     const hasDraft = unsent.has(leafId);
     const firstFile = files[0];
     return (
-      <li key={leafId} className={dimmed ? 'briefing-group-detail__document--dimmed' : undefined}>
+      <li key={leafId} className={`feedback-collection-row${dimmed ? ' briefing-group-detail__document--dimmed' : ''}`}>
         <SidebarItemRow
+          className="sidebar-item-row--fixed-badges"
           label={label}
           selectionLabel={`Open ${label}`}
           selectionDescription={hasDraft ? 'Unsent comments' : undefined}
@@ -307,7 +308,7 @@ export function BriefingGroupDetail({
             {trackedProposals.map(proposal => {
               const href = authReviewHref(proposal.request_ref, 'diff');
               return (
-                <li key={proposal.request_id}>
+                <li key={proposal.request_id} className="feedback-collection-row">
                   <RequestListRow leading={<Icon name="mergeRequest" />} title={proposal.title}
                     selected={selectedUpdateId === proposal.request_id} selection="toggle"
                     onSelect={() => selectPending(proposal.request_id)}
@@ -320,7 +321,7 @@ export function BriefingGroupDetail({
               );
             })}
             {group.updates.map(update => (
-              <li key={update.id}>
+              <li key={update.id} className="feedback-collection-row">
                 <RequestListRow leading={<Icon name="custodyPackage" />} title={update.name}
                   selected={selectedUpdateId === update.id} selection="toggle" onSelect={() => selectPending(update.id)}
                   metadata={<><time className="auth-sidebar-item__metadata-text" dateTime={new Date(update.createdAt).toISOString()}>
@@ -345,7 +346,7 @@ export function BriefingGroupDetail({
         ) : null}
         <ul className="feedback-collections-sidebar__list sidebar-group-contents" aria-label="Documents">
           {displayedLayout.map(entry => entry.kind === 'subgroup' ? (
-            <li key={`subgroup:${entry.name}`}>
+            <li key={`subgroup:${entry.name}`} className="feedback-collection-row">
               <SidebarGroupNode id={`${id}-${entry.name}`} presentation="folder" label={entry.name} bodyAs="ul"
                 bodyClassName="feedback-collections-sidebar__list" count={subgroupMembers(entry).length} countVisibility="interaction"
                 leadingIcon={<SidebarBriefingBundleIcon expanded={!collapsed.has(entry.name)} />}
