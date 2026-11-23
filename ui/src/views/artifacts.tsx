@@ -1327,6 +1327,8 @@ export function ArtifactDetail({
                   readOnly={!editing}
                   onChange={setDraftValue}
                   comparison={diffOpen ? markdownComparison.data : undefined}
+                  comparisonLayout="full-document"
+                  changeNavigation={diffOpen}
                   operatorComparison={editing ? readReviewSource : undefined}
                 /> : <PlainTextDocument
                   {...noteReview.documentProps}
