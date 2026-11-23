@@ -147,8 +147,8 @@
 }
 
 div.markdown-change--deletion {
+  position: relative;
   background: transparent;
-  box-shadow: inset var(--space-1) 0 var(--change-colour);
   padding-inline-start: var(--space-2);
 }
 
@@ -171,23 +171,32 @@ div.markdown-change--deletion > .cm-line {
   margin-inline-end: var(--space-1);
 }
 
-.markdown-change__line::before {
+.markdown-change__line::before,
+div.markdown-change--deletion::before {
   content: '';
   position: absolute;
   inset-block: 0;
   inset-inline-start: 0;
-  border-inline-start: thin solid var(--change-bar);
+  border-inline-start: thin solid var(--change-bar, var(--change-colour));
 }
 
 .markdown-change__line--agent { --change-bar: var(--accent-green); }
 .markdown-change__line--operator { --change-bar: var(--accent-blue); }
 
 .markdown-change__unchanged.contextual-action {
+  display: flex;
+  gap: var(--space-2);
   inline-size: 100%;
   color: var(--text-muted);
   font-size: var(--text-xs);
-  border-block: thin solid var(--border-muted);
   border-radius: 0;
-  margin-block: var(--space-2);
+  margin-block: var(--space-1);
   padding-block: var(--space-1);
+}
+
+.markdown-change__unchanged::before,
+.markdown-change__unchanged::after {
+  content: '';
+  flex: 1;
+  border-block-start: thin solid var(--border-muted);
 }
