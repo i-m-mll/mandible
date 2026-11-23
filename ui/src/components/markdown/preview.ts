@@ -455,7 +455,7 @@ const liveMarkdown = StateField.define<{ focused: boolean; decorations: Decorati
   update(previous, transaction) {
     const { startState, state } = transaction;
     const focused = transaction.effects.find((effect) => effect.is(setFocus))?.value ?? previous.focused;
-    return transaction.docChanged || state.field(specials) !== startState.field(specials) || !state.selection.eq(startState.selection)
+    return transaction.docChanged || state.field(specials) !== startState.field(specials, false) || !state.selection.eq(startState.selection)
       || syntaxTree(state) !== syntaxTree(startState) || focused !== previous.focused
       || state.facet(markdownDirectives) !== startState.facet(markdownDirectives)
       || state.facet(markdownPreviewPolicy) !== startState.facet(markdownPreviewPolicy)

@@ -755,7 +755,7 @@ export function BriefingDocumentRenderer({
                   </>}
                 </div>
               ) : null}
-              {round.valid && canMutate && <DetailPaneIconAction className="briefing-send" label={pendingAnnotations.length ? `Send (${pendingAnnotations.length})` : 'Send'}
+              {round.valid && !round.selected_submission_overlay && <DetailPaneIconAction className="briefing-send" label={pendingAnnotations.length ? `Send (${pendingAnnotations.length})` : 'Send'}
                 tip={submitReason ? `Send · ${submitReason}` : 'Send'} aria-disabled={submitDisabled} aria-busy={busy}
                 onClick={() => { if (!submitDisabled) void submit(); }}>
                 <ArrowUp className="app-icon" aria-hidden="true" />
@@ -819,7 +819,7 @@ export function BriefingDocumentRenderer({
             <dl>
               <div><dt>Round occurrence</dt><dd>{selectedSummary ? roundLabels.get(selectedSummary.id) : 'Unavailable'}</dd></div>
               {round ? <div><dt>Round ID</dt><dd><DetailHeaderIdentity shortId={shortRouteId(round.selected_round_id)} copyValue={round.selected_round_id} copyLabel="Copy full round ID" /></dd></div> : null}
-              {artifactVersionRef ? <div><dt>Pinned artifact version</dt><dd><a href={artifactDetailHref(displayResourceRef(artifactVersionRef))}>{displayResourceRef(artifactVersionRef)}</a></dd></div> : null}
+              {artifactVersionRef ? <div><dt>Pinned artifact version</dt><dd><DetailHeaderIdentity shortId={displayResourceRef(artifactVersionRef)} copyValue={artifactVersionRef} copyLabel="Copy exact artifact-version ref" /> <a href={artifactDetailHref(displayResourceRef(artifactVersionRef))}>Open artifact</a></dd></div> : null}
             </dl>
             {round && round.submission_overlays.length > 0 && (
               <details className="briefing-submission-shelf">

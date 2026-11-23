@@ -153,6 +153,7 @@ export function BriefingDocumentPanel({
   const dirty = workingText !== persistedText;
   const maySuggest = canInteract && source.length > 0 && !isLargeMarkdownDocument(source);
   const editing = maySuggest && suggesting;
+  useEffect(() => setFailedWorking(null), [suggesting]);
   const toWorking = useMemo(() => suggestionRangeMap(source, workingText), [source, workingText]);
   const fromPersisted = useMemo(() => suggestionRangeMap(persistedText, workingText), [persistedText, workingText]);
   const toSource = useMemo(() => suggestionRangeMap(workingText, source), [source, workingText]);
@@ -180,6 +181,9 @@ export function BriefingDocumentPanel({
         throw new Error('The annotation service returned an incomplete event result.');
       }
       return result;
+    } catch (error) {
+      await refresh.current();
+      throw error;
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -303,7 +307,7 @@ export function BriefingDocumentPanel({
   if (!document) return null;
   return (
     <section className="briefing-document__content" aria-label="Briefing document">
-      {status && <DetailPaneNotice severity="error" density="compact">{status}</DetailPaneNotice>}
+      {dirty && status && <DetailPaneNotice severity="error" density="compact">{status}</DetailPaneNotice>}
       {currentDocument && !currentDocument.documentError && <DocumentCommentSurface
         controller={comments} documentRef={documentRef} navigationKey={`${briefingId}:${roundId}`}
         threads={threads}
@@ -338,7 +342,7 @@ export function BriefingDocumentPanel({
         <MarkdownDocument value={workingText} documentRef={documentRef}
           comparison={showChanges ? currentComparison?.text : undefined}
           operatorComparison={workingText === source ? undefined : source} operatorAnnotations={operatorAnnotations}
-          showSource={showSource} readOnly={!editing} ariaLabel="Briefing document"
+          showSource={showSource} readOnly={!editing} ariaLabel="Pinned briefing document"
           directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} decorations={decorations}
           onChange={value => { setWorking(value); setFailedWorking(null); }}
           onSelectionChange={setSelection} onDecorationClick={id => comments.select(id)}
