@@ -74,6 +74,6 @@ it('opens a Markdown file pair as one read-only document with its captured compa
 
   const document = await screen.findByRole('textbox', { name: path });
   expect(document.getAttribute('aria-readonly')).toBe('true');
-  expect(document.querySelector('del')?.textContent).toBe('previous');
-  expect(document.querySelector('.cm-changedText')?.textContent).toBe('proposed');
+  expect(document.querySelector('.markdown-change--deletion')?.textContent).toBe('previous');
+  expect(document.querySelector('.markdown-change--insertion')?.textContent).toBe('proposed');
 });

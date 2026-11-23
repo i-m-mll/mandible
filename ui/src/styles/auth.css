@@ -2118,6 +2118,9 @@
   max-inline-size: none;
 }
 
-.auth-review__narrative-embed:not(:empty) {
+.auth-review__narrative-change {
   margin-block: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
