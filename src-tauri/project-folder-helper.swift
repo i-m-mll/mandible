@@ -2,6 +2,7 @@ import AppKit
 
 let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
+application.finishLaunching()
 application.activate()
 
 let panel = NSOpenPanel()
