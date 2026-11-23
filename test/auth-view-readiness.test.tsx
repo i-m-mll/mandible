@@ -657,13 +657,13 @@ for (const coverage of ['absent', 'empty', 'partial', 'wrong-reference', 'duplic
 
 for (const history of [false, true]) {
   it('renders and navigates every prerequisite in ' + (history ? 'history' : 'queue') + ' while reconciling readiness', () => {
-    const ids = ['spatial', 'validation', 'source', 'missing', 'ambiguous'];
-    const states = ['ready', 'pending', 'failed', 'missing', 'ambiguous'] as const;
+    const ids = ['spatial', 'validation', 'source', 'unfinalized', 'ambiguous'];
+    const states = ['ready', 'pending', 'failed', 'unfinalized', 'ambiguous'] as const;
     const dependencies = ids.map((id, index) => ({ requested_id: id,
-      request_id: index < 3 ? id : null, state: states[index],
-      status: index === 0 ? 'completed' as const : index === 1 ? 'pending' as const : index === 2 ? 'failed' as const : null,
-      outcome: index === 0 ? 'succeeded' as const : index === 2 ? 'failed' as const : null,
-      exit_code: index === 0 ? 0 : null, merge_finalized_at: index === 0 ? 10 : null }));
+      request_id: index < 4 ? id : null, state: states[index],
+      status: index === 0 || index === 3 ? 'completed' as const : index === 1 ? 'pending' as const : index === 2 ? 'failed' as const : null,
+      outcome: index === 0 || index === 3 ? 'succeeded' as const : index === 2 ? 'failed' as const : null,
+      exit_code: index === 0 || index === 3 ? 0 : null, merge_finalized_at: index === 0 ? 10 : null }));
     const request = { ...pendingRequest, status: history ? 'completed' : 'pending',
       depends_on_ids: ids, dependencies };
     const onNavigateRequest = vi.fn();
@@ -681,16 +681,17 @@ for (const history of [false, true]) {
     const popover = () => within(screen.getByRole('dialog', { name: 'Request prerequisites' }));
     const rows = popover().getAllByRole('button');
     expect(rows).toHaveLength(5);
-    for (const [index, state] of ['Complete', 'Pending', 'Failed', 'Missing', 'Ambiguous'].entries()) {
+    for (const [index, state] of ['Merged', 'Pending', 'Failed', 'Merged', 'Ambiguous'].entries()) {
       expect(within(rows[index]).getByText(state)).toBeTruthy();
     }
+    if (!history) expect((screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement).disabled).toBe(true);
     onSelectAuth.mockClear();
     const updated = { ...request, dependencies: dependencies.map(dependency => ({ ...dependency,
       state: 'ready' as const, status: 'completed' as const, outcome: 'succeeded' as const,
       request_id: dependency.requested_id, merge_finalized_at: 20 })) };
     view.rerender(<AuthQueueView {...props} queue={history ? [] : [updated]} historyQueue={history ? [updated] : []} />);
     expect(onSelectAuth).not.toHaveBeenCalled();
-    expect(popover().getAllByText('Complete')).toHaveLength(5);
+    expect(popover().getAllByText('Merged')).toHaveLength(5);
     if (!history) expect((screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(popover().getByRole('button', { name: /^source/ }));
     expect(onSelectAuth).toHaveBeenCalledWith('source');

@@ -25,6 +25,20 @@ textarea::placeholder {
   opacity: 1;
 }
 
+.app-multiline-input,
+.issue-comment-form__input {
+  width: 100%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--neutral-alpha-08);
+  color: var(--text-primary);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  resize: vertical;
+  min-height: 80px;
+}
+
 .app-shell {
   --font-sans: var(--font-ui);
   font-family: var(--font-ui);
