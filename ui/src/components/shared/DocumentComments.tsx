@@ -10,7 +10,7 @@ import { ContextualAction } from './ContextualAction';
 import { DetailPaneNotice } from './DetailPaneNotice';
 import { OfficialProviderMark, type OfficialProviderMarkKind } from './OfficialProviderMark';
 import { SidebarItemRow } from './SidebarItemRow';
-import { SidebarSearchFilterHeader } from './SidebarSearchFilterHeader';
+import { SidebarCountBadge, SidebarSearchFilterHeader } from './SidebarSearchFilterHeader';
 import '../../styles/review-comments.css';
 
 type CommentMessage = {
@@ -73,7 +73,7 @@ export function DocumentCommentsButton({ controller, count }: { controller: Comm
     aria-controls={controller.open ? controller.drawerId : undefined} aria-haspopup="dialog" {...appTip('Comments')}
     onClick={() => controller.setOpen(!controller.open)}>
     <MessageSquare className="app-icon" aria-hidden="true" />
-    {count > 0 && <span aria-hidden="true" className="sidebar-search-filter__badge">{count}</span>}
+    <SidebarCountBadge count={count} />
   </button>;
 }
 

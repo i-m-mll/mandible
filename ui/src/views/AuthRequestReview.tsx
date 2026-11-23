@@ -216,7 +216,8 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
     };
   });
   const draftCommentCount = threads.filter(thread => thread.draft).length;
-  return { data, navigation, setNavigation, comments, threads, draftCommentCount, available, target, selectComparison, readOnly, drafts,
+  const openDraftCommentCount = threads.filter(thread => thread.draft && !thread.resolved).length;
+  return { data, navigation, setNavigation, comments, threads, draftCommentCount, openDraftCommentCount, available, target, selectComparison, readOnly, drafts,
     comparison: comparison?.target === target ? comparison?.report : undefined, comparisonError,
     openReject, returnToRequester, freeze, busy, error, answerQuestion, commentOn,
     activeDraft, activeFile, activateFile, clearActiveFile,
@@ -241,7 +242,7 @@ function range(comment: RequestReviewComment) {
 }
 
 export function AuthReviewCommentsButton({ review }: { review: AuthRequestReviewState }) {
-  return <DocumentCommentsButton controller={review.comments} count={review.threads.length} />;
+  return <DocumentCommentsButton controller={review.comments} count={review.threads.filter(thread => !thread.resolved).length} />;
 }
 
 export function AuthReviewComments({ review, onNavigate }: {
