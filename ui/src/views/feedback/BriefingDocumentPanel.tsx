@@ -1,44 +1,41 @@
-import { EditorState } from '@codemirror/state';
-import { standingNoteSidebarEntry } from '../../components/shared/StandingNoteReview';
 import { createPortal } from 'preact/compat';
+import type { RefObject } from 'preact';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   postBriefingAnnotations, type BriefingAnnotation, type BriefingAnnotationOperation,
   type BriefingDirectiveItem, type BriefingResponseValue, type BriefingRoundProjection,
 } from '../../api';
-import { Icon } from '../../components/icons/Icon';
 import {
-  isLargeMarkdownDocument, MarkdownDocument, type MarkdownDirectiveRenderer, type MarkdownDocumentHandle, type MarkdownSelection,
-  type MarkdownSourceRange,
+  isLargeMarkdownDocument, MarkdownDocument, type MarkdownChangePosition, type MarkdownDirectiveRenderer,
+  type MarkdownDocumentHandle, type MarkdownSelection, type MarkdownSourceRange,
 } from '../../components/MarkdownDocument';
-import { externalSourceUpdate, markdownEditorRange, markdownValue } from '../../components/markdown/source';
-import { appTip } from '../../components/shared/AppHoverTips';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
-import { ContextualAction } from '../../components/shared/ContextualAction';
-import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
-import { ReviewCommentsSidebar, type ReviewSidebarComment } from '../../components/shared/ReviewCommentsSidebar';
+import { DocumentCommentSurface, type DocumentCommentThread, type useDocumentComments } from '../../components/shared/DocumentComments';
 import { BriefingDirectiveControls, BRIEFING_MARKDOWN_PREVIEW } from './BriefingDirectiveControls';
+import { briefingSuggestionOperations, briefingSuggestionText, suggestionRangeMap } from './briefing-suggestions';
 
-export type BriefingDocumentPanelProps = {
+type BriefingDocumentPanelProps = {
   briefingId: string;
-  briefingTitle: string;
   roundId: string;
   round: BriefingRoundProjection;
   canMutate: boolean;
-  draftIdentity?: string | null;
+  draftIdentity: string | null;
+  comments: ReturnType<typeof useDocumentComments>;
+  documentRef: RefObject<MarkdownDocumentHandle>;
+  showChanges: boolean;
+  showSource: boolean;
+  suggesting: boolean;
+  onSuggest(): void;
+  onChangePosition(position: MarkdownChangePosition): void;
   onRefresh(): Promise<BriefingRoundProjection | null>;
   draft?: Record<string, BriefingResponseValue | null>;
   validationErrors?: Record<string, string>;
   onDirectiveValue?(itemId: string, value: BriefingResponseValue | null): void;
-  onContentGateChange?(reason: string | null): void;
-  onDocumentFailureChange?(message: string | null): void;
-  onAnnotationEditChange?(editing: boolean): void;
+  onContentGateChange(reason: string | null): void;
+  onDocumentFailureChange(message: string | null): void;
+  onPendingSuggestionChange(pending: boolean): void;
 };
 
-type AnnotationEditor = MarkdownSelection & {
-  annotation: BriefingAnnotation | null;
-  kind: BriefingAnnotation['annotation_kind'];
-};
 const EMPTY_VALUES = {};
 
 async function sha256(value: string): Promise<string> {
@@ -70,13 +67,10 @@ async function verifyDirectives(source: string, items: readonly BriefingDirectiv
   return items.every(({ directive }, index) => directive!.definition_digest === digests[index]);
 }
 
-function annotationActor(annotation: BriefingAnnotation): string {
-  return annotation.presentation?.actor?.display_name || annotation.presentation?.actor?.slug
-    || (annotation.presentation?.source === 'current_draft' ? 'You' : 'Reviewer');
-}
-
-export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, draftIdentity, onRefresh,
-  draft = EMPTY_VALUES, validationErrors = EMPTY_VALUES, onDirectiveValue, onContentGateChange, onDocumentFailureChange, onAnnotationEditChange,
+export function BriefingDocumentPanel({
+  briefingId, roundId, round, canMutate, draftIdentity, comments, documentRef, showChanges, showSource, suggesting,
+  onSuggest, onChangePosition, onRefresh, draft = EMPTY_VALUES, validationErrors = EMPTY_VALUES,
+  onDirectiveValue, onContentGateChange, onDocumentFailureChange, onPendingSuggestionChange,
 }: BriefingDocumentPanelProps): JSX.Element | null {
   const document = round.document;
   const standingNotes = round.standing_notes;
@@ -84,16 +78,14 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
     directiveError: string | null } | null>(null);
   const [comparison, setComparison] = useState<{ key: string; text: string | undefined; error: string | null } | null>(null);
   const [selection, setSelection] = useState<MarkdownSelection | null>(null);
-  const [commentsOpen, setCommentsOpen] = useState(false);
-  const [selectedCommentId, setSelectedCommentId] = useState<string | null>(null);
-  const [editor, setEditor] = useState<AnnotationEditor | null>(null);
-  const [body, setBody] = useState('');
-  const [replacement, setReplacement] = useState('');
+  const [working, setWorking] = useState<string | null>(null);
+  const [failedWorking, setFailedWorking] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const contentRef = useRef<HTMLElement>(null);
-  const documentRef = useRef<MarkdownDocumentHandle>(null);
-  const selectionToRestore = useRef<MarkdownSourceRange | null>(null);
+  const inFlight = useRef(false);
+  const selectionToEdit = useRef<MarkdownSourceRange | null>(null);
+  const refresh = useRef(onRefresh);
+  refresh.current = onRefresh;
 
   const directives = useMemo(() => [...round.items].sort((a, b) =>
     (a.directive?.start_offset ?? 0) - (b.directive?.start_offset ?? 0)), [round.items]);
@@ -105,14 +97,6 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
   const base = document?.comparison_base ?? null;
   const comparisonKey = useMemo(() => JSON.stringify(base && [base.target ?? base.artifact_version_id,
     base.content_hash, base.utf8_bom, base.source]), [base]);
-  const roundKey = `${briefingId}:${roundId}`;
-
-  useEffect(() => {
-    setEditor(null);
-    setSelection(null);
-    setSelectedCommentId(null);
-    setStatus(null);
-  }, [roundKey, documentKey]);
 
   useEffect(() => {
     if (!document) return;
@@ -155,131 +139,142 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
     || (round.directive_binding?.status !== 'valid' ? round.directive_binding?.reason || 'The pinned document binding is unavailable.' : null);
   const ready = currentDocument !== null && currentDocument.directiveKey === directiveKey && currentComparison !== null && !failure;
   const contentGate = failure ?? (ready ? '' : null);
-  const canInteract = canMutate && ready && !busy;
+  const canInteract = canMutate && ready;
   useEffect(() => onContentGateChange?.(contentGate), [contentGate, onContentGateChange]);
   useEffect(() => onDocumentFailureChange?.(failure), [failure, onDocumentFailureChange]);
-  useEffect(() => () => onDocumentFailureChange?.(null), [onDocumentFailureChange]);
 
-  const inline = editor?.kind === 'suggest_replacement' ? editor : null;
+
   const source = document?.source ?? '';
-  const prefix = inline ? source.slice(0, inline.start) : '';
-  const suffix = inline ? source.slice(inline.end) : '';
-  const previewSource = inline ? prefix + replacement + suffix : source;
-  const mayReplace = source.length > 0 && !isLargeMarkdownDocument(source);
-  const delta = inline ? replacement.length - inline.quote.length : 0;
-  const workingRange = (range: MarkdownSourceRange): MarkdownSourceRange | null => {
-    if (!inline || range.end <= inline.start) return range;
-    if (range.start >= inline.end) return { start: range.start + delta, end: range.end + delta };
-    return null;
-  };
-  const replacementRange = useRef({ start: 0, end: 0 });
-  const editStart = inline?.start ?? 0;
-  const tailLength = suffix.length;
-  const inlineEditing = inline !== null;
-  const editingExtension = useMemo(() => inlineEditing ? EditorState.changeFilter.of(transaction => {
-    if (!transaction.docChanged || transaction.annotation(externalSourceUpdate)) return true;
-    const state = transaction.startState;
-    const { from, to } = markdownEditorRange(state, {
-      start: editStart, end: markdownValue(state).length - tailLength,
-    });
-    let allowed = true;
-    transaction.changes.iterChangedRanges((start, end) => { allowed &&= start >= from && end <= to; });
-    return allowed;
-  }) : undefined, [editStart, inlineEditing, tailLength]);
-
-  useEffect(() => {
-    onAnnotationEditChange?.(inlineEditing);
-    return () => onAnnotationEditChange?.(false);
-  }, [inlineEditing, onAnnotationEditChange]);
+  const annotations = round.annotations ?? [];
+  const replacements = useMemo(() => annotations.filter(annotation => annotation.annotation_kind === 'suggest_replacement'),
+    [round.annotations]);
+  const persistedText = useMemo(() => briefingSuggestionText(source, replacements), [source, replacements]);
+  const workingText = working ?? persistedText;
+  const dirty = workingText !== persistedText;
+  const maySuggest = canInteract && source.length > 0 && !isLargeMarkdownDocument(source);
+  const editing = maySuggest && suggesting;
+  const toWorking = useMemo(() => suggestionRangeMap(source, workingText), [source, workingText]);
+  const fromPersisted = useMemo(() => suggestionRangeMap(persistedText, workingText), [persistedText, workingText]);
+  const toSource = useMemo(() => suggestionRangeMap(workingText, source), [source, workingText]);
 
   useLayoutEffect(() => {
-    const target = inlineEditing ? replacementRange.current : selectionToRestore.current;
-    selectionToRestore.current = null;
-    if (!target) return;
-    const frame = requestAnimationFrame(() => documentRef.current?.select(target, inlineEditing));
-    return () => cancelAnimationFrame(frame);
-  }, [inlineEditing]);
+    onPendingSuggestionChange(dirty || busy);
+  }, [dirty, busy, onPendingSuggestionChange]);
 
-  const closeEditor = () => {
-    if (inline) selectionToRestore.current = inline;
-    setEditor(null);
-    setStatus(null);
-  };
-  const openEditor = (range: MarkdownSelection, annotation: BriefingAnnotation | null = null,
-    kind: BriefingAnnotation['annotation_kind'] = annotation?.annotation_kind ?? 'comment', note = annotation?.body ?? '') => {
-    if (!canInteract || (kind === 'suggest_replacement' && !mayReplace) || source.slice(range.start, range.end) !== range.quote) return;
-    const proposed = annotation?.replacement_text ?? range.quote;
-    replacementRange.current = { start: range.start, end: range.start + proposed.length };
-    setEditor({ ...range, annotation, kind });
-    setBody(note);
-    setReplacement(proposed);
-    setStatus(null);
-  };
+  useLayoutEffect(() => {
+    if (editing && selectionToEdit.current) {
+      documentRef.current?.select(selectionToEdit.current);
+      selectionToEdit.current = null;
+    }
+  }, [editing, documentRef]);
 
-  const currentRange = (annotation: BriefingAnnotation) => ({
-    start: annotation.start_offset, end: annotation.end_offset, quote: annotation.quote,
+  const mutate = async (operations: readonly BriefingAnnotationOperation[]) => {
+    if (operations.length === 0) return;
+    if (inFlight.current) throw new Error('Wait for the current edit to finish saving.');
+    inFlight.current = true;
+    setBusy(true);
+    try {
+      const result = await postBriefingAnnotations(briefingId, roundId, operations);
+      if (!await refresh.current()) throw new Error('Reopen this round to recover the saved edit.');
+      if (result.annotation_event_ids.length !== operations.length) {
+        throw new Error('The annotation service returned an incomplete event result.');
+      }
+      return result;
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
+  const autosave = useRef(mutate);
+  autosave.current = mutate;
+  useEffect(() => {
+    if (!canInteract || busy || !dirty || workingText === failedWorking) return;
+    const timer = window.setTimeout(() => {
+      const operations = briefingSuggestionOperations(source, workingText, replacements);
+      void autosave.current(operations).then(() => {
+        setStatus(null);
+        setWorking(current => current === workingText ? null : current);
+      }, error => {
+        setFailedWorking(workingText);
+        setStatus(error instanceof Error ? error.message : String(error));
+      });
+    }, 280);
+    return () => window.clearTimeout(timer);
+  }, [dirty, canInteract, busy, source, workingText, failedWorking, replacements]);
+
+  const editSelection = (range: MarkdownSourceRange) => {
+    if (!maySuggest) return;
+    if (editing) documentRef.current?.select(range);
+    else {
+      selectionToEdit.current = range;
+      onSuggest();
+    }
+  };
+  const select = (annotation: BriefingAnnotation, range: MarkdownSourceRange | null, draftAnnotation: boolean): DocumentCommentThread => ({
+    id: annotation.annotation_event_id,
+    quote: annotation.quote,
+    range,
+    author: annotation.presentation?.actor?.display_name || annotation.presentation?.actor?.slug
+      || (draftAnnotation ? 'You' : null),
+    body: annotation.annotation_kind === 'suggest_replacement' ? annotation.replacement_text || annotation.quote : annotation.body,
+    createdAt: annotation.created_at,
+    draft: draftAnnotation,
+    onDelete: draftAnnotation && canInteract && !dirty ? async () => {
+      await mutate([{ operation: 'retract', annotation_event_id: annotation.annotation_event_id }]);
+    } : undefined,
+    onEdit: draftAnnotation && canInteract && !dirty && annotation.annotation_kind === 'comment' ? async body => {
+      await mutate([
+        { operation: 'retract', annotation_event_id: annotation.annotation_event_id },
+        { operation: 'set', annotation_kind: 'comment', start_offset: annotation.start_offset,
+          end_offset: annotation.end_offset, quote: annotation.quote, body },
+      ]);
+    } : undefined,
   });
-  const openExisting = (annotation: BriefingAnnotation) => openEditor(currentRange(annotation), annotation);
-  const openComment = (id: string) => {
-    setSelectedCommentId(id);
-    setCommentsOpen(true);
-  };
-  const viewAnchor = (range: MarkdownSourceRange, id: string) => {
-    openComment(id);
-    const visible = workingRange(range);
-    if (visible) documentRef.current?.select(visible);
-  };
-  const describe = (entry: BriefingAnnotation) => entry.annotation_kind === 'suggest_replacement'
-    ? <><del>{entry.quote}</del> <ins>{entry.replacement_text}</ins>{entry.body && <div>{entry.body}</div>}</>
-    : entry.body;
-  const standingRanges = useMemo(() => (standingNotes ?? []).map((note) => ({
-    note,
-    range: note.anchor.status === 'detached' ? null : { start: note.anchor.start_offset, end: note.anchor.end_offset },
-  })), [standingNotes]);
-  const comments: ReviewSidebarComment[] = [
-    ...standingRanges.map(({ note, range }) => standingNoteSidebarEntry(note, range)),
-    ...(round.annotations ?? []).map((annotation) => ({
-      id: annotation.annotation_event_id, quote: annotation.quote,
-      range: currentRange(annotation), author: annotationActor(annotation), content: describe(annotation),
-      ...(canInteract && !inline && annotation.presentation?.source === 'current_draft' ? { edit: () => openExisting(annotation) } : {}),
+  const workingReplacements = new Map<string, MarkdownSourceRange>();
+  let replacementEnd = 0;
+  let delta = 0;
+  for (const annotation of [...replacements].sort((a, b) => a.start_offset - b.start_offset)) {
+    if (annotation.start_offset < replacementEnd || annotation.replacement_text === null) continue;
+    const start = annotation.start_offset + delta;
+    const end = start + annotation.replacement_text.length;
+    const range = fromPersisted({ start, end });
+    if (range) workingReplacements.set(annotation.annotation_event_id, range);
+    delta += annotation.replacement_text.length - annotation.quote.length;
+    replacementEnd = annotation.end_offset;
+  }
+  const threads: DocumentCommentThread[] = [
+    ...(standingNotes ?? []).map(note => ({
+      id: note.id, quote: note.quote, body: note.body, author: note.author,
+      resolved: note.resolved, range: note.anchor.status === 'detached' ? null
+        : toWorking({ start: note.anchor.start_offset, end: note.anchor.end_offset }),
     })),
-    ...(round.carried_annotations ?? []).map((annotation) => ({
-      id: annotation.annotation_event_id, quote: annotation.quote,
-      range: annotation.anchor.status === 'detached' ? null : currentRange({
-        ...annotation, start_offset: annotation.anchor.start_offset, end_offset: annotation.anchor.end_offset,
-      }),
-      status: annotation.anchor.status, author: annotationActor(annotation), content: describe(annotation),
-    })),
+    ...annotations.map(annotation => select(annotation,
+      annotation.annotation_kind === 'suggest_replacement'
+        ? workingReplacements.get(annotation.annotation_event_id) ?? null
+        : toWorking({ start: annotation.start_offset, end: annotation.end_offset }),
+      annotation.presentation?.source === 'current_draft')),
+    ...(round.carried_annotations ?? []).map(annotation => select(annotation,
+      annotation.anchor.status === 'detached' ? null
+        : toWorking({ start: annotation.anchor.start_offset, end: annotation.anchor.end_offset }), false)),
   ];
-  const decorations = useMemo(() => [
-    ...standingRanges.flatMap(({ note, range }) => range ? [{ ...range, id: note.id, className: 'review-range' }] : []),
-    ...(round.annotations ?? []).map((annotation) => ({
-      ...currentRange(annotation), id: annotation.annotation_event_id, className: 'review-range',
-    })),
-    ...(round.carried_annotations ?? []).flatMap(({ annotation_event_id, anchor }) =>
-      anchor.status === 'detached' ? [] : [{ start: anchor.start_offset, end: anchor.end_offset,
-        id: annotation_event_id, className: 'review-range' }]),
-  ], [round.annotations, round.carried_annotations, standingRanges]);
-  const visibleDecorations = inline ? decorations.flatMap(decoration => {
-    const range = workingRange(decoration);
-    return range ? [{ ...decoration, ...range }] : [];
-  }) : decorations;
-  if (inline && replacement.length) visibleDecorations.push({
-    start: inline.start, end: inline.start + replacement.length, id: 'briefing-inline-replacement', className: 'review-range',
-  });
-  const validSelection = selection && selection.start < selection.end
-    && document?.source.slice(selection.start, selection.end) === selection.quote ? selection : null;
+  const decorations = threads.flatMap(thread => thread.range
+    ? [{ ...thread.range, id: thread.id, className: workingReplacements.has(thread.id) ? 'suggestion-range' : 'review-range' }]
+    : []);
+  const selectionRange = selection && workingText.slice(selection.start, selection.end) === selection.quote ? selection : null;
+  const selectedSource = selectionRange ? toSource(selectionRange) : null;
 
-  const directiveItemsRef = useRef({ directives, workingRange, inlineEditing });
-  directiveItemsRef.current = { directives, workingRange, inlineEditing };
+  const latestDirectives = useRef({ directives, toWorking });
+  latestDirectives.current = { directives, toWorking };
   const directiveHosts = useRef(new Map<HTMLElement, string>());
+  const directiveRefs = useRef(new Map<string, { view: MarkdownDocumentHandle; start: number; end: number }>()).current;
+  const directiveRefCallbacks = useRef(new Map<string, (view: MarkdownDocumentHandle | null) => void>()).current;
   const [, setHostsRevision] = useState(0);
   const allowlist = useMemo(() => {
     const locate = (node: Parameters<MarkdownDirectiveRenderer>[0]) => {
-      const { directives, workingRange } = directiveItemsRef.current;
+      const { directives, toWorking } = latestDirectives.current;
       return directives.find(({ directive }) => {
         if (!directive || directive.key !== node.attributes.key) return false;
-        const range = workingRange({ start: directive.start_offset, end: directive.end_offset });
+        const range = toWorking({ start: directive.start_offset, end: directive.end_offset });
         return range?.start === node.start && range.end === node.end;
       });
     };
@@ -297,139 +292,87 @@ export function BriefingDocumentPanel({ briefingId, roundId, round, canMutate, d
         queueMicrotask(() => setHostsRevision((value) => value + 1));
       } };
     };
-    render.accepts = (node) => !directiveItemsRef.current.inlineEditing || Boolean(locate(node));
+    render.accepts = (node) => Boolean(locate(node));
     return new Map([['spec-item', render]]);
   }, []);
 
-  const mutate = async (operations: BriefingAnnotationOperation[]) => {
-    if (busy) return;
-    setBusy(true);
-    setStatus(null);
-    try {
-      const result = await postBriefingAnnotations(briefingId, roundId, operations);
-      if (result.annotation_event_ids.length !== operations.length) {
-        throw new Error('The annotation service returned an ambiguous event result.');
-      }
-      await onRefresh();
-      closeEditor();
-      setCommentsOpen(true);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-      await onRefresh();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const save = async () => {
-    if (!editor || !canInteract || source.slice(editor.start, editor.end) !== editor.quote) return;
-    const { kind } = editor;
-    if (kind === 'comment' && !body.trim()) {
-      setStatus('Comment text is required.');
-      return;
-    }
-    const range = { operation: 'set' as const, start_offset: editor.start, end_offset: editor.end, quote: editor.quote };
-    const annotation: BriefingAnnotationOperation = kind === 'comment'
-      ? { ...range, annotation_kind: kind, body: body.trim() }
-      : { ...range, annotation_kind: kind, replacement_text: replacement, ...(body.trim() ? { body: body.trim() } : {}) };
-    const operations: BriefingAnnotationOperation[] = editor.annotation
-      ? [{ operation: 'retract', annotation_event_id: editor.annotation.annotation_event_id }, annotation] : [annotation];
-    await mutate(operations);
-  };
-
   if (!document) return null;
   return (
-    <section ref={contentRef} className="briefing-document__content" aria-label="Briefing document">
-      {currentDocument && !currentDocument.documentError && (
-        <>
-          {inline ? (
-            <form className="briefing-document__review-toolbar briefing-document__inline-replacement" aria-label="Text replacement"
-              onSubmit={event => { event.preventDefault(); void save(); }}>
-              <textarea aria-label="Note (optional)" placeholder="Add a note" rows={2} value={body} disabled={!canInteract}
-                onInput={event => setBody(event.currentTarget.value)} />
-              {inline.annotation && <ContextualAction presentation="compact" aria-label="Delete replacement" {...appTip('Delete replacement')}
-                disabled={!canInteract} onClick={() => void mutate([{ operation: 'retract', annotation_event_id: inline.annotation!.annotation_event_id }])}>
-                <Icon name="discard" />
-              </ContextualAction>}
-              <ContextualAction presentation="compact" aria-label="Cancel replacement" {...appTip('Cancel replacement')}
-                disabled={busy} onClick={closeEditor}><Icon name="dismiss" /></ContextualAction>
-              <ContextualAction presentation="compact" type="submit" aria-label="Save replacement" {...appTip('Save replacement')}
-                disabled={!canInteract || (replacement === inline.quote && !body.trim())}><Icon name="keep" /></ContextualAction>
-            </form>
-          ) : (
-            <div className="briefing-document__review-toolbar">
-              <ContextualAction presentation="compact" aria-label="Comment on selection" {...appTip('Comment on selection')}
-                disabled={!canInteract || !validSelection} onClick={() => validSelection && openEditor(validSelection)}>
-                <Icon name="comment" />
-              </ContextualAction>
-              <ContextualAction presentation="compact" aria-label="Edit selected text" {...appTip('Edit selected text')}
-                disabled={!canInteract || !mayReplace || !validSelection}
-                onClick={() => validSelection && openEditor(validSelection, null, 'suggest_replacement')}>
-                <Icon name="editAnnotation" />
-              </ContextualAction>
-            </div>
-          )}
-          {inline && status && <DetailPaneNotice severity="error" density="compact">{status}</DetailPaneNotice>}
-          <div key="review-document" className={`briefing-document__review${commentsOpen ? ' briefing-document__review--with-comments' : ''}`}>
-            <MarkdownDocument key={roundKey} documentRef={documentRef} value={previewSource}
-              comparison={currentComparison ? currentComparison.text : comparison?.text} comparisonLayout="full-document"
-              readOnly={!inline || !canInteract} ariaLabel="Pinned briefing document" editingExtension={editingExtension}
-              directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} decorations={visibleDecorations}
-              onChange={inline ? value => {
-                if (value.startsWith(prefix) && value.endsWith(suffix)) setReplacement(value.slice(prefix.length, value.length - suffix.length));
-              } : undefined}
-              onSelectionChange={inline ? undefined : setSelection}
-              onKeyDown={event => {
-                if (!inline || busy || event.key !== 'Escape') return false;
-                closeEditor();
-                return true;
-              }} onDecorationClick={openComment} />
-            <ReviewCommentsSidebar comments={comments} open={commentsOpen} setOpen={setCommentsOpen}
-              onNavigate={viewAnchor} selectedId={selectedCommentId} />
-          </div>
-          {Array.from(directiveHosts.current, ([element, itemId]) => {
-            const item = directives.find((directive) => directive.id === itemId);
-            if (!item?.directive) return null;
-            const current = Object.hasOwn(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
-            return createPortal(
-              <BriefingDirectiveControls key={`${itemId}:${draftIdentity ?? ''}`} item={{ ...item, directive: item.directive }} source={document.source}
-                current={current} canInteract={canInteract && !inline} validationError={validationErrors[item.id]} decorations={decorations}
-                onDirectiveValue={onDirectiveValue} onSelect={setSelection} onComment={openEditor} onDecorationClick={openComment} />,
-              element,
-            );
-          })}
-        </>
-      )}
-      <DetailPaneModal open={editor?.kind === 'comment'} onClose={closeEditor}
-        titleId="briefing-annotation-editor-title" title={editor?.annotation ? 'Edit annotation' : 'Add annotation'}
-        headerActions={editor && !editor.annotation && mayReplace ? <ContextualAction presentation="compact" aria-label="Edit text" {...appTip('Edit text')}
-          disabled={!canInteract} onClick={() => openEditor(editor, null, 'suggest_replacement', body)}><Icon name="editAnnotation" /></ContextualAction> : undefined}
-        closeLabel="Close annotation editor" embeddedFallback={{ scrollOwnerRef: contentRef }}
-        scrollLockClassName="detail-pane-shell__body--overlay-open"
-        className="briefing-document__annotation-modal" panelClassName="briefing-document__popover">
-        {editor && (
-          <div className="briefing-document__popover-content">
-            <blockquote>{editor.quote}</blockquote>
-            <label>
-              <span className="sr-only">Comment</span>
-              <textarea value={body} onInput={(event) => setBody(event.currentTarget.value)} disabled={!canInteract} />
-            </label>
-            {status && <p className="briefing-document__popover-status" role="status">{status}</p>}
-            <div className="briefing-document__popover-actions">
-              <div>
-                {editor.annotation?.presentation?.source === 'current_draft' && (
-                  <button type="button" className="btn btn--ghost btn--sm" disabled={!canInteract}
-                    onClick={() => void mutate([{ operation: 'retract', annotation_event_id: editor.annotation!.annotation_event_id }])}>Delete</button>
-                )}
-              </div>
-              <div className="briefing-document__popover-primary-actions">
-                <button type="button" className="btn btn--ghost" disabled={busy} onClick={closeEditor}>Cancel</button>
-                <button type="button" className="btn btn--primary" disabled={!canInteract} onClick={() => void save()}>Save</button>
-              </div>
-            </div>
-          </div>
-        )}
-      </DetailPaneModal>
+    <section className="briefing-document__content" aria-label="Briefing document">
+      {status && <DetailPaneNotice severity="error" density="compact">{status}</DetailPaneNotice>}
+      {currentDocument && !currentDocument.documentError && <DocumentCommentSurface
+        controller={comments} documentRef={documentRef} navigationKey={`${briefingId}:${roundId}`}
+        threads={threads}
+        position={range => {
+          for (const { view, start, end } of directiveRefs.values()) {
+            if (range.start >= start && range.end <= end) return view.bounds({ start: range.start - start, end: range.end - start });
+          }
+          return null;
+        }}
+        onNavigate={range => {
+          for (const { view, start, end } of directiveRefs.values()) {
+            if (range.start >= start && range.end <= end) {
+              view.reveal({ start: range.start - start, end: range.end - start });
+              return;
+            }
+          }
+          documentRef.current?.reveal(range);
+        }}
+        selection={selectionRange && selectionRange.start < selectionRange.end && !editing ? {
+          range: selectionRange,
+          onEdit: maySuggest ? () => editSelection(selectionRange) : undefined,
+          onComment: canInteract && selectedSource && !dirty ? async body => {
+            const result = await mutate([{
+              operation: 'set', annotation_kind: 'comment', body,
+              start_offset: selectedSource.start, end_offset: selectedSource.end,
+              quote: source.slice(selectedSource.start, selectedSource.end),
+            }]);
+            if (result?.annotation_event_ids[0]) comments.select(result.annotation_event_ids[0]);
+            setSelection(null);
+          } : undefined,
+        } : null}>
+        <MarkdownDocument value={workingText} documentRef={documentRef}
+          comparison={showChanges ? currentComparison?.text : undefined}
+          operatorComparison={workingText === source ? undefined : source}
+          showSource={showSource} readOnly={!editing} ariaLabel="Briefing document"
+          directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} decorations={decorations}
+          onChange={value => { setWorking(value); setFailedWorking(null); }}
+          onSelectionChange={setSelection} onDecorationClick={id => comments.select(id)}
+          onChangePosition={onChangePosition} />
+        {Array.from(directiveHosts.current, ([element, itemId]) => {
+          const item = directives.find(directive => directive.id === itemId);
+          if (!item?.directive) return null;
+          const current = Object.hasOwn(draft, item.id) ? draft[item.id] ?? null : item.effective_response?.value ?? null;
+          const responseKey = current && 'option_key' in current ? current.option_key : null;
+          const variants = item.revision.variants ?? [];
+          const body = variants.find(variant => variant.key === responseKey) ?? variants[0] ?? item.directive;
+          const range = toWorking({ start: body.body_start_offset, end: body.body_end_offset });
+          const refKey = JSON.stringify([itemId, range?.start, range?.end]);
+          if (range && !directiveRefCallbacks.has(refKey)) {
+            directiveRefCallbacks.set(refKey, view => {
+              if (view) directiveRefs.set(refKey, { view, ...range });
+              else {
+                directiveRefs.delete(refKey);
+                directiveRefCallbacks.delete(refKey);
+              }
+            });
+          }
+          return createPortal(
+            <BriefingDirectiveControls key={`${itemId}:${draftIdentity ?? ''}`} item={{ ...item, directive: item.directive }}
+              source={document.source} current={current} canInteract={canInteract && !editing}
+              validationError={validationErrors[item.id]} documentRef={directiveRefCallbacks.get(refKey)}
+              decorations={decorations.flatMap(decoration => {
+                const range = toSource(decoration);
+                return range ? [{ ...decoration, ...range }] : [];
+              })}
+              onDirectiveValue={onDirectiveValue} onSelect={range => {
+                const mapped = toWorking(range);
+                setSelection(mapped ? { ...mapped, quote: range.quote } : null);
+              }} onDecorationClick={comments.select} />,
+            element,
+          );
+        })}
+      </DocumentCommentSurface>}
     </section>
   );
 }
