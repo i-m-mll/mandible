@@ -7,8 +7,9 @@ import {
 } from '../../../src/feedback/request-narrative';
 import { getAuthDiffFile, type AuthReviewProjection } from '../api';
 import { ChangeList } from '../components/ChangeList';
-import type { MarkdownDirective, MarkdownDirectiveRenderer } from '../components/MarkdownDocument';
-import { AuthReviewMarkdown, AuthReviewTextFile, authReviewMarkdownMarks, type AuthRequestReviewState } from './AuthRequestReview';
+import { DocumentCommentSurface, type DocumentCommentSelection } from '../components/shared/DocumentComments';
+import type { MarkdownDirective, MarkdownDirectiveRenderer, MarkdownDocumentHandle, MarkdownSelection } from '../components/MarkdownDocument';
+import { AuthReviewMarkdown, AuthReviewTextFile, authReviewDocumentThreads, authReviewMarkdownMarks, type AuthReviewBinding, type AuthRequestReviewState } from './AuthRequestReview';
 import { BRIEFING_MARKDOWN_PREVIEW, BriefingDirectiveControls } from './feedback/BriefingDirectiveControls';
 import { authReviewHref } from './auth-review-navigation';
 
@@ -83,7 +84,6 @@ export function AuthReviewNarrative({ id, review, onFile }: {
   }
   const remainingFiles = files.flatMap((file, index) => loaded.get(index) || indices.includes(index) && !loaded.has(index)
     ? [] : [{ file, index }]);
-  const marks = authReviewMarkdownMarks(review, binding);
   const fileReference = (index: number, label: string) => {
     const file = files[index];
     return <a href={authReviewHref(id, 'diff', { oldPath: file.old_path, newPath: file.new_path })} onClick={event => {
@@ -97,7 +97,8 @@ export function AuthReviewNarrative({ id, review, onFile }: {
 
   return <div className="auth-review__narrative">
     <AuthReviewMarkdown review={review} binding={binding} value={source} label="Review narrative"
-      directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} />
+      directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW}
+      embedded={data.narrative_questions.map(({ directive }) => ({ start: directive.body_start_offset, end: directive.body_end_offset }))} />
     {[...hosts.current].map(([element, offset]) => {
       const embed = byOffset.get(offset);
       if (embed?.kind === 'change') {
@@ -110,16 +111,7 @@ export function AuthReviewNarrative({ id, review, onFile }: {
         </section>, element);
       }
       if (embed?.kind === 'question') {
-        const { question } = embed;
-        const { directive } = question;
-        const answer = (_id: string, value: Parameters<typeof review.answerQuestion>[1]) => review.answerQuestion(directive.key, value);
-        return createPortal(<BriefingDirectiveControls item={{ id: question.id, directive, revision: {
-          response_type: directive.type, required: directive.required, options: directive.options, variants: directive.variants,
-        } }} source={source} current={question.effective_response?.value ?? null}
-          canInteract={Boolean(review.available) && !review.busy} decorations={marks} onDirectiveValue={answer} onTextBlur={answer}
-          onSelect={selection => review.markdownSelection(binding, selection)}
-          onComment={selection => review.commentOnMarkdown(binding, selection)}
-          onDecorationClick={() => review.setCommentsOpen(true)} />, element);
+        return createPortal(<NarrativeQuestion question={embed.question} review={review} source={source} binding={binding} />, element);
       }
       return null;
     })}
@@ -134,8 +126,37 @@ export function AuthReviewNarrative({ id, review, onFile }: {
     {remainingFiles.length > 0 && <ChangeList
       files={remainingFiles.map(({ file }) => file)} scope={`auth:${id}:narrative`} revision={report?.comparison.head_sha}
       loadFile={(_file, index, signal) => getAuthDiffFile(id, remainingFiles[index].index, signal, undefined, data.round.id)}
-      onLineSelection={(_file, index, range, quote) => review.lineSelection(remainingFiles[index].index, range, quote)}
       renderTextFile={(_file, pair, index, view) => <AuthReviewTextFile review={review} pair={pair} index={remainingFiles[index].index} view={view} />}
       ariaLabel="Other request changes" />}
   </div>;
+}
+
+function NarrativeQuestion({ question, review, source, binding }: {
+  question: Question; review: AuthRequestReviewState; source: string; binding: AuthReviewBinding;
+}) {
+  const { directive } = question;
+  const document = useRef<MarkdownDocumentHandle>(null);
+  const [selected, setSelected] = useState<MarkdownSelection | null>(null);
+  const span = { start: directive.body_start_offset, end: directive.body_end_offset };
+  const selection: DocumentCommentSelection | null = selected?.quote ? {
+    range: { start: selected.start - span.start, end: selected.end - span.start },
+    onComment: review.available ? async body => {
+      await review.commentOn({ bindingId: binding.id, start_offset: selected.start, end_offset: selected.end, quote: selected.quote }, body);
+      setSelected(null);
+    } : undefined,
+  } : null;
+  const threads = authReviewDocumentThreads(review, binding, span);
+  const target = review.navigation;
+  useEffect(() => {
+    const thread = threads.find(entry => entry.id === target?.comment.annotation_event_id);
+    if (thread?.range) document.current?.reveal(thread.range);
+  }, [target?.token]);
+  return <DocumentCommentSurface controller={review.comments} threads={threads} selection={selection} drawer={false}
+    documentRef={document} navigationKey={`auth.${binding.id}.${span.start}`}>
+    <BriefingDirectiveControls item={{ id: question.id, directive, revision: {
+      response_type: directive.type, required: directive.required, options: directive.options, variants: directive.variants,
+    } }} source={source} current={question.effective_response?.value ?? null} canInteract={Boolean(review.available)}
+      decorations={authReviewMarkdownMarks(review, binding)} onDirectiveValue={(_id, value) => review.answerQuestion(directive.key, value)}
+      onSelect={setSelected} onDecorationClick={review.comments.select} documentRef={document} />
+  </DocumentCommentSurface>;
 }

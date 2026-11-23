@@ -245,10 +245,11 @@ type Geometry = { localY: number; left: number; top: number; bottom: number };
 type Composer = { range: MarkdownSourceRange; send: CommentWrite };
 
 export function DocumentCommentSurface({ controller, threads, selection, documentRef, drawer = true,
-  children, navigationKey, position, onNavigate }: {
+  children, navigationKey, position, onNavigate, gutterSelection }: {
   controller: CommentController;
   threads: readonly DocumentCommentThread[];
   selection: DocumentCommentSelection | null;
+  gutterSelection?: { range: MarkdownSourceRange; send: CommentWrite };
   documentRef?: RefObject<MarkdownDocumentHandle>;
   position?: (range: MarkdownSourceRange, id?: string) => DOMRect | null;
   drawer?: boolean;
@@ -267,6 +268,9 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
   const liveSelection = selection && selection.range.start < selection.range.end && !composer ? selection : null;
   const activeThread = shown.find(item => item.id === controller.selected);
   const previousScope = useRef(controller.scopeKey);
+  useLayoutEffect(() => {
+    if (gutterSelection) setComposer(gutterSelection);
+  }, [gutterSelection]);
   const latest = useRef({ shown, liveSelection, composer, position, documentRef });
   latest.current = { shown, liveSelection, composer, position, documentRef };
 

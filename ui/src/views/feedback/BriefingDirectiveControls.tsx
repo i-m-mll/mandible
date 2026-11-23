@@ -1,8 +1,9 @@
+import type { Ref } from 'preact';
 import { useId, useState } from 'preact/hooks';
 import { Icon } from '../../components/icons/Icon';
 import { ContextualAction } from '../../components/shared/ContextualAction';
 import {
-  MarkdownDocument, type MarkdownRangeDecoration, type MarkdownSelection,
+  MarkdownDocument, type MarkdownDocumentHandle, type MarkdownRangeDecoration, type MarkdownSelection,
 } from '../../components/MarkdownDocument';
 import type { BriefingDirectiveItem, BriefingResponseValue } from '../../api';
 
@@ -12,7 +13,7 @@ type DirectiveControlsItem = { id: string; directive: NonNullable<BriefingDirect
 export const BRIEFING_MARKDOWN_PREVIEW = { images: 'omit', directivePreview: 'on-changed-text' } as const;
 
 export function BriefingDirectiveControls({ item, source, current, canInteract, validationError, decorations,
-  onDirectiveValue, onTextBlur, onSelect, onComment, onDecorationClick }: {
+  onDirectiveValue, onTextBlur, onSelect, onComment, onDecorationClick, documentRef }: {
   item: DirectiveControlsItem;
   source: string;
   current: BriefingResponseValue | null;
@@ -22,7 +23,8 @@ export function BriefingDirectiveControls({ item, source, current, canInteract, 
   onDirectiveValue?(itemId: string, value: BriefingResponseValue | null): void;
   onTextBlur?(itemId: string, value: BriefingResponseValue | null): void;
   onSelect(selection: MarkdownSelection): void;
-  onComment(selection: MarkdownSelection): void;
+  onComment?(selection: MarkdownSelection): void;
+  documentRef?: Ref<MarkdownDocumentHandle>;
   onDecorationClick(id: string): void;
 }) {
   const radioGroupScope = useId();
@@ -158,15 +160,15 @@ export function BriefingDirectiveControls({ item, source, current, canInteract, 
   return (
     <section className="briefing-directive" aria-labelledby={promptId}>
       <div id={promptId}>
-        <MarkdownDocument value={quote} readOnly ariaLabel="Directive text" previewPolicy={BRIEFING_MARKDOWN_PREVIEW}
+        <MarkdownDocument documentRef={documentRef} value={quote} readOnly ariaLabel="Directive text" previewPolicy={BRIEFING_MARKDOWN_PREVIEW}
           decorations={relativeDecorations} onDecorationClick={onDecorationClick}
           onSelectionChange={(selection) => onSelect({ ...selection, start: selection.start + start, end: selection.end + start })} />
       </div>
       <div className="briefing-directive__controls">
         {responseControls(item, current, promptId)}
         {clearResponseAction(item, current, promptId)}
-        <ContextualAction aria-label="Comment on directive" title="Comment on directive" disabled={!canInteract}
-          onClick={() => onComment({ start, end, quote })}><Icon name="comment" /></ContextualAction>
+        {onComment && <ContextualAction aria-label="Comment on directive" title="Comment on directive" disabled={!canInteract}
+          onClick={() => onComment({ start, end, quote })}><Icon name="comment" /></ContextualAction>}
       </div>
     </section>
   );

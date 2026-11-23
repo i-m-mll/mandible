@@ -4,7 +4,7 @@ import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
 import type { RefObject } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { AuthReviewDialog, AuthReviewMarkdown, AuthReviewTextFile, AuthReviewDetachedDrafts, AuthReviewSidebar, authReviewSelector,
+import { AuthReviewDialog, AuthReviewMarkdown, AuthReviewTextFile, AuthReviewDetachedDrafts, AuthReviewComments, AuthReviewCommentsButton, authReviewSelector,
   useAuthRequestReview, type AuthRequestReviewState } from './AuthRequestReview';
 import type { RequestReviewComment } from '../../../src/feedback/request-review';
 import { ChangeList, type DiffTargetReady } from '../components/ChangeList';
@@ -1346,7 +1346,7 @@ function AuthRequestDetail({
       subheader={subheader}
       notice={<>
         {notice}
-        {review.error && !review.decision && !review.replyTarget && !review.editor &&
+        {review.error && !review.decision &&
           <DetailPaneNotice density="compact" severity="error">{review.error}</DetailPaneNotice>}
         {review.data?.returned && <DetailPaneNotice severity={review.data.returned.delivered ? 'info' : 'warning'}
           density="compact" title={review.data.returned.delivered ? 'Review delivered' : 'Review notice undelivered'}>
@@ -1381,6 +1381,7 @@ function AuthRequestDetail({
           }} />}
           actions={(
             <div className="auth-detail__header-actions">
+              <AuthReviewCommentsButton review={review} />
               <DetailPaneMenuTrigger
                 buttonRef={actionsTriggerRef}
                 label="Approval actions"
@@ -1529,7 +1530,7 @@ function AuthRequestDetail({
             )}
           </div>
         ) : (
-      <AuthReviewSidebar review={review} id={fullId} onNavigate={selectComment}>
+        <>
         {viewMode === 'diff' ? (
           <div id="auth-detail-panel-diff" role="tabpanel" aria-labelledby="auth-detail-tab-diff" style={targetToken ? { paddingBottom: 'var(--auth-diff-target-scroll-space, 0px)' } : undefined}>
           {comparedVersion && comparedVersion.description !== request.commit_message &&
@@ -1596,7 +1597,6 @@ function AuthRequestDetail({
             loadFile={(_file, index, signal) => getAuthDiffFile(fullId, index, signal, review.against || undefined)}
             target={commentTarget ?? (navigation.file && targetToken && !review.against ? { ...navigation.file, navigationToken: targetToken } : undefined)}
             lineTarget={lineTarget}
-            onLineSelection={review.available && !review.against ? (_file, index, range, quote) => review.lineSelection(index, range, quote) : undefined}
             renderFileStatus={!review.against ? file => {
               const status = review.drafts.fileStatus(file.new_path);
               const label = status === 'conflict' ? 'Draft conflict' : status === 'draft' ? 'Review draft' : file.operator_edited ? 'Operator edit' : null;
@@ -1709,8 +1709,9 @@ function AuthRequestDetail({
           </div>
           </div>
         )}
-      </AuthReviewSidebar>
+        </>
       )}
+      <AuthReviewComments review={review} onNavigate={selectComment} />
       <AuthReviewDialog review={review} />
       <DetailPaneModal open={responsibilityDialog !== null} onClose={() => setResponsibilityDialog(null)}
         titleId="auth-responsibility-title" title="Request responsibility" closeLabel="Close responsibility">

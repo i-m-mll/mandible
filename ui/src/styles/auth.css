@@ -2028,28 +2028,6 @@
   word-break: break-word;
 }
 
-.auth-review {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-}
-
-.auth-review--with-comments {
-  grid-template-columns: minmax(0, 1fr) minmax(12rem, 28%);
-}
-
-.auth-review__content,
-.auth-review__sidebar {
-  min-width: 0;
-}
-
-.auth-review__sidebar {
-  position: sticky;
-  top: 0;
-  background: var(--surface);
-}
-
 .auth-review__side,
 .auth-review__versions {
   display: flex;
