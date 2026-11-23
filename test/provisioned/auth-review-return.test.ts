@@ -60,12 +60,12 @@ it('returns a quoted review through the CLI and signs a separately frozen edit o
     await page.keyboard.press('End');
     for (const _ of 'wording') await page.keyboard.press('Shift+ArrowLeft');
     await page.getByRole('toolbar', { name: 'Selection actions' }).getByRole('button', { name: 'Edit', exact: true }).click();
-    const editor = page.getByRole('textbox', { name: 'Review draft for proposal.md' });
+    const editor = page.locator('[contenteditable="true"][aria-label="proposal.md after"]');
     await editor.waitFor();
     await page.waitForFunction(() => {
       const selection = window.getSelection();
       return selection?.toString() === 'wording' &&
-        selection.anchorNode?.parentElement?.closest('[contenteditable="true"]')?.getAttribute('aria-label') === 'Review draft for proposal.md';
+        selection.anchorNode?.parentElement?.closest('[contenteditable="true"]')?.getAttribute('aria-label') === 'proposal.md after';
     });
     await page.keyboard.type('language');
 

@@ -1129,7 +1129,7 @@ function AuthRequestDetail({
   const showDiffStats = typeHasDiffStats(authType);
   const hasStats = stats.files != null || stats.additions != null || stats.deletions != null;
   const statsSummary = showDiffStats && hasStats
-    ? `${formatNumber(stats.files ?? 0)} files · +${formatNumber(stats.additions ?? 0)} -${formatNumber(stats.deletions ?? 0)}`
+    ? `${formatNumber(stats.files ?? 0)} ${stats.files === 1 ? 'file' : 'files'} · +${formatNumber(stats.additions ?? 0)} -${formatNumber(stats.deletions ?? 0)}`
     : null;
   const shortRef = requestHash || 'unknown';
   const requester = request.requester ?? null;
@@ -1194,7 +1194,7 @@ function AuthRequestDetail({
             lineTarget={lineTarget}
             renderFileStatus={file => {
               const status = review.readOnly ? null : review.drafts.fileStatus(file.new_path);
-              const label = status === 'conflict' ? 'Draft conflict' : status === 'draft' ? 'Review draft' : file.operator_edited ? 'Operator edit' : null;
+              const label = status === 'conflict' ? 'Edit conflict' : status === 'draft' || file.operator_edited ? 'Edited' : null;
               return label && <span {...appTip(label)}><Icon name={status === 'conflict' ? 'warning' : 'toolEdit'} label={label} /></span>;
             }}
             renderTextFile={(_file, pair, index, view) => <AuthReviewTextFile review={review} pair={pair} index={index} view={view}
@@ -1270,6 +1270,10 @@ function AuthRequestDetail({
         <MetadataRow label="Session" value={sessionId ?? null} />
         <MetadataRow label="Target repo" value={targetRepo} />
       </dl>
+      {review.data?.returned && <DetailPaneNotice severity="info" density="compact"
+        title={review.data.returned.delivered ? 'Review delivered' : 'Review delivery pending'}>
+        {review.data.returned.reason}
+      </DetailPaneNotice>}
       <AuthPrerequisites request={request} onSelect={id => { setMetadataOpen(false); onSelectRequest(id); }} />
       {referenceRefs.length > 0 && canIssueLink && (
         <section className="auth-detail__reference-rows" aria-label="References">
@@ -1436,10 +1440,6 @@ function AuthRequestDetail({
         {notice}
         {review.error && !review.rejecting &&
           <DetailPaneNotice density="compact" severity="error">{review.error}</DetailPaneNotice>}
-        {review.data?.returned && <DetailPaneNotice severity={review.data.returned.delivered ? 'info' : 'warning'}
-          density="compact" title={review.data.returned.delivered ? 'Review delivered' : 'Review notice undelivered'}>
-          {review.data.returned.reason}
-        </DetailPaneNotice>}
         {runtimeVerification && (
           <DetailPaneNotice severity="info" density="compact" title="Update verification is pending">
             {runtimeVerification.reason}
@@ -1454,9 +1454,11 @@ function AuthRequestDetail({
       overlays={overlays}
       header={(
         <DetailPaneHeader
-          {...(revisionSelector
-            ? { variant: 'versioned', state: headerState, selector: revisionSelector, supportingMetadata: headerMetadata } as const
-            : { variant: 'standard', status: headerState, secondaryMetadata: headerMetadata } as const)}
+          variant="versioned"
+          className="auth-detail__revision-header"
+          state={headerState}
+          selector={revisionSelector}
+          supportingMetadata={headerMetadata}
           identity={{
             entityLabel: repoName,
             displayRef: shortRef,
@@ -1473,6 +1475,10 @@ function AuthRequestDetail({
                 shown={review.showChanges} position={review.fileChangePosition}
                 onToggle={() => review.setShowChanges(shown => !shown)}
                 onStep={direction => review.fileDocument.current?.moveChange(direction)} />}
+              {viewMode !== 'console' && review.activeDraft?.editing &&
+                <DetailPaneIconAction label="Finish editing" disabled={review.activeDraft.busy} onClick={review.activeDraft.toggle}>
+                  <Icon name="markRead" />
+                </DetailPaneIconAction>}
               <AuthReviewCommentsButton review={review} />
               <DetailPaneMenuTrigger
                 buttonRef={actionsTriggerRef}
@@ -1500,6 +1506,21 @@ function AuthRequestDetail({
                     role="menuitemcheckbox" aria-checked={review.showSource} onClick={() => closeActionsAfter(
                       () => review.setShowSource(shown => !shown),
                     )}>Show source</button>}
+                  {viewMode !== 'console' && review.activeFile?.format === 'lines' && review.activeDraft && !review.activeDraft.editing &&
+                    <button type="button" className="auth-detail__actions-item" role="menuitem"
+                      onClick={() => closeActionsAfter(() => {
+                        review.setNavigation(null);
+                        review.clearSelection();
+                        review.activeDraft?.toggle();
+                      })}>Edit</button>}
+                  {viewMode !== 'console' && review.activeDraft?.edited &&
+                    <button type="button" className="auth-detail__actions-item" role="menuitem"
+                      disabled={review.activeDraft.busy || review.activeDraft.writeConflict}
+                      onClick={() => closeActionsAfter(() => review.activeDraft?.revert())}>Discard edits</button>}
+                  {review.available && review.drafts.detached.map(draft =>
+                    <button key={draft.path} type="button" className="auth-detail__actions-item" role="menuitem"
+                      disabled={draft.busy || draft.writeConflict}
+                      onClick={() => closeActionsAfter(draft.revert)}>Discard edits to {draft.path}</button>)}
                   {review.target?.kind !== 'revision' && review.data?.versions.map((version, index) =>
                     version.id !== fullId && version.head && <button key={version.id} type="button" className="auth-detail__actions-item"
                       role="menuitemradio" aria-checked={review.target?.id === version.id}
@@ -3121,17 +3142,19 @@ export function AuthQueueView({
     const returnBlocked = !review.available || review.busy || isSubmitting || !currentReview
       ? 'Return is unavailable' : review.drafts.hasConflicts ? 'Resolve draft conflicts'
       : returning ? null : 'No comments or edits to return';
+    const confirming = Boolean(request.merge_effective_head_sha && proof && !review.drafts.hasEdits);
+    const approvalTip = approveBlocked ?? (review.drafts.hasEdits ? 'Review edited candidate' : approveTitle(getApprovalTier(request)));
     return (
       <div className="auth-actions">
         <span className="auth-action-tip" tabIndex={returnBlocked ? 0 : undefined} {...appTip(returnBlocked ?? undefined)}>
-          <DetailPaneIconAction className="auth-return" label="Return to requester" disabled={Boolean(returnBlocked)} onClick={review.returnToRequester}>
+          <DetailPaneIconAction className="auth-return" label="Return to requester" disabled={Boolean(returnBlocked)}
+            aria-description={returning ? `${returning} unsent` : undefined} onClick={review.returnToRequester}>
             <Icon name="returnReview" />
-            {returning > 0 && <span className="tab-badge">{returning}</span>}
+            {returning > 0 && <span className="sidebar-search-filter__badge" aria-hidden="true">{returning}</span>}
           </DetailPaneIconAction>
         </span>
-        <span className="auth-action-tip" tabIndex={approveBlocked ? 0 : undefined}
-          {...appTip(approveBlocked ?? approveTitle(getApprovalTier(request)))}>
-          <button type="button" className="btn btn--success btn--sm auth-approve" disabled={Boolean(approveBlocked)}
+        <span className="auth-action-tip" tabIndex={approveBlocked ? 0 : undefined} {...appTip(approvalTip)}>
+          <button type="button" className={`btn ${confirming ? 'btn--active' : 'btn--success'} btn--sm auth-approve`} disabled={Boolean(approveBlocked)}
             onClick={() => {
               if (approveBlocked) return;
               if (review.drafts.hasEdits) void review.freeze(openCandidate);

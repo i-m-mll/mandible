@@ -8,18 +8,25 @@ export function appTip(label: string | undefined, placement: 'bottom' | 'right' 
 }
 
 export function AppHoverTips(): JSX.Element | null {
-  const [tip, setTip] = useState<{ anchor: HTMLElement; text: string } | null>(null);
+  const [tip, setTip] = useState<{ anchor: HTMLElement; text: string; placement: string | undefined } | null>(null);
   const element = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     let pending: ReturnType<typeof setTimeout> | undefined;
     let anchor: HTMLElement | null = null;
-    const hide = () => { clearTimeout(pending); anchor = null; setTip(null); };
+    const update = () => {
+      const text = anchor?.dataset.appTip;
+      setTip(anchor?.isConnected && text ? { anchor, text, placement: anchor.dataset.appTipPlacement } : null);
+    };
+    const attributes = new MutationObserver(update);
+    const hide = () => { clearTimeout(pending); attributes.disconnect(); anchor = null; setTip(null); };
     const show = (target: EventTarget | null) => {
       const next = target instanceof Element ? target.closest<HTMLElement>('[data-app-tip]') : null;
       if (next === anchor) return;
       hide(); anchor = next;
       if (next?.dataset.appTip) pending = setTimeout(() => {
-        if (next.isConnected) setTip({ anchor: next, text: next.dataset.appTip! });
+        if (!next.isConnected) return;
+        attributes.observe(next, { attributeFilter: ['data-app-tip', 'data-app-tip-placement'] });
+        update();
       }, APP_HOVER_TIP_DELAY_MS);
     };
     const enter = (event: Event) => show(event.target);
@@ -50,7 +57,7 @@ export function AppHoverTips(): JSX.Element | null {
     if (!tip || !node) return;
     const anchor = tip.anchor.getBoundingClientRect();
     const bounds = node.getBoundingClientRect();
-    const right = tip.anchor.dataset.appTipPlacement === 'right';
+    const right = tip.placement === 'right';
     let left = right ? anchor.right + 8 : anchor.left + (anchor.width - bounds.width) / 2;
     let top = right ? anchor.top + (anchor.height - bounds.height) / 2 : anchor.bottom + 8;
     if (right && left + bounds.width > window.innerWidth - 8) left = anchor.left - bounds.width - 8;

@@ -93,7 +93,7 @@ it('reviews changed Git text beside its reasons and uses the same draft in file 
     throw new Error(`Unexpected request: ${url}`);
   });
   function Review() {
-    const review = useAuthRequestReview(request.id, 'pending', request.updated_at, true, () => undefined);
+    const review = useAuthRequestReview(request.id, 'pending', request.updated_at, 1, true, () => undefined);
     const [files, setFiles] = useState(false);
     if (!review.data?.narrative) return null;
     return <>
@@ -110,7 +110,7 @@ it('reviews changed Git text beside its reasons and uses the same draft in file 
     await waitFor(() => expect(screen.getAllByRole('textbox', { name: first })).toHaveLength(2));
     const beforeEdit = screen.getAllByRole('textbox', { name: first });
     const compare = beforeEdit.find(editor => editor.textContent?.includes('Snapshot'));
-    expect(compare?.querySelector('del')?.textContent).toContain('Local base');
+    expect(compare?.textContent).toContain('Local base');
     expect(beforeEdit.some(editor => editor.textContent?.includes('refresh'))).toBe(true);
     const groups = screen.getAllByRole('region').filter(region => paths.includes(region.getAttribute('aria-label') ?? ''));
     expect(groups.map(group => group.getAttribute('aria-label'))).toEqual([second, first, first, first]);
@@ -120,15 +120,18 @@ it('reviews changed Git text beside its reasons and uses the same draft in file 
 
     fireEvent.click(screen.getByRole('button', { name: 'Keep' }));
     await waitFor(() => expect(db.prepare("SELECT value_json FROM briefing_response_events").get()).toEqual({ value_json: '{"verdict":"keep"}' }));
-    await waitFor(() => expect(within(groups[1]).getByRole('button', { name: 'Edit proposed text' })).toBeDefined());
-    fireEvent.click(within(groups[1]).getByRole('button', { name: 'Edit proposed text' }));
-    const edit = await within(groups[1]).findByRole('textbox', { name: `Review draft for ${first}` });
+    const edit = within(groups[1]).getByRole('textbox', { name: first });
     const editor = EditorView.findFromDOM(edit.closest('.cm-editor') as HTMLElement)!;
+    vi.spyOn(editor, 'coordsAtPos').mockReturnValue({ left: 64, right: 68, top: 64, bottom: 80 });
     const offset = editor.state.doc.toString().indexOf('Snapshot custody');
+    act(() => editor.dispatch({ selection: { anchor: offset, head: offset + 'Snapshot custody'.length } }));
+    const rail = await within(groups[1]).findByRole('toolbar', { name: 'Selection actions' });
+    fireEvent.click(within(rail).getByRole('button', { name: 'Edit', exact: true }));
+    expect(edit.getAttribute('contenteditable')).toBe('true');
     act(() => editor.dispatch({ changes: { from: offset, to: offset + 'Snapshot custody'.length, insert: 'Review custody' } }));
 
     fireEvent.click(screen.getByRole('button', { name: 'File order' }));
-    const fileEditor = await screen.findByRole('textbox', { name: `Review draft for ${first}` });
+    const fileEditor = await screen.findByRole('textbox', { name: `${first} after` });
     expect(fileEditor.textContent).toContain('Review custody');
     await waitFor(() => expect(db.prepare("SELECT text FROM request_review_drafts").get())
       .toEqual({ text: proposed.replace('Snapshot custody', 'Review custody') }));
