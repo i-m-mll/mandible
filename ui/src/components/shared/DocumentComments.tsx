@@ -256,15 +256,41 @@ function ThreadCard({ controller, thread }: { controller: CommentController; thr
   </article>;
 }
 
-type Geometry = { localY: number; left: number; top: number; bottom: number; paneLeft: number; paneRight: number };
+type Geometry = { localY: number; left: number; top: number; bottom: number };
+type PaneGeometry = {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  gap: number;
+  marginStart: number;
+  popupLeft: number;
+  popupRight: number;
+  shift: number | null;
+};
+
+const commentCardWidthRem = 16;
+
+function commentScrollports(element: HTMLElement) {
+  const scrollports: HTMLElement[] = [];
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    if (/^(auto|scroll|hidden|clip)$/.test(getComputedStyle(parent).overflowX)) scrollports.push(parent);
+  }
+  return scrollports;
+}
+
+function clampPosition(value: number, low: number, high: number) {
+  return Math.max(low, Math.min(high, value));
+}
 type Composer = { range: MarkdownSourceRange; send: CommentWrite };
 
 export function DocumentCommentSurface({ controller, threads, selection, documentRef, drawer = true,
-  children, navigationKey, position, onNavigate, gutterSelection }: {
+  children, navigationKey, position, onNavigate, gutterSelection, readingMeasure = 'prose' }: {
   controller: CommentController;
   threads: readonly DocumentCommentThread[];
   selection: DocumentCommentSelection | null;
   gutterSelection?: { range: MarkdownSourceRange; send: CommentWrite };
+  readingMeasure?: 'prose' | 'document';
   documentRef?: RefObject<MarkdownDocumentHandle>;
   position?: (range: MarkdownSourceRange, id?: string) => DOMRect | null;
   drawer?: boolean;
@@ -274,7 +300,11 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
 }) {
   const surface = useRef<HTMLDivElement>(null);
   const documentContent = useRef<HTMLDivElement>(null);
-  const [geometry, setGeometry] = useState<Record<string, Geometry>>({});
+  const layout = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
+  const [{ geometry, pane }, setPlacement] = useState<{ geometry: Record<string, Geometry>; pane: PaneGeometry | null }>({
+    geometry: {}, pane: null,
+  });
   const refreshGeometry = useRef<() => void>();
   const [composer, setComposer] = useState<Composer | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -327,24 +357,55 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
   useLayoutEffect(() => {
     const outer = surface.current;
     const content = documentContent.current;
-    if (!outer || !content) return;
+    const flow = layout.current;
+    if (!outer || !content || !flow) return;
+    const scrollports = commentScrollports(outer);
+    const detailBody = outer.closest('.detail-pane-shell__body, .space-document__scroller');
     let previous = '';
     let frame = 0;
     const positionOverlays = () => {
+      const { shown, liveSelection, composer, position, documentRef } = latest.current;
+      if (!shown.length && !liveSelection && !composer) {
+        if (previous) setPlacement({ geometry: {}, pane: null });
+        previous = '';
+        return;
+      }
       const next: Record<string, Geometry> = {};
       const origin = outer.getBoundingClientRect();
-      const { shown, liveSelection, composer, position, documentRef } = latest.current;
+      const textWidth = content.getBoundingClientRect().width;
+      const gap = parseFloat(getComputedStyle(flow).columnGap) || 0;
+      const cardWidth = commentCardWidthRem * parseFloat(getComputedStyle(document.documentElement).fontSize);
+      const body = detailBody?.getBoundingClientRect();
+      let left = Math.max(0, body?.left ?? 0);
+      let right = Math.min(document.documentElement.clientWidth, body?.right ?? window.innerWidth);
+      let top = Math.max(0, body?.top ?? 0);
+      for (const port of scrollports) {
+        const bounds = port.getBoundingClientRect();
+        const style = getComputedStyle(port);
+        const edge = bounds.left + port.clientLeft;
+        left = Math.max(left, edge + parseFloat(style.paddingLeft));
+        right = Math.min(right, edge + port.clientWidth - parseFloat(style.paddingRight));
+        top = Math.max(top, bounds.top + port.clientTop);
+      }
+      const bottom = Math.min(window.innerHeight, body?.bottom ?? window.innerHeight);
+      const marginStart = textWidth + gap;
+      const shift = Math.max(0, origin.left + marginStart + cardWidth - right);
+      const pane = {
+        left, right, top, bottom, gap, marginStart,
+        popupLeft: Math.max(left, origin.left), popupRight: Math.min(right, origin.right),
+        shift: shift <= Math.max(0, origin.left - left) ? shift : null,
+      };
       const measure = (key: string, range: MarkdownSourceRange, id?: string) => {
         const rect = position?.(range, id) ?? documentRef?.current?.bounds(range);
         if (!rect) return;
-        next[key] = { localY: rect.top - origin.top, left: (rect.left + rect.right) / 2, top: rect.top, bottom: rect.bottom,
-          paneLeft: origin.left, paneRight: origin.right };
+        next[key] = { localY: rect.top - origin.top, left: (rect.left + rect.right) / 2, top: rect.top, bottom: rect.bottom };
       };
       for (const thread of shown) if (thread.range) measure(thread.id, thread.range, thread.id);
       if (liveSelection) measure('selection', liveSelection.range);
       if (composer) measure('composer', composer.range);
-      const serialized = JSON.stringify(next);
-      if (serialized !== previous) { previous = serialized; setGeometry(next); }
+      const placement = { geometry: next, pane };
+      const serialized = JSON.stringify(placement);
+      if (serialized !== previous) { previous = serialized; setPlacement(placement); }
     };
     const schedule = () => {
       if (frame) return;
@@ -353,6 +414,7 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
     observer?.observe(content);
     observer?.observe(outer);
+    if (observer) for (const port of scrollports) observer.observe(port);
     window.addEventListener('scroll', schedule, true);
     window.addEventListener('resize', schedule);
     const endDrag = () => { setSelecting(false); schedule(); };
@@ -445,8 +507,25 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
   const band = geometry.selection;
   const compose = geometry.composer;
   const popup = activeThread && geometry[activeThread.id];
-  return <div className="document-comment-surface" ref={surface}>
-    <div className="document-comment-surface__layout">
+  const railVisible = Boolean(pane && band && band.bottom > pane.top && band.top < pane.bottom && liveSelection && !selecting);
+  useLayoutEffect(() => {
+    const rail = railRef.current;
+    if (!rail || !band || !pane) return;
+    const { width, height } = rail.getBoundingClientRect();
+    const above = band.top - height - pane.gap;
+    const x = contextMenu?.x ?? band.left - width / 2;
+    const y = contextMenu?.y ?? (above >= pane.top ? above : band.bottom + pane.gap);
+    rail.style.left = `${clampPosition(x, pane.left, pane.right - width)}px`;
+    rail.style.top = `${clampPosition(y, pane.top, pane.bottom - height)}px`;
+    rail.style.visibility = 'visible';
+  });
+
+  const wide = pane?.shift != null;
+  const shift = (ordered.length > 0 || compose) ? pane?.shift ?? 0 : 0;
+  return <div className="document-comment-surface" ref={surface} data-reading-measure={readingMeasure} data-comment-margin={wide}
+    style={{ '--comment-card-width': `${commentCardWidthRem}rem`, '--comment-margin-start': `${pane?.marginStart ?? 0}px`,
+      '--comment-pane-left': `${pane?.popupLeft ?? 0}px`, '--comment-pane-right': `${pane?.popupRight ?? 0}px` }}>
+    <div className="document-comment-surface__layout" ref={layout} style={{ insetInlineStart: `${-shift}px` }}>
       <div className="document-comment-surface__text" ref={documentContent}
         onPointerDown={event => {
           if (event.button === 0 && event.target instanceof Element
@@ -481,8 +560,7 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
         })}
       </div>}
       {composer && compose && <div className="sidebar-search-filter__panel sidebar-search-filter__panel--popover document-comments__popover document-comments__composer"
-        style={{ '--comment-x': `${compose.left}px`, '--comment-y': `${compose.bottom}px`, '--comment-local-y': `${compose.localY}px`,
-          '--comment-pane-left': `${compose.paneLeft}px`, '--comment-pane-right': `${compose.paneRight}px` }}>
+        style={{ '--comment-x': `${compose.left}px`, '--comment-y': `${compose.bottom}px`, '--comment-local-y': `${compose.localY}px` }}>
         <CommentInput label="Add a comment…" autoFocus onSend={composer.send} onCancel={() => setComposer(null)} />
       </div>}
     </div>
@@ -497,10 +575,8 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
         </ContextualAction>
       </div>)}
     </div>}
-    {liveSelection && !selecting && band && <div className="sidebar-search-filter__panel sidebar-search-filter__panel--popover document-comments__popover document-comments__rail"
+    {liveSelection && railVisible && <div ref={railRef} className="sidebar-search-filter__panel sidebar-search-filter__panel--popover document-comments__popover document-comments__rail"
       role={contextMenu ? 'group' : 'toolbar'} aria-label="Selection actions"
-      data-context-menu={Boolean(contextMenu)}
-      style={{ left: contextMenu?.x ?? band.left, top: contextMenu?.y ?? band.top }}
       onPointerDown={event => event.preventDefault()}
       onKeyDown={event => {
         if (event.key === 'Escape') {
@@ -510,8 +586,7 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
         }
       }}>{actions}</div>}
     {activeThread && popup && !composer && <div className="sidebar-search-filter__panel sidebar-search-filter__panel--popover document-comments__popover document-comments__thread-popover"
-      style={{ '--comment-x': `${popup.left}px`, '--comment-y': `${popup.bottom}px`,
-        '--comment-pane-left': `${popup.paneLeft}px`, '--comment-pane-right': `${popup.paneRight}px` }}>
+      style={{ '--comment-x': `${popup.left}px`, '--comment-y': `${popup.bottom}px` }}>
       <ThreadCard key={activeThread.id} controller={controller} thread={activeThread} />
     </div>}
     {drawer && <DocumentCommentsDrawer key={controller.scopeKey} controller={controller} threads={threads} onNavigate={navigation} />}
