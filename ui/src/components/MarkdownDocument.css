@@ -3,6 +3,12 @@
   overflow-wrap: anywhere;
 }
 
+.markdown-document__navigation {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.25rem;
+}
+
 .markdown-document .cm-content {
   font-variant-ligatures: none;
 }

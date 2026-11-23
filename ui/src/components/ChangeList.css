@@ -4,34 +4,6 @@
   min-width: 0;
 }
 
-.change-list-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 3fr);
-  align-items: start;
-  gap: var(--space-3);
-}
-
-.change-list-layout__files {
-  min-width: 0;
-}
-
-.auth-detail .auth-file-list-trigger {
-  display: none;
-}
-
-@container auth-review (width < 58rem) {
-  .change-list-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .change-list-layout__files {
-    display: none;
-  }
-
-  .change-list-layout--open .change-list-layout__files { display: block; }
-  .auth-detail .auth-file-list-trigger { display: inline-flex; }
-}
-
 .change-list__toolbar,
 .change-list__toolbar > [role="group"] {
   display: flex;

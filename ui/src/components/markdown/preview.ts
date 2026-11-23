@@ -33,6 +33,7 @@ export const markdownDirectives = Facet.define<MarkdownDirectives, MarkdownDirec
 
 export type MarkdownPreviewPolicy = {
   images?: 'omit';
+  softBreaks?: 'preserve';
   directivePreview?: 'on-changed-text';
   protectSpaceFrames?: boolean;
 };
@@ -388,7 +389,7 @@ function previewDecorations(state: EditorState, focused: boolean, tree = syntaxT
           return false;
         }
         case 'Paragraph':
-          joinSoftBreaks(node);
+          if (policy?.softBreaks !== 'preserve') joinSoftBreaks(node);
           return;
         case 'HardBreak':
           if (hidden(node)) hide({ from: node.from, to: state.doc.lineAt(node.from).to });

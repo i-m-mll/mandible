@@ -68,7 +68,7 @@ if (actionLayout) {
       const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href).pathname;
       if (path === '/api/client-auth/whoami') return Promise.resolve(json({ authenticated: true, session: { csrf_token: 'fixture' } }));
       if (path.endsWith('/actions')) return Promise.resolve(json({ actions: full.actions }));
-      if (path.startsWith('/api/auth/request/')) {
+      if (path === `/api/auth/request/${canonicalId}`) {
         detailCalls += 1;
         return new Promise(resolve => { if (detailCalls === 1) resolveDetail = resolve; });
       }

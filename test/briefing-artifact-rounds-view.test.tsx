@@ -352,8 +352,8 @@ describe('artifact-backed Briefing rounds', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy Briefing reference' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('briefing:65db040'));
 
-    fireEvent.click(screen.getByRole('button', { name: 'More' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Briefing actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Metadata' }));
     const metadata = screen.getByRole('dialog', { name: 'Briefing metadata' });
     expect(within(metadata).getByText('briefing-round:c76f940')).toBeTruthy();
     expect(within(metadata).queryByText(FULL_ROUND_ID)).toBeNull();
@@ -601,9 +601,8 @@ describe('artifact-backed Briefing rounds', () => {
     render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     expect(await screen.findByRole('heading', { name: 'Recurring review' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Select briefing Recurring review' })).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: 'More' }));
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Details' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Rename', exact: true }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Briefing actions' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename Briefing' }));
 
     const dialog = screen.getByRole('dialog', { name: 'Rename Briefing' });
     const input = within(dialog).getByRole('textbox', { name: 'Briefing title' }) as HTMLInputElement;

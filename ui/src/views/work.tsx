@@ -880,6 +880,12 @@ export function WorkOverviewView({
 
   const canAddProject = canPerformOperation(instance, 'POST', '/api/work/repos/add');
   const pushingAll = pushState.active || pushState.authPending;
+  const pushProgress = pushState.authPending
+    ? 'Authenticating...'
+    : pushState.active
+      ? `Pushing... (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
+      : null;
+  const showCapabilityNote = instance && (!canAddProject || !canPushAll);
 
   // Sync repos when initialRepos changes (external updates)
   useEffect(() => {
@@ -1436,13 +1442,7 @@ export function WorkOverviewView({
               {
                 icon: 'pushAll',
                 label: 'Push all',
-                tip: !canPushAll
-                  ? capabilityReason
-                  : pushState.authPending
-                    ? 'Authenticating…'
-                    : pushState.active
-                      ? `Pushing… (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
-                      : 'Push all ahead branches and notes',
+                tip: canPushAll ? pushProgress ?? 'Push all ahead branches and notes' : capabilityReason,
                 disabled: !canPushAll || pushingAll,
                 busy: pushingAll,
                 onClick: () => void pushRepos('all_ahead').catch(() => {}),
@@ -1495,6 +1495,16 @@ export function WorkOverviewView({
               ),
             } : undefined}
           />}
+          footer={pushProgress || showCapabilityNote ? (
+            <div className="work-sidebar__footer">
+              {pushProgress && <span className="work-sidebar__push-progress" role="status">{pushProgress}</span>}
+              {showCapabilityNote && (
+                <span className="work-sidebar__capability-note" role="status">
+                  Some project actions are {capabilityReason.toLowerCase()}
+                </span>
+              )}
+            </div>
+          ) : undefined}
         >
           <div role="list">
             {repoRows.length === 0 ? (

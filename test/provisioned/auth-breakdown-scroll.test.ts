@@ -126,7 +126,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
               overflow:row.scrollWidth>row.clientWidth,titleWidth:title.clientWidth,titleScroll:title.scrollWidth,
               fullTitle:title.parentElement.title,text:control.textContent};}),
             sidebar:sidebar?{title:rect(sidebar.querySelector('.auth-sidebar-item__title')),dot:rect(sidebar.querySelector('.auth-sidebar-item__dot')),
-              meta:[...meta.children].map(rect),project:meta.firstElementChild.title,
+              meta:[...meta.children].map(rect),project:meta.firstElementChild.dataset.appTip,
               projectWidth:meta.firstElementChild.clientWidth,projectScroll:meta.firstElementChild.scrollWidth,
               overflow:sidebar.scrollWidth>sidebar.clientWidth,selected:sidebar.getAttribute('aria-current')}:null,
             detailBranches:document.querySelector('.auth-detail-pane').textContent.includes('feature/navigation')};})()`);
@@ -168,7 +168,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
         const rect = selector => { const r=document.querySelector(selector).getBoundingClientRect();return {top:r.top,height:r.height,left:r.left,right:r.right}; };
         const item=document.querySelector('.auth-change-breakdown__items');
         const file=document.querySelector('.auth-change-file');
-        return {header:rect('.auth-change-breakdown>.collapsible-panel__header'),tabs:rect('.auth-change-breakdown__tabs'),columns:rect('.auth-change-columns-header'),
+        return {totals:rect('.auth-change-breakdown__totals'),tabs:rect('.auth-change-breakdown__tabs'),columns:rect('.auth-change-columns-header'),
           breadcrumbs:document.querySelector('.auth-change-directory__breadcrumbs')?rect('.auth-change-directory__breadcrumbs'):null,
           outer:document.querySelector('#outer-review').scrollTop,item:item?.scrollTop??0,max:item?item.scrollHeight-item.clientHeight:0,
           file:file?{height:file.getBoundingClientRect().height,pathHeight:file.querySelector('code').getBoundingClientRect().height,
@@ -181,7 +181,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       const expanded = await measure();
       expect(expanded.tabs, `tabs stable after expansion at${width}`).toEqual(collapsed.tabs);
       expect(expanded.columns).toEqual(collapsed.columns);
-      expect(expanded.header).toEqual(collapsed.header);
+      expect(expanded.totals).toEqual(collapsed.totals);
       const itemViewports = () => session!.evaluate("[...document.querySelectorAll('.auth-change-breakdown__items')].map(node=>({height:node.clientHeight,content:node.scrollHeight,outer:document.querySelector('#outer-review').clientHeight}))");
       const firstViewport = (await itemViewports())[0];
       expect(firstViewport.height).toBeGreaterThan(0);
@@ -210,7 +210,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       expect(await session.evaluate("document.querySelectorAll('.auth-change-breakdown__items')[1].scrollTop")).toBeGreaterThan(0);
       expect((await measure()).item).toBe(middle.item);
       expect(await groupHeadings()).toEqual(headingsBefore);
-      expect(middle.tabs).toEqual(expanded.tabs); expect(middle.columns).toEqual(expanded.columns); expect(middle.header).toEqual(expanded.header);
+      expect(middle.tabs).toEqual(expanded.tabs); expect(middle.columns).toEqual(expanded.columns); expect(middle.totals).toEqual(expanded.totals);
       await session.evaluate("document.querySelector('.auth-change-breakdown__items').scrollTop=0;true"); await frames();
       await wheel('.auth-change-breakdown__items', 180);
       const top = await measure(); expect(top.item).toBe(0); expect(top.outer).toBe(expanded.outer);
@@ -231,7 +231,7 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       const directoryAfter = await measure();
       expect(directoryAfter.item).toBeGreaterThan(0);
       expect(directoryAfter.tabs).toEqual(directoryBefore.tabs); expect(directoryAfter.columns).toEqual(directoryBefore.columns);
-      expect(directoryAfter.breadcrumbs).toEqual(directoryBefore.breadcrumbs); expect(directoryAfter.header).toEqual(directoryBefore.header);
+      expect(directoryAfter.breadcrumbs).toEqual(directoryBefore.breadcrumbs); expect(directoryAfter.totals).toEqual(directoryBefore.totals);
       expect(directoryAfter.file.pathHeight).toBeLessThanOrEqual(directoryAfter.file.lineHeight + 1);
       expect(directoryAfter.file.title).toContain(directoryAfter.file.fullPath);
       directoryAfter.file.metricRight.forEach((right: number, index: number) => expect(right).toBeCloseTo(directoryAfter.file.headingRight[index], 0));
@@ -246,16 +246,15 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
     }
     for (const [width, height] of [[877, 1128], [360, 720]]) {
       await session.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
-      await session.navigate(`${fixtureOrigin}/` + `?width=${width}`);
+      await session.navigate(`${fixtureOrigin}/` + `?width=${width}&view=breakdown`);
       const waitFor = (expression: string) => session!.evaluate(`new Promise((resolve,reject)=>{
         const timer=setTimeout(()=>{observer.disconnect();reject(new Error('Missing browser state: '+${JSON.stringify(expression)}))},2500);
         const ready=()=>{if(${expression}){clearTimeout(timer);observer.disconnect();resolve(true)}};
         const observer=new MutationObserver(ready);observer.observe(document,{subtree:true,childList:true,attributes:true});ready();})`);
-      await waitFor("document.querySelector('#auth-detail-panel-abstract .auth-change-group__row')"); await frames();
+      await waitFor("document.querySelector('#auth-detail-panel-breakdown .auth-change-group__row')"); await frames();
       await session.evaluate("document.querySelectorAll('.auth-change-group__row')[0].click();true"); await frames();
       await session.evaluate("document.querySelectorAll('.auth-change-group__row')[1].click();true"); await frames();
-      await session.evaluate(`document.querySelector('[aria-controls=auth-action-detail-navigation-action]').click();
-        document.querySelectorAll('.auth-change-breakdown__items')[0].scrollTop=184;
+      await session.evaluate(`document.querySelectorAll('.auth-change-breakdown__items')[0].scrollTop=184;
         document.querySelectorAll('.auth-change-breakdown__items')[1].scrollTop=72;
         document.querySelector('.auth-detail__body').scrollTop=220;true`); await frames();
       const origin = await session.evaluate(`(() => {
@@ -263,14 +262,14 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
         link.focus({preventScroll:true});
         return {href:link.getAttribute('href'),outer:document.querySelector('.auth-detail__body').scrollTop,
           items:[...document.querySelectorAll('.auth-change-breakdown__items')].map(node=>node.scrollTop),
-          disclosures:[...document.querySelectorAll('#auth-detail-panel-abstract button[aria-expanded]')].map(node=>[node.textContent,node.getAttribute('aria-expanded')])};})()`);
+          disclosures:[...document.querySelectorAll('#auth-detail-panel-breakdown button[aria-expanded]')].map(node=>[node.textContent,node.getAttribute('aria-expanded')])};})()`);
       await session.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
       await session.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
       await waitFor("document.querySelector('#auth-detail-panel-diff .change-list__file-toggle')"); await frames();
       const destination = await session.evaluate('window.location.href');
       const alignment = () => session!.evaluate(`(() => {
         const params=new URLSearchParams(location.search);const path=params.get('diff_new')??params.get('diff_old');
-        const title=[...document.querySelectorAll('.change-list__path')].find(node=>node.title===path);
+        const title=[...document.querySelectorAll('.change-list__path')].find(node=>node.dataset.appTip===path);
         const heading=title.closest('button'),body=document.querySelector('.auth-detail__body'),header=document.querySelector('.detail-pane-shell__header');
         return {visible:heading.getBoundingClientRect().top>=body.getBoundingClientRect().top-1
             &&heading.getBoundingClientRect().bottom<=body.getBoundingClientRect().bottom+1,expanded:heading.getAttribute('aria-expanded'),
@@ -282,10 +281,10 @@ it('keeps controls fixed, files on one line and native wheel input inside the it
       expect(aligned.outer).toBeGreaterThan(0); expect(aligned.sidebar).toBe('hidden'); expect(aligned.agent).toBe('fixture-agent');
       expect(aligned.state).toBe('preserved');
       await session.evaluate('history.back();true');
-      await waitFor("document.querySelector('#auth-detail-panel-abstract .auth-change-breakdown__items')"); await frames();
+      await waitFor("document.querySelector('#auth-detail-panel-breakdown .auth-change-breakdown__items')"); await frames();
       const restored = await session.evaluate(`({outer:document.querySelector('.auth-detail__body').scrollTop,
         items:[...document.querySelectorAll('.auth-change-breakdown__items')].map(node=>node.scrollTop),
-        disclosures:[...document.querySelectorAll('#auth-detail-panel-abstract button[aria-expanded]')].map(node=>[node.textContent,node.getAttribute('aria-expanded')])})`);
+        disclosures:[...document.querySelectorAll('#auth-detail-panel-breakdown button[aria-expanded]')].map(node=>[node.textContent,node.getAttribute('aria-expanded')])})`);
       expect(restored.outer).toBe(origin.outer); expect(restored.items).toEqual(origin.items); expect(restored.disclosures).toEqual(origin.disclosures);
       await session.evaluate('history.forward();true');
       await waitFor("document.querySelector('#auth-detail-panel-diff .change-list__file-toggle')"); await frames();

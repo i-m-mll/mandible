@@ -5,7 +5,6 @@ import type { DiffFileIdentity } from '../components/diff-file-identity';
 import { useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import type { AuthChangeFile, AuthChangeFileRole, AuthChangeKind, AuthChangeReport } from '../../../src/contracts';
-import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DisclosureChevronIcon } from '../components/shared/DisclosureChevronIcon';
 import { usePersistedScrollPosition } from '../hooks/usePersistedScrollPosition';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -395,22 +394,16 @@ export function AuthChangeBreakdown({
 
   return (
     <FileNavigationContext.Provider value={{ requestId, activate: onFileActivate ? file => onFileActivate(file, state) : undefined }}>
-    <CollapsiblePanel
-      title="Change breakdown"
-      availability={report === undefined ? 'unknown' : report === null ? 'unavailable' : 'available'}
-      expanded={state.expanded}
-      onExpandedChange={(expanded) => setState({ ...state, expanded })}
-      className="auth-change-breakdown"
-      bodyClassName="auth-change-breakdown__body"
-      actions={report ? (
+    <div className="auth-change-breakdown">
+      {report === null && <p className="auth-change-breakdown__empty">Unavailable</p>}
+      {report && (
         <div className="auth-change-breakdown__totals" aria-label="Change totals">
           <span><strong>{formatCount(report.totals.files)}</strong> files</span>
           <span><strong className="auth-change-breakdown__added">+{formatCount(report.totals.additions)}</strong> added</span>
           <span><strong className="auth-change-breakdown__deleted">−{formatCount(report.totals.deletions)}</strong> deleted</span>
           {report.totals.binary_files > 0 && <span><strong>{formatCount(report.totals.binary_files)}</strong> binary</span>}
         </div>
-      ) : null}
-    >
+      )}
       {report != null && (
         <>
           <div className="auth-change-breakdown__tabs" role="tablist" aria-label="Change breakdown view">
@@ -451,7 +444,7 @@ export function AuthChangeBreakdown({
           </div>
         </>
       )}
-    </CollapsiblePanel>
+    </div>
     </FileNavigationContext.Provider>
   );
 }

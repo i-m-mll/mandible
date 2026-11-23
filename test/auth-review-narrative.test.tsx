@@ -112,7 +112,8 @@ it('reviews changed Git text beside its reasons and uses the same draft in file 
     expect(compare?.textContent).toContain('Local base');
     expect(beforeEdit.some(editor => editor.textContent?.includes('refresh'))).toBe(true);
     const groups = screen.getAllByRole('region', { name: /^(second|first)\.md$/ });
-    expect(groups.map(group => within(group).getByRole('button', { name: /^(second|first)\.md$/ }).textContent)).toEqual([second, first, first]);
+    expect(groups.map(group => within(group).getByRole('link', { name: /^(second|first)\.md$/ }).textContent)).toEqual([second, first, first, first]);
+    expect(within(groups[2]).queryByRole('textbox')).toBeNull();
     expect(screen.queryByRole('link', { name: '../outside.md' })).toBeNull();
     expect([...loads].sort()).toEqual([0, 1]);
 
@@ -120,11 +121,8 @@ it('reviews changed Git text beside its reasons and uses the same draft in file 
     await waitFor(() => expect(db.prepare("SELECT value_json FROM briefing_response_events").get()).toEqual({ value_json: '{"verdict":"keep"}' }));
     const edit = within(groups[1]).getByRole('textbox', { name: first });
     const editor = EditorView.findFromDOM(edit.closest('.cm-editor') as HTMLElement)!;
-    vi.spyOn(editor, 'coordsAtPos').mockReturnValue({ left: 64, right: 68, top: 64, bottom: 80 });
     const offset = editor.state.doc.toString().indexOf('Snapshot custody');
-    act(() => editor.dispatch({ selection: { anchor: offset, head: offset + 'Snapshot custody'.length } }));
-    const rail = await within(groups[1]).findByRole('toolbar', { name: 'Selection actions' });
-    fireEvent.click(within(rail).getByRole('button', { name: 'Edit', exact: true }));
+    fireEvent.click(within(groups[1]).getByRole('button', { name: 'Edit proposed text' }));
     expect(edit.getAttribute('contenteditable')).toBe('true');
     act(() => editor.dispatch({ changes: { from: offset, to: offset + 'Snapshot custody'.length, insert: 'Review custody' } }));
 

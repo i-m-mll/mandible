@@ -154,6 +154,30 @@
   opacity: 0.72;
 }
 
+.work-sidebar__footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  border-top: 1px solid var(--neutral-alpha-06);
+}
+
+.work-sidebar__push-progress,
+.work-sidebar__capability-note {
+  color: var(--text-muted);
+  font-size: calc(11px + var(--chrome-text-increment, 0px));
+}
+
+.work-sidebar__push-progress {
+  grid-column: 2;
+  align-self: center;
+  text-align: center;
+}
+
+.work-sidebar__capability-note {
+  grid-column: 1 / -1;
+}
+
 .work-detail {
   position: relative;
   min-width: 0;

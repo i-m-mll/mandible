@@ -189,26 +189,6 @@
   pointer-events: none;
 }
 
-.auth-approve {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.auth-return:has(.sidebar-search-filter__badge) {
-  inline-size: auto;
-  gap: var(--space-1);
-  padding-inline: var(--space-1);
-}
-
-.auth-return > .sidebar-search-filter__badge {
-  position: static;
-}
-
-.auth-detail__revision-header .detail-pane-header__topline {
-  min-block-size: var(--detail-pane-icon-action-size);
-}
-
 .auth-detail__subtitle {
   display: flex;
   flex-direction: column;
@@ -218,7 +198,16 @@
 }
 
 .auth-detail__subtitle-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  column-gap: 12px;
   color: var(--text-primary);
+}
+
+.auth-detail__branch-meta {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
 }
 
 .auth-detail__primary-metadata {
@@ -296,7 +285,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  width: 190px;
+  width: max-content;
+  min-width: min(190px, calc(100vw - 16px));
   padding: 4px;
   border-radius: 8px;
   border: 1px solid var(--neutral-alpha-10);
@@ -317,7 +307,7 @@
   font-size: 13px;
   line-height: 1.35;
   text-align: left;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .auth-detail__actions-item:hover {
@@ -353,11 +343,6 @@
 .auth-detail__action-strip .auth-actions {
   justify-content: flex-end;
   flex-wrap: wrap;
-}
-
-.auth-detail__header-actions .auth-actions {
-  align-items: center;
-  gap: var(--space-1);
 }
 
 .auth-detail-metadata__content {
@@ -428,27 +413,34 @@
 }
 
 .auth-prerequisites {
-  flex-shrink: 0;
-  padding: 12px 16px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.auth-prerequisites h3 {
-  margin: 0 0 8px;
-  font-size: inherit;
-}
-
-.auth-prerequisites ul {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
-  gap: 8px 24px;
-  margin: 0;
-  padding-left: 20px;
+  align-items: center;
+  gap: 4px;
 }
 
-.auth-detail__body--console > .auth-prerequisites {
-  margin: 14px 20px;
+.auth-prerequisites__icon {
+  display: inline-flex;
+  color: var(--text-muted);
+  margin-inline-end: 2px;
+}
+
+.auth-prerequisites__pill > .auth-sidebar-item__dot {
+  margin: 0;
+}
+
+.auth-prerequisites > .issue-pill {
+  line-height: normal;
+}
+
+.auth-prerequisites__overflow {
+  border: 0;
+}
+
+.auth-prerequisites__popover {
+  inline-size: min(20rem, calc(100vw - 16px));
+  gap: 0;
+  padding: 4px;
 }
 
 .auth-detail__body--console > :is(.auth-failure, .auth-execution-callout) {
@@ -888,30 +880,12 @@
 
 .auth-change-breakdown {
   --auth-change-file-row-size: 32px;
-}
-
-.auth-change-breakdown > .collapsible-panel__header {
-  flex-wrap: wrap;
-}
-
-.auth-change-breakdown > .collapsible-panel__header > :first-child {
-  flex: none;
-}
-
-.auth-change-breakdown .collapsible-panel__actions {
-  min-width: 0;
-  max-width: 100%;
-}
-
-.auth-change-breakdown > .collapsible-panel__overflow > .auth-change-breakdown__body {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-height: none;
-  overflow: visible;
 }
 
-.auth-change-breakdown__body > *,
+.auth-change-breakdown > *,
 .auth-change-breakdown__view > * {
   flex: none;
 }
@@ -1986,7 +1960,6 @@
 
 /* Auth detail panel */
 .auth-detail {
-  container: auth-review / inline-size;
   position: relative;
   z-index: 3;
   display: flex;
@@ -2083,29 +2056,35 @@
   word-break: break-word;
 }
 
-.auth-review__side {
+.auth-review__side,
+.auth-review__versions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
 }
 
-.auth-review__dialog {
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-3);
+.auth-review__versions .choice-dropdown__trigger {
+  min-height: 30px;
+  padding: 0 18px 0 10px;
+  border: 1px solid var(--neutral-alpha-10);
+  border-radius: 8px;
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+  font: calc(13px + var(--chrome-text-increment, 0px))/1.2 var(--font-sans);
 }
 
-.auth-review__dialog button {
-  justify-self: end;
+.auth-review__dialog {
+  width: min(20rem, calc(100vw - 16px));
+  gap: var(--space-2);
+}
+
+.auth-review__dialog > button {
+  align-self: flex-end;
 }
 
 .auth-review__detached-draft {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.auth-review__reasons {
-  font-size: var(--text-md);
 }
 
 .auth-review__narrative {
@@ -2114,10 +2093,9 @@
   min-width: 0;
 }
 
-.auth-review__narrative .document-comment-surface__layout:not(:has(> :is(.document-comments__margin, .document-comments__composer))) > .document-comment-surface__text {
-  max-inline-size: none;
-}
-
-.auth-review__narrative-embed:not(:empty) {
+.auth-review__narrative-change {
   margin-block: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
