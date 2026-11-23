@@ -347,6 +347,7 @@ export function BriefingDocumentPanel({
         } : null}>
         <MarkdownDocument value={workingText} documentRef={documentRef}
           comparison={showChanges ? currentComparison?.text : undefined}
+          comparisonLayout="full-document"
           operatorComparison={workingText === source ? undefined : source} operatorAnnotations={operatorAnnotations}
           showSource={showSource} readOnly={!editing} ariaLabel="Pinned briefing document"
           directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} decorations={decorations}
