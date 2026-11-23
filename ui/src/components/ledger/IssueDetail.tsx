@@ -876,14 +876,14 @@ function IssueActionsMenu({
       {open && (
         <div
           ref={menuRef}
-          className="ledger-issue-actions-menu__dropdown app-anchored-menu"
+          className="detail-pane-menu app-anchored-menu"
           role="menu"
           popover="manual"
           style={menuStyle}
         >
           {liveSession && (
             <a
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               href={viewHref('console', { session: liveSession.id })}
               onClick={onClose}
@@ -894,7 +894,7 @@ function IssueActionsMenu({
           {!liveSession && onStartAgent && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               disabled={busy}
               onClick={() => closeAfter(() => void onStartAgent())}
@@ -905,7 +905,7 @@ function IssueActionsMenu({
           {onLaunchAgent && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               disabled={busy}
               onClick={() => closeAfter(onLaunchAgent)}
@@ -916,7 +916,7 @@ function IssueActionsMenu({
           {onAddComment && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               disabled={busy}
               onClick={() => closeAfter(onAddComment)}
@@ -927,7 +927,7 @@ function IssueActionsMenu({
           {onShowWorkNotes && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               onClick={() => closeAfter(onShowWorkNotes)}
             >
@@ -939,7 +939,7 @@ function IssueActionsMenu({
           {onAddToSpace && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               disabled={busy}
               onClick={() => closeAfter(onAddToSpace)}
@@ -950,7 +950,7 @@ function IssueActionsMenu({
           {onShowPins && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               onClick={() => closeAfter(onShowPins)}
             >
@@ -960,7 +960,7 @@ function IssueActionsMenu({
           {onHidePins && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               onClick={() => closeAfter(onHidePins)}
             >
@@ -970,7 +970,7 @@ function IssueActionsMenu({
           {onShowMetadata && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               onClick={() => closeAfter(onShowMetadata)}
             >
@@ -980,7 +980,7 @@ function IssueActionsMenu({
           {onShowChildren && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               disabled={busy}
               onClick={() => closeAfter(() => onShowChildren(detail))}
@@ -991,7 +991,7 @@ function IssueActionsMenu({
           {onShowAuthEvidence && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               disabled={busy}
               onClick={() => closeAfter(onShowAuthEvidence)}
@@ -1002,7 +1002,7 @@ function IssueActionsMenu({
           {onSetStatus && detail.status === 'open' && !closeResolutionOpen && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item ledger-issue-actions-menu__item--danger"
+              className="detail-pane-menu__item detail-pane-menu__item--danger"
               role="menuitem"
               disabled={busy}
               onClick={() => setCloseResolutionOpen(true)}
@@ -1017,7 +1017,7 @@ function IssueActionsMenu({
                 <button
                   key={resolution}
                   type="button"
-                  className="ledger-issue-actions-menu__item ledger-issue-actions-menu__item--danger"
+                  className="detail-pane-menu__item detail-pane-menu__item--danger"
                   role="menuitem"
                   disabled={busy}
                   onClick={() => closeAfter(() => void onSetStatus('closed', resolution))}
@@ -1027,7 +1027,7 @@ function IssueActionsMenu({
               ))}
               <button
                 type="button"
-                className="ledger-issue-actions-menu__item"
+                className="detail-pane-menu__item"
                 role="menuitem"
                 disabled={busy}
                 onClick={() => setCloseResolutionOpen(false)}
@@ -1039,7 +1039,7 @@ function IssueActionsMenu({
           {onSetStatus && detail.status === 'closed' && (
             <button
               type="button"
-              className="ledger-issue-actions-menu__item"
+              className="detail-pane-menu__item"
               role="menuitem"
               disabled={busy}
               onClick={() => closeAfter(() => void onSetStatus('open'))}
