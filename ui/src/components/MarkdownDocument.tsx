@@ -133,12 +133,12 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
   }).current;
   const readOnly = props.readOnly || (props.syntax === 'markdown' && isLargeMarkdownDocument(props.value));
 
-  const comparison = (props: MarkdownDocumentProps) => comparisonInput.of({
+  const comparison = (props: MarkdownDocumentProps & { syntax: 'markdown' | 'plain' }) => comparisonInput.of({
     agent: props.comparison,
     operator: props.operatorComparison,
     operatorAnnotations: props.operatorAnnotations,
     collapse: props.readOnly && props.comparisonLayout !== 'full-document' && !props.showSource,
-    source: Boolean(props.showSource),
+    source: props.syntax === 'plain' || Boolean(props.showSource),
     policy: props.previewPolicy,
   });
   const preview = (props: MarkdownDocumentProps & { syntax: 'markdown' | 'plain' }) => props.syntax === 'markdown' && !props.showSource ? markdownPreview : [];
