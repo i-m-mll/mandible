@@ -649,9 +649,9 @@ for (const coverage of ['absent', 'empty', 'partial', 'wrong-reference', 'duplic
     expect(approve.disabled).toBe(true);
     fireEvent.click(approve);
     expect(onApprove).not.toHaveBeenCalled();
-    const prerequisites = within(screen.getByRole('region', { name: 'Request prerequisites' }));
-    expect(prerequisites.getAllByRole('listitem')).toHaveLength(2);
-    expect(prerequisites.getByRole('link', { name: 'auth:validati' }).getAttribute('href')).toContain('validation');
+    const prerequisites = within(screen.getByRole('group', { name: 'Request prerequisites' }));
+    expect(prerequisites.getAllByRole('link')).toHaveLength(2);
+    expect(prerequisites.getByRole('link', { name: 'validation' }).getAttribute('href')).toContain('validation');
   });
 }
 
@@ -672,19 +672,27 @@ for (const history of [false, true]) {
       onNavigateRequest, onSelectAuth };
     rememberEntityRoute('auth', 'req-1', { id: 'req-1' });
     const view = render(<AuthQueueView {...props} queue={history ? [] : [request]} historyQueue={history ? [request] : []} />);
-    const prerequisites = () => within(screen.getByRole('region', { name: 'Request prerequisites' }));
-    const rows = prerequisites().getAllByRole('listitem');
+    const prerequisites = () => within(screen.getByRole('group', { name: 'Request prerequisites' }));
+    expect(prerequisites().getAllByRole('link')).toHaveLength(2);
+    expect(prerequisites().getByRole('link', { name: 'spatial' }).getAttribute('aria-description')).toBe('spatial · Complete');
+    const overflow = prerequisites().getByRole('button', { name: 'Show all 5 prerequisites' });
+    expect(overflow.textContent).toBe('+3');
+    fireEvent.click(overflow);
+    const popover = () => within(screen.getByRole('dialog', { name: 'Request prerequisites' }));
+    const rows = popover().getAllByRole('button');
     expect(rows).toHaveLength(5);
-    for (const [index, state] of states.entries()) expect(within(rows[index]).getByText(state)).toBeTruthy();
+    for (const [index, state] of ['Complete', 'Pending', 'Failed', 'Missing', 'Ambiguous'].entries()) {
+      expect(within(rows[index]).getByText(state)).toBeTruthy();
+    }
     onSelectAuth.mockClear();
     const updated = { ...request, dependencies: dependencies.map(dependency => ({ ...dependency,
       state: 'ready' as const, status: 'completed' as const, outcome: 'succeeded' as const,
       request_id: dependency.requested_id, merge_finalized_at: 20 })) };
     view.rerender(<AuthQueueView {...props} queue={history ? [] : [updated]} historyQueue={history ? [updated] : []} />);
     expect(onSelectAuth).not.toHaveBeenCalled();
-    expect(prerequisites().getAllByText('ready')).toHaveLength(5);
+    expect(popover().getAllByText('Complete')).toHaveLength(5);
     if (!history) expect((screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(prerequisites().getByRole('link', { name: 'auth:source' }));
+    fireEvent.click(popover().getByRole('button', { name: /^source/ }));
     expect(onSelectAuth).toHaveBeenCalledWith('source');
     expect(onNavigateRequest).toHaveBeenCalledWith('source');
   });

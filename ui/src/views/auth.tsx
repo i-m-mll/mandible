@@ -24,10 +24,11 @@ import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DisclosureChevronIcon } from '../components/shared/DisclosureChevronIcon';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { IconTabList, type IconTab } from '../components/shared/IconTabList';
+import { RequestListRow } from '../components/shared/RequestListRow';
 import type { MarkdownPreviewPolicy } from '../components/markdown/preview';
 
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
-import { entityHref, viewHref } from '../routing';
+import { entityHref, shortRouteId, viewHref } from '../routing';
 import { APPROVAL_SETTINGS_SECTION, approvalRefusal, approveTitle } from './auth-approval';
 import { formatRelativeTime } from '../lib/format';
 import { createCoalescedRefresh } from '../lib/coalesced-refresh';
@@ -218,29 +219,62 @@ function publicationBlockerTitle(blocker: AuthPublicationBlocker): string {
   }
 }
 
-function AuthPrerequisites({ request, onSelect }: { request: AuthRequest; onSelect: (id: string) => void }): JSX.Element | null {
+type Prerequisite = ReturnType<typeof requestPrerequisites>[number];
+type FindRequest = (id: string) => AuthRequest | undefined;
+
+function AuthPrerequisiteItem({ prerequisite, findRequest, onSelect, row }: {
+  prerequisite: Prerequisite;
+  findRequest: FindRequest;
+  onSelect: (id: string) => void;
+  row?: boolean;
+}) {
+  const { id, dependency, state, ready } = prerequisite;
+  const reference = dependency?.request_id ?? id;
+  const known = findRequest(reference);
+  const resolved = useEntityRoute('auth', known ? null : dependency?.request_id);
+  const entity = resolved.status === 'resolved' ? resolved.entity : undefined;
+  const shortId = known?.short_id ?? entity?.short_id;
+  const short = typeof shortId === 'string' ? shortId : shortRouteId(reference);
+  const title = known ? getAuthTitle(known) : typeof entity?.title === 'string' && entity.title ? entity.title : short;
+  const stateLabel = ready ? 'Complete' : state[0].toUpperCase() + state.slice(1);
+  const dotStatus = ready ? 'completed' : state === 'pending' || state === 'unfinalized' ? 'pending' : 'failed';
+  const dot = <span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} aria-hidden="true" />;
+  const tip = `${title} · ${stateLabel}`;
+  if (row) return <RequestListRow requestId={reference} selection="current" selected={false} leading={dot} title={title}
+    metadata={<><code>{short}</code><span>{stateLabel}</span></>} onSelect={() => onSelect(reference)} />;
+  return <a className="issue-pill auth-prerequisites__pill" href={entityHref('auth', short)}
+    aria-description={tip} {...appTip(tip)} onClick={event => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      onSelect(reference);
+    }}>{dot}<span className="issue-pill__id">{short}</span></a>;
+}
+
+function AuthPrerequisites({ request, findRequest, onSelect }: { request: AuthRequest; findRequest: FindRequest; onSelect: (id: string) => void }) {
   const prerequisites = requestPrerequisites(request);
-  if (prerequisites.length === 0) return null;
-  return (
-    <section className="auth-prerequisites" aria-label="Request prerequisites">
-      <h3>Prerequisites</h3>
-      <ul>
-        {prerequisites.map(({ id, dependency, state }) => {
-          const reference = dependency?.request_id ?? id;
-          return <li key={id}>
-            <a href={entityHref('auth', reference)} onClick={event => {
-              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-              event.preventDefault();
-              onSelect(reference);
-            }}>auth:{reference.slice(0, 8)}</a>
-            {' · '}<span>{state}</span>
-            {dependency?.status && <span>{' · '}{dependency.status}</span>}
-            {dependency?.outcome && <span>{' · '}{dependency.outcome}</span>}
-          </li>;
-        })}
-      </ul>
-    </section>
-  );
+  const hasOverflow = prerequisites.length > 3;
+  const [showAll, setShowAll] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const open = hasOverflow && showAll;
+  const menuStyle = useAnchoredMenu({ open, anchorRef: anchor, menuRef: menu, placement: 'bottom-start', onDismiss: () => setShowAll(false) });
+  useLayoutEffect(() => {
+    if (open) menu.current?.querySelector('button')?.focus({ preventScroll: true });
+  }, [open]);
+  if (!prerequisites.length) return null;
+  return <div className="auth-prerequisites" role="group" aria-label="Request prerequisites">
+    <span className="auth-prerequisites__icon" {...appTip('Prerequisites')}><Icon name="copyLink" size={14} /></span>
+    {(hasOverflow ? prerequisites.slice(0, 2) : prerequisites).map(prerequisite =>
+      <AuthPrerequisiteItem key={prerequisite.id} prerequisite={prerequisite} findRequest={findRequest} onSelect={onSelect} />)}
+    {hasOverflow && <button type="button" ref={anchor} className="issue-pill auth-prerequisites__overflow"
+      aria-label={`Show all ${prerequisites.length} prerequisites`} aria-haspopup="dialog" aria-expanded={open}
+      onClick={() => setShowAll(!open)}>+{prerequisites.length - 2}</button>}
+    {open && <div ref={menu} role="dialog" aria-label="Request prerequisites" popover="manual"
+      className="sidebar-search-filter__panel sidebar-search-filter__panel--popover app-anchored-menu auth-prerequisites__popover" style={menuStyle}>
+      {prerequisites.map(prerequisite => <AuthPrerequisiteItem key={prerequisite.id} prerequisite={prerequisite} findRequest={findRequest}
+        onSelect={reference => { setShowAll(false); onSelect(reference); }} row />)}
+    </div>}
+  </div>;
 }
 
 export type AuthQueueViewProps = {
@@ -907,9 +941,11 @@ function AuthRequestDetail({
   autoReturnToAbstractOnSuccess = true,
   navigation,
   restoredBreakdown,
+  findPrerequisiteRequest,
   onSelectRequest,
 }: {
   request: AuthRequest;
+  findPrerequisiteRequest: FindRequest;
   onSelectRequest: (id: string) => void;
   history?: boolean;
   branchMerged?: boolean;
@@ -1331,16 +1367,19 @@ function AuthRequestDetail({
                     createdBy={requesterDisplayName}
                   />
                 </span>
-                <span className="auth-detail__subtitle-line">
-                  {typeMeta.label.toLowerCase()}
-                  {(headBranch && baseBranch) ? (
-                    <>
-                      {' · '}<code>{headBranch}</code>{' \u2192 '}<code>{baseBranch}</code>
-                    </>
-                  ) : commitBranch ? (
-                    <>{' · '}<code>{commitBranch}</code></>
-                  ) : null}
-                </span>
+                <div className="auth-detail__subtitle-line">
+                  <span className="auth-detail__branch-meta">
+                    {typeMeta.label.toLowerCase()}
+                    {(headBranch && baseBranch) ? (
+                      <>
+                        {' · '}<code>{headBranch}</code>{' \u2192 '}<code>{baseBranch}</code>
+                      </>
+                    ) : commitBranch ? (
+                      <>{' · '}<code>{commitBranch}</code></>
+                    ) : null}
+                  </span>
+                  <AuthPrerequisites request={request} findRequest={findPrerequisiteRequest} onSelect={onSelectRequest} />
+                </div>
               </div>
               {(approver || signatureClaim.state !== 'none') && (
                 <div className="auth-detail__attribution" aria-label="Approval attribution">
@@ -1484,7 +1523,6 @@ function AuthRequestDetail({
         />
       )}
     >
-        <AuthPrerequisites request={request} onSelect={onSelectRequest} />
         {showFailure && (
           <div className={`auth-failure${status === 'expired' ? ' auth-failure--expired' : ''}`}>
             <div className="auth-failure__header">
@@ -3502,6 +3540,8 @@ export function AuthQueueView({
               restoredBreakdown={restoredBreakdown}
               request={request}
               onSelectRequest={handleSelect}
+              findPrerequisiteRequest={ref => queue.find(item => getAuthId(item) === ref)
+                ?? historyQueue?.find(item => getAuthId(item) === ref)}
               history={isHistory}
               branchMerged={isHistory && !isFailed && isBranchMerged(request, branchesByRepo)}
               executionOutput={outputs[id]}
