@@ -170,15 +170,11 @@ describe('Briefing sidebar row actions', () => {
     fireEvent.click(groupSelect);
     expect(disclosure.getAttribute('aria-expanded')).toBe('false');
     expect(screen.getByRole('heading', { name: 'Release review' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Proposed updates' })).toBeTruthy();
-    const currentLayout = screen.getByRole('button', { name: 'Show Base layout Accepted layout' });
-    const proposedUpdates = screen.getByRole('heading', { name: 'Proposed updates' }).closest('section') as HTMLElement;
-    expect(proposedUpdates.contains(currentLayout)).toBe(false);
-    expect(currentLayout.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Open First briefing' })).toBeTruthy();
 
-    const secondProposal = screen.getByRole('button', { name: 'Preview proposed update Second proposal' });
+    const secondProposal = within(screen.getByRole('list', { name: 'Pending changes' }))
+      .getByRole('button', { name: /Second proposal/ });
     fireEvent.click(secondProposal);
-    expect(currentLayout.getAttribute('aria-pressed')).toBe('false');
     expect(secondProposal.getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(disclosure);
     expect(within(group).queryByRole('button', { name: 'Select briefing First briefing' })).toBeNull();
@@ -187,8 +183,8 @@ describe('Briefing sidebar row actions', () => {
     expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}').selectedGroupUpdateIds)
       .toEqual({ [groupedUpdates.id]: groupedUpdates.updates[1].id });
 
-    fireEvent.click(currentLayout);
-    expect(currentLayout.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(secondProposal);
+    expect(secondProposal.getAttribute('aria-pressed')).toBe('false');
     expect(within(group).getByRole('button', { name: 'Select briefing First briefing' })).toBeTruthy();
     expect(within(group).queryByRole('button', { name: /Research/ })).toBeNull();
     expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}').selectedGroupUpdateIds).toEqual({});
@@ -212,7 +208,7 @@ describe('Briefing sidebar row actions', () => {
     });
   });
 
-  it('shows operator actions only for an exact frozen human-review candidate', () => {
+  it('lets the operator dismiss a proposal that needs a protected merge', async () => {
     const selected = groupedUpdates.updates[0];
     const readyGroup: BriefingGroup = {
       ...groupedUpdates,
@@ -243,12 +239,14 @@ describe('Briefing sidebar row actions', () => {
         }],
       }],
     };
+    const onDisposition = vi.fn();
+    const dismissal = vi.spyOn(api, 'dismissBriefingGroupProposal').mockResolvedValue({ ...readyGroup, updates: [] });
     const view = render(
-      <BriefingGroupDetail group={readyGroup} selectedUpdateId={selected.id} onSelectUpdate={() => undefined} />,
+      <BriefingGroupDetail group={readyGroup} selectedUpdateId={null} onSelectUpdate={() => undefined} onDisposition={onDisposition} />,
     );
-
-    expect(screen.getByRole('button', { name: 'Accept as Base' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Reject proposal' })).toBeTruthy();
+    const candidateRow = () => screen.getByRole('button', { name: /First proposal/ }).closest('li')!;
+    const action = (name: string) => within(candidateRow()).getByRole('button', { name }) as HTMLButtonElement;
+    expect(action('Accept').disabled).toBe(false);
 
     view.rerender(
       <BriefingGroupDetail
@@ -258,16 +256,21 @@ describe('Briefing sidebar row actions', () => {
             ...readyGroup.reviewCandidates![0],
             ready: false,
             bindingDigest: null,
-            blockerCode: 'briefing_review_submission_required',
-            blockerMessage: 'A frozen operator submission is required.',
+            blockerCode: 'briefing_review_repository_authority_required',
+            blockerMessage: 'Protected merge promotion is required.',
           }],
         }}
         selectedUpdateId={selected.id}
         onSelectUpdate={() => undefined}
+        onDisposition={onDisposition}
       />,
     );
-    expect(screen.queryByRole('button', { name: 'Accept as Base' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Reject proposal' })).toBeNull();
+    expect(action('Accept').disabled).toBe(true);
+    expect(action('Dismiss').disabled).toBe(false);
+    fireEvent.click(action('Dismiss'));
+    expect(dismissal).toHaveBeenCalledWith(expect.objectContaining({ id: readyGroup.id }), selected.id);
+    await Promise.resolve();
+    expect(onDisposition).toHaveBeenCalledWith(expect.objectContaining({ updates: [] }));
   });
 
   it('fails closed across adjacent groups while stale proposal ownership reconciles', () => {

@@ -196,7 +196,7 @@ function renameViewer(
   ).id, operator: true };
 }
 
-function groupUpdateViewer(db: Db, req: RequestLike): { userId: string; operator: true } {
+function groupUpdateViewer(db: Db, req: RequestLike): { userId: string; operator: true; humanReviewOperator: boolean } {
   const principal = publicationPrincipal(db, req, {
     agentCode: "briefing_group_update_publisher_agent_required",
     agentMessage: "Briefing group updates require an active agent identity.",
@@ -206,10 +206,11 @@ function groupUpdateViewer(db: Db, req: RequestLike): { userId: string; operator
       throw new ClientAuthzError(403, "briefing_group_update_operator_required",
         "Briefing group updates require the configured human operator or an admitted agent publisher.");
     }
-    return { userId: principal.publisherUserId, operator: true };
+    return { userId: principal.publisherUserId, operator: true, humanReviewOperator: true };
   }
   return { userId: configuredHumanOperator(db, "briefing_group_update_operator_required",
-    "Briefing group updates by an agent require a configured active human operator.").id, operator: true };
+    "Briefing group updates by an agent require a configured active human operator.").id,
+    operator: true, humanReviewOperator: false };
 }
 
 function humanReviewOperator(db: Db, req: RequestLike) {
@@ -601,7 +602,8 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
       const viewer = groupUpdateViewer(db, req);
       const requestBody = body(req);
       const unexpected = Object.keys(requestBody)
-        .filter((key) => key !== "current_bundle_ref" && key !== "bundle_refs" && key !== "sharing_reason");
+        .filter((key) => key !== "current_bundle_ref" && key !== "bundle_refs"
+          && key !== "expected_bundle_refs" && key !== "sharing_reason");
       if (unexpected.length) throw new BriefingStoreError(`request body contains unsupported field '${unexpected[0]}'`);
       if (!Object.hasOwn(requestBody, "current_bundle_ref") || !Object.hasOwn(requestBody, "bundle_refs")) {
         throw new BriefingStoreError("configuration requires current_bundle_ref and bundle_refs");
@@ -614,9 +616,14 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db, reader: L
           || !requestBody.bundle_refs.every((ref) => typeof ref === "string" && ref.trim())) {
         throw new BriefingStoreError("bundle_refs must be an array of nonblank Briefing bundle refs");
       }
+      if (requestBody.expected_bundle_refs !== undefined && (!Array.isArray(requestBody.expected_bundle_refs)
+          || !requestBody.expected_bundle_refs.every((ref) => typeof ref === "string" && ref.trim()))) {
+        throw new BriefingStoreError("expected_bundle_refs must be an array of nonblank Briefing bundle refs");
+      }
       const result = configureBriefingGroup(db, req.params.groupId, {
         currentBundleRef: requestBody.current_bundle_ref as string | null,
         bundleRefs: requestBody.bundle_refs,
+        expectedBundleRefs: requestBody.expected_bundle_refs as string[] | undefined,
         placementOverride: placementOverride(req, requestBody, requireIdentity(req).user_id),
       }, { ...viewer, retainTrackedReviewRefs: retentionAllowed(req) });
       if (result.changed) broadcast(BRIEFING_EVENTS.groupConfigurationUpdated, { group_id: result.group.id });

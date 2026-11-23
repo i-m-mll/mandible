@@ -34,7 +34,7 @@ import {
   type BriefingCollectionViewState,
 } from './feedback/collection-view-state';
 import {
-  briefingGroupOwnsUpdate,
+  briefingGroupOwnsPendingChange,
   indexBriefingGroupBundleOwners,
   resolveBriefingGroupProjection,
 } from './feedback/briefing-group-projection';
@@ -231,13 +231,10 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
     }
   }, [appShell.active, routeStatus, selectedCollectionId, selectedGroupId, explicitRoundId, hasExplicitTarget, setViewState]);
   const groupBundleOwners = useMemo(() => indexBriefingGroupBundleOwners(groups), [groups]);
-  const selectedGroupUpdateId = selectedGroup
-    ? resolveBriefingGroupProjection(
-      selectedGroup,
-      viewState.selectedGroupUpdateIds[selectedGroup.id],
-      groupBundleOwners,
-    ).selectedUpdate?.id ?? null
-    : null;
+  const requestedGroupUpdateId = selectedGroup ? viewState.selectedGroupUpdateIds[selectedGroup.id] : null;
+  const selectedGroupUpdateId = selectedGroup && requestedGroupUpdateId
+    && briefingGroupOwnsPendingChange(selectedGroup, requestedGroupUpdateId, groupBundleOwners)
+    ? requestedGroupUpdateId : null;
   const selectedDisplayContext = useMemo(
     () => briefingDisplayContext(selected, groups, viewState),
     [groups, selected, viewState.selectedGroupUpdateIds],
@@ -258,7 +255,7 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
     if (!ownerGroup) return;
     setViewState((current) => {
       const selectedGroupUpdateIds = { ...current.selectedGroupUpdateIds };
-      if (updateId && briefingGroupOwnsUpdate(ownerGroup, updateId, groupBundleOwners)) {
+      if (updateId && briefingGroupOwnsPendingChange(ownerGroup, updateId, groupBundleOwners)) {
         selectedGroupUpdateIds[ownerGroupId] = updateId;
       } else {
         delete selectedGroupUpdateIds[ownerGroupId];
@@ -309,6 +306,9 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
       groups: current.groups.map((group) => group.id === nextGroup.id ? nextGroup : group),
     }));
     setViewState((current) => {
+      const selectedId = current.selectedGroupUpdateIds[nextGroup.id];
+      if (!selectedId || nextGroup.updates.some(update => update.id === selectedId)
+        || nextGroup.trackedProposals?.some(proposal => proposal.request_id === selectedId)) return current;
       const selectedGroupUpdateIds = { ...current.selectedGroupUpdateIds };
       delete selectedGroupUpdateIds[nextGroup.id];
       return { ...current, selectedGroupUpdateIds };
@@ -338,6 +338,7 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
           selectedUpdateId={selectedGroupUpdateId}
           onSelectUpdate={(updateId) => selectGroupUpdate(selectedGroup.id, updateId)}
           onDisposition={updateDispositionedGroup}
+          onRefresh={() => { void sidebarQuery.refetch(); }}
           onSelectBriefing={selectBriefing}
         />
       ) : !selected ? sidebarLoaded && !error ? <p className="briefing-empty briefing-empty--selection">No Briefings in this view.</p> : null : (

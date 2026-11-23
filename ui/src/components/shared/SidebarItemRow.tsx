@@ -3,6 +3,7 @@ import type { ComponentChildren, JSX } from 'preact';
 import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { ContextualAction } from './ContextualAction';
+import { appTip } from './AppHoverTips';
 import { OfficialProviderMark, type OfficialProviderMarkKind } from './OfficialProviderMark';
 import { SidebarReorderHandle } from './SidebarReorderHandle';
 import type { SidebarReorderBinding } from './sidebar-order';
@@ -113,7 +114,7 @@ export function SidebarItemRow({
         aria-description={selectionDescription ?? (provider ? `Provider: ${provider.label}` : undefined)}
         aria-current={ariaCurrent}
         tabIndex={tabIndex}
-        title={label}
+        {...appTip(label)}
         onClick={onSelect}
         aria-describedby={reorder?.control['aria-describedby']}
         aria-keyshortcuts={reorder?.control['aria-keyshortcuts']}

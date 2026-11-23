@@ -1,4 +1,4 @@
-import type { TrackedBriefingDocument, TrackedBriefingProposal } from "../../src/contracts";
+import type { BriefingGroupProposalChanges, TrackedBriefingDocument, TrackedBriefingProposal } from "../../src/contracts";
 import type { StandingNoteMutation } from '../../src/feedback/standing-notes';
 import type { ReviewRange, StandingNote, StandingNotePresentation } from '../../src/feedback/review-types';
 import type { RequestReview } from '../../src/feedback/request-review';
@@ -3365,9 +3365,11 @@ export async function getArtifactVersions(
   return payload.history;
 }
 
-export async function getArtifactDiff(from: string, to: string): Promise<ArtifactDiffResult> {
-  const query = buildQuery({ a: from, b: to, format: 'contents' });
-  const response = await apiGet(`/api/artifacts/diff${query}`);
+export async function getArtifactDiff(from: string, to: string, options: {
+  format?: 'contents' | 'patch'; signal?: AbortSignal;
+} = {}): Promise<ArtifactDiffResult> {
+  const query = buildQuery({ a: from, b: to, format: options.format ?? 'contents' });
+  const response = await apiGet(`/api/artifacts/diff${query}`, { signal: options.signal });
   const payload = (await parseMaybeJson(response)) as { diff: ArtifactDiffResult };
   return payload.diff;
 }
@@ -4593,6 +4595,8 @@ export type BriefingGroup = {
   archivedAt?: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  proposalChanges?: BriefingGroupProposalChanges[];
+  draftCommentBriefingIds?: string[];
   trackedProposals?: TrackedBriefingProposal[];
   destinations: Array<{ logicalArtifactId: string; publicationMode: 'reviewed-document' | 'published-report' | null;
     routeKeys: string[] }>;
@@ -4853,6 +4857,10 @@ export function normalizeBriefingGroups(payload: unknown, invalid: InvalidBriefi
       archivedAt: briefingOptionalNumber(group.archived_at),
       current,
       updates,
+      proposalChanges: Array.isArray(group.proposal_changes) ? group.proposal_changes as BriefingGroupProposalChanges[] : [],
+      draftCommentBriefingIds: Array.isArray(group.draft_comment_briefing_ids) ? group.draft_comment_briefing_ids.filter(
+        (id): id is string => typeof id === 'string',
+      ) : [],
       trackedProposals: Array.isArray(group.tracked_proposals) ? group.tracked_proposals as TrackedBriefingProposal[] : [],
       destinations,
       destinationHistory,
@@ -4908,6 +4916,23 @@ export async function dispositionBriefingGroupProposal(
   invalidateApiGetCache(BRIEFING_GROUPS_PATH);
   void refreshBrowserResources(queryClient, browserResourceKeysForEvent('briefing:group-proposal-accepted'));
   return { group, disposition, changed: root.changed };
+}
+
+export async function dismissBriefingGroupProposal(group: BriefingGroup, proposalId: string): Promise<BriefingGroup> {
+  const response = await apiPut(`${BRIEFING_GROUPS_PATH}/${encodeURIComponent(group.id)}/configuration`, {
+    current_bundle_ref: group.current?.id ?? null,
+    expected_bundle_refs: group.updates.map(update => update.id),
+    bundle_refs: group.updates.filter(update => update.id !== proposalId).map(update => update.id),
+  });
+  const root = briefingRecord(await parseMaybeJson(response));
+  const invalid: InvalidBriefingRow[] = [];
+  const updated = normalizeBriefingGroups({ groups: [root.group] }, invalid)[0];
+  if (!updated || invalid.length > 0 || typeof root.changed !== 'boolean') {
+    throw new Error('The Briefing proposal dismissal response is invalid.');
+  }
+  invalidateApiGetCache(BRIEFING_GROUPS_PATH);
+  void refreshBrowserResources(queryClient, browserResourceKeysForEvent('briefing:group-configuration-updated'));
+  return updated;
 }
 
 export async function getBriefingSidebarSnapshot(signal?: AbortSignal): Promise<BriefingSidebarSnapshot> {

@@ -1732,6 +1732,26 @@
   border-left-color: var(--accent-blue);
 }
 
+.request-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.request-list-row--selected {
+  background: var(--surface-selected);
+}
+
+.request-list-row--selected > .auth-sidebar-item--selected {
+  background: transparent;
+}
+
+.request-list-row__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding-inline: var(--space-3);
+}
+
 .auth-sidebar-item__dot {
   width: 8px;
   height: 8px;

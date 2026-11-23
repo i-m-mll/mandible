@@ -338,8 +338,13 @@ describe("artifact-backed Briefing rounds", () => {
     }, viewer, 1_300)).toMatchObject({ changed: true, group: {
       current: { id: bundles[0].id }, updates: [{ id: bundles[1].id }, { id: bundles[2].id }],
     } });
+    expect(() => configureBriefingGroup(db, group.id, {
+      currentBundleRef: bundles[0].id, bundleRefs: [], expectedBundleRefs: [bundles[1].id],
+    }, viewer)).toThrowError(expect.objectContaining({ code: "briefing_group_updates_drift" }));
+    expect(readBriefingGroup(db, group.id, viewer).updates.map(update => update.id))
+      .toEqual([bundles[1].id, bundles[2].id]);
     expect(configureBriefingGroup(db, group.id, {
-      currentBundleRef: bundles[0].id, bundleRefs: [bundles[1].id],
+      currentBundleRef: bundles[0].id, bundleRefs: [bundles[1].id], expectedBundleRefs: [bundles[1].id, bundles[2].id],
     }, viewer, 1_325)).toMatchObject({ changed: true, group: { history: [{
       kind: "dismissed",
       prior_base: { id: bundles[0].id },

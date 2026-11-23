@@ -35,7 +35,7 @@ function inventory(db: Db, request: RequestInventory) {
       else indexes.set(path, [index]);
     }
   });
-  return { projectId, indexes };
+  return { projectId, indexes, files: request.change_report.files };
 }
 
 function matchMembers(members: readonly TrackedBriefingPath[], changed: NonNullable<ReturnType<typeof inventory>>): TrackedBriefingMatch[] {
@@ -62,10 +62,15 @@ export function trackedBriefingProposals(db: Db, members: readonly TrackedBriefi
     const changed = inventory(db, request);
     if (!changed) return [];
     const matched = matchMembers(members, changed);
+    const fileIndexes = new Set(matched.flatMap(member => member.file_indexes));
     return matched.length ? [{
       request_id: request.id, request_ref: shortRef(db, "auth_request", request.id), title: request.title,
       project_id: changed.projectId, members: matched,
       project_key: (projectKey.get(changed.projectId) as { project_key: string }).project_key,
+      files: [...fileIndexes].map(index => {
+        const { old_path, new_path, additions, deletions } = changed.files[index]!;
+        return { index, old_path, new_path, additions, deletions };
+      }),
       depends_on: request.depends_on_ids.map(id => dependencies.get(id)!),
     }] : [];
   });
