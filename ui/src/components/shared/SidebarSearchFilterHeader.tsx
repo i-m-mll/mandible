@@ -1,6 +1,7 @@
-import { Icon } from '../icons/Icon';
+import { Icon, type IconName } from '../icons/Icon';
 import type { ComponentChildren, JSX } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
+import { appTip } from './AppHoverTips';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 
 export type SidebarSearchFilterHeaderPanel = {
@@ -22,6 +23,15 @@ export type SidebarSearchFilterHeaderFilterTrigger = {
   onToggle: () => void;
 };
 
+type SidebarSearchFilterHeaderAction = {
+  icon: IconName;
+  label: string;
+  tip: string;
+  disabled: boolean;
+  busy: boolean;
+  onClick: () => void;
+};
+
 export type SidebarSearchFilterHeaderProps = {
   value: string;
   onValueChange: (value: string) => void;
@@ -31,7 +41,7 @@ export type SidebarSearchFilterHeaderProps = {
   inputType?: 'text' | 'search';
   searchSlot?: ComponentChildren;
   leadingAction?: ComponentChildren;
-  actionSlot?: ComponentChildren;
+  actions?: readonly SidebarSearchFilterHeaderAction[];
   filterTrigger?: SidebarSearchFilterHeaderFilterTrigger;
   summarySlot?: ComponentChildren;
   panel?: SidebarSearchFilterHeaderPanel;
@@ -142,9 +152,20 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
             ) : null}
           </button>
         ) : null}
-        {props.actionSlot !== undefined ? (
-          <div className="sidebar-search-filter__action">{props.actionSlot}</div>
-        ) : null}
+        {props.actions?.map(({ icon, label, tip, disabled, busy, onClick }) => (
+          <button
+            key={label}
+            type="button"
+            className="sidebar-search-filter__trigger"
+            aria-label={label}
+            aria-disabled={disabled || undefined}
+            aria-busy={busy || undefined}
+            {...appTip(tip)}
+            onClick={disabled ? undefined : onClick}
+          >
+            <Icon name={icon} />
+          </button>
+        ))}
       </div>
       {props.summarySlot !== undefined ? (
         <div className="sidebar-search-filter__summary">{props.summarySlot}</div>

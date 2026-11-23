@@ -20,6 +20,7 @@ export const EFFECTS = [
   "maintenance:shared",
   "preferences:instance",
   "notes:source",
+  "dialog:project-folder",
 ] as const;
 
 export type Effect = (typeof EFFECTS)[number];
@@ -32,6 +33,7 @@ export const STANDARD_PREVIEW_EFFECTS: readonly Effect[] = [
   "files:preview",
   "preferences:instance",
   "notes:source",
+  "dialog:project-folder",
 ];
 
 export type Operation = {
