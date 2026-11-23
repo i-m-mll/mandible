@@ -478,7 +478,7 @@ const WRITES: Record<string, RouteEntry> = {
   "POST /api/users/setup": () => "provisions user credentials (auth:credentials on a preview)",
 
   "PUT /api/work/repos/:id": (fx) => [post("no-op update", `/api/work/repos/${fx.workRepo}`, {})],
-  "POST /api/work/repos/add": () => "scans a repository on disk with git",
+  "POST /api/work/repos/add": () => "opens a native folder panel and scans the selection with git",
   "DELETE /api/work/repos/:id": () => "removes a repository's preview files",
 };
 

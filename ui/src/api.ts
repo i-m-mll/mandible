@@ -1423,6 +1423,13 @@ export async function scanIssueRepo(repoId: string): Promise<void> {
   await apiPost(`/api/issues/${encodeURIComponent(repoId)}/scan`);
 }
 
+export async function chooseAndAddWorkProject(): Promise<import('../../src/work-scanner').RepoInfo | null> {
+  const response = await apiPost('/api/work/repos/add', {});
+  if (response.status === 204) return null;
+  invalidateApiGetCache('/api/work/repos');
+  return response.json();
+}
+
 export async function triggerWorkScan(): Promise<void> {
   await apiPost('/api/work/scan');
   invalidateApiGetCache('/api/work/');

@@ -9,6 +9,7 @@ target/
 src-tauri/gen/
 src-tauri/resources/local-ca-trust-helper
 src-tauri/resources/MandibleApproval.app/
+src-tauri/resources/MandibleProjectFolder.app/
 src-tauri/resources/bun-runtime/
 worktrees/
 coverage/

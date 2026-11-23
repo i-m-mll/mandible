@@ -154,29 +154,6 @@
   opacity: 0.72;
 }
 
-.work-sidebar__footer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 10px;
-  padding: 12px;
-  border-top: 1px solid var(--neutral-alpha-06);
-}
-
-.work-sidebar__footer .btn {
-  justify-content: center;
-  min-height: 32px;
-}
-
-.work-sidebar__footer .btn > span.app-icon {
-  font-size: 11px;
-}
-
-.work-sidebar__capability-note {
-  grid-column: 1 / -1;
-  color: var(--text-muted);
-  font-size: calc(11px + var(--chrome-text-increment, 0px));
-}
-
 .work-detail {
   position: relative;
   min-width: 0;
@@ -494,8 +471,7 @@
   font-size: 13px;
 }
 
-.repo-settings-strip__input,
-.repo-add-form__input {
+.repo-settings-strip__input {
   font-size: calc(10pt + var(--chrome-text-increment, 0px));
   min-width: 0;
   background: var(--bg-secondary);
@@ -509,23 +485,6 @@
 .repo-settings-strip__input {
   flex: 1;
   min-width: 180px;
-}
-
-.repo-add-form {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border-top: 1px solid var(--neutral-alpha-06);
-}
-
-.repo-add-form__actions {
-  display: flex;
-  gap: 8px;
-}
-
-.repo-add-form__error {
-  color: var(--accent-red, #f26b6b);
-  font-size: calc(12px + var(--chrome-text-increment, 0px));
 }
 
 .repo-card--collapsible {

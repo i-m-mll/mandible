@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   createTrashEntry,
   canPerformOperation,
+  chooseAndAddWorkProject,
   getRepoBranchCommits,
   getWorkRepoAudit,
   getWorkCompare,
@@ -869,7 +870,6 @@ export function WorkOverviewView({
   // Repo management state
   const [settingsOpenFor, setSettingsOpenFor] = useState<string | null>(null);
   const [addingRepo, setAddingRepo] = useState(false);
-  const [addPath, setAddPath] = useState('');
   const [addError, setAddError] = useState<string | null>(null);
   const [showExcluded, setShowExcluded] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
@@ -878,12 +878,8 @@ export function WorkOverviewView({
   // Bug: b5abaea — Push/sync state
   const [pushState, setPushState] = useState<PushState>({ active: false, authPending: false, repoProgress: new Map() });
 
-  const canAddProject = canPerformOperation(
-    instance,
-    'POST',
-    '/api/work/repos/add',
-    { root: addPath },
-  );
+  const canAddProject = canPerformOperation(instance, 'POST', '/api/work/repos/add');
+  const pushingAll = pushState.active || pushState.authPending;
 
   // Sync repos when initialRepos changes (external updates)
   useEffect(() => {
@@ -1327,25 +1323,22 @@ export function WorkOverviewView({
   };
 
   const handleAddRepo = async () => {
-    if (!canAddProject) return;
+    if (!canAddProject || addingRepo) return;
+    setAddingRepo(true);
     setAddError(null);
     try {
-      const res = await browserSessionFetch('/api/work/repos/add', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ root: addPath }),
-      });
-      if (res.ok) {
-        const newRepo = await res.json() as WorkRepo;
-        setRepos((prev) => [...prev, newRepo]);
-        setAddingRepo(false);
-        setAddPath('');
-      } else {
-        const body = await res.json() as { error?: string };
-        setAddError(body.error ?? `Error ${res.status}`);
+      const newRepo = await chooseAndAddWorkProject();
+      if (newRepo) {
+        setRepos((prev) => {
+          if (prev.some((repo) => getRepoId(repo) === newRepo.id)) return prev;
+          return [...prev, { ...newRepo }];
+        });
+        setRepoLoadState('ready');
       }
-    } catch (e) {
-      setAddError(String(e));
+    } catch (error) {
+      setAddError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAddingRepo(false);
     }
   };
 
@@ -1407,6 +1400,9 @@ export function WorkOverviewView({
           {pushState.message}
         </div>
       )}
+      {addError && (
+        <DetailPaneNotice severity="error" density="compact" title="Could not add project">{addError}</DetailPaneNotice>
+      )}
       <div className={`work-shell${sidebarHidden ? ' work-shell--sidebar-hidden' : ''}`}>
         <ViewSidebar
           hidden={sidebarHidden}
@@ -1428,6 +1424,30 @@ export function WorkOverviewView({
               open: advancedFiltersOpen,
               onToggle: () => setAdvancedFiltersOpen((open) => !open),
             }}
+            actions={[
+              {
+                icon: 'add',
+                label: 'Add project',
+                tip: canAddProject ? 'Add project' : capabilityReason,
+                disabled: !canAddProject || addingRepo,
+                busy: addingRepo,
+                onClick: () => void handleAddRepo(),
+              },
+              {
+                icon: 'pushAll',
+                label: 'Push all',
+                tip: !canPushAll
+                  ? capabilityReason
+                  : pushState.authPending
+                    ? 'Authenticating…'
+                    : pushState.active
+                      ? `Pushing… (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
+                      : 'Push all ahead branches and notes',
+                disabled: !canPushAll || pushingAll,
+                busy: pushingAll,
+                onClick: () => void pushRepos('all_ahead').catch(() => {}),
+              },
+            ]}
             panel={advancedFiltersOpen ? {
               variant: 'inline',
               children: (
@@ -1475,74 +1495,6 @@ export function WorkOverviewView({
               ),
             } : undefined}
           />}
-          footer={(
-            <>
-              {addingRepo ? (
-                <div className="repo-add-form">
-                  <input
-                    type="text"
-                    className="repo-add-form__input"
-                    placeholder="Absolute path to Git project..."
-                    aria-label="Project path"
-                    value={addPath}
-                    onInput={(e) => setAddPath(e.currentTarget.value)}
-                  />
-                  <div className="repo-add-form__actions">
-                    <button
-                      type="button"
-                      className="btn btn--sm"
-                      disabled={!canAddProject}
-                      title={!canAddProject ? capabilityReason : undefined}
-                      onClick={() => void handleAddRepo()}
-                    >
-                      Add project
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn--sm btn--ghost"
-                      onClick={() => { setAddingRepo(false); setAddPath(''); setAddError(null); }}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                  {addError ? (
-                    <DetailPaneNotice severity="error" density="compact" title="Could not add project">{addError}</DetailPaneNotice>
-                  ) : null}
-                </div>
-              ) : null}
-              <div className="work-sidebar__footer">
-                <button
-                  type="button"
-                  className="btn btn--ghost btn--sm"
-                  disabled={!canAddProject}
-                  title={!canAddProject ? capabilityReason : undefined}
-                  onClick={() => { setAddingRepo((v) => !v); setAddError(null); }}
-                >
-                  <Icon name="add" /> Add project
-                </button>
-                <button
-                  type="button"
-                  className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
-                  disabled={pushState.active || pushState.authPending || !canPushAll}
-                  onClick={() => {
-                    if (canPushAll) void pushRepos('all_ahead').catch(() => {});
-                  }}
-                  title={!canPushAll ? capabilityReason : 'Push all ahead branches + notes for all projects'}
-                >
-                  {pushState.authPending
-                    ? 'Authenticating...'
-                    : pushState.active
-                      ? `Pushing... (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
-                      : <><Icon name="pushAll" /> Push All</>}
-                </button>
-                {instance && (!canAddProject || !canPushAll) ? (
-                  <span className="work-sidebar__capability-note" role="status">
-                    Some project actions are {capabilityReason.toLowerCase()}
-                  </span>
-                ) : null}
-              </div>
-            </>
-          )}
         >
           <div role="list">
             {repoRows.length === 0 ? (

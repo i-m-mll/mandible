@@ -83,7 +83,7 @@ export function requireNativeAppSigning(plan) {
 }
 
 export function nativeSigningIdentifier(appIdentifier, role) {
-  const suffix = { serviceHelper: 'service', trustHelper: 'trust', approvalHelper: 'approval' }[role];
+  const suffix = { serviceHelper: 'service', trustHelper: 'trust', approvalHelper: 'approval', projectFolderHelper: 'project-folder' }[role];
   if (!suffix) return null;
   if (typeof appIdentifier !== 'string' || !/^[A-Za-z0-9.-]+$/.test(appIdentifier)) throw new Error('Native signing requires the app bundle identifier.');
   return `${appIdentifier}.${suffix}`;
