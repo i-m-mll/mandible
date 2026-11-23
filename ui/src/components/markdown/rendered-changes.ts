@@ -6,6 +6,7 @@ import { Decoration, EditorView, WidgetType } from '@codemirror/view';
 import { compareMarkdownWords } from './comparison';
 import { markdownPreview, markdownPreviewPolicy, previewRanges, type MarkdownPreviewPolicy } from './preview';
 import { markdownSyntax } from './syntax';
+import { exactMarkdownSource } from './source';
 
 type Layer = 'agent' | 'operator';
 type ComparisonInput = {
@@ -42,7 +43,7 @@ function compare(
   const original = EditorState.create({
     doc: before,
     extensions: [
-      EditorState.readOnly.of(true),
+      exactMarkdownSource(before), EditorState.readOnly.of(true),
       ...(input?.source ? [] : [markdown({ extensions: markdownSyntax, completeHTMLTags: false }), markdownPreview]),
       ...(input?.policy ? [markdownPreviewPolicy.of(input.policy)] : []),
     ],
