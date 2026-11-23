@@ -280,8 +280,11 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
   const [selecting, setSelecting] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const shown = threads.filter(thread => thread.range && !thread.resolved);
-  const liveSelection = selection && selection.range.start < selection.range.end && !composer ? selection : null;
   const activeThread = shown.find(item => item.id === controller.selected);
+  const activeRange = activeThread?.range;
+  const selectionMatchesThread = selection?.range.start === activeRange?.start && selection?.range.end === activeRange?.end;
+  const liveSelection = selection && selection.range.start < selection.range.end && !composer && !selectionMatchesThread
+    ? selection : null;
   const previousScope = useRef(controller.scopeKey);
   useLayoutEffect(() => {
     const document = documentRef?.current;
