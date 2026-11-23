@@ -106,7 +106,7 @@ export function DocumentCommentsDrawer({ controller, threads, onNavigate }: {
   const row = (thread: DocumentCommentThread) => {
     const label = typeof thread.body === 'string' ? thread.body : thread.quote;
     return <SidebarItemRow key={thread.id} label={label} selectionLabel={label} selected={controller.selected === thread.id}
-      className={thread.range ? undefined : 'document-comments__detached'} labelTip="app"
+      className={thread.range ? undefined : 'document-comments__detached'}
       leading={<CommentAuthor message={thread} />}
       detail={thread.range ? undefined : <s>{thread.quote}</s>}
       actions={<>

@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, ArrowRightLeft, ArrowUp, ArrowUpRight, Bell, Bot, Bug, Check, CheckCheck, Columns2, CornerUpLeft, ChevronDown, ChevronRight, ChevronUp, ChevronsUp, Circle, CircleDot, CloudDownload, CloudUpload, Code, Copy, Download, Ellipsis, FilePenLine, FilePlus2, FileText, FileX2, Fingerprint, GitFork, Globe, History, Image, Info, Lightbulb, Link, ListTodo, Menu, MessageSquare, MousePointer2, Paintbrush, Pencil, Play, Plus, Rows2, Search, Settings, ShieldAlert, Square, SquareCheck, SquareTerminal, TriangleAlert, User, Workflow, WrapText, X, type LucideIcon } from 'lucide-preact';
+import { Activity, ArrowDown, ArrowRightLeft, ArrowUp, ArrowUpRight, Bell, Bot, Bug, Check, CheckCheck, Columns2, CornerUpLeft, ChevronDown, ChevronRight, ChevronUp, ChevronsUp, Circle, CircleDot, CloudDownload, CloudUpload, Code, Copy, Download, Ellipsis, FilePenLine, FilePlus2, FileText, FileX2, Fingerprint, GitFork, GitPullRequest, Globe, History, Image, Info, Lightbulb, Link, ListTodo, Menu, MessageSquare, MousePointer2, Package, Paintbrush, Pencil, Play, Plus, Rows2, Search, Settings, ShieldAlert, Square, SquareCheck, SquareTerminal, TriangleAlert, User, Workflow, WrapText, X, type LucideIcon } from 'lucide-preact';
 import type { IconSourceProps } from './types';
 
 function PaintbrushIcon({ size = 16, ...props }: IconSourceProps) {
@@ -62,6 +62,8 @@ export const lucideSet = {
   history: lucideIcon(History),
   approve: lucideIcon(Fingerprint),
   returnReview: lucideIcon(CornerUpLeft),
+  mergeRequest: lucideIcon(GitPullRequest),
+  custodyPackage: lucideIcon(Package),
   thought: lucideIcon(Lightbulb),
   monitor: lucideIcon(Activity),
   chat: lucideIcon(MessageSquare),

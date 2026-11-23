@@ -20,7 +20,6 @@ export type SidebarItemRowProps = {
   leading?: ComponentChildren;
   badges?: ComponentChildren;
   detail?: ComponentChildren;
-  labelTip?: 'app';
   actions?: ComponentChildren;
   selectRef?: (element: HTMLButtonElement | null) => void;
   tabIndex?: number;
@@ -68,7 +67,6 @@ export function SidebarItemRow({
   leading,
   badges,
   detail,
-  labelTip,
   actions,
   selectRef,
   tabIndex,
@@ -118,8 +116,7 @@ export function SidebarItemRow({
         aria-description={selectionDescription ?? (provider ? `Provider: ${provider.label}` : undefined)}
         aria-current={ariaCurrent}
         tabIndex={tabIndex}
-        title={labelTip ? undefined : label}
-        {...(labelTip ? appTip(label) : {})}
+        {...appTip(label)}
         onClick={onSelect}
         aria-describedby={reorder?.control['aria-describedby']}
         aria-keyshortcuts={reorder?.control['aria-keyshortcuts']}

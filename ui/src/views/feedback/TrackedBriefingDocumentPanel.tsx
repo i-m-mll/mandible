@@ -18,18 +18,23 @@ export function TrackedBriefingDocumentPanel({ document, showCommit, pending, ch
   pending?: number;
   children?: ComponentChildren;
 }) {
-  const { path, project_key, content, commit_sha } = document;
-  const Document = isMarkdownFile(path) ? MarkdownDocument : PlainTextDocument;
+  const { path, project_key, commit_sha } = document;
   return (
     <TrackedBriefingDisclosure title={<>
       {path} · {project_key}
       {showCommit && commit_sha ? ` · ${commit_sha.slice(0, 10)}` : ''}
       {pending ? <span className="change-list__badge">{pending} pending</span> : null}
     </>}>
-      {content === null
-        ? <DetailPaneNotice severity="warning" density="compact" title="File unavailable">{null}</DetailPaneNotice>
-        : <Document value={content} readOnly ariaLabel={path} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} />}
+      <TrackedBriefingDocumentContent document={document} />
       {children}
     </TrackedBriefingDisclosure>
   );
+}
+
+export function TrackedBriefingDocumentContent({ document }: { document: TrackedBriefingDocument }) {
+  const { path, content } = document;
+  const Document = isMarkdownFile(path) ? MarkdownDocument : PlainTextDocument;
+  return content === null
+    ? <DetailPaneNotice severity="warning" density="compact" title="File unavailable">{null}</DetailPaneNotice>
+    : <Document value={content} readOnly ariaLabel={path} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} />;
 }

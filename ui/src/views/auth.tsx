@@ -17,6 +17,7 @@ import { DetailPaneIconAction } from '../components/shared/DetailPaneIconAction'
 import { DocumentChangeActions } from '../components/shared/DocumentChangeActions';
 import { appTip } from '../components/shared/AppHoverTips';
 import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigger';
+import { RequestListRow } from '../components/shared/RequestListRow';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
@@ -1726,32 +1727,20 @@ function AuthSidebarItem({
   const repo = request.repo && request.repo.trim() ? request.repo.trim() : null;
 
   return (
-    <button
-      type="button"
-      className={`auth-sidebar-item${selected ? ' auth-sidebar-item--selected' : ''}`}
-      aria-current={selected ? 'true' : undefined}
-      data-request-id={id}
-      onClick={() => onSelect(id)}
-    >
-      <span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} />
-      <span className="auth-sidebar-item__body">
-        <span className="auth-sidebar-item__title-row">
-          {/* Bug: a44fd6a — render auth sidebar title as inline markdown */}
-          <span
-            className="auth-sidebar-item__title"
-            dangerouslySetInnerHTML={{
-              __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))),
-            }}
-          />
-        </span>
-        <span className="auth-sidebar-item__metadata">
+    <RequestListRow
+      requestId={id}
+      selected={selected}
+      selection="current"
+      onSelect={() => onSelect(id)}
+      leading={<span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} />}
+      title={<span dangerouslySetInnerHTML={{ __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))) }} />}
+      metadata={<>
           {repo && <span className="auth-sidebar-item__repo" title={repo}>{repo}</span>}
           <span className={`type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`}>{sidebarTypeMeta.label}</span>
           {status === 'approved' && <span className="auth-sidebar-item__metadata-text">Queued</span>}
           <span className="auth-sidebar-item__metadata-text">{timestampLabel}</span>
-        </span>
-      </span>
-    </button>
+      </>}
+    />
   );
 }
 

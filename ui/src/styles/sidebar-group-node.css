@@ -1,8 +1,15 @@
+:root {
+  --sidebar-node-root-inset: 7px;
+  --sidebar-node-icon-column: 22px;
+}
+
 .sidebar-group-node {
   margin-bottom: 10px;
+  --sidebar-node-parent-inset: var(--sidebar-title-column-inset, var(--sidebar-node-root-inset));
+}
 
-  --sidebar-node-parent-inset: var(--sidebar-title-column-inset, 7px);
-  --sidebar-node-icon-column: 22px;
+.sidebar-group-contents {
+  --sidebar-title-column-inset: calc(var(--sidebar-node-root-inset) + var(--sidebar-node-icon-column));
 }
 
 /*
