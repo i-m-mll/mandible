@@ -16,10 +16,10 @@ import { withLifecycleLock, withInstallationGatewayLock, inspectLifecycleLock, a
 import { prepareAcceptedApplication, installAcceptedApplication } from './accepted-app-install.mjs';
 import { activationDatabase, installStagedApplication, preparedApplicationContext, stagedInstallPaths, validatePreparedDaemon } from './staged-app-install.mjs';
 import { serviceInstallationContext, inspectServiceDefinitionsSync, matchingServiceDefinitions, parseLoadedService } from './service-definitions.mjs';
-import { admitBundleOwner } from './bundle-services.mjs';
-import { applicationRootIdentity, installedResourceRoot, installedRuntimeEnvironment, installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
+import { admitBundleOwner, readBundleOwner } from './bundle-services.mjs';
+import { applicationRootIdentity, assertInstalledApplicationVerification, installedResourceRoot, installedRuntimeEnvironment, installedFileIdentity, readInstalledRelease, releaseFile } from './installed-release.mjs';
 import { assertApprovedRuntimePackage, readAcceptedReleaseReceipt, readAcceptedInstalledRelease, readImmutableAcceptedRelease, disposeAcceptedRelease } from './accepted-release.mjs';
-import { inspectRunConsumers } from './owned-run.mjs';
+import { inspectRunConsumersAsync } from './owned-run.mjs';
 import SqliteDatabase from '../src/sqlite.ts';
 import { verifyRuntimeHandoffAuthority } from '../src/runtime-handoff-proof.ts';
 import { assertCacheTransitionFileIdentities, cacheFileIdentity, cacheTransitionReceiptPath, incompatibleConversationCachePaths, OBSOLETE_CACHE_SUFFIXES, publishCacheInvalidationReceipt, validateCacheInvalidationReceipt } from '../src/conversations/cache-transition-receipt.ts';
@@ -113,27 +113,35 @@ function inUse(subject, pids) {
     : `${subject} was in use by processes that have since exited.`;
   return Object.assign(new Error(message), { processes });
 }
-function removePreviousApplication(journal) {
+function sameApplicationRoot(a, b) {
+  return Number.isSafeInteger(a?.dev) && Number.isSafeInteger(a?.ino) && a.dev === b?.dev && a.ino === b?.ino;
+}
+async function inspectObsoleteBundle(journal, kind, target, identity) {
   const b = journal.binding;
-  const previous = stagedInstallPaths(b).previous;
-  if (!fs.existsSync(previous)) return;
-  const prior = applicationRootIdentity(previous);
-  if (!b.priorAppIdentity || prior.dev !== b.priorAppIdentity.dev || prior.ino !== b.priorAppIdentity.ino) throw new Error('Previous app custody changed.');
-  const owned = [b.oldProcess, ...Object.values(journal.attempt?.effects.drain?.processes ?? {})]
+  if (!sameApplicationRoot(applicationRootIdentity(target), identity)) throw new Error(`The ${kind} app root differs from its recorded custody.`);
+  const captured = kind === 'previous' ? [b.oldProcess, ...Object.values(journal.attempt?.effects.drain?.processes ?? {})] : [];
+  const owned = captured
     .filter(identity => identity && startedAt(identity.pid) === identity.startedAt).map(identity => identity.pid);
-  const consumers = owned.length ? { idle: false, pids: owned } : inspectRunConsumers(previous);
+  const consumers = owned.length ? { idle: false, pids: owned } : await inspectRunConsumersAsync(target);
   if (!consumers.idle) {
     const desktop = journal.attempt?.receipt?.desktop;
-    const blocked = consumers.pids?.length ? inUse(`The superseded app copy ${previous}`, consumers.pids) : new Error(consumers.reason);
-    if (desktop?.kind === "retained" && blocked.processes?.length === 1
+    const subject = kind === 'previous' ? 'The superseded app copy' : 'The staged app copy';
+    const blocked = consumers.pids?.length ? inUse(`${subject} ${target}`, consumers.pids) : new Error(consumers.reason);
+    if (kind === 'previous' && desktop?.kind === "retained" && blocked.processes?.length === 1
         && sameDesktop(desktop.identity, blocked.processes[0])) {
       blocked.message = "The previous app copy will be removed after the retained Mandible window closes.";
       blocked.expected = true;
     }
     throw blocked;
   }
+}
+async function removeObsoleteBundle(journal, kind, target, identity, recheck) {
+  if (!fs.lstatSync(target, { throwIfNoEntry: false })) return;
+  await inspectObsoleteBundle(journal, kind, target, identity);
+  recheck();
   assertObservationLease(journal);
-  fs.rmSync(previous, { recursive: true });
+  if (!sameApplicationRoot(applicationRootIdentity(target), identity)) throw new Error(`The ${kind} app root changed during cleanup.`);
+  await fs.promises.rm(target, { recursive: true });
 }
 async function disposeSupersededRelease(journal) {
   const b = journal.binding;
@@ -258,7 +266,7 @@ function requireDesktopForObservation(journal) {
     identity: exact[0], confirmedAt: Date.now(), ...(!stage?.issuedAt ? { suppliedExternally: true } : {}) } } });
 }
 
-function replacementPaint(journal, effect, process) {
+function replacementPaint(journal, effect, process, startupEpoch) {
   const file = path.join(path.dirname(journalFile(journal.binding)), `desktop-paint-${effect.token}.json`);
   let evidence;
   try {
@@ -271,8 +279,9 @@ function replacementPaint(journal, effect, process) {
     if (error.code === "ENOENT") return null;
     throw error;
   }
-  if (evidence.schema !== "mandible-desktop-paint@1" || evidence.token !== effect.token
-      || evidence.pid !== process.pid || evidence.startup_epoch !== acceptedOperations.getStore().startupEpoch) {
+  if (typeof startupEpoch !== 'string' || !startupEpoch
+      || evidence.schema !== "mandible-desktop-paint@1" || evidence.token !== effect.token
+      || evidence.pid !== process.pid || evidence.startup_epoch !== startupEpoch) {
     throw observationFailure("desktop_evidence_mismatch", "The painted desktop belongs to another process, update, or daemon startup.");
   }
   return true;
@@ -287,20 +296,26 @@ function predecessorDesktopRoute(journal, prior) {
   return ownedDesktopRoute(JSON.parse(fs.readFileSync(file, 'utf8')), observed);
 }
 
-function retirePredecessorDesktop(journal, effect) {
-  const identities = desktopIdentities(journal.binding.nativeApp);
-  for (const process of identities) {
-    if (!process.installedImage && effect.prior.some(prior => sameDesktopImage(prior, process))) {
-      assertObservationLease(journal);
-      const result = runRuntimeCommand("/bin/kill", ["-TERM", String(process.pid)]);
-      if (result.status !== 0 && startedAt(process.pid) === process.startedAt) {
-        throw observationFailure("desktop_retirement_failed", result.stderr || "Could not retire the superseded desktop.");
-      }
-    }
-  }
+function runningPredecessorDesktops(journal, effect) {
+  return desktopIdentities(journal.binding.nativeApp)
+    .filter(process => !process.installedImage && effect.prior.some(prior => sameDesktopImage(prior, process)));
 }
 
-async function restoreDesktop(journal) {
+function retirePredecessorDesktop(journal, effect, guard = () => {}) {
+  const retiring = runningPredecessorDesktops(journal, effect);
+  for (const process of retiring) {
+    assertObservationLease(journal);
+    if (startedAt(process.pid) !== process.startedAt) continue;
+    guard();
+    const result = runRuntimeCommand("/bin/kill", ["-TERM", String(process.pid)]);
+    if (result.status !== 0 && startedAt(process.pid) === process.startedAt) {
+      throw observationFailure("desktop_retirement_failed", result.stderr || "Could not retire the superseded desktop.");
+    }
+  }
+  return retiring;
+}
+
+async function restoreDesktop(journal, startupEpoch) {
   const binding = journal.binding;
   if (!binding.desktopWasRunning) return;
   if (!journal.attempt) throw new Error("Desktop effects require a current approved update attempt.");
@@ -353,7 +368,7 @@ async function restoreDesktop(journal) {
     assertObservationLease(journal);
     candidates = desktopIdentities(binding.nativeApp, launchArgument).filter(process => process.installedImage);
     if (candidates.length > 1) throw observationFailure("desktop_ambiguous", "More than one successor desktop is running.");
-    if (candidates.length === 1 && replacementPaint(journal, effect, candidates[0])) {
+    if (candidates.length === 1 && replacementPaint(journal, effect, candidates[0], startupEpoch)) {
       saveEffect(journal, "desktop", { identity: candidates[0], confirmedAt: Date.now() });
       retirePredecessorDesktop(journal, effect);
       saveEffect(journal, "desktop", { completedAt: Date.now() });
@@ -712,6 +727,10 @@ function drainOwnership(journal) {
 
 function exactActiveOwner(journal) {
   assertObservationLease(journal);
+  assertActiveOwnerRecord(journal);
+}
+
+function assertActiveOwnerRecord(journal) {
   const active = JSON.parse(fs.readFileSync(runtimeHandoffLockFile(journal.binding.home), 'utf8'));
   if (active.journal !== journalFile(journal.binding) || active.bindingDigest !== journal.bindingDigest) throw new Error('Active runtime handoff owner changed.');
 }
@@ -1115,15 +1134,20 @@ async function cleanupHandoff(journal) {
   const obligations = [
     ['conversation-cache', () => retireConversationCache(journal)],
     ...(!journal.helperFencedAt ? [['helper', async () => { await fenceHelper(journal); save(journal, { helperFencedAt: Date.now() }); }]] : []),
-    ...(b.acceptedRelease ? [['previous-app', () => removePreviousApplication(journal)], ['superseded-release', () => disposeSupersededRelease(journal)]] : []),
+    ...(b.acceptedRelease ? [
+      ['previous-app', () => removeTerminalRuntimeBundle(journal, 'previous')],
+      ['staging-app', () => removeTerminalRuntimeBundle(journal, 'staging')],
+      ['superseded-release', () => disposeSupersededRelease(journal)],
+    ] : []),
     ...(b.legacyBridgeSha256 ? [['legacy-bridge', () => removeLegacyBridge(journal)]] : []),
   ];
   const blockers = [];
   for (const [obligation, settle] of obligations) {
     try { await settle(); }
     catch (error) {
-      if (error instanceof RuntimeObservationError) throw error;
-      blockers.push({ obligation, reason: error.message, ...(error.processes ? { processes: error.processes } : {}), ...(error.retryAfter ? { retryAfter: error.retryAfter } : {}),
+      if (error instanceof RuntimeObservationError && ['observer_lost', 'observer_busy'].includes(error.code)) throw error;
+      const retryAfter = error.retryAfter ?? (observationPending(error) ? Date.now() + 1000 : null);
+      blockers.push({ obligation, reason: error.message, ...(error.processes ? { processes: error.processes } : {}), ...(retryAfter ? { retryAfter } : {}),
         ...(error.expected ? { expected: true } : {}) });
     }
   }
@@ -1133,6 +1157,123 @@ async function cleanupHandoff(journal) {
   }
   save(journal, { cleanup: { state: 'pending', attemptedAt: Date.now(), reason: blockers.map(blocker => blocker.reason).join(' '), blockers } });
   return { cleanup: 'pending' };
+}
+
+function readVerifiedCleanupInstallation(home) {
+  const owner = readBundleOwner({ runtimeDir: homeDirectory(home) });
+  const app = owner?.bundleRoot;
+  if (owner?.schema !== 'mandible-bundle-owner@1' || !path.isAbsolute(app ?? '')
+      || path.normalize(app) !== app || path.extname(app) !== '.app') throw new Error('The current native installation is not owned.');
+  const authority = fs.readFileSync(path.join(home, 'config/client-auth/authority-id'), 'utf8').trim();
+  if (!authority || owner.installationId !== authority) throw new Error('The current native installation authority differs.');
+  const resources = path.join(app, 'Contents/Resources');
+  const release = readInstalledRelease(resources);
+  if (owner.generation !== release.provenance.commit || owner.sourceDigest !== release.provenance.source_digest) {
+    throw new Error('The installed manifest differs from the current native owner.');
+  }
+  assertInstalledApplicationVerification(resources, owner.verification);
+  return owner;
+}
+
+function readBundleCleanupJournal(home, file) {
+  if (fs.realpathSync(file) !== file || !fs.lstatSync(file).isFile()) throw new Error('Handoff journal is not a canonical file.');
+  const raw = validateJournal(JSON.parse(fs.readFileSync(file, 'utf8')));
+  const b = raw.binding;
+  if (b.home !== home || journalFile(b) !== file) throw new Error('Handoff journal is outside its recorded installation.');
+  return readRuntimeHandoff(home, b.requestId, b.executionId);
+}
+
+function bundleCleanupIdentity(journal, target, kind, installation) {
+  const b = journal.binding;
+  if (b.nativeApp !== installation.bundleRoot || b.installationId !== installation.installationId
+      || stagedInstallPaths(b)[kind] !== target) throw new Error('Bundle path or authority differs from its handoff.');
+  const { prepare, replace } = journal.attempt?.effects ?? {};
+  const retired = journal.phase === 'retired' && journal.retirement;
+  if (!retired || kind === 'previous') {
+    if (journal.phase !== 'complete' || journal.attempt?.state !== 'complete' || !journal.attempt.fence) {
+      throw new Error(kind === 'previous' ? 'The handoff has no fenced successful replacement.' : 'The stage has no terminal handoff or verified retirement.');
+    }
+    const receipt = currentReceipt(journal);
+    if (receipt.schema !== 'mandible-runtime-receipt@2' || receipt.installed?.root !== b.nativeApp
+        || !sameApplicationRoot(receipt.installed.identity, prepare?.stageIdentity)
+        || receipt.approved?.reference !== b.acceptedRelease?.reference
+        || !/^[a-f0-9]{64}$/.test(receipt.approved?.packageSha256 ?? '')
+        || receipt.approved.packageSha256 !== replace?.packageSha256
+        || !replace.completedAt || replace.previous !== stagedInstallPaths(b).previous) {
+      throw new Error('The terminal receipt does not prove this bundle exchange.');
+    }
+  } else {
+    const archived = JSON.parse(fs.readFileSync(path.join(path.dirname(journalFile(b)), 'retired-active.json'), 'utf8'));
+    if (archived.journal !== journalFile(b) || archived.bindingDigest !== journal.bindingDigest) {
+      throw new Error('The retired stage has no matching archived activation owner.');
+    }
+  }
+  if (kind === 'staging' && prepare?.stagePath !== target) throw new Error('The staging app has no exact recorded path.');
+  const identity = kind === 'previous' ? b.priorAppIdentity : prepare.stageIdentity;
+  if (sameApplicationRoot(identity, installation.verification.identity)) throw new Error('The obsolete path names the current installed app.');
+  return identity;
+}
+
+function assertSameCleanupInstallation(home, installation) {
+  const current = readVerifiedCleanupInstallation(home);
+  if (JSON.stringify(current) !== JSON.stringify(installation)) throw new Error('The current native installation changed during disposal.');
+  return current;
+}
+
+async function removeTerminalRuntimeBundle(journal, kind, readInstall = () => readVerifiedCleanupInstallation(journal.binding.home)) {
+  const target = stagedInstallPaths(journal.binding)[kind];
+  if (!fs.lstatSync(target, { throwIfNoEntry: false })) return false;
+  const installation = readInstall();
+  const identity = bundleCleanupIdentity(journal, target, kind, installation);
+  await removeObsoleteBundle(journal, kind, target, identity, () => {
+    if (JSON.stringify(readInstall()) !== JSON.stringify(installation)) throw new Error('The current native installation changed during disposal.');
+  });
+  return true;
+}
+
+/** Bundle-only disposal leaves archival journals, receipts and hook adoption untouched. */
+export async function reconcileTerminalRuntimeBundles(home, { apply = false } = {}) {
+  home = path.resolve(home);
+  const installation = readVerifiedCleanupInstallation(home);
+  const { bundleRoot } = installation;
+  const directory = path.dirname(bundleRoot);
+  const readInstall = () => {
+    if (!apply) return installation;
+    const current = assertSameCleanupInstallation(home, installation);
+    const lock = readRuntimeHandoffLock(home);
+    if (lock) throw new Error(`A runtime handoff still owns installation mutation (${lock.requestId?.slice(0, 8) ?? 'unknown'}).`);
+    return current;
+  };
+  const results = [];
+  for (const name of fs.readdirSync(directory).sort()) {
+    const match = /^\.Mandible-([A-Za-z0-9_-]+)\.(previous|staging)\.app$/.exec(name);
+    if (!match) continue;
+    const [, scope, kind] = match;
+    const target = path.join(directory, name);
+    const file = path.join(homeDirectory(home), 'handoff', scope, 'journal.json');
+    const subject = { kind, path: target, journal: file };
+    try {
+      const journal = readBundleCleanupJournal(home, file);
+      const identity = bundleCleanupIdentity(journal, target, kind, installation);
+      if (!apply) {
+        await inspectObsoleteBundle(journal, kind, target, identity);
+        results.push({ ...subject, status: 'eligible' });
+        continue;
+      }
+      const removed = await withRuntimeObservation(journal, async () => {
+        const current = readBundleCleanupJournal(home, file);
+        if (journalState(current) !== journalState(journal)) throw new Error('Bundle custody changed before cleanup.');
+        return removeTerminalRuntimeBundle(current, kind, readInstall);
+      });
+      results.push({ ...subject, status: removed ? 'removed' : 'gone' });
+    } catch (error) {
+      results.push({ ...subject, status: 'blocked',
+        reason: error.code === 'ENOENT' ? 'Bundle or matching journal disappeared, or the journal is absent.' : error.message,
+        ...(error.processes?.length ? { processes: error.processes } : {}) });
+    }
+  }
+  const active = readRuntimeHandoffLock(home);
+  return { apply, installation: bundleRoot, active: active ? { requestId: active.requestId, phase: active.phase } : null, results };
 }
 /**
  * What a pending cleanup waits for: its blockers, with only the blocking
@@ -1265,8 +1406,8 @@ export async function closeQuiescentRuntimeHandoff(home, { actor } = {}, { fence
 
 /**
  * Operator retirement of a failed handoff lock. Only the exact failed owner is
- * released; its journal, staged material and logs stay in place as evidence,
- * and the lock itself moves beside them with a retirement record.
+ * released. Its journal and logs stay as evidence and the lock itself moves
+ * beside them with a retirement record. Owned unused staging is disposable.
  */
 export async function retireFailedRuntimeHandoff(home, { bindingDigest: expected, actor, reason }) {
   if (typeof expected !== 'string' || !/^[0-9a-f]{64}$/.test(expected)) throw new Error('Retirement requires the exact lock binding digest.');
@@ -1296,14 +1437,23 @@ export async function retireFailedRuntimeHandoff(home, { bindingDigest: expected
     const retirementFile = path.join(dir, 'retirement.json');
     const archivedLock = path.join(dir, 'retired-active.json');
     if (fs.existsSync(archivedLock)) throw new Error('Retirement lock archive already exists; preserving it.');
-    const finishRetirement = retirement => {
+    const finishRetirement = async retirement => {
       assertObservationLease(journal);
       fs.renameSync(file, archivedLock);
       for (const directory of [path.dirname(file), dir]) {
         const fd = fs.openSync(directory, 'r');
         try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
       }
-      return retirement;
+      if (!path.isAbsolute(journal.binding.nativeApp ?? '')) return retirement;
+      try {
+        const retired = readBundleCleanupJournal(home, journalPath);
+        return await removeTerminalRuntimeBundle(retired, 'staging')
+          ? { ...retirement, stageCleanup: { state: 'complete' } }
+          : retirement;
+      } catch (error) {
+        return { ...retirement, stageCleanup: { state: 'pending', reason: error.message,
+          ...(error.processes?.length ? { processes: error.processes } : {}) } };
+      }
     };
     const prior = readRuntimeHandoffRetirement(journalPath);
     if (prior) return finishRetirement(prior.retirement);
@@ -1420,9 +1570,121 @@ export async function activateStagedRuntime(journal, { prepare, install = instal
     const ready = await readControllerEvidence(journal, 'handoff-verify', false, { until: budget.until, awaitReady: true }, invokeControl);
     scope.startupEpoch ??= ready.process?.startupEpoch;
     saveEffect(journal, 'services', { readyAt: journal.attempt.effects.services.readyAt ?? now() });
-    await desktop(journal);
+    await desktop(journal, scope.startupEpoch);
     return observe(journal, { until: budget.until, control: invokeControl, prepared,
       context: scope.context, assertHeld: preparedLease(journal) });
+  });
+}
+
+function completeRuntimeReceipt(journal, { packageSha256, ...observation }, desktop, now, recovery) {
+  unchangedJournal(journal);
+  const completedAt = now();
+  const receipt = { ...observation, schema: 'mandible-runtime-receipt@2',
+    approved: { reference: journal.binding.acceptedRelease.reference, packageSha256,
+      publicationEvidence: journal.binding.publicationEvidence }, bindingDigest: journal.bindingDigest,
+    attemptId: journal.attempt.id, desktop, completedAt };
+  save(journal, { phase: 'complete', drainReady: null, ...(recovery ? { paintedRecovery: recovery } : {}),
+    attempt: { ...journal.attempt, ...(recovery ? { effects: { ...journal.attempt.effects, desktop } } : {}), state: 'complete', completedAt, receipt,
+      receiptDigest: hash(JSON.stringify(receipt)), fence: { fencedAt: completedAt, reason: 'terminal-completion' } } });
+}
+
+/** Inspect a failed attempt that installed and started its exact services before the desktop receipt was written. */
+export async function previewPaintedRuntimeHandoff(journal, {
+  guard = () => {}, until = Date.now() + 15_000,
+  verifyPublication = publication, prepare = prepareAcceptedApplication,
+  inspect = async (binding, options) => (await import('./local-runtime.mjs')).verifyHandoffDefinitions(binding, options),
+} = {}) {
+  validateJournal(journal);
+  const { binding, attempt } = journal;
+  const { prepare: staging, drain, replace, services, desktop } = attempt?.effects ?? {};
+  if (!binding.acceptedRelease || !binding.desktopWasRunning || attempt?.state !== 'failed'
+      || attempt.fence || journal.mutationFence || journal.phase !== 'failed'
+      || !drain?.exitedAt || !replace?.completedAt || !services?.readyAt
+      || !['backend', 'gateway'].every(role => services.processes?.[role]?.pid && services.processes[role].startedAt)
+      || desktop?.kind !== 'replaced' || !Number.isSafeInteger(desktop.issuedAt) || !Number.isSafeInteger(desktop.launchedAt)
+      || desktop.launchedAt < desktop.issuedAt || !/^[a-f0-9]{32}$/.test(desktop.token ?? '')
+      || !Array.isArray(desktop.prior) || typeof journal.database !== 'string' || activationDatabase(binding) !== path.resolve(journal.database)) {
+    throw new Error('Recovery requires a failed installed attempt with captured services and a launched successor desktop.');
+  }
+  const state = journalState(journal);
+  const assertCurrent = () => {
+    guard();
+    runtimeObservationTimeout(until);
+    assertActiveOwnerRecord(journal);
+    if (journalState(readJournalFile(binding.home, binding.requestId, binding.executionId)) !== state) {
+      throw observationFailure('observation_changed', 'Runtime recovery journal changed.');
+    }
+  };
+  assertCurrent();
+  await verifyPublication(journal);
+  const prepared = prepare(binding, { until, attemptId: attempt.id, assertHeld: assertCurrent,
+    phase: 'installed', stageIdentity: staging?.stageIdentity });
+  const application = preparedApplicationContext(prepared, binding);
+  const api = await import('./local-runtime.mjs');
+  const context = api.createHandoffContext({ home: binding.home, accountHome: binding.accountHome,
+    domain: binding.domain, bundleRoot: binding.nativeApp, bundleIdentifier: application.bundleIdentifier });
+  const owner = readBundleOwner(context);
+  if (!application.installed || desktop.executionSha256 !== desktopExecutionDigest(application.release)
+      || owner?.bundleRoot !== application.app || owner.installationId !== binding.installationId
+      || owner.acceptedRelease !== binding.acceptedRelease.reference || owner.generation !== application.release.provenance.commit
+      || owner.sourceDigest !== application.release.provenance.source_digest
+      || owner.verification?.packageSha256 !== application.digest) throw new Error('Installed bundle ownership differs from the approved update.');
+  assertInstalledApplicationVerification(application.resources, owner.verification);
+  const evidence = await inspect(binding, { context, prepared, assertHeld: assertCurrent, until,
+    expectedProcesses: services.processes, expectedServing: true });
+  const candidates = desktopIdentities(binding.nativeApp, `${path.basename(path.dirname(journalFile(binding)))}:${desktop.token}`)
+    .filter(process => process.installedImage);
+  const [successor] = candidates;
+  const epoch = evidence.process.startupEpoch;
+  const launched = Date.parse(successor?.startedAt);
+  if (candidates.length !== 1 || !Number.isFinite(launched) || launched < Math.floor(desktop.issuedAt / 1000) * 1000
+      || launched > Date.now() || [desktop.identity, desktop.observed].some(recorded => recorded && !sameDesktopImage(recorded, successor))
+      || !replacementPaint(journal, desktop, successor, epoch)) {
+    throw new Error('The exact successor desktop has not reported readiness.');
+  }
+  assertCurrent();
+  const observation = { packageSha256: application.digest, installed: { root: application.app, identity: application.identity },
+    services: evidence.processes, startup: { epoch, generation: evidence.health.instance.backend_generation,
+      database: path.resolve(evidence.health.instance.db_path) }, diagnostics: { daemonLog: evidence.daemonLog } };
+  const { size: _size, ...daemonLog } = evidence.daemonLog;
+  const liveDigest = hash(JSON.stringify([{ ...observation, diagnostics: { daemonLog } }, successor]));
+  const proof = hash(JSON.stringify([state, liveDigest]));
+  const predecessors = runningPredecessorDesktops(journal, desktop).map(process => process.pid);
+  if (desktop.prior.some(process => startedAt(process.pid) === process.startedAt && !predecessors.includes(process.pid))) {
+    throw new Error('A living predecessor desktop could not be qualified for retirement.');
+  }
+  assertCurrent();
+  return { proof, liveDigest, attemptId: attempt.id, observation, successor, predecessors };
+}
+
+/** Complete the original painted attempt under its exact installation and observation leases. */
+export async function completePaintedRuntimeHandoff(journal, { proof, actor, guard = () => {} }, options = {}) {
+  if (!/^[a-f0-9]{64}$/.test(proof ?? '') || !actor?.user_id) throw new Error('Recovery requires a dry-run proof and attributed actor.');
+  return withRuntimeObservation(journal, async () => {
+    unchangedJournal(journal);
+    const until = Date.now() + 15_000;
+    return withRuntimeBudget(() => until, async () => {
+      const check = () => { guard(); assertObservationLease(journal); exactActiveOwner(journal); };
+      const preview = await previewPaintedRuntimeHandoff(journal, { ...options, guard: check, until });
+      if (preview.proof !== proof) throw new Error('The installed recovery observations changed after the dry run.');
+      check();
+      if (!journal.attempt.effects.desktop.identity) {
+        saveEffect(journal, 'desktop', { identity: preview.successor, confirmedAt: Date.now() });
+      }
+      const desktop = journal.attempt.effects.desktop;
+      retirePredecessorDesktop(journal, desktop, check);
+      while (desktop.prior.some(process => startedAt(process.pid) === process.startedAt)) {
+        check();
+        await sleep(Math.min(25, runtimeObservationTimeout(until)));
+      }
+      const observed = await previewPaintedRuntimeHandoff(journal, { ...options, guard: check, until });
+      if (observed.liveDigest !== preview.liveDigest || observed.predecessors.length) throw new Error('The running desktop processes changed during recovery.');
+      const at = Date.now();
+      check();
+      completeRuntimeReceipt(journal, observed.observation, { ...desktop, identity: observed.successor, confirmedAt: at, completedAt: at },
+        () => at, { actor, at, proof, failedAt: journal.attempt.failedAt, observation: journal.attempt.lastObservation });
+      return journal;
+    });
   });
 }
 
@@ -1480,17 +1742,11 @@ export async function runRuntimeHandoffWorker(file, {
         throw new Error('The signed publication and native service target different ledger databases.');
       }
       await verifyPublication(journal);
-      const { packageSha256, ...observation } = await activateStagedRuntime(journal, {
+      const observation = await activateStagedRuntime(journal, {
         prepare, install, control, desktop, observe, validateGateway, validateDaemon,
         context: context ?? (install === installAcceptedApplication ? undefined : {}), now, wait, budget,
       });
-      unchangedJournal(journal);
-      const currentReceipt = { ...observation, schema: 'mandible-runtime-receipt@2',
-        approved: { reference: journal.binding.acceptedRelease.reference, packageSha256,
-          publicationEvidence: journal.binding.publicationEvidence }, bindingDigest: journal.bindingDigest,
-        attemptId: journal.attempt.id, desktop: journal.attempt.effects.desktop ?? { required: false }, completedAt: now() };
-      save(journal, { phase: 'complete', drainReady: null, attempt: { ...journal.attempt, state: 'complete', completedAt: now(), receipt: currentReceipt,
-        receiptDigest: hash(JSON.stringify(currentReceipt)), fence: { fencedAt: now(), reason: 'terminal-completion' } } });
+      completeRuntimeReceipt(journal, observation, journal.attempt.effects.desktop ?? { required: false }, now);
     }); } catch (error) {
       assertObservationLease(journal);
       unchangedJournal(journal);
@@ -1516,7 +1772,13 @@ export async function runRuntimeHandoffWorker(file, {
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [command, file, expected, actor] = process.argv.slice(2);
-  (command === 'cleanup' ? cleanupRuntimeHandoff(file).catch(error => { if (error.code !== 'observer_busy') throw error; process.stderr.write(`${error.message}\n`); process.exitCode = 75; }) : ['recovery-start', 'recovery-desktop'].includes(command) ? (command === 'recovery-start' ? startFailedRuntimeHandoff : restoreFailedRuntimeHandoffDesktop)(file, { bindingDigest: expected, actor: JSON.parse(actor) }).then(j => {
+  (command === 'cleanup-bundles' ? (async () => {
+    if (!path.isAbsolute(file ?? '') || expected !== undefined && expected !== '--apply' || actor) {
+      throw new Error('Usage: runtime-handoff.mjs cleanup-bundles <absolute-installation-home> [--apply]');
+    }
+    const result = await reconcileTerminalRuntimeBundles(file, { apply: expected === '--apply' });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  })() : command === 'cleanup' ? cleanupRuntimeHandoff(file).catch(error => { if (error.code !== 'observer_busy') throw error; process.stderr.write(`${error.message}\n`); process.exitCode = 75; }) : ['recovery-start', 'recovery-desktop'].includes(command) ? (command === 'recovery-start' ? startFailedRuntimeHandoff : restoreFailedRuntimeHandoffDesktop)(file, { bindingDigest: expected, actor: JSON.parse(actor) }).then(j => {
     process.stdout.write(`${JSON.stringify({ phase: j.phase, recoveryStart: j.recoveryStart })}\n`);
   }) : command === 'worker' ? runRuntimeHandoffWorker(file).then(j => { if (workerRunsAgain(j)) process.exitCode = 75; }) : command === 'arm' ? armRuntimeHandoff(path.resolve(file || process.cwd())).then(j => {
     if (j) { process.stderr.write(`MANDIBLE_RUNTIME_HANDOFF_PENDING:${j.bindingDigest}\n`); process.exitCode = 75; }

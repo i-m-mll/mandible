@@ -7060,7 +7060,7 @@ export class AuthQueue {
    * Operator-initiated convergence retry: grant one more attempt to the failed
    * hooks of a merged request and run them. Never re-runs the merge.
    */
-  async retryHookConvergence(requestId: string, hookId?: string, recovery?: { mode: "verify-current"; actor: AuthLifecycleActor }): Promise<AuthConvergence & { verification?: RuntimeVerificationResult; supersession?: AuthGoLiveSupersessionReport }> {
+  async retryHookConvergence(requestId: string, hookId?: string, recovery?: { mode: "verify-current"; actor: AuthLifecycleActor; paintedProof?: string }): Promise<AuthConvergence & { verification?: RuntimeVerificationResult; supersession?: AuthGoLiveSupersessionReport }> {
     const finishObservation = this.beginObservation();
     try {
       this.requireExternalEffects("Hook convergence retry");
@@ -7096,7 +7096,7 @@ export class AuthQueue {
         let verification: RuntimeVerificationResult;
         try {
           verification = await this.hookManager.verifyCurrentRuntimeHandoff(request, recovery.actor, guard,
-            (binding, proof) => this.adoptRuntimePublication(binding, proof));
+            (binding, proof) => this.adoptRuntimePublication(binding, proof), recovery.paintedProof);
         } catch (error) {
           if (error instanceof AuthQueueError) throw error;
           const detail = error instanceof Error ? error.message : String(error);

@@ -95,6 +95,9 @@ export interface RuntimeHandoffClient {
   readRuntimeHandoff(home: string, requestId: string, executionId: string): RuntimeHandoffJournal | null | Promise<RuntimeHandoffJournal | null>;
   readRuntimeHandoffPhase(home: string, requestId: string, executionId: string): string | undefined | Promise<string | undefined>;
   verifyRuntimeHandoffReceipt(journal: RuntimeHandoffJournal, options: { probe: boolean }): Promise<unknown>;
+  completePaintedRuntimeHandoff?(journal: RuntimeHandoffJournal, options: {
+    proof: string; actor: unknown; guard: () => void;
+  }): Promise<RuntimeHandoffJournal>;
   runtimeHandoffDrainIdentity?(journal: RuntimeHandoffJournal): string | null;
   acknowledgeRuntimeHandoff(binding: RuntimePublicationBinding, options?: { verifiedReceipt?: unknown; acceptedReceiptDigest?: string }): Promise<unknown>;
   runtimeHandoffNeedsAcknowledgment?(journal: RuntimeHandoffJournal): boolean | Promise<boolean>;
@@ -572,8 +575,9 @@ export class AuthHookManager {
   }
 
   async verifyCurrentRuntimeHandoff(
-    request: Pick<AuthRequest, 'id'>, _actor: unknown, guard: () => void,
+    request: Pick<AuthRequest, 'id'>, actor: unknown, guard: () => void,
     adopt: (binding: RuntimePublicationBinding, proof: Awaited<ReturnType<typeof verifyRuntimeHandoffAuthority>>) => Promise<() => void>,
+    paintedProof?: string,
   ): Promise<RuntimeVerificationResult> {
     guard();
     if (this.verificationInFlight.has(request.id)) return { outcome: 'pending', reason: 'Runtime verification is already in progress.' };
@@ -582,7 +586,12 @@ export class AuthHookManager {
       const run = this.getRun(request.id, MANDIBLE_REBUILD_HOOK_ID);
       if (!run?.runtime_delivery) throw new Error('Request has no durable runtime-delivery intent.');
       const runtime: RuntimeHandoffClient = this.handoffClient ?? await import(new URL('../scripts/runtime-handoff.mjs', import.meta.url).href);
-      const result = await this.consumeRuntimeDelivery(runtime, run, await this.readDeliveryJournal(runtime, run), adopt, guard, true);
+      let journal = await this.readDeliveryJournal(runtime, run);
+      if (paintedProof && journal.attempt?.state === 'failed') {
+        if (!runtime.completePaintedRuntimeHandoff) throw new Error('Painted runtime recovery is unavailable.');
+        journal = await runtime.completePaintedRuntimeHandoff(journal, { proof: paintedProof, actor, guard });
+      }
+      const result = await this.consumeRuntimeDelivery(runtime, run, journal, adopt, guard, true);
       return result.outcome === 'confirmed' ? { outcome: 'confirmed' } : result;
     } catch (error) {
       if (!observationPending(error)) throw error;
