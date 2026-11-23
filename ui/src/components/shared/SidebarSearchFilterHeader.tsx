@@ -29,6 +29,7 @@ type SidebarSearchFilterHeaderAction = {
   tip: string;
   disabled: boolean;
   busy: boolean;
+  pressed?: boolean;
   onClick: () => void;
 };
 
@@ -125,7 +126,7 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
               type="button"
               className="sidebar-search-filter__clear"
               aria-label={props.clearAriaLabel}
-              title={props.clearAriaLabel}
+              {...appTip(props.clearAriaLabel)}
               onClick={() => props.onValueChange('')}
             >
               <Icon name="clearSearch" />
@@ -152,14 +153,15 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
             ) : null}
           </button>
         ) : null}
-        {props.actions?.map(({ icon, label, tip, disabled, busy, onClick }) => (
+        {props.actions?.map(({ icon, label, tip, disabled, busy, pressed, onClick }) => (
           <button
             key={label}
             type="button"
-            className="sidebar-search-filter__trigger"
+            className={`sidebar-search-filter__trigger${pressed ? ' sidebar-search-filter__trigger--active' : ''}`}
             aria-label={label}
             aria-disabled={disabled || undefined}
             aria-busy={busy || undefined}
+            aria-pressed={pressed}
             {...appTip(tip)}
             onClick={disabled ? undefined : onClick}
           >

@@ -1,6 +1,6 @@
 import { type ComponentChildren, type RefObject } from 'preact';
 import { useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import { ArrowUp, Check, History, Link, MessageSquare, Pencil, Trash2, UserRound, X } from 'lucide-preact';
+import { ArrowUp, Check, History, Link, MessageSquare, Pencil, Trash2, UserRound } from 'lucide-preact';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import { formatRelativeTime } from '../../lib/format';
@@ -125,11 +125,12 @@ export function DocumentCommentsDrawer({ controller, threads, onNavigate }: {
   return <div ref={menu} id={controller.drawerId} role="dialog" aria-label="Comments" popover="manual" style={style}
     className="sidebar-search-filter__panel sidebar-search-filter__panel--popover app-anchored-menu document-comments__drawer">
     <SidebarSearchFilterHeader value={search} onValueChange={setSearch} placeholder="Search comments" searchAriaLabel="Search comments"
-      clearAriaLabel="Clear search" captureFindShortcut={false} actionSlot={<>
-        <ContextualAction presentation="compact" aria-pressed={showResolved} aria-label="Show resolved" {...appTip('Show resolved')}
-          onClick={() => setShowResolved(!showResolved)}><Check className="app-icon" aria-hidden="true" /></ContextualAction>
-        <CommentAction label="Close" icon={X} onClick={() => controller.setOpen(false)} />
-      </>} />
+      clearAriaLabel="Clear search" captureFindShortcut={false} actions={[
+        { icon: 'menuSelected', label: 'Show resolved', tip: 'Show resolved', disabled: false, busy: false,
+          pressed: showResolved, onClick: () => setShowResolved(!showResolved) },
+        { icon: 'dismiss', label: 'Close', tip: 'Close', disabled: false, busy: false,
+          onClick: () => controller.setOpen(false) },
+      ]} />
     {error && <DetailPaneNotice severity="error" density="compact">{error}</DetailPaneNotice>}
     {items.filter(thread => thread.range).map(row)}
     {detached.length > 0 && <div className="sidebar-search-filter__section">
