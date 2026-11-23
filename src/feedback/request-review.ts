@@ -215,10 +215,13 @@ export function requestReviewVersions(db: Db, requestId: string): RequestReviewV
   });
 }
 
-type RequestThreadEvent = ReviewThreadEvent & { request_ref: string };
+type CommentAuthor = { display_name: string; kind: string; slug: string };
+type RequestThreadEvent = ReviewThreadEvent & { request_ref: string; author: CommentAuthor | null };
 type RequestReviewThread = { short_id: string; resolved: boolean; events: RequestThreadEvent[] };
 
 function projectRequestThreads(db: Db, notes: readonly ReviewAnnotation[]) {
+  const readAuthor = db.prepare("SELECT display_name, kind, slug FROM users WHERE id = ?");
+  const authors = new Map<string, CommentAuthor | null>();
   const threads = reviewThreadEvents(db, notes.map(note => note.annotation_event_id));
   const requestIds = new Map<string, string>();
   const requestRef = (roundId: string) => {
@@ -232,7 +235,10 @@ function projectRequestThreads(db: Db, notes: readonly ReviewAnnotation[]) {
   return (note: ReviewAnnotation): RequestReviewThread => {
     const events = threads.get(note.annotation_event_id) ?? [];
     return { short_id: note.annotation_event_id.slice(0, 8), resolved: reviewThreadResolved(events),
-      events: events.map(event => ({ ...event, request_ref: requestRef(event.round_id) })) };
+      events: events.map(event => {
+        if (!authors.has(event.actor_user_id)) authors.set(event.actor_user_id, readAuthor.get(event.actor_user_id) as CommentAuthor | null ?? null);
+        return { ...event, request_ref: requestRef(event.round_id), author: authors.get(event.actor_user_id) ?? null };
+      }) };
   };
 }
 
@@ -252,6 +258,7 @@ export type RequestReviewComment = RequestReviewNote & {
   anchor: CarriedReviewRange;
   origin_request_id: string;
   thread: RequestReviewThread;
+  author: CommentAuthor | null;
 };
 
 function requestReviewRoots(db: Db, request: AuthRequest, reviewerId: string | null) {
@@ -289,8 +296,14 @@ export async function readRequestReview(db: Db, request: AuthRequest, reviewerId
   const editable_files = canEditRequestFiles(request) ? request.change_report!.files.flatMap((file, index) =>
     canEditRequestFile(file) ? [{ index, path: file.new_path }] : []) : [];
   const thread = projectRequestThreads(db, [...notes, ...prior.map(({ comment }) => comment)]);
+  const authorRows = db.prepare(`SELECT e.id, u.display_name, u.kind, u.slug
+    FROM briefing_annotation_events e JOIN users u ON u.id = e.actor_user_id
+    WHERE e.id IN (SELECT value FROM json_each(?))`).all(
+    JSON.stringify([...notes, ...prior.map(({ comment }) => comment)].map(comment => comment.annotation_event_id)),
+  ) as Array<CommentAuthor & { id: string }>;
+  const authorById = new Map(authorRows.map(({ id, ...author }) => [id, author]));
   const annotations: RequestReviewComment[] = notes.map(comment => ({
-    ...comment, origin_request_id: request.id, anchor: { ...comment, status: "preserved" }, thread: thread(comment),
+    ...comment, origin_request_id: request.id, author: authorById.get(comment.annotation_event_id) ?? null, anchor: { ...comment, status: "preserved" }, thread: thread(comment),
   }));
   const readSources = new Map<string, Promise<string | null>>();
   const read = (source: RequestBinding["source"]) => {
@@ -321,7 +334,7 @@ export async function readRequestReview(db: Db, request: AuthRequest, reviewerId
           ? carryReviewLines(before, after, comment) : carryReviewRanges(before, after)(comment);
       }
     }
-    annotations.push({ ...comment, origin_request_id: origin, anchor, thread: thread(comment),
+    annotations.push({ ...comment, origin_request_id: origin, author: authorById.get(comment.annotation_event_id) ?? null, anchor, thread: thread(comment),
       ...(candidate && anchor.status !== "detached"
         ? { document_binding_id: candidate.id, source: candidate.source } : {}) });
   }

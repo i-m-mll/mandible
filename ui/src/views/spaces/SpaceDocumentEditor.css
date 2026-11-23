@@ -33,16 +33,11 @@
   padding: var(--space-3) var(--space-5);
 }
 
-.space-document__outline,
-.space-document__workspace > .review-comments {
+.space-document__outline {
   flex: 0 0 auto;
   width: min(16rem, 32%);
   overflow: auto;
   padding: var(--space-2);
-}
-
-.space-document__workspace[data-comments-open="false"] > .review-comments {
-  width: auto;
 }
 
 .space-document__outline-row > button:first-child {

@@ -158,6 +158,8 @@ describe("artifact drafts", () => {
     expect((await post(v2.version.id, { kind: "edit", id, body: "Verified" })).statusCode).toBe(200);
     expect((await post(v2.version.id, { kind: "resolve", id })).statusCode).toBe(200);
     expect((await get(v2.version.id, true)).payload.notes).toMatchObject([{ id, resolved: true }]);
+    expect((await post(v2.version.id, { kind: "reopen", id })).statusCode).toBe(200);
+    expect((await get(v2.version.id, true)).payload.notes).toMatchObject([{ id, resolved: false }]);
 
     const original = await get(v1.series.id, false);
     const stub = await startStubDaemon(request => request.method === "GET" && request.url.endsWith("/notes")

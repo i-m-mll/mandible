@@ -25,6 +25,9 @@ export type MarkdownDocumentHandle = {
   select: (range: MarkdownSourceRange, focus?: boolean) => void;
   edit: (edits: readonly MarkdownSourceEdit[], selection?: MarkdownSourceRange) => void;
   positionAt: (x: number, y: number) => number | null;
+  bounds: (range: MarkdownSourceRange) => DOMRect | null;
+  reveal: (range: MarkdownSourceRange, focus?: boolean) => void;
+  previewComment?: (range: MarkdownSourceRange | null) => void;
 };
 
 type MarkdownDocumentProps = {
@@ -70,6 +73,15 @@ const rangeDecorations = StateField.define<DecorationSet>({
     (effect) => effect.is(setRangeDecorations),
   )?.value ?? current.map(transaction.changes),
   provide: (field) => EditorView.decorations.from(field),
+});
+
+const setCommentPreview = StateEffect.define<DecorationSet>();
+const commentPreview = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update: (current, transaction) => transaction.effects.find(
+    effect => effect.is(setCommentPreview),
+  )?.value ?? current.map(transaction.changes),
+  provide: field => EditorView.decorations.from(field),
 });
 
 function commentRanges(state: EditorState, decorations: readonly MarkdownRangeDecoration[] = []) {
@@ -139,6 +151,30 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
       if (focus) editor.focus();
       editor.dispatch({ selection: EditorSelection.range(from, to), scrollIntoView: true });
     },
+    bounds(range) {
+      const editor = view.current;
+      if (!editor) return null;
+      const { from, to } = markdownEditorRange(editor.state, range);
+      const start = editor.coordsAtPos(from, 1);
+      if (!start) return null;
+      const end = editor.coordsAtPos(to, -1);
+      const right = end && Math.abs(start.top - end.top) < start.bottom - start.top ? end.right : start.right;
+      return DOMRect.fromRect({ x: Math.min(start.left, right), y: start.top,
+        width: Math.abs(right - start.left), height: start.bottom - start.top });
+    },
+    previewComment(range) {
+      const editor = view.current;
+      if (!editor) return;
+      const marks = range ? commentRanges(editor.state, [{ ...range, id: 'comment-preview', className: 'review-range' }]) : Decoration.none;
+      editor.dispatch({ effects: setCommentPreview.of(marks) });
+    },
+    reveal(range, focus = false) {
+      const editor = view.current;
+      if (!editor) return;
+      if (focus) editor.focus();
+      const { from } = markdownEditorRange(editor.state, range);
+      editor.dispatch({ effects: EditorView.scrollIntoView(from, { y: 'nearest' }) });
+    },
     edit(edits, selection) {
       const editor = view.current;
       if (!editor || editor.state.readOnly || !edits.length) return;
@@ -160,7 +196,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
         doc: initial.value,
         extensions: [
           exactMarkdownSource(initial.value),
-          history(), rangeDecorations, compartments.editing.of(initial.editingExtension ?? []),
+          history(), rangeDecorations, commentPreview, compartments.editing.of(initial.editingExtension ?? []),
           compartments.directives.of(initial.directives ? markdownDirectives.of(initial.directives) : []),
           compartments.previewPolicy.of(initial.previewPolicy ? markdownPreviewPolicy.of(initial.previewPolicy) : []),
           initial.syntax === 'markdown' ? [

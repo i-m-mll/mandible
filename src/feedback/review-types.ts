@@ -110,4 +110,5 @@ export type ArtifactDraftStandingNote = ReviewRange & {
   anchor: CarriedReviewRange;
 };
 
-export type StandingNotePresentation = Pick<StandingNote, "id" | "quote" | "anchor" | "author" | "body" | "resolved" | "can_edit">;
+export type StandingNotePresentation = Pick<StandingNote, "id" | "quote" | "anchor" | "author" | "body" | "resolved" | "can_edit">
+  & Partial<Pick<StandingNote, "created_at">>;
