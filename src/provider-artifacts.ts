@@ -5675,7 +5675,7 @@ export function mutateArtifactDraftNote(db: Db, ref: string, actor: { id: string
       const note = notes.find(note => note.id === operation.id && note.actor_user_id === actor.id);
       if (!note) return { ok: false, reason: "stale_annotation" };
       notes = notes.flatMap(item => item !== note ? [item] : operation.kind === "retract" ? []
-        : [{ ...note, ...(operation.kind === "edit" ? { body: operation.body } : { resolved: true }) }]);
+        : [{ ...note, ...(operation.kind === "edit" ? { body: operation.body } : { resolved: operation.kind === "resolve" }) }]);
     }
     const artifactId = canonicalArtifactIdForSeriesRef(draft.series_id);
     mutateArtifactRecord(db, "artifact_drafts", artifactId, () =>
