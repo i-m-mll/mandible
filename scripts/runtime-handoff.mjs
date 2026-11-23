@@ -233,7 +233,7 @@ function retainedDesktopDigest(binding, process) {
   if (!fs.existsSync(file)) return null;
   const prior = validateJournal(JSON.parse(fs.readFileSync(file, 'utf8')));
   if (!prior.attempt?.receipt || prior.binding.nativeApp !== binding.nativeApp
-      || acceptedInstallPaths(prior.binding).previous !== process.imageRoot) return null;
+      || stagedInstallPaths(prior.binding).previous !== process.imageRoot) return null;
   const desktop = currentReceipt(prior).desktop;
   return desktop?.kind === 'retained' && sameDesktopImage(desktop.identity, process) && /^[a-f0-9]{64}$/.test(desktop.executionSha256)
     ? desktop.executionSha256 : null;
