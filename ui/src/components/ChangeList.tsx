@@ -277,6 +277,7 @@ export function ChangeInventoryList({
         const name = file.new_path ?? file.old_path ?? 'Changes';
         const viewed = view.viewed[key] === fileRevision;
         return <SidebarItemRow key={key} label={name} selectionLabel={name} selected={index === selectedIndex}
+          className="sidebar-item-row--fixed-badges"
           ariaCurrent={index === selectedIndex ? 'true' : undefined} onSelect={() => filePicker.onSelect(index)}
           badges={<>{renderFileStatus?.(file)}{counts(file)}</>}
           actions={<ContextualAction aria-label={`Viewed ${name}`} {...appTip('Mark viewed')}

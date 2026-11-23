@@ -28,6 +28,8 @@ export type DetailPaneHeaderSelector = {
   selectedCanonicalRef: string;
   /** Ordinary ambiguity-safe clipboard ref. Defaults to compacting selectedCanonicalRef. */
   selectedCopyRef?: string;
+  /** When identity already owns the same copy affordance. */
+  copyReference?: false;
   copyLabel?: string;
 };
 
@@ -173,10 +175,10 @@ export function DetailPaneHeader({
               {selector && (
                 <div className="detail-pane-header__selector" role="group" aria-label={selector.label}>
                   <div className="detail-pane-header__selector-control">{selector.control}</div>
-                  <CopyRefButton
+                  {selector.copyReference !== false && <CopyRefButton
                     value={selector.selectedCopyRef ?? shortIdentityRef(selector.selectedCanonicalRef)}
                     label={selector.copyLabel ?? `Copy selected ${selector.label.toLowerCase()} reference`}
-                  />
+                  />}
                 </div>
               )}
             </div>
@@ -230,13 +232,13 @@ export function DetailPaneHeader({
                     <div className="detail-pane-header__selector-control">
                       {selector.control}
                     </div>
-                    <CopyRefButton
+                    {selector.copyReference !== false && <CopyRefButton
                       value={selector.selectedCopyRef ?? shortIdentityRef(selector.selectedCanonicalRef)}
                       label={
                         selector.copyLabel
                         ?? `Copy selected ${selector.label.toLowerCase()} reference`
                       }
-                    />
+                    />}
                   </div>
                 )}
               </div>

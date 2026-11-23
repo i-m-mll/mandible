@@ -1,4 +1,5 @@
 import { useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import type { ComponentChildren } from 'preact';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { appTip } from './AppHoverTips';
 import { DisclosureChevronIcon } from './DisclosureChevronIcon';
@@ -7,8 +8,9 @@ import './ChoiceDropdown.css';
 type Choice = { value: string; label: string };
 
 /** A single-choice popover sharing the app's top-layer positioning and dismissal. */
-export function ChoiceDropdown({ label, prompt, value, choices, disabled = false, hint, onChange }: {
+export function ChoiceDropdown({ label, prompt, value, choices, disabled = false, hint, triggerIcon, onChange }: {
   label: string; prompt: string; value: string; choices: Choice[]; disabled?: boolean; hint?: string;
+  triggerIcon?: ComponentChildren;
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -43,18 +45,19 @@ export function ChoiceDropdown({ label, prompt, value, choices, disabled = false
   return <span className="choice-dropdown" onBlur={event => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) close();
   }}>
-    <button type="button" ref={triggerRef} className="choice-dropdown__trigger" disabled={disabled}
-      aria-label={label} {...appTip(hint ? `${label} · ${hint}` : label)} aria-description={hint} aria-haspopup="listbox" aria-expanded={open} aria-controls={menuId}
+    <button type="button" ref={triggerRef} className={triggerIcon ? 'detail-pane-menu-trigger' : 'choice-dropdown__trigger'} disabled={disabled}
+      aria-label={label} {...appTip(hint ? `${label} · ${hint}` : label)} aria-description={hint}
+      aria-haspopup="listbox" aria-expanded={open} aria-controls={menuId}
       onClick={() => open ? close() : show()}
       onKeyDown={event => {
         if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
         show(event.key === 'Home' ? 0 : event.key === 'End' ? choices.length - 1 : selectedIndex);
       }}>
-      <span className="choice-dropdown__label" data-current={currentLabel ?? prompt} data-prompt={prompt}>
+      {triggerIcon ?? <><span className="choice-dropdown__label" data-current={currentLabel ?? prompt} data-prompt={prompt}>
         <span className={open || !currentLabel ? 'choice-dropdown__prompt' : undefined}>{open ? prompt : currentLabel ?? prompt}</span>
       </span>
-      <DisclosureChevronIcon expanded />
+      <DisclosureChevronIcon expanded /></>}
     </button>
     {open && <div ref={menuRef} id={menuId} role="listbox" aria-label={label} popover="manual"
       className="choice-dropdown__menu app-anchored-menu" style={menuStyle}

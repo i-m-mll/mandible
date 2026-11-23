@@ -217,6 +217,10 @@ export function useAuthReviewDrafts(id: string, review: AuthReviewProjection | n
   };
   return {
     forFile,
+    forPath: (path: string) => {
+      const entry = session.entries.get(path);
+      return entry ? session.file(path, entry.head) : null;
+    },
     fileStatus: (path: string | null) => {
       if (!path) return null;
       const row = session.rows.get(path);
