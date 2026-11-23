@@ -1,4 +1,4 @@
-import { Check, ChevronLeft, ChevronRight, Pencil } from 'lucide-preact';
+import { ArrowUp, Check, ChevronLeft, ChevronRight, Pencil } from 'lucide-preact';
 import { ChoiceDropdown } from '../../components/shared/ChoiceDropdown';
 import { DetailPaneIconAction } from '../../components/shared/DetailPaneIconAction';
 import { DocumentChangeActions } from '../../components/shared/DocumentChangeActions';
@@ -354,18 +354,12 @@ export function BriefingDocumentRenderer({
     && currentAnswerIds.every((id) => round.latest_frozen_membership!.answer_event_ids.includes(id))
     && currentAnnotationIds.every((id) => round.latest_frozen_membership!.annotation_event_ids.includes(id)));
   const emptyNoChange = !draftDiffers && currentAnswerIds.length === 0 && currentAnnotationIds.length === 0;
-  const submitReason = !canMutate
-    ? (round?.directive_binding?.reason || 'Submitting is unavailable for the current identity or instance.')
-    : round?.directive_binding?.status !== 'valid'
-      ? (round?.directive_binding?.reason || 'The directive binding is unavailable.')
-      : contentGate
-        || (pendingSuggestion ? 'Save or cancel the suggestion before submitting.'
-          : requiredIncomplete ? 'Complete the required directives before submitting.'
-          : emptyNoChange ? 'Add an answer or annotation before submitting.'
-            : !draftDiffers && frozenMatches ? 'No answer or annotation changes since your latest submission.'
-              : null);
-
-  const submitDisabled = contentGate === null || busy || clearBusy || Boolean(submitReason);
+  const sendRestriction = !canMutate || round?.directive_binding?.status !== 'valid' || contentGate !== ''
+    ? 'Send unavailable'
+    : pendingSuggestion || busy || clearBusy ? 'Saving…'
+      : requiredIncomplete ? 'Answers required'
+        : emptyNoChange || (!draftDiffers && frozenMatches) ? 'Nothing to send' : null;
+  const submitDisabled = sendRestriction !== null;
 
   const submit = async () => {
     if (!round || !canMutate || busy || clearBusy || pendingSuggestion || contentGate !== '') return;
@@ -512,7 +506,8 @@ export function BriefingDocumentRenderer({
   };
 
   const requestClear = () => {
-    if (!round || busy || clearBusy) return;
+    if (!round || busy || clearBusy || pendingSuggestion) return;
+    setActionsOpen(false);
     if (round.selected_submission_overlay) {
       selectSubmissionOverlay(null);
       return;
@@ -724,6 +719,12 @@ export function BriefingDocumentRenderer({
                 (round.annotations?.length ?? 0) + (round.carried_annotations?.length ?? 0)
                 + (round.standing_notes?.filter(note => !note.resolved).length ?? 0)
               } />}
+              {round.valid && !round.selected_submission_overlay && <DetailPaneIconAction className="briefing-send" label={pendingAnnotations.length ? `Send (${pendingAnnotations.length})` : 'Send'}
+                tip={sendRestriction ?? 'Send'} aria-disabled={submitDisabled} aria-busy={busy}
+                onClick={() => { if (!submitDisabled) void submit(); }}>
+                <ArrowUp className="app-icon" aria-hidden="true" />
+                {pendingAnnotations.length > 0 && <span className="sidebar-search-filter__badge" aria-hidden="true">{pendingAnnotations.length}</span>}
+              </DetailPaneIconAction>}
               <DetailPaneMenuTrigger buttonRef={actionsTriggerRef} label="Briefing actions" expanded={actionsOpen}
                 onClick={() => { setBranchPicker(false); setActionsOpen(open => !open); }} />
               {actionsOpen ? (
@@ -750,6 +751,12 @@ export function BriefingDocumentRenderer({
                       <a role="menuitem" href={artifactDetailHref(displayResourceRef(artifactVersionRef))}
                         onClick={() => setActionsOpen(false)}>Go to artifact version</a>
                     ) : null}
+                    {round.valid && <button type="button" role="menuitem"
+                      disabled={busy || clearBusy || pendingSuggestion || (!round.selected_submission_overlay && pendingAnnotations.length > 0 && !canMutate)}
+                      onClick={requestClear}>Clear</button>}
+                    {resultId && <button type="button" role="menuitem" onClick={() => void copyResultId()}>
+                      {resultCopied ? 'Copied result ID' : 'Copy result ID'}
+                    </button>}
                     {defaultComparisonLabel && (defaultComparison || displayContext?.proposalBundleId && comparisonChoice) &&
                       <button type="button" className="detail-pane-menu__item" role="menuitemradio" aria-checked={!comparisonChoice} onClick={() => chooseComparison('')}>
                         Compare with {defaultComparisonLabel}{!comparisonChoice && <Check className="app-icon" aria-hidden="true" />}
@@ -777,38 +784,6 @@ export function BriefingDocumentRenderer({
       footer={round?.valid ? {
         content: (
           <div className="briefing-footer-content">
-            <div className="briefing-footer-actions">
-              {resultId ? (
-                <button type="button" className="btn btn--sm btn--success briefing-copy-result" onClick={() => void copyResultId()}>
-                  {resultCopied ? 'Copied result ID' : 'Copy result ID'}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="briefing-primary"
-                aria-disabled={submitDisabled}
-                aria-busy={busy}
-                aria-describedby={submitReason ? 'briefing-submit-reason' : undefined}
-                {...appTip(submitReason ?? undefined)}
-                onClick={(event) => { if (submitDisabled && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
-                onKeyDown={(event) => {
-                  if (!submitReason || !requiredIncomplete || (event.key !== 'Enter' && event.key !== ' ')) return;
-                  event.preventDefault();
-                  void submit();
-                }}
-              >
-                Submit
-              </button>
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm briefing-clear"
-                disabled={busy || clearBusy || pendingSuggestion || (!round.selected_submission_overlay && pendingAnnotations.length > 0 && !canMutate)}
-                onClick={requestClear}
-              >
-                Clear
-              </button>
-              {submitReason ? <span id="briefing-submit-reason" className="sr-only">{submitReason}</span> : null}
-            </div>
             {round.submission_overlays.length === 0 ? (
               <div className="briefing-submission-shelf briefing-submission-shelf--inactive">Annotation sets (0)</div>
             ) : (

@@ -159,7 +159,7 @@ describe('copied-preview Briefing publication boundary', () => {
       fireEvent.keyDown(composer, { key: 'Enter' });
       await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Add a comment…' })).toBeNull());
 
-      const submit = screen.getByRole('button', { name: 'Submit' });
+      const submit = screen.getByRole('button', { name: /^Send(?: \(\d+\))?$/ });
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
       fireEvent.click(submit);
       await waitFor(() => expect(mutationResponses).toHaveLength(3));
@@ -208,7 +208,7 @@ describe('copied-preview Briefing publication boundary', () => {
       const comments = await screen.findByRole('dialog', { name: 'Comments' });
       expect(within(comments).getByRole('button', { name: /Final IAB acceptance annotation/ })).toBeTruthy();
       await waitFor(() => expect((screen.getByRole('radio', { name: '4' }) as HTMLInputElement).checked).toBe(true));
-      expect(screen.getByRole('button', { name: 'Submit' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /^Send(?: \(\d+\))?$/ })).toBeTruthy();
       expect(roundOneSnapshot()).toEqual(roundOneBefore);
       expect(readPinnedBytes()).toEqual(pinnedBytes);
       reloadedView.unmount();
