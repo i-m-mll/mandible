@@ -9,14 +9,12 @@ export const AUTH_CHANGE_BREAKDOWN_VIEWS = [
 export type AuthChangeBreakdownView = typeof AUTH_CHANGE_BREAKDOWN_VIEWS[number];
 
 export type AuthChangeBreakdownViewState = {
-  expanded: boolean;
   view: AuthChangeBreakdownView;
   expandedGroups: string[];
   directoryPath: string[];
 };
 
 export const DEFAULT_AUTH_CHANGE_BREAKDOWN_VIEW_STATE: AuthChangeBreakdownViewState = {
-  expanded: true,
   view: 'language',
   expandedGroups: [],
   directoryPath: [],
@@ -53,7 +51,6 @@ export function normalizeAuthChangeBreakdownViewState(
     : defaults.directoryPath;
 
   return {
-    expanded: typeof record.expanded === 'boolean' ? record.expanded : defaults.expanded,
     view: isBreakdownView(record.view) ? record.view : defaults.view,
     expandedGroups,
     directoryPath,

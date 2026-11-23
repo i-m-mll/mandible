@@ -79,7 +79,7 @@ import { useEntityRoute } from '../hooks/useEntityRoute';
 import { EntityRouteState, isUnopenedEntityRoute } from '../components/shared/EntityRouteState';
 import { authChangeBreakdownStorageKey } from './auth-change-breakdown-state';
 import { AUTH_TYPE_META, authStatusPillClass, isFailedLikeStatus } from './auth-presentation';
-import { navigateAuthFile, navigateAuthReviewView, useAuthReviewNavigation, type AuthActionViewState, type AuthInfoSnapshot, type AuthReviewNavigation } from './auth-review-navigation';
+import { navigateAuthFile, navigateAuthReviewView, useAuthReviewNavigation, type AuthBreakdownSnapshot, type AuthReviewNavigation, type AuthReviewView } from './auth-review-navigation';
 
 function TrackedReviewDocuments({ documents }: { documents: import('../../../src/contracts').TrackedBriefingDocument[] }) {
   return <ul>{documents.map(doc => <li key={`${doc.project_id}:${doc.path}`}>
@@ -637,16 +637,12 @@ function AuthActionBundle({
   inFlightActionIds,
   instance,
   onToggleVeto,
-  viewStateRef,
-  initialViewState,
 }: {
   request: AuthRequest;
   actions?: AuthRequestAction[];
   inFlightActionIds: Set<string>;
   instance?: InstanceInfo | null;
   onToggleVeto: (requestId: string, action: AuthRequestAction, vetoed: boolean) => void;
-  viewStateRef?: RefObject<AuthActionViewState>;
-  initialViewState?: AuthActionViewState;
 }): JSX.Element | null {
   const requestId = getAuthId(request);
   const repoId = request.repo ?? '';
@@ -654,15 +650,12 @@ function AuthActionBundle({
     `auth-action-expanded:${requestId}`,
     normalizeExpandedActionIds,
     DEFAULT_EXPANDED_ACTION_IDS,
-    initialViewState?.actionIds,
   );
   const [bundleExpanded, setBundleExpanded] = usePersistedViewState(
     `auth-action-bundle-expanded:${requestId}`,
     (value, defaults) => typeof value === 'boolean' ? value : defaults,
     true,
-    initialViewState?.expanded,
   );
-  if (viewStateRef) viewStateRef.current = { expanded: bundleExpanded, actionIds: expandedActionIds };
   const expandedIds = useMemo(() => new Set(expandedActionIds), [expandedActionIds]);
   const status = getAuthStatus(request);
   const canVeto = status === 'pending';
@@ -898,6 +891,8 @@ function normalizeAuthDescriptionViewState(value: unknown, defaults: Readonly<Au
   };
 }
 
+type AuthDetailView = Exclude<AuthReviewView, 'info'> | 'abstract';
+
 function AuthRequestDetail({
   request,
   history,
@@ -911,8 +906,7 @@ function AuthRequestDetail({
   autoShowConsoleOnApproval = true,
   autoReturnToAbstractOnSuccess = true,
   navigation,
-  restoredInfo,
-  actionViewStateRef,
+  restoredBreakdown,
   onSelectRequest,
 }: {
   request: AuthRequest;
@@ -929,38 +923,30 @@ function AuthRequestDetail({
   autoShowConsoleOnApproval?: boolean;
   autoReturnToAbstractOnSuccess?: boolean;
   navigation: AuthReviewNavigation;
-  restoredInfo?: AuthInfoSnapshot;
-  actionViewStateRef: RefObject<AuthActionViewState>;
+  restoredBreakdown?: AuthBreakdownSnapshot;
 }): JSX.Element {
+  const authType = getAuthType(request);
   useLayoutEffect(() => {
-    if (!restoredInfo) return;
-    const id = getAuthId(request);
-    writePersistedViewState(authChangeBreakdownStorageKey(id), restoredInfo.breakdown);
-    writePersistedViewState(`auth-description-view:${id}`, restoredInfo.description);
-    writePersistedViewState(`auth-spec-expanded:${id}`, restoredInfo.showSpec);
-    writePersistedViewState(`auth-protected-root-expanded:${id}`, restoredInfo.showDirtyNote);
-    writePersistedViewState(`auth-action-expanded:${id}`, restoredInfo.actions.actionIds);
-    writePersistedViewState(`auth-action-bundle-expanded:${id}`, restoredInfo.actions.expanded);
-    for (const [key, position] of Object.entries(restoredInfo.itemOffsets)) writePersistedViewState(key, position);
-  }, [restoredInfo]);
+    if (!restoredBreakdown) return;
+    writePersistedViewState(authChangeBreakdownStorageKey(getAuthId(request)), restoredBreakdown.breakdown);
+    for (const [key, position] of Object.entries(restoredBreakdown.itemOffsets)) writePersistedViewState(key, position);
+  }, [restoredBreakdown]);
   const [descriptionView, setDescriptionView] = usePersistedViewState(
     `auth-description-view:${getAuthId(request)}`,
     normalizeAuthDescriptionViewState,
     DEFAULT_AUTH_DESCRIPTION_VIEW_STATE,
-    restoredInfo?.description,
   );
   const normalizeDisclosure = (value: unknown, expanded: boolean) => typeof value === 'boolean' ? value : expanded;
-  const [showSpec, setShowSpec] = usePersistedViewState(`auth-spec-expanded:${getAuthId(request)}`,
-    normalizeDisclosure, false, restoredInfo?.showSpec);
-  const [showDirtyNote, setShowDirtyNote] = usePersistedViewState(`auth-protected-root-expanded:${getAuthId(request)}`,
-    normalizeDisclosure, true, restoredInfo?.showDirtyNote);
-  const [savedViewMode, setSavedViewMode] = usePersistedViewState<'abstract' | 'console' | 'diff'>(
+  const [showSpec, setShowSpec] = usePersistedViewState(`auth-spec-expanded:${getAuthId(request)}`, normalizeDisclosure, false);
+  const [showDirtyNote, setShowDirtyNote] = usePersistedViewState(`auth-protected-root-expanded:${getAuthId(request)}`, normalizeDisclosure, true);
+  const [savedViewMode, setSavedViewMode] = usePersistedViewState<AuthDetailView>(
     `auth-review-tab:${getAuthId(request)}`,
-    (value, defaults) => value === 'abstract' || value === 'console' || value === 'diff' ? value : defaults,
+    (value, defaults) => value === 'abstract' || value === 'console' || value === 'diff' || value === 'breakdown' ? value : defaults,
     autoShowConsoleOnApproval && getAuthStatus(request) === 'executing' ? 'console' : 'abstract',
   );
-  const viewMode = navigation.view === 'info' ? 'abstract' : navigation.view ?? savedViewMode;
-  const setViewMode = (view: 'abstract' | 'console' | 'diff') => {
+  const requestedView = navigation.view === 'info' ? 'abstract' : navigation.view ?? savedViewMode;
+  const viewMode = requestedView === 'breakdown' && authType !== 'merge' ? 'abstract' : requestedView;
+  const setViewMode = (view: AuthDetailView) => {
     setSavedViewMode(view);
     navigateAuthReviewView(getAuthId(request), view === 'abstract' ? 'info' : view);
   };
@@ -969,7 +955,7 @@ function AuthRequestDetail({
   const targetReady = useRef<{ token: string; result: DiffTargetReady } | null>(null);
   const [unmatchedTarget, setUnmatchedTarget] = useState<string | null>(null);
   const scrollRestoring = usePersistedScrollPosition(bodyRef, `auth-review-scroll:${getAuthId(request)}:${viewMode}`, {
-    initialPosition: viewMode === 'abstract' ? restoredInfo?.outerOffset : undefined,
+    initialPosition: viewMode === 'breakdown' ? restoredBreakdown?.outerOffset : undefined,
     target: viewMode === 'diff' && targetToken ? {
       token: targetToken,
       resolve: () => {
@@ -1166,7 +1152,6 @@ function AuthRequestDetail({
     }
   }, [consoleKey, consoleText]);
 
-  const authType = getAuthType(request);
   const typeMeta = AUTH_TYPE_META[authType];
   const showDiffStats = typeHasDiffStats(authType);
   const hasStats = stats.files != null || stats.additions != null || stats.deletions != null;
@@ -1200,6 +1185,7 @@ function AuthRequestDetail({
   const modeTabs: readonly IconTab[] = [
     { id: 'abstract', label: 'Info', tooltip: 'Info', icon: <Icon name="info" size={18} /> },
     { id: 'console', label: 'Console', tooltip: 'Console', icon: <Icon name="terminal" size={18} /> },
+    ...(authType === 'merge' ? [{ id: 'breakdown', label: 'Breakdown', tooltip: 'Breakdown', icon: <Icon name="workflow" size={18} /> }] : []),
     { id: 'diff', label: 'Diff', tooltip: 'Diff', icon: <Icon name="diff" size={18} /> },
   ];
   const subheader = (
@@ -1209,7 +1195,7 @@ function AuthRequestDetail({
           ariaLabel="Approval request view"
           tabs={modeTabs}
           activeTab={viewMode}
-          onActiveTabChange={(tab) => setViewMode(tab as typeof viewMode)}
+          onActiveTabChange={(tab) => setViewMode(tab as AuthDetailView)}
           idPrefix="auth-detail"
           className="auth-detail__mode-tabs"
         />
@@ -1464,18 +1450,18 @@ function AuthRequestDetail({
                   </button>
                   <button type="button" className="auth-detail__actions-item" role="menuitem"
                     onClick={() => closeActionsAfter(() => { void openResponsibility(); })}>Responsibility</button>
-                  {viewMode !== 'console' && <button type="button" className="auth-detail__actions-item"
+                  {(viewMode === 'abstract' || viewMode === 'diff') && <button type="button" className="auth-detail__actions-item"
                     role="menuitemcheckbox" aria-checked={review.showSource} onClick={() => closeActionsAfter(
                       () => review.setShowSource(shown => !shown),
                     )}>Show source</button>}
-                  {viewMode !== 'console' && review.activeFile?.format === 'lines' && review.activeDraft && !review.activeDraft.editing &&
+                  {(viewMode === 'abstract' || viewMode === 'diff') && review.activeFile?.format === 'lines' && review.activeDraft && !review.activeDraft.editing &&
                     <button type="button" className="auth-detail__actions-item" role="menuitem"
                       onClick={() => closeActionsAfter(() => {
                         review.setNavigation(null);
                         review.clearSelection();
                         review.activeDraft?.toggle();
                       })}>Edit</button>}
-                  {viewMode !== 'console' && review.activeDraft?.edited &&
+                  {(viewMode === 'abstract' || viewMode === 'diff') && review.activeDraft?.edited &&
                     <button type="button" className="auth-detail__actions-item" role="menuitem"
                       disabled={review.activeDraft.busy || review.activeDraft.writeConflict}
                       onClick={() => closeActionsAfter(() => review.activeDraft?.revert())}>Discard edits</button>}
@@ -1669,6 +1655,32 @@ function AuthRequestDetail({
             ? <AuthReviewNarrative key={review.data!.round.id} id={fullId} review={review} onFile={selectFile} />
             : reviewedChanges()}
           </div>
+      ) : viewMode === 'breakdown' ? (
+        <div id="auth-detail-panel-breakdown" role="tabpanel" aria-labelledby="auth-detail-tab-breakdown">
+          <AuthChangeBreakdown
+            requestId={fullId}
+            report={request.change_report}
+            initialState={restoredBreakdown?.breakdown}
+            initialOffsets={restoredBreakdown?.itemOffsets}
+            onFileActivate={(file, breakdown) => {
+              const itemOffsets: Record<string, number> = {};
+              const prefix = `auth-breakdown-scroll:${fullId}:`;
+              try {
+                for (let index = 0; index < window.localStorage.length; index += 1) {
+                  const key = window.localStorage.key(index);
+                  if (key?.startsWith(prefix)) itemOffsets[key] = readPersistedViewState(key, value => typeof value === 'number' && value >= 0 ? value : 0, 0);
+                }
+              } catch { /* Active owners below remain authoritative when storage is unavailable. */ }
+              for (const node of bodyRef.current?.querySelectorAll<HTMLElement>('[data-auth-scroll-key]') ?? []) {
+                const key = node.dataset.authScrollKey;
+                if (key?.startsWith(prefix)) itemOffsets[key] = node.scrollTop;
+              }
+              navigateAuthFile(fullId, { oldPath: file.old_path, newPath: file.new_path }, {
+                requestId: fullId, breakdown, outerOffset: bodyRef.current?.scrollTop ?? 0, itemOffsets,
+              });
+            }}
+          />
+        </div>
       ) : (
           <div id="auth-detail-panel-abstract" role="tabpanel" aria-labelledby="auth-detail-tab-abstract">
           <div className="auth-detail__panels collapsible-panel-region--persistent-disclosures">
@@ -1728,33 +1740,6 @@ function AuthRequestDetail({
                     dangerouslySetInnerHTML={{ __html: specHtml }}
                   />
                 </CollapsiblePanel>
-              )}
-              {authType === 'merge' && (
-                <AuthChangeBreakdown
-                  requestId={fullId}
-                  report={request.change_report}
-                  initialState={restoredInfo?.breakdown}
-                  initialOffsets={restoredInfo?.itemOffsets}
-                  onFileActivate={(file, breakdown) => {
-                    const itemOffsets: Record<string, number> = {};
-                    const prefix = `auth-breakdown-scroll:${fullId}:`;
-                    try {
-                      for (let index = 0; index < window.localStorage.length; index += 1) {
-                        const key = window.localStorage.key(index);
-                        if (key?.startsWith(prefix)) itemOffsets[key] = readPersistedViewState(key, value => typeof value === 'number' && value >= 0 ? value : 0, 0);
-                      }
-                    } catch { /* Active owners below remain authoritative when storage is unavailable. */ }
-                    for (const node of bodyRef.current?.querySelectorAll<HTMLElement>('[data-auth-scroll-key]') ?? []) {
-                      const key = node.dataset.authScrollKey;
-                      if (key?.startsWith(prefix)) itemOffsets[key] = node.scrollTop;
-                    }
-                    navigateAuthFile(fullId, { oldPath: file.old_path, newPath: file.new_path }, {
-                      requestId: fullId, breakdown, description: descriptionView,
-                      actions: actionViewStateRef.current ?? { expanded: true, actionIds: [] },
-                      showSpec, showDirtyNote, outerOffset: bodyRef.current?.scrollTop ?? 0, itemOffsets,
-                    });
-                  }}
-                />
               )}
             </div>
           </div>
@@ -2314,7 +2299,6 @@ export function AuthQueueView({
   const routeResolution = useEntityRoute('auth', entityRef);
   const initialRequestId = routeResolution.status === 'resolved' && typeof routeResolution.entity.id === 'string'
     ? routeResolution.entity.id : undefined;
-  const actionViewStateRef = useRef<AuthActionViewState>({ expanded: true, actionIds: [] });
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
 
@@ -3510,13 +3494,12 @@ export function AuthQueueView({
           const inlineActions = getInlineActionList(request);
           const requestActions = actionLists.get(id) ?? inlineActions;
           const actionError = actionErrors.get(id) ?? null;
-          const restoredInfo = reviewNavigation.info?.requestId === id ? reviewNavigation.info : undefined;
+          const restoredBreakdown = reviewNavigation.breakdown?.requestId === id ? reviewNavigation.breakdown : undefined;
           return (
             <AuthRequestDetail
-              key={`${id}:${restoredInfo ? reviewNavigation.token : 'current'}`}
+              key={`${id}:${restoredBreakdown ? reviewNavigation.token : 'current'}`}
               navigation={reviewNavigation}
-              restoredInfo={restoredInfo}
-              actionViewStateRef={actionViewStateRef}
+              restoredBreakdown={restoredBreakdown}
               request={request}
               onSelectRequest={handleSelect}
               history={isHistory}
@@ -3559,8 +3542,6 @@ export function AuthQueueView({
                   inFlightActionIds={inFlightActionIds}
                   instance={instance}
                   onToggleVeto={handleToggleActionVeto}
-                  viewStateRef={actionViewStateRef}
-                  initialViewState={restoredInfo?.actions}
                 />
               )}
               renderActions={(review, openCandidate, rejectButton) => renderDetailActions(request, review, openCandidate, rejectButton)}

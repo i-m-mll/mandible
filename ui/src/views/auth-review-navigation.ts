@@ -4,20 +4,16 @@ import { navigateTo, replaceRoute, routeWithParams, shortRouteId } from '../rout
 import { rememberEntityRoute } from '../query/entityRoute';
 import { DEFAULT_AUTH_CHANGE_BREAKDOWN_VIEW_STATE, normalizeAuthChangeBreakdownViewState, type AuthChangeBreakdownViewState } from './auth-change-breakdown-state';
 
-export type AuthReviewView = 'info' | 'diff' | 'console';
-export type AuthActionViewState = { expanded: boolean; actionIds: string[] };
-export type AuthInfoSnapshot = {
+const AUTH_REVIEW_VIEWS = ['info', 'console', 'breakdown', 'diff'] as const;
+export type AuthReviewView = typeof AUTH_REVIEW_VIEWS[number];
+export type AuthBreakdownSnapshot = {
   requestId: string;
   breakdown: AuthChangeBreakdownViewState;
-  description: { descriptionExpanded: boolean; referencesExpanded: boolean };
-  actions: AuthActionViewState;
-  showSpec: boolean;
-  showDirtyNote: boolean;
   outerOffset: number;
   itemOffsets: Record<string, number>;
 };
 
-type ReviewHistory = { version: 1; entryId: string; info?: AuthInfoSnapshot };
+type ReviewHistory = { version: 2; entryId: string; breakdown?: AuthBreakdownSnapshot };
 const HISTORY_KEY = 'mandibleAuthReview';
 export const AUTH_REVIEW_SELECTORS = ['view', 'diff_old', 'diff_new'] as const;
 
@@ -39,23 +35,18 @@ function offset(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
-function reviewHistory(): ReviewHistory | null {
+function reviewHistory(): (ReviewHistory & { legacyBreakdown: boolean }) | null {
   const stored = record(record(window.history.state)[HISTORY_KEY]);
-  if (stored.version !== 1 || typeof stored.entryId !== 'string') return null;
-  const info = record(stored.info);
-  const description = record(info.description);
-  const actions = record(info.actions);
+  if ((stored.version !== 1 && stored.version !== 2) || typeof stored.entryId !== 'string') return null;
+  const snapshot = record(stored.version === 1 ? stored.info : stored.breakdown);
   return {
-    version: 1, entryId: stored.entryId,
-    ...(typeof info.requestId === 'string' ? { info: {
-      requestId: info.requestId,
-      breakdown: normalizeAuthChangeBreakdownViewState(info.breakdown, DEFAULT_AUTH_CHANGE_BREAKDOWN_VIEW_STATE),
-      description: { descriptionExpanded: description.descriptionExpanded !== false, referencesExpanded: description.referencesExpanded !== false },
-      actions: { expanded: actions.expanded !== false, actionIds: Array.isArray(actions.actionIds) ? actions.actionIds.filter((id): id is string => typeof id === 'string') : [] },
-      showSpec: info.showSpec === true, showDirtyNote: info.showDirtyNote !== false,
-      outerOffset: offset(info.outerOffset),
-      itemOffsets: Object.fromEntries(Object.entries(record(info.itemOffsets))
-        .filter(([key]) => key.startsWith(`auth-breakdown-scroll:${info.requestId}:`))
+    version: 2, entryId: stored.entryId, legacyBreakdown: stored.version === 1 && typeof snapshot.requestId === 'string',
+    ...(typeof snapshot.requestId === 'string' ? { breakdown: {
+      requestId: snapshot.requestId,
+      breakdown: normalizeAuthChangeBreakdownViewState(snapshot.breakdown, DEFAULT_AUTH_CHANGE_BREAKDOWN_VIEW_STATE),
+      outerOffset: offset(snapshot.outerOffset),
+      itemOffsets: Object.fromEntries(Object.entries(record(snapshot.itemOffsets))
+        .filter(([key]) => key.startsWith(`auth-breakdown-scroll:${snapshot.requestId}:`))
         .map(([key, value]) => [key, offset(value)])),
     } } : {}),
   };
@@ -71,44 +62,45 @@ export function authReviewHref(requestId: string, view: AuthReviewView, file?: D
   }, AUTH_REVIEW_SELECTORS);
 }
 
-export function navigateAuthFile(requestId: string, file: DiffFileIdentity, info: AuthInfoSnapshot): void {
+export function navigateAuthFile(requestId: string, file: DiffFileIdentity, breakdown: AuthBreakdownSnapshot): void {
   rememberEntityRoute('auth', shortRouteId(requestId), { id: requestId });
   const origin = reviewHistory();
-  replaceRoute(authReviewHref(requestId, 'info'), historyState({ version: 1, entryId: origin?.entryId ?? crypto.randomUUID(), info }));
-  navigateTo(authReviewHref(requestId, 'diff', file), historyState({ version: 1, entryId: crypto.randomUUID() }));
+  replaceRoute(authReviewHref(requestId, 'breakdown'), historyState({ version: 2, entryId: origin?.entryId ?? crypto.randomUUID(), breakdown }));
+  navigateTo(authReviewHref(requestId, 'diff', file), historyState({ version: 2, entryId: crypto.randomUUID() }));
 }
 
 export function navigateAuthReviewView(requestId: string, view: AuthReviewView, file?: DiffFileIdentity): void {
   rememberEntityRoute('auth', shortRouteId(requestId), { id: requestId });
-  navigateTo(authReviewHref(requestId, view, file), historyState({ version: 1, entryId: crypto.randomUUID() }));
+  navigateTo(authReviewHref(requestId, view, file), historyState({ version: 2, entryId: crypto.randomUUID() }));
 }
 
 export type AuthReviewNavigation = {
   view?: AuthReviewView;
   file?: DiffFileIdentity;
   token: string;
-  info?: AuthInfoSnapshot;
+  breakdown?: AuthBreakdownSnapshot;
 };
 
 /** The app router supplies activations; refetches and context-only URL patches do not reapply them. */
 export function useAuthReviewNavigation(params: Record<string, string>, active: boolean): AuthReviewNavigation {
   const stored = !active || typeof window === 'undefined' ? null : reviewHistory();
-  const view = params.view === 'info' || params.view === 'diff' || params.view === 'console' ? params.view : undefined;
+  const canonicalView = AUTH_REVIEW_VIEWS.find(view => view === params.view);
+  const view = canonicalView === 'info' && stored?.legacyBreakdown ? 'breakdown' : canonicalView;
   const file = view === 'diff' && (params.diff_old || params.diff_new)
     ? { oldPath: params.diff_old || null, newPath: params.diff_new || null } : undefined;
   const key = JSON.stringify([stored?.entryId, view, file?.oldPath, file?.newPath]);
-  const activation = useRef({ key, active, generation: 0, info: stored?.info });
-  const result = useRef<AuthReviewNavigation>({ view, file, token: `${key}:0`, info: view === 'info' ? stored?.info : undefined });
+  const activation = useRef({ key, active, generation: 0, breakdown: stored?.breakdown });
+  const result = useRef<AuthReviewNavigation>({ view, file, token: `${key}:0`, breakdown: view === 'breakdown' ? stored?.breakdown : undefined });
   if (!active) {
     activation.current.active = false;
     return result.current;
   }
   if (active && (!activation.current.active || activation.current.key !== key)) {
     activation.current.generation += 1;
-    activation.current.info = stored?.info;
+    activation.current.breakdown = stored?.breakdown;
   }
   activation.current.key = key;
   activation.current.active = active;
-  result.current = { view, file, token: `${key}:${activation.current.generation}`, info: view === 'info' ? activation.current.info : undefined };
+  result.current = { view, file, token: `${key}:${activation.current.generation}`, breakdown: view === 'breakdown' ? activation.current.breakdown : undefined };
   return result.current;
 }

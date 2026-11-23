@@ -625,13 +625,14 @@ it('keeps unknown breakdown distinct from confirmed absence and available zero-f
     totals: { files: 0, additions: 0, deletions: 0, text_files: 0, binary_files: 0 }, files: [],
   };
   const view = render(<AuthChangeBreakdown requestId="availability-report" report={undefined} />);
-  expect(screen.queryByRole('button', { name: 'Change breakdown' })).toBeNull();
+  expect(screen.queryByText('Unavailable')).toBeNull();
   view.rerender(<AuthChangeBreakdown requestId="availability-report" report={null} />);
+  expect(screen.getByText('Unavailable')).toBeTruthy();
   expect(screen.queryByRole('tablist', { name: 'Change breakdown view' })).toBeNull();
   view.rerender(<AuthChangeBreakdown requestId="availability-report" report={report} />);
-  expect(screen.getByRole('button', { name: 'Change breakdown' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Change breakdown' }).getAttribute('aria-expanded')).toBe('true');
+  expect(screen.queryByText('Unavailable')).toBeNull();
   expect(screen.getByRole('tablist', { name: 'Change breakdown view' })).toBeTruthy();
+  expect(screen.getByText('The reviewed commits contain no file changes.')).toBeTruthy();
 });
 
 for (const coverage of ['absent', 'empty', 'partial', 'wrong-reference', 'duplicate'] as const) {
