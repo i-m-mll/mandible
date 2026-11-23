@@ -186,36 +186,11 @@
   z-index: 8;
 }
 
-.artifact-detail__subline {
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
 .artifact-detail__type {
   color: var(--text-muted);
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-}
-
-.artifact-detail__dates {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  flex-wrap: wrap;
-  gap: 5px 12px;
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.artifact-detail__header-context {
-  display: flex;
-  align-items: center;
-  gap: 5px 12px;
-  min-width: 0;
-  flex-wrap: wrap;
 }
 
 .artifact-detail__actions {

@@ -636,6 +636,7 @@ export function ArtifactDetail({
   const identityRows: MetadataRow[] = [
     ['Series', seriesRefValue, true, series ? canonicalArtifactSeriesRef(series.id) : seriesRefValue],
     ['Selected version', selectedVersion ? `v${selectedVersion.version_no}` : 'Latest'],
+    ['File', detailIdentity.filename, true],
     ['URI', artifact.uri, true],
     ['Content hash', artifact.content_hash, true],
     ['Short ID', shortArtifactId(artifact.id), true, immutableArtifactRef],
@@ -649,7 +650,8 @@ export function ArtifactDetail({
     ['Role', artifact.role ?? ''],
     ['Media type', artifact.media_type ?? ''],
     ['Size', formatBytes(artifact.size_bytes)],
-    ['Created', formatTime(artifact.created_at)],
+    ['Created', formatTime(createdUpdated.created)],
+    ['Updated', formatTime(createdUpdated.updated)],
   ].filter(([, value]) => Boolean(value)) as MetadataRow[];
   const locatorRows = artifact.aliases ?? [];
   const [lineSourceOpen, setLineSourceOpen] = useState(false);
@@ -1139,22 +1141,6 @@ export function ArtifactDetail({
             copyLabel: headerCopyLabel,
           }}
           title={detailIdentity.title}
-          supportingMetadata={(
-            <div className="artifact-detail__header-context">
-              <span className="artifact-detail__subline">
-                {[
-                  detailIdentity.filename ? `File: ${detailIdentity.filename}` : '',
-                  artifact.custody_mode,
-                  artifact.role,
-                ].filter(Boolean).join(' · ')}
-              </span>
-              <span className="artifact-detail__dates">
-                <span>Created: {formatTime(createdUpdated.created)}</span>
-                <span>Updated: {formatTime(createdUpdated.updated)}</span>
-              </span>
-            </div>
-          )}
-          state={selectedVersionNo === null ? 'Latest' : undefined}
           selector={{
             label: 'Artifact version',
             control: (
