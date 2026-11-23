@@ -160,6 +160,10 @@ export function BriefingDocumentPanel({
   const toSource = useMemo(() => suggestionRangeMap(workingText, source), [source, workingText]);
 
   useLayoutEffect(() => {
+    setWorking(current => current?.text === persistedText ? null : current);
+  }, [persistedText]);
+
+  useLayoutEffect(() => {
     onPendingSuggestionChange(dirty || busy);
   }, [dirty, busy, onPendingSuggestionChange]);
 
@@ -198,7 +202,6 @@ export function BriefingDocumentPanel({
       const operations = briefingSuggestionOperations(source, workingText, replacements, working.changes);
       void autosave.current(operations).then(() => {
         setStatus(null);
-        setWorking(current => current === working ? null : current);
       }, error => {
         setFailedWorking(workingText);
         setStatus(error instanceof Error ? error.message : String(error));
@@ -226,6 +229,7 @@ export function BriefingDocumentPanel({
     createdAt: annotation.created_at,
     draft: draftAnnotation,
     onDelete: draftAnnotation && canInteract && !dirty ? async () => {
+      setWorking(null);
       await mutate([{ operation: 'retract', annotation_event_id: annotation.annotation_event_id }]);
     } : undefined,
     onEdit: draftAnnotation && canInteract && !dirty && annotation.annotation_kind === 'comment' ? async body => {
@@ -348,7 +352,7 @@ export function BriefingDocumentPanel({
           directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} decorations={decorations}
           onChange={(text, edits) => {
             setWorking(previous => {
-              const base = previous ?? persisted;
+              const base = previous && previous.text !== persistedText ? previous : persisted;
               return { text, changes: base.changes.compose(suggestionEdits(base.text.length, edits)) };
             });
             setFailedWorking(null);

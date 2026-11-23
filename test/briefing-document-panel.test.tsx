@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { EditorView } from '@codemirror/view';
+import { undo } from '@codemirror/commands';
 import { createHash } from 'node:crypto';
-import { cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
 import { useRef, useState } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -16,7 +17,7 @@ import { installReadingBrowserFixture } from './helpers/reading-browser-fixture'
 import { selectBriefingEditorText, stubBriefingEditorBounds } from './helpers/briefing-editor';
 
 function BriefingDocumentPanel(props: Pick<Parameters<typeof DocumentPanel>[0],
-  'briefingId' | 'roundId' | 'round' | 'canMutate' | 'onRefresh' | 'draft' | 'onDirectiveValue'>) {
+  'briefingId' | 'roundId' | 'round' | 'canMutate' | 'onRefresh' | 'draft' | 'onDirectiveValue'> & { deferProjection?: boolean }) {
   const [suggesting, setSuggesting] = useState(false);
   const [refreshed, setRefreshed] = useState<BriefingRoundProjection | null>(null);
   const controller = useDocumentComments(props.roundId);
@@ -28,7 +29,7 @@ function BriefingDocumentPanel(props: Pick<Parameters<typeof DocumentPanel>[0],
       draftIdentity={null} showChanges showSource={false} suggesting={suggesting} onSuggest={() => setSuggesting(true)}
       onRefresh={async () => {
         const updated = await props.onRefresh();
-        if (updated) setRefreshed(updated);
+        if (updated && !props.deferProjection) setRefreshed(updated);
         return updated;
       }}
       onChangePosition={() => {}} onPendingSuggestionChange={() => {}}
@@ -218,6 +219,59 @@ describe('Briefing document panel', () => {
     });
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
     expect(surface.state.doc.toString()).toBe(source.replace('Plan', 'Revised plan'));
+  });
+
+  it('replaces only the visible paragraph tail and retracts the saved suggestion on undo', async () => {
+    const quote = 'operations room.';
+    const source = '# Checklist\n\nTell the support team in the operations room.\n\nAn unchanged paragraph.\n\n## Runbook\n';
+    const before = source.replace('support', 'release').replace('Runbook', 'Instructions');
+    const from = source.indexOf(quote);
+    const to = from + quote.length;
+    const replacement = 'release bridge.';
+    const original = round({ items: [], document: { ...round().document!, source,
+      profile: 'mandible-briefing.v3', content_hash: createHash('sha256').update(source).digest('hex'),
+      comparison_base: { artifact_version_id: 'artifact-version:version-0', source: before,
+        content_hash: createHash('sha256').update(before).digest('hex') },
+    } });
+    const saved = { ...original, annotations: [annotation({
+      annotation_event_id: 'suggestion', annotation_kind: 'suggest_replacement', body: null,
+      start_offset: from, end_offset: to, quote, replacement_text: replacement,
+      presentation: { source: 'current_draft', actor: null },
+    })] } as BriefingRoundProjection;
+    const refresh = vi.fn(async () => saved);
+    const posts: { annotations: unknown[] }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      posts.push(JSON.parse(String(init?.body)));
+      return json({ annotation_event_ids: ['suggestion'] });
+    }));
+    const panel = (round: BriefingRoundProjection) => <BriefingDocumentPanel
+      briefingId="briefing-1" roundId="round-1" round={round} canMutate onRefresh={refresh} deferProjection />;
+    const view = render(panel(original));
+    const content = await screen.findByLabelText('Pinned briefing document');
+    const editor = EditorView.findFromDOM(content.closest<HTMLElement>('.cm-editor')!)!;
+    expect(await screen.findByText('1 unchanged block')).toBeTruthy();
+
+    // Browsers place the endpoint at the first glyph of the next block,
+    // beyond its invisible heading syntax and the collapsed paragraph.
+    act(() => editor.dispatch({ selection: { anchor: from, head: source.indexOf('Runbook') } }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit', exact: true }));
+    await waitFor(() => expect(editor.state.readOnly).toBe(false));
+    act(() => editor.dispatch(editor.state.replaceSelection(replacement)));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(editor.state.doc.toString()).toBe(source.replace(quote, replacement));
+    expect(posts[0]?.annotations).toEqual([{
+      operation: 'set', kind: 'suggest_replacement', body: null,
+      start_offset: from, end_offset: to, quote, replacement_text: replacement,
+    }]);
+
+    view.rerender(panel(saved));
+    act(() => { expect(undo(editor)).toBe(true); });
+    expect(editor.state.doc.toString()).toBe(source);
+    await waitFor(() => expect(posts[1]?.annotations).toEqual([
+      { operation: 'retract', annotation_event_id: 'suggestion' },
+    ]));
+    view.rerender(panel(original));
+    expect(editor.state.doc.toString()).toBe(source);
   });
 
   it('posts an exact sub-selection across CRLF and a surrogate pair', async () => {

@@ -63,7 +63,6 @@ import {
   SIDEBAR_GROUP_LIMIT_MIN,
   normalizeSidebarGroupLimit,
 } from '../components/shared/sidebar-group-settings';
-import { BRIEFING_KEEP_SUBMITTED_ANNOTATIONS_SETTING } from './feedback/briefing-preferences';
 import {
   AUTH_AUTO_RETURN_TO_OVERVIEW_SETTING,
   AUTH_AUTO_SHOW_CONSOLE_SETTING,
@@ -138,7 +137,6 @@ const SETTINGS_SECTIONS = {
   agentHooks: { id: 'settings-agent-hooks', title: 'Agent Hooks' },
   integrations: { id: 'settings-integrations', title: 'Agent integrations' },
   instructionDelivery: { id: 'settings-instruction-delivery', title: 'Instruction Delivery' },
-  briefings: { id: 'settings-briefings', title: 'Briefings' },
   conversations: { id: 'settings-conversations', title: 'Conversations' },
   chatDefaults: { id: 'settings-chat-defaults', title: 'Chat defaults' },
   childCleanup: { id: 'settings-child-cleanup', title: 'Child chat cleanup' },
@@ -1648,22 +1646,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         settingsAllowed={instructionSettingsAllowed}
         exportRunsOnSave={exportRunsOnSave}
       />,
-
-      <SettingsSectionShell key={SETTINGS_SECTIONS.briefings.id} section={SETTINGS_SECTIONS.briefings}>
-        <SettingsSectionHeader
-          section={SETTINGS_SECTIONS.briefings}
-          description="Submission display behavior for Briefing review rounds."
-        />
-        <div className="settings-view__section-body">
-          <ToggleRow
-            title="Keep submitted annotations displayed"
-            desc="Leave the annotations from a just-submitted Briefing visible instead of clearing the document overlay."
-            settingKey={BRIEFING_KEEP_SUBMITTED_ANNOTATIONS_SETTING}
-            settings={settings}
-            onSave={saveSetting}
-          />
-        </div>
-      </SettingsSectionShell>,
 
       <SettingsSectionShell key={SETTINGS_SECTIONS.chatDefaults.id} section={SETTINGS_SECTIONS.chatDefaults}>
         <SettingsSectionHeader section={SETTINGS_SECTIONS.chatDefaults} description="Choose the model, effort and permissions used for new chats. Existing chats keep their own choices." />

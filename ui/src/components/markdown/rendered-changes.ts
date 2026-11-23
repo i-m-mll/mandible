@@ -1,12 +1,12 @@
 import { markdown } from '@codemirror/lang-markdown';
 import { syntaxTree } from '@codemirror/language';
 import { Chunk, type Change } from '@codemirror/merge';
-import { ChangeSet, EditorState, Facet, Prec, StateEffect, StateField, type ChangeDesc, type Range, type Text, type Transaction } from '@codemirror/state';
+import { ChangeSet, EditorState, Facet, Prec, RangeSet, StateEffect, StateField, type ChangeDesc, type Range, type Text, type Transaction } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType } from '@codemirror/view';
 import { compareMarkdownWords, compareRenderedMarkdown } from './comparison';
-import { markdownPreview, markdownPreviewPolicy, previewRanges, type MarkdownPreviewPolicy } from './preview';
+import { markdownPreview, markdownPreviewDecorations, markdownPreviewPolicy, previewRanges, type MarkdownPreviewPolicy } from './preview';
 import { markdownSyntax } from './syntax';
-import { exactMarkdownSource, markdownEditorRange, type MarkdownSourceRange } from './source';
+import { exactMarkdownSource, markdownEditorRange, markdownSelection, markdownSourceRange, type MarkdownSourceRange } from './source';
 
 type Layer = 'agent' | 'operator';
 type ComparisonInput = {
@@ -101,6 +101,42 @@ class UnchangedBlocks extends WidgetType {
     button.onclick = () => view.dispatch({ effects: expandUnchanged.of(this.from) });
     return button;
   }
+}
+
+export function renderedMarkdownSelection(state: EditorState) {
+  const preview = markdownPreviewDecorations(state);
+  const selection = state.selection.main;
+  if (!state.readOnly || !preview || selection.empty) return markdownSelection(state);
+  const changes = state.field(renderedChanges).decorations;
+  let { from, to } = selection;
+  const visibleText = (start: number, end: number) => {
+    let position = start;
+    for (const span = RangeSet.iter([preview, changes], start); span.value && span.from < end; span.next()) {
+      const { widget, markdownPreviewReplacement } = span.value.spec;
+      if (!(widget instanceof UnchangedBlocks) && (!markdownPreviewReplacement || widget)) continue;
+      if (span.from > position && state.sliceDoc(position, span.from).trim()) return true;
+      position = Math.max(position, span.to);
+    }
+    return position < end && Boolean(state.sliceDoc(position, end).trim());
+  };
+  // A mouse endpoint at the next block's opening markup selects no visible
+  // text in that block. Keep its line separator and syntax out of the edit.
+  while (state.doc.lineAt(from).number < state.doc.lineAt(to).number) {
+    const line = state.doc.lineAt(to);
+    if (visibleText(line.from, to)) break;
+    to = state.doc.line(line.number - 1).to;
+  }
+  while (state.doc.lineAt(from).number < state.doc.lineAt(to).number) {
+    const line = state.doc.lineAt(from);
+    if (visibleText(from, line.to)) break;
+    from = state.doc.line(line.number + 1).from;
+  }
+  for (const span = changes.iter(from); span.value && span.from < to; span.next()) {
+    if (span.to > from && span.value.spec.widget instanceof UnchangedBlocks) {
+      return markdownSourceRange(state, { from, to: from });
+    }
+  }
+  return markdownSourceRange(state, { from, to });
 }
 
 type Span = { from: number; to: number };

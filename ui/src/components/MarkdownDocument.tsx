@@ -8,7 +8,7 @@ import {
   editMarkdownSource, exactMarkdownSource, externalSourceUpdate, markdownEditorRange, markdownSelection, markdownSourceRange,
   markdownValue, replaceMarkdownSource, type MarkdownSelection, type MarkdownSourceEdit, type MarkdownSourceRange,
 } from './markdown/source';
-import { comparisonInput, expandUnchanged, renderedChanges, setChangePosition } from './markdown/rendered-changes';
+import { comparisonInput, expandUnchanged, renderedChanges, renderedMarkdownSelection, setChangePosition } from './markdown/rendered-changes';
 import { markdownPreview, markdownDirectives, markdownPreviewPolicy, type MarkdownDirectives, type MarkdownPreviewPolicy } from './markdown/preview';
 import { markdownSyntax } from './markdown/syntax';
 import './MarkdownDocument.css';
@@ -20,6 +20,7 @@ export type MarkdownDocumentHandle = {
   select: (range: MarkdownSourceRange, focus?: boolean) => void;
   edit: (edits: readonly MarkdownSourceEdit[], selection?: MarkdownSourceRange) => void;
   moveChange: (direction: -1 | 1) => void;
+  resetHistory: () => void;
   positionAt: (x: number, y: number) => number | null;
   bounds: (range: MarkdownSourceRange) => DOMRect | null;
   reveal: (range: MarkdownSourceRange, focus?: boolean) => void;
@@ -126,6 +127,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
     mode: new Compartment(),
     label: new Compartment(),
     comparison: new Compartment(),
+    history: new Compartment(),
     rendered: new Compartment(),
     directives: new Compartment(),
     previewPolicy: new Compartment(),
@@ -184,6 +186,12 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
       if (!editor || editor.state.readOnly || !edits.length) return;
       editor.dispatch(editMarkdownSource(editor.state, edits, selection));
     },
+    resetHistory() {
+      const editor = view.current;
+      if (!editor) return;
+      editor.dispatch({ effects: compartments.history.reconfigure([]) });
+      editor.dispatch({ effects: compartments.history.reconfigure(history()) });
+    },
     moveChange(direction) {
       const editor = view.current;
       if (!editor) return;
@@ -211,7 +219,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
         doc: initial.value,
         extensions: [
           exactMarkdownSource(initial.value),
-          history(), rangeDecorations, commentPreview, compartments.editing.of(initial.editingExtension ?? []),
+          compartments.history.of(history()), rangeDecorations, commentPreview, compartments.editing.of(initial.editingExtension ?? []),
           compartments.directives.of(initial.directives ? markdownDirectives.of(initial.directives) : []),
           compartments.previewPolicy.of(initial.previewPolicy ? markdownPreviewPolicy.of(initial.previewPolicy) : []),
           initial.syntax === 'markdown' ? [
@@ -239,14 +247,14 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
               latest.current.onChange?.(value, edits);
             }
             if (update.selectionSet || update.docChanged || external) {
-              latest.current.onSelectionChange?.(markdownSelection(update.state));
+              latest.current.onSelectionChange?.(renderedMarkdownSelection(update.state));
             }
           }),
           EditorView.clipboardOutputFilter.of((text, state) =>
             state.selection.main.empty ? text : markdownSelection(state).quote),
           EditorView.domEventHandlers({
             keydown(event, editor) {
-              return latest.current.onKeyDown?.(event, markdownSelection(editor.state)) ?? false;
+              return latest.current.onKeyDown?.(event, renderedMarkdownSelection(editor.state)) ?? false;
             },
             click(event, editor) {
               const target = event.target;

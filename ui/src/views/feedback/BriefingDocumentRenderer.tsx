@@ -59,7 +59,6 @@ export type BriefingDocumentRendererProps = {
   onBriefingChange?(briefing: BriefingProjection | null): void;
   onTitleChange?(title: string): void;
   onRoundChange?(roundId: string | null): void;
-  keepSubmittedAnnotations?: boolean;
 };
 
 type SubmissionSort = { field: 'date' | 'actor' | 'annotations'; direction: 'asc' | 'desc' };
@@ -144,7 +143,6 @@ export function BriefingDocumentRenderer({
   onBriefingChange,
   onTitleChange,
   onRoundChange,
-  keepSubmittedAnnotations = false,
 }: BriefingDocumentRendererProps): JSX.Element {
   const active = useViewActive();
   const [draft, setDraft] = useState<BriefingDraft>({});
@@ -185,7 +183,6 @@ export function BriefingDocumentRenderer({
     if (value) storageOrNull()?.setItem(comparisonPreferenceKey, value);
     else storageOrNull()?.removeItem(comparisonPreferenceKey);
   };
-  const [hideSubmittedAnnotations, setHideSubmittedAnnotations] = useState(false);
   const [resultId, setResultId] = useState<string | null>(null);
   const [resultCopied, setResultCopied] = useState(false);
   const [submissionSort, setSubmissionSort] = useState<SubmissionSort>({ field: 'date', direction: 'desc' });
@@ -295,7 +292,6 @@ export function BriefingDocumentRenderer({
     setExportBusy(false);
     setExportError(null);
     setMutationError(null);
-    setHideSubmittedAnnotations(false);
     setResultId(null);
     setResultCopied(false);
     setClearConfirmOpen(false);
@@ -451,7 +447,7 @@ export function BriefingDocumentRenderer({
       currentSelection.current = selectionKey(null);
       setResultId(submission.submission_id);
       setResultCopied(false);
-      setHideSubmittedAnnotations(!keepSubmittedAnnotations);
+      documentRef.current?.resetHistory();
       setSuggesting(false);
       const refreshed = await reconcile(null);
       if (refreshed) setDraft(effectiveDraft(refreshed.items));
@@ -493,7 +489,6 @@ export function BriefingDocumentRenderer({
   const selectSubmissionOverlay = (submission: BriefingSubmissionOverlaySummary | null) => {
     const overlayId = submission?.id ?? null;
     setSelectedOverlayId(overlayId);
-    setHideSubmittedAnnotations(false);
     setResultId(null);
     currentSelection.current = selectionKey(overlayId);
   };
@@ -633,9 +628,6 @@ export function BriefingDocumentRenderer({
       ? comparisonBranches.find(branch => branch.commit === comparisonDefault.commit)?.name ?? comparisonDefault.commit.slice(0, 8)
       : matchingRound && matchingRound.round.id === round?.document?.previous_round_id ? 'previous round'
         : matchingRound?.label ?? (comparisonVersionRef ? `version ${shortRouteId(comparisonVersionRef).replace(/^artifact-version:/, '')}` : null);
-  const displayedRound = round && hideSubmittedAnnotations && !round.selected_submission_overlay
-    ? { ...round, annotations: [] }
-    : round;
   const body = load.loading && !round
     ? null
     : load.error && !round
@@ -652,8 +644,8 @@ export function BriefingDocumentRenderer({
                 </div>
               ) : null}
               {round.document ? (
-                <BriefingDocumentPanel key={`${round.selected_round_id}:${selectedOverlayId ?? ''}:${round.latest_submission_for_actor?.ordinal ?? 0}`}
-                  briefingId={briefingId} roundId={round.selected_round_id} round={displayedRound!}
+                <BriefingDocumentPanel key={`${round.selected_round_id}:${selectedOverlayId ?? ''}`}
+                  briefingId={briefingId} roundId={round.selected_round_id} round={round}
                   canMutate={canMutate && !busy && !clearBusy} draftIdentity={draftScope}
                   documentRef={documentRef} comments={comments} showChanges={showChanges} showSource={showSource}
                   suggesting={suggesting} onSuggest={() => setSuggesting(true)} onChangePosition={setChangePosition}
@@ -720,7 +712,7 @@ export function BriefingDocumentRenderer({
                 </DetailPaneIconAction>
               )}
               {round.document && <DocumentCommentsButton controller={comments} count={
-                (displayedRound?.annotations?.length ?? 0) + (round.carried_annotations?.length ?? 0)
+                (round.annotations?.length ?? 0) + (round.carried_annotations?.length ?? 0)
                 + (round.standing_notes?.filter(note => !note.resolved).length ?? 0)
               } />}
               <DetailPaneMenuTrigger buttonRef={actionsTriggerRef} label="More" expanded={actionsOpen}
