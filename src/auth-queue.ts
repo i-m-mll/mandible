@@ -5087,21 +5087,45 @@ export class AuthQueue {
     }
   }
 
-  private async assertReviewedCandidateCurrent(request: AuthRequest): Promise<void> {
-    if (!isAuthMergeCommand(request) || request.execution_mode === "remote") return;
-    if (!request.cwd || !request.base_branch || !request.head_branch || !await this.mergeCandidatePinIsValid(request)) {
-      throw new AuthQueueError("merge_check_failed", "Reviewed candidate pin is no longer available.");
-    }
+  private async reviewedCandidateRefMismatch(request: AuthRequest) {
+    if (!request.cwd || !request.base_branch || !request.head_branch) return "pin";
     const edit = request.merge_effective_head_sha ? changeEditRef(request.id, request.merge_effective_head_sha) : null;
     const refs = await readCommitRefs(request.cwd, [
       `refs/heads/${request.base_branch}`, `refs/heads/${request.head_branch}`, this.mergeCandidateRef(request.id), ...(edit ? [edit] : []),
     ]);
-    if (edit && refs.get(edit) !== request.merge_effective_head_sha) {
+    if (edit && refs.get(edit) !== request.merge_effective_head_sha) return "edit";
+    if (refs.get(this.mergeCandidateRef(request.id)) !== request.merge_candidate_pin_sha) return "pin";
+    if (refs.get(`refs/heads/${request.head_branch}`) !== request.merge_head_sha) return "head";
+    if (targetRefValue(refs.get(`refs/heads/${request.base_branch}`), request.merge_preflight_base_sha) !== request.merge_preflight_base_sha) return "base";
+    return null;
+  }
+
+  async reviewCandidateBlocker(request: AuthRequest): Promise<string | null> {
+    if (request.status !== "pending" || !request.merge_candidate_pin_sha || !isAuthMergeCommand(request) ||
+        request.execution_mode === "remote" || !this.externalEffectsAllowed) return null;
+    try {
+      switch (await this.reviewedCandidateRefMismatch(request)) {
+        case "edit": return "The reviewed edits changed";
+        case "pin": return "The reviewed candidate changed";
+        case "head": return "The reviewed branch changed";
+        case "base": return null; // Approval can refresh a base-only change.
+        case null: return null;
+      }
+    } catch {
+      return "The reviewed Git references are unavailable";
+    }
+  }
+
+  private async assertReviewedCandidateCurrent(request: AuthRequest): Promise<void> {
+    if (!isAuthMergeCommand(request) || request.execution_mode === "remote") return;
+    if (!await this.mergeCandidatePinIsValid(request)) {
+      throw new AuthQueueError("merge_check_failed", "Reviewed candidate pin is no longer available.");
+    }
+    const mismatch = await this.reviewedCandidateRefMismatch(request);
+    if (mismatch === "edit") {
       throw new AuthQueueError("merge_check_failed", "The frozen change edit ref changed during approval.");
     }
-    if (targetRefValue(refs.get(`refs/heads/${request.base_branch}`), request.merge_preflight_base_sha) !== request.merge_preflight_base_sha ||
-        refs.get(`refs/heads/${request.head_branch}`) !== request.merge_head_sha ||
-        refs.get(this.mergeCandidateRef(request.id)) !== request.merge_candidate_pin_sha) {
+    if (mismatch) {
       throw new AuthQueueError("merge_check_failed", "Reviewed base, head or candidate pin changed during approval.");
     }
   }

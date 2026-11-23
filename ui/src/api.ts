@@ -1052,23 +1052,29 @@ export async function getAuthRequestDetail(requestId: string): Promise<Record<st
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
 }
 
-export async function getAuthDiffFile(requestId: string, index: number, signal?: AbortSignal, against?: string, round?: string): Promise<DiffFilePair> {
+export async function getAuthDiffFile(requestId: string, index: number, signal?: AbortSignal, against?: string, round?: string, revision?: string): Promise<DiffFilePair> {
   const query = new URLSearchParams();
   if (against) query.set('against', against);
   if (round) query.set('round', round);
+  if (revision) query.set('revision', revision);
   const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/files/${index}${query.size ? `?${query}` : ''}`, { signal });
   return await response.json() as DiffFilePair;
 }
 
 export type AuthReviewPrecondition = { expected_revision: number | null; expected_custody_generation: number };
-export type AuthReviewProjection = RequestReview & { precondition: AuthReviewPrecondition; status: string; proof_digest: string };
+export type AuthReviewProjection = RequestReview & {
+  precondition: AuthReviewPrecondition;
+  status: string;
+  proof_digest: string;
+  review_candidate_blocker: string | null;
+};
 export async function getAuthReview(requestId: string, signal?: AbortSignal): Promise<AuthReviewProjection> {
   const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review`, { signal });
   return await response.json();
 }
 
-export async function getAuthReviewComparison(requestId: string, against: string, signal: AbortSignal) {
-  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review/changes?against=${encodeURIComponent(against)}`, { signal });
+export async function getAuthReviewComparison(requestId: string, target: { kind: 'against' | 'revision'; id: string }, signal: AbortSignal) {
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review/changes?${target.kind}=${encodeURIComponent(target.id)}`, { signal });
   return await response.json() as import('../../src/contracts').AuthChangeReport;
 }
 

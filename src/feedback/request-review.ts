@@ -9,6 +9,7 @@ import { authSnapshotDigest } from "../auth-request-snapshot.js";
 import type { Db } from "../db.js";
 import { shortRef } from "../entity-refs.js";
 import { readGitFilePair } from "../git-change-review.js";
+import { parseChangeReport } from "../auth-request-row.js";
 import type { AuthRequest, AuthRequestStatus } from "../types.js";
 import { carryReviewLines, carryReviewRanges } from "./review-ranges.js";
 import {
@@ -213,6 +214,30 @@ export function requestReviewVersions(db: Db, requestId: string): RequestReviewV
     });
     return [...earlier, shown];
   });
+}
+
+export function requestReviewHistoricalVersion(db: Db, request: AuthRequest, id: string) {
+  const version = requestReviewVersions(db, request.id).find(version => version.id === id);
+  const separator = id.lastIndexOf("@");
+  if (!version || separator < 0) return null;
+  const snapshot = db.prepare(`SELECT
+      json_extract(snapshot_json, '$.request.merge_head_sha') AS merge_head_sha,
+      json_extract(snapshot_json, '$.request.merge_effective_head_sha') AS merge_effective_head_sha,
+      COALESCE(json_extract(snapshot_json, '$.request.frozen_change_report_json'),
+        json_extract(snapshot_json, '$.request.change_report_json')) AS report
+    FROM auth_request_lifecycle_events WHERE auth_request_id = ? AND revision = ?`)
+    .get(id.slice(0, separator), Number(id.slice(separator + 1))) as {
+    merge_head_sha: string | null; merge_effective_head_sha: string | null; report: string | null;
+  } | null;
+  if (!snapshot) return null;
+  const changeReport = parseChangeReport(snapshot.report);
+  return {
+    ...request,
+    merge_head_sha: snapshot.merge_head_sha,
+    merge_effective_head_sha: snapshot.merge_effective_head_sha,
+    merge_candidate_pin_sha: snapshot.merge_effective_head_sha ? changeReport?.comparison.head_sha : null,
+    change_report: changeReport,
+  };
 }
 
 type CommentAuthor = { display_name: string; kind: string; slug: string };

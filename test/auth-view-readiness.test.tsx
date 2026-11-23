@@ -89,6 +89,12 @@ const previewInstance: InstanceInfo = {
   source_db_path_source: 'env',
 };
 
+function openDetails() {
+  if (screen.queryByRole('dialog', { name: 'Approval metadata' })) return;
+  fireEvent.click(screen.getByRole('button', { name: 'More' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Details' }));
+}
+
 function renderView(
   daemonReady: boolean,
   onApprove: (id: string) => void,
@@ -130,6 +136,21 @@ afterEach(() => {
 });
 
 describe('AuthQueueView daemon readiness gate', () => {
+  it('enables Approve in place as the exact candidate passes package acceptance', () => {
+    const onApprove = vi.fn();
+    const fixture = { reason: null, warnings: [], phases: [], started_at: 1, finished_at: null };
+    const props = { outputs: {}, historyQueue: [], selectedAuthId: 'req-1', daemonReady: true, instance: authMainInstance, onApprove };
+    const view = render(<AuthQueueView {...props} queue={[{ ...pendingRequest, candidate_acceptance: { ...fixture, state: 'running' } }]} />);
+    const approve = screen.getByRole<HTMLButtonElement>('button', { name: 'Approve' });
+    expect(approve.disabled).toBe(true);
+    expect(document.querySelector('[data-detail-pane-slot="notice"]')?.textContent).toBe('');
+    fireEvent.click(approve);
+    expect(onApprove).not.toHaveBeenCalled();
+    view.rerender(<AuthQueueView {...props} queue={[{ ...pendingRequest, candidate_acceptance: { ...fixture, state: 'passed', finished_at: 2 } }]} />);
+    expect(approve.disabled).toBe(false);
+    fireEvent.click(approve);
+    expect(onApprove).toHaveBeenCalledOnce();
+  });
   it('shows an accepted approval as queued while leaving other approvals actionable', () => {
     const waiting = { ...pendingRequest, id: 'req-2', title: 'Queued update', status: 'approved' };
     render(<AuthQueueView queue={[pendingRequest, waiting]} historyQueue={[]} outputs={{}} selectedAuthId="req-1"
@@ -157,17 +178,13 @@ describe('AuthQueueView daemon readiness gate', () => {
     }
 
     render(<RecoveringApproval />);
-    const blocker = screen.getByRole('status');
-    expect(within(blocker).getByText('Checkout state blocks approval')).toBeTruthy();
-    expect(within(blocker).queryByRole('button')).toBeNull();
+    expect(screen.queryByText('Git index is locked.')).toBeNull();
     expect((screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(refresh).toHaveBeenCalledOnce();
-    expect(screen.getByText('Checkout state blocks approval')).toBeTruthy();
     window.dispatchEvent(new Event('focus'));
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
     expect((screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement).disabled).toBe(false);
     expect(refresh).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText('Checkout state blocks approval')).toBeNull();
     vi.useRealTimers();
   });
 
@@ -190,7 +207,7 @@ describe('AuthQueueView daemon readiness gate', () => {
     };
     const { rerender } = render(<AuthQueueView {...props} />);
 
-    const blocked = screen.getByRole('button', { name: 'Blocked: dependency unfinalized' }) as HTMLButtonElement;
+    const blocked = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(blocked.disabled).toBe(true);
     fireEvent.click(blocked);
     expect(onApprove).not.toHaveBeenCalled();
@@ -253,7 +270,8 @@ describe('AuthQueueView daemon readiness gate', () => {
     renderView(true, onApprove, previewInstance);
     const approve = screen.getByRole('button', { name: /^Approve/ }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    expect((screen.getByRole('menuitem', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByRole('textbox', { name: 'Description' })).toBeNull();
     fireEvent.click(approve);
     expect(onApprove).not.toHaveBeenCalled();
@@ -275,66 +293,13 @@ describe('Auth Description presentation', () => {
   }
 });
 
-describe('Auth Description disclosure persistence', () => {
-  const message = 'Merge feature/x: Preserve the reviewed explanation\n\nVerification:\nPrivate checks pass.\n';
-  const first = { ...pendingRequest, commit_message: message, commit_message_digest: 'a'.repeat(64) };
-  const second = { ...first, id: 'req-2', title: 'Second review', commit_message_digest: 'b'.repeat(64) };
-  const props = (selectedAuthId = 'req-1') => ({
-    queue: [first, second], historyQueue: [], outputs: {}, selectedAuthId, daemonReady: true,
-    instance: authMainInstance, onApprove: vi.fn(), onReject: vi.fn(), onRetry: vi.fn(),
-  });
-  const expanded = (name: string) => screen.getByRole('button', { name }).getAttribute('aria-expanded');
-
-  it('preserves explicit Description and References toggles across refetch, request switches and remount', async () => {
-    const view = render(<AuthQueueView {...props()} />);
-    expect(expanded('Description')).toBe('true');
-    expect(expanded('References')).toBe('true');
-    expect(localStorage.getItem('auth-description-view:req-1')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Description' }));
-    fireEvent.click(screen.getByRole('button', { name: 'References' }));
-    await waitFor(() => expect(localStorage.getItem('auth-description-view:req-1'))
-      .toBe(JSON.stringify({ descriptionExpanded: false, referencesExpanded: false })));
-
-    view.rerender(<AuthQueueView {...props()} queue={[{ ...first, updated_at: 2 }, second]} />);
-    expect(expanded('Description')).toBe('false');
-    expect(expanded('References')).toBe('false');
-    view.rerender(<AuthQueueView {...props('req-2')} />);
-    await waitFor(() => expect(expanded('Description')).toBe('true'));
-    expect(expanded('References')).toBe('true');
-    expect(localStorage.getItem('auth-description-view:req-2')).toBeNull();
-    view.rerender(<AuthQueueView {...props('req-1')} />);
-    await waitFor(() => expect(expanded('Description')).toBe('false'));
-    expect(expanded('References')).toBe('false');
-    view.unmount();
-    render(<AuthQueueView {...props()} />);
-    expect(expanded('Description')).toBe('false');
-    expect(expanded('References')).toBe('false');
-    fireEvent.click(screen.getByRole('button', { name: 'Description' }));
-    expect(screen.getAllByText(/Preserve the reviewed explanation/)).toHaveLength(1);
-    expect(screen.getAllByText(/Private checks pass\./)).toHaveLength(1);
-  });
-
-  it('uses independent strict boolean defaults without rewriting malformed storage on initial read', async () => {
-    const invalid = JSON.stringify({ descriptionExpanded: 'false', referencesExpanded: 1 });
-    localStorage.setItem('auth-description-view:req-1', invalid);
-    const view = render(<AuthQueueView {...props()} />);
-    expect(expanded('Description')).toBe('true');
-    expect(expanded('References')).toBe('true');
-    await waitFor(() => expect(localStorage.getItem('auth-description-view:req-1')).toBe(invalid));
-    view.unmount();
-    localStorage.setItem('auth-description-view:req-1', JSON.stringify({ descriptionExpanded: false, referencesExpanded: 'true' }));
-    render(<AuthQueueView {...props()} />);
-    expect(expanded('Description')).toBe('false');
-    expect(expanded('References')).toBe('true');
-  });
-});
-
 describe('AuthQueueView persisted action expansion', () => {
   it('reveals the full payload behind a truncated one-line action preview', async () => {
     const body = 'A long review comment. '.repeat(30) + 'The complete final sentence.';
     const request = { ...pendingRequest, actions: [{ ...deferredAction, payload: { body }, outcome_detail: null }] };
     render(<AuthQueueView queue={[request]} historyQueue={[]} outputs={{}} selectedAuthId="req-1"
       daemonReady instance={authMainInstance} onApprove={() => undefined} onReject={() => undefined} />);
+    openDetails();
     const preview = document.querySelector('.auth-action-row__summary')!;
     expect(preview.textContent!.length).toBeLessThan(body.length);
     expect(document.querySelector('.auth-action-row__detail')).toBeNull();
@@ -358,6 +323,7 @@ describe('AuthQueueView persisted action expansion', () => {
     };
     const { rerender } = render(<AuthQueueView {...props} queue={[request]} />);
 
+    openDetails();
     expect(await screen.findByText('Expanded action detail')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Collapse Comment action' }));
     await waitFor(() => expect(localStorage.getItem(storageKey)).toBe('[]'));
@@ -399,6 +365,7 @@ describe('Approval review issue and action composition', () => {
       onApprove: () => undefined, onReject: () => undefined, onRetry: () => undefined, onDismiss: () => undefined,
     };
     const view = render(<AuthQueueView {...props} />);
+    openDetails();
     await screen.findByText(titles['ref-9b1']);
     const references = within(screen.getByRole('region', { name: 'References', exact: true }));
     const actions = within(screen.getByRole('region', { name: 'Actions on merge', exact: true }));
@@ -411,12 +378,12 @@ describe('Approval review issue and action composition', () => {
     expect(screen.getAllByRole('button', { name: 'Expand Close issue action' })).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Expand Close issue action' }));
     expect(screen.getByText('Closed after the reviewed target changed.')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'References', exact: true }));
+    openDetails();
     fireEvent.click(screen.getByRole('button', { name: 'Actions on merge', exact: true }));
     view.rerender(<AuthQueueView {...props} historyQueue={[{ ...request, updated_at: 2 }]} />);
-    expect(screen.getByRole('button', { name: 'References', exact: true }).getAttribute('aria-expanded')).toBe('false');
     view.unmount();
     render(<AuthQueueView {...props} />);
+    openDetails();
     expect(screen.getByRole('button', { name: 'Actions on merge', exact: true }).getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(screen.getByRole('button', { name: 'Actions on merge', exact: true }));
     expect(screen.getByText('Closed after the reviewed target changed.')).toBeTruthy();
@@ -431,6 +398,7 @@ describe('Approval closure targets without recorded actions', () => {
       render(<AuthQueueView queue={[]} historyQueue={[request]} outputs={{}}
         selectedAuthId={request.id} daemonReady instance={authMainInstance}
         onApprove={() => undefined} onReject={() => undefined} />);
+      openDetails();
       const panel = screen.getByRole('button', { name: 'Actions on merge', exact: true }).closest('section')!;
       expect(panel.querySelectorAll('a')).toHaveLength(2);
       expect(panel.querySelector('a')?.getAttribute('href')).toContain('legacy-9b1');
@@ -457,19 +425,19 @@ describe('Approval body reading position', () => {
     const body = () => document.querySelector<HTMLDivElement>('.auth-detail__body')!;
     body().scrollTop = 184;
     fireEvent.scroll(body());
-    fireEvent.click(screen.getByRole('tab', { name: 'Diff' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
     expect(body().scrollTop).toBe(0);
     body().scrollTop = 72;
     fireEvent.scroll(body());
     view.rerender(<AuthQueueView {...props} selectedAuthId={second.id} />);
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Info' }).getAttribute('aria-selected')).toBe('true'));
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Reasons' }).getAttribute('aria-selected')).toBe('true'));
     expect(body().scrollTop).toBe(0);
     body().scrollTop = 39;
     fireEvent.scroll(body());
     view.rerender(<AuthQueueView {...props} />);
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Diff' }).getAttribute('aria-selected')).toBe('true'));
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' }).getAttribute('aria-selected')).toBe('true'));
     expect(body().scrollTop).toBe(72);
-    fireEvent.click(screen.getByRole('tab', { name: 'Info' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Reasons' }));
     expect(body().scrollTop).toBe(184);
     fireEvent.click(screen.getByRole('tab', { name: 'Console' }));
     body().scrollTop = 61;
@@ -541,6 +509,7 @@ it('waits for confirmed actions and preserves useful rows throughout a delayed r
     daemonReady: true, instance: authMainInstance, onApprove: () => undefined, onReject: () => undefined };
   const view = render(<AuthQueueView {...props} />);
   await waitFor(() => expect(replies).toHaveLength(1));
+  openDetails();
   expect(document.querySelectorAll('.auth-action-row')).toHaveLength(1);
   expect(document.querySelector('.auth-action-row a')?.getAttribute('href')).toContain('close-loading');
   expect(screen.queryByRole('switch')).toBeNull();
@@ -629,10 +598,11 @@ for (const coverage of ['absent', 'empty', 'partial', 'wrong-reference', 'duplic
     const onApprove = vi.fn();
     render(<AuthQueueView queue={[{ ...pendingRequest, depends_on_ids: ['spatial', 'validation'], dependencies: projections }]}
       outputs={{}} selectedAuthId="req-1" daemonReady instance={authMainInstance} onApprove={onApprove} />);
-    const approve = screen.getByRole('button', { name: /Blocked: dependency/ }) as HTMLButtonElement;
+    const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);
     fireEvent.click(approve);
     expect(onApprove).not.toHaveBeenCalled();
+    openDetails();
     const prerequisites = within(screen.getByRole('region', { name: 'Request prerequisites' }));
     expect(prerequisites.getAllByRole('listitem')).toHaveLength(2);
     expect(prerequisites.getByRole('link', { name: 'auth:validati' }).getAttribute('href')).toContain('validation');
@@ -656,6 +626,7 @@ for (const history of [false, true]) {
       onNavigateRequest, onSelectAuth };
     rememberEntityRoute('auth', 'req-1', { id: 'req-1' });
     const view = render(<AuthQueueView {...props} queue={history ? [] : [request]} historyQueue={history ? [request] : []} />);
+    openDetails();
     const prerequisites = () => within(screen.getByRole('region', { name: 'Request prerequisites' }));
     const rows = prerequisites().getAllByRole('listitem');
     expect(rows).toHaveLength(5);

@@ -31,7 +31,7 @@ const reviewFixtures = [
       narrative: null, narrative_report: null, narrative_questions: [],
       active_answer_event_ids: [], active_annotation_event_ids: [], frozen_head: null, comparison_head: null,
       returned: null, status: 'completed', precondition: { expected_revision: 3, expected_custody_generation: 0 },
-      proof_digest: 'completed-proof',
+      proof_digest: 'completed-proof', review_candidate_blocker: null,
     } satisfies AuthReviewProjection) },
 ];
 

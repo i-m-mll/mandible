@@ -476,7 +476,7 @@ export type GitChangeFile = Pick<AuthChangeFile,
 export type DiffFileContents = { name: string; contents: string };
 
 export type DiffFilePair =
-  | { kind: "text"; before: DiffFileContents; after: DiffFileContents }
+  | { kind: "text"; before: DiffFileContents; after: DiffFileContents; operator_baseline?: string }
   | { kind: "binary" };
 
 /**

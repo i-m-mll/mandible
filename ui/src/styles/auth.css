@@ -178,6 +178,32 @@
   align-items: center;
   justify-content: center;
   align-self: start;
+  gap: var(--space-1);
+}
+
+.auth-action-tip {
+  display: inline-flex;
+}
+
+.auth-action-tip > :disabled {
+  pointer-events: none;
+}
+
+.auth-approve {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.auth-return {
+  position: relative;
+}
+
+.auth-return > .tab-badge {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-end: 0;
+  transform: translate(30%, -30%);
 }
 
 .auth-detail__subtitle {
@@ -324,6 +350,11 @@
 .auth-detail__action-strip .auth-actions {
   justify-content: flex-end;
   flex-wrap: wrap;
+}
+
+.auth-detail__header-actions .auth-actions {
+  align-items: center;
+  gap: var(--space-1);
 }
 
 .auth-detail-metadata__content {
@@ -1932,6 +1963,7 @@
 
 /* Auth detail panel */
 .auth-detail {
+  container: auth-review / inline-size;
   position: relative;
   z-index: 3;
   display: flex;
@@ -2028,17 +2060,16 @@
   word-break: break-word;
 }
 
-.auth-review__side,
-.auth-review__versions {
+.auth-review__side {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
 }
 
-.auth-review__dialog,
-.auth-review__dialog label {
+.auth-review__dialog {
   display: grid;
-  gap: 0.6rem;
+  gap: var(--space-2);
+  padding: var(--space-3);
 }
 
 .auth-review__dialog button {
