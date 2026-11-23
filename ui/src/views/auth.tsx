@@ -3135,7 +3135,7 @@ export function AuthQueueView({
     return (
       <div className="auth-actions">
         <span className="auth-action-tip" tabIndex={returnBlocked ? 0 : undefined} {...appTip(returnBlocked ?? undefined)}>
-          <DetailPaneIconAction label="Return to requester" disabled={Boolean(returnBlocked)} onClick={review.returnToRequester}>
+          <DetailPaneIconAction className="auth-return" label="Return to requester" disabled={Boolean(returnBlocked)} onClick={review.returnToRequester}>
             <Icon name="returnReview" />
             {returning > 0 && <span className="tab-badge">{returning}</span>}
           </DetailPaneIconAction>

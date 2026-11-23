@@ -234,14 +234,14 @@ export function ChangeInventoryList({
           </span>}
           actions={<>
             {!filePicker && renderFileStatus?.(file)}
-            {status && <span class="change-list__badge">{status}</span>}
-            {file.whitespace_only && <span class="change-list__badge">Whitespace only</span>}
+            {!hideToolbar && status && <span class="change-list__badge">{status}</span>}
+            {!hideToolbar && file.whitespace_only && <span class="change-list__badge">Whitespace only</span>}
             {modeChanged && <span class="change-list__badge">Mode {file.old_object!.mode} → {file.new_object!.mode}</span>}
             {gitlink ? <span class="change-list__badge">Gitlink</span>
               : binary ? <span class="change-list__badge">Binary</span>
-              : !modeOnly && !filePicker && counts(file)}
-            {viewed !== undefined && viewed !== fileRevision && <span class="change-list__badge">Changed since viewed</span>}
-            {!filePicker && <button type="button" class="change-list__viewed" {...appTip("Mark viewed")}
+              : !modeOnly && !filePicker && !hideToolbar && counts(file)}
+            {!hideToolbar && viewed !== undefined && viewed !== fileRevision && <span class="change-list__badge">Changed since viewed</span>}
+            {!filePicker && !hideToolbar && <button type="button" class="change-list__viewed" {...appTip("Mark viewed")}
               aria-label={`Viewed ${name}`} aria-pressed={viewed === fileRevision}
               onClick={() => toggleViewed(key, fileRevision)}>
               <Icon name="menuSelected" size={14} />

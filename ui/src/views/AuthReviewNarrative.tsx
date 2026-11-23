@@ -123,7 +123,7 @@ export function AuthReviewNarrative({ id, review, onFile }: {
         </div>)}
       </section>
     ))}
-    {remainingFiles.length > 0 && <ChangeList
+    {remainingFiles.length > 0 && <ChangeList hideToolbar
       files={remainingFiles.map(({ file }) => file)} scope={`auth:${id}:narrative`} revision={report?.comparison.head_sha}
       loadFile={(_file, index, signal) => getAuthDiffFile(id, remainingFiles[index].index, signal, undefined, data.round.id)}
       renderTextFile={(_file, pair, index, view) => <AuthReviewTextFile review={review} pair={pair} index={remainingFiles[index].index} view={view} />}
