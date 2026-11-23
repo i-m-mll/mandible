@@ -1324,7 +1324,7 @@ export function readBriefing(
   const standingNotes = standingVersion && verification.valid ? readArtifactStandingNotes(db, {
     documentKey: standingVersion.artifact_id, reference: artifactReviewDocument(standingVersion.id),
     order: standingVersion.version_no, source: verification.source, rangeKind: "text",
-  }).map(({ id, author, body, quote, resolved, anchor }) => ({ id, author, body, quote, resolved, anchor, can_edit: false as const })) : [];
+  }).map(({ id, author, body, quote, resolved, anchor, created_at }) => ({ id, author, body, quote, resolved, anchor, created_at, can_edit: false as const })) : [];
   return {
     briefing,
     rounds,

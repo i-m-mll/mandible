@@ -1,6 +1,7 @@
 import { artifactReviewSource, carryArtifactDraftNotes, carryReviewRangeKind } from '../../../src/feedback/review-ranges';
 import { useArtifactStandingNotes, invalidateArtifactStandingNotes } from '../hooks/useArtifactStandingNotes';
-import { useStandingNoteReview } from '../components/shared/StandingNoteReview';
+import { useStandingNoteComments } from '../components/shared/StandingNoteComments';
+import { DocumentCommentsButton, DocumentCommentSurface } from '../components/shared/DocumentComments';
 import { ContextualAction } from '../components/shared/ContextualAction';
 import { NativeSelect } from '../components/shared/NativeSelect';
 import { Icon } from '../components/icons/Icon';
@@ -685,7 +686,7 @@ export function ArtifactDetail({
     const standing = notes.map(note => note.anchor.status === 'detached' || !carry ? note
       : { ...note, anchor: carry(note.anchor) });
     const staged = carryArtifactDraftNotes(draft.content, draftValue, draft.standing_notes ?? [])
-      .map(note => ({ ...note, can_edit: Boolean(noteQuery.data?.can_write) }));
+      .map(note => ({ ...note, draft: true, can_edit: Boolean(noteQuery.data?.can_write) }));
     return [...standing, ...staged];
   }, [noteQuery.data, editMode, draft, readReviewSource, draftValue, rangeKind]);
   const [diffOpen, setDiffOpen] = useState(false);
@@ -975,9 +976,10 @@ export function ArtifactDetail({
   }, [saveDraftNow, seriesRefValue]);
 
   const canWriteNotes = Boolean(noteQuery.data?.can_write) && !draftSaving;
-  const noteReview = useStandingNoteReview({
+  const noteReview = useStandingNoteComments({
     scopeKey: editing ? draft.id : reviewVersionRef ?? '', source: visibleReviewSource,
     rangeKind, notes: visibleNotes, stripBom: true,
+    onEdit: editableState.editable ? range => { setEditMode(true); requestAnimationFrame(() => noteReview.documentProps.documentRef.current?.select(range)); } : undefined,
     onCreate: canWriteNotes && reviewVersionRef ? async (range, body, captured) => {
       if (editing) {
         const saved = await saveDraftNow();
@@ -1146,6 +1148,8 @@ export function ArtifactDetail({
           }}
           actions={(
           <div className="artifact-detail__actions">
+            {(editing || (markdownArtifact || showLineSource) && readReviewSource !== undefined) &&
+              <DocumentCommentsButton controller={noteReview.surfaceProps.controller} count={visibleNotes.length} />}
             <DetailPaneMenuTrigger
               buttonRef={actionsTriggerRef}
               label="Artifact actions"
@@ -1308,9 +1312,7 @@ export function ArtifactDetail({
             title={lineSourceOpen ? 'Show preview' : 'Show text source'}
             onClick={() => setLineSourceOpen(value => !value)}><Icon name="terminal" /></ContextualAction>}
           {editing || (markdownArtifact || showLineSource) && readReviewSource !== undefined ? (
-            <>
-              <div className="briefing-document__review-toolbar">{noteReview.toolbar}</div>
-              <div className="artifact-note-review">
+            <DocumentCommentSurface {...noteReview.surfaceProps}>
                 {markdownArtifact ? <MarkdownDocument
                   {...noteReview.documentProps}
                   key={seriesRefValue || immutableArtifactRef}
@@ -1327,10 +1329,7 @@ export function ArtifactDetail({
                   readOnly={!editing}
                   onChange={setDraftValue}
                 />}
-                {reviewVersionRef && noteReview.sidebar}
-              </div>
-              {noteReview.composer}
-            </>
+            </DocumentCommentSurface>
           ) : <PreviewSection
             preview={markdownArtifact ? null : preview}
             content={content}

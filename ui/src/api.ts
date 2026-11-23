@@ -4470,7 +4470,8 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     if (!id || !quote || typeof row.author !== 'string' || typeof row.body !== 'string') return [];
     const placement = briefingCarriedRange(row.anchor, document?.source);
     if (!placement) return [];
-    return [{ id, quote, body: row.body, author: row.author, anchor: placement, can_edit: false, resolved: row.resolved === true }];
+    return [{ id, quote, body: row.body, author: row.author, anchor: placement, can_edit: false,
+      created_at: briefingOptionalNumber(row.created_at) ?? undefined, resolved: row.resolved === true }];
   });
   if ((rawState === 'open' && latestSubmissionForActor !== null)
       || (rawState === 'submitted' && latestSubmissionForActor === null)) valid = false;
