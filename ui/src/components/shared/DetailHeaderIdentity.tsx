@@ -1,7 +1,6 @@
 import { Icon } from '../icons/Icon';
 import type { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
-import { useIsFrameHeader } from './FrameHeader';
 import { appTip } from './AppHoverTips';
 import type { AttributionReadProjection, ReadUserIdentity } from '../../api';
 
@@ -154,7 +153,6 @@ function IdentityRow({ label, value }: { label: string; value: string }): JSX.El
 }
 
 export function CopyRefButton({ value, label }: { value: string; label: string }): JSX.Element {
-  const frameHeader = useIsFrameHeader();
   const [copied, setCopied] = useState(false);
   const effectiveLabel = copied ? 'Copied reference' : label;
 
@@ -172,7 +170,7 @@ export function CopyRefButton({ value, label }: { value: string; label: string }
     <button
       type="button"
       className="ledger-copy-ref-button"
-      {...(frameHeader ? appTip(copied ? 'Copied' : label) : { title: copied ? 'Copied' : label })}
+      {...appTip(copied ? 'Copied' : label)}
       aria-label={effectiveLabel}
       onClick={() => void handleCopy()}
     >
