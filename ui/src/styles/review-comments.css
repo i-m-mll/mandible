@@ -118,9 +118,11 @@
 
 .document-comments__drawer {
   gap: var(--space-1);
+  font-size: var(--font-ui-size);
 }
 
 .document-comments__drawer .sidebar-search-filter {
+  --chrome-text-increment: calc(var(--app-chrome-ui-font-size) - var(--app-chrome-reference-font-size));
   padding: 0;
 }
 
