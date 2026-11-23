@@ -2,6 +2,7 @@ import { type ComponentChildren, type RefObject } from 'preact';
 import { useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { ArrowUp, Check, History, Link, MessageSquare, Pencil, Trash2, UserRound, X } from 'lucide-preact';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
+import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import { formatRelativeTime } from '../../lib/format';
 import type { MarkdownDocumentHandle, MarkdownSourceRange } from '../MarkdownDocument';
 import { appTip } from './AppHoverTips';
@@ -49,14 +50,14 @@ export function useDocumentComments(scopeKey: string, drawerState?: {
 }) {
   const anchor = useRef<HTMLButtonElement>(null);
   const drawerId = useId();
-  const [openByDocument, setOpenByDocument] = useState<Record<string, boolean>>({});
+  const [open, setOpen] = usePersistedViewState(`document-comments:${scopeKey}`, value => value === true, false);
   const [active, setActive] = useState<{ scopeKey: string; id: string | null }>({ scopeKey, id: null });
   const [hover, setHover] = useState<{ scopeKey: string; id: string | null }>({ scopeKey, id: null });
 
   return {
     anchor, drawerId, scopeKey,
-    open: drawerState?.open ?? openByDocument[scopeKey] ?? false,
-    setOpen: drawerState?.setOpen ?? ((open: boolean) => setOpenByDocument(old => ({ ...old, [scopeKey]: open }))),
+    open: drawerState?.open ?? open,
+    setOpen: drawerState?.setOpen ?? setOpen,
     selected: active.scopeKey === scopeKey ? active.id : null,
     select: (id: string | null) => setActive({ scopeKey, id }),
     hovered: hover.scopeKey === scopeKey ? hover.id : null,
@@ -254,7 +255,7 @@ function ThreadCard({ controller, thread }: { controller: CommentController; thr
   </article>;
 }
 
-type Geometry = { localY: number; left: number; top: number; bottom: number };
+type Geometry = { localY: number; left: number; top: number; bottom: number; paneLeft: number; paneRight: number };
 type Composer = { range: MarkdownSourceRange; send: CommentWrite };
 
 export function DocumentCommentSurface({ controller, threads, selection, documentRef, drawer = true,
@@ -273,6 +274,7 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
   const surface = useRef<HTMLDivElement>(null);
   const documentContent = useRef<HTMLDivElement>(null);
   const [geometry, setGeometry] = useState<Record<string, Geometry>>({});
+  const refreshGeometry = useRef<() => void>();
   const [composer, setComposer] = useState<Composer | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [selecting, setSelecting] = useState(false);
@@ -331,7 +333,8 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
       const measure = (key: string, range: MarkdownSourceRange, id?: string) => {
         const rect = position?.(range, id) ?? documentRef?.current?.bounds(range);
         if (!rect) return;
-        next[key] = { localY: rect.top - origin.top, left: (rect.left + rect.right) / 2, top: rect.top, bottom: rect.bottom };
+        next[key] = { localY: rect.top - origin.top, left: (rect.left + rect.right) / 2, top: rect.top, bottom: rect.bottom,
+          paneLeft: origin.left, paneRight: origin.right };
       };
       for (const thread of shown) if (thread.range) measure(thread.id, thread.range, thread.id);
       if (liveSelection) measure('selection', liveSelection.range);
@@ -351,8 +354,7 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
     const endDrag = () => { setSelecting(false); schedule(); };
     window.addEventListener('pointerup', endDrag, true);
     window.addEventListener('pointercancel', endDrag, true);
-    const settle = () => schedule();
-    outer.addEventListener('document-comment-layout', settle);
+    refreshGeometry.current = schedule;
     positionOverlays();
     return () => {
       if (frame) cancelAnimationFrame(frame);
@@ -361,13 +363,11 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
       window.removeEventListener('resize', schedule);
       window.removeEventListener('pointerup', endDrag, true);
       window.removeEventListener('pointercancel', endDrag, true);
-      outer.removeEventListener('document-comment-layout', settle);
+      refreshGeometry.current = undefined;
     };
   }, [controller.scopeKey]);
 
-  useLayoutEffect(() => {
-    surface.current?.dispatchEvent(new Event('document-comment-layout'));
-  });
+  useLayoutEffect(() => refreshGeometry.current?.());
 
   useLayoutEffect(() => {
     const content = documentContent.current;
@@ -498,11 +498,13 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
         }
       }}>{actions}</div>}
     {composer && compose && <div className="sidebar-search-filter__panel sidebar-search-filter__panel--popover document-comments__popover document-comments__composer"
-      style={{ '--comment-x': `${compose.left}px`, '--comment-y': `${compose.bottom}px`, '--comment-local-y': `${compose.localY}px` }}>
+      style={{ '--comment-x': `${compose.left}px`, '--comment-y': `${compose.bottom}px`, '--comment-local-y': `${compose.localY}px`,
+        '--comment-pane-left': `${compose.paneLeft}px`, '--comment-pane-right': `${compose.paneRight}px` }}>
       <CommentInput label="Add a comment…" autoFocus onSend={composer.send} onCancel={() => setComposer(null)} />
     </div>}
     {activeThread && popup && !composer && <div className="sidebar-search-filter__panel sidebar-search-filter__panel--popover document-comments__popover document-comments__thread-popover"
-      style={{ '--comment-x': `${popup.left}px`, '--comment-y': `${popup.bottom}px` }}>
+      style={{ '--comment-x': `${popup.left}px`, '--comment-y': `${popup.bottom}px`,
+        '--comment-pane-left': `${popup.paneLeft}px`, '--comment-pane-right': `${popup.paneRight}px` }}>
       <ThreadCard key={activeThread.id} controller={controller} thread={activeThread} />
     </div>}
     {drawer && <DocumentCommentsDrawer key={controller.scopeKey} controller={controller} threads={threads} onNavigate={navigation} />}

@@ -144,6 +144,7 @@
   flex-direction: row;
   gap: var(--space-1);
   padding: var(--space-1);
+  font-size: var(--font-ui-size);
   transform: translate(-50%, calc(-100% - var(--space-1)));
 }
 
@@ -154,7 +155,8 @@
 .document-comments__composer,
 .document-comments__thread-popover {
   inset-block-start: calc(var(--comment-y) + var(--space-1));
-  inset-inline-start: clamp(var(--space-2), calc(var(--comment-x) - 8rem), calc(100vw - 16rem - var(--space-2)));
+  inset-inline-start: clamp(max(var(--space-2), var(--comment-pane-left)), calc(var(--comment-x) - 8rem),
+    calc(min(var(--comment-pane-right), 100vw - var(--space-2)) - 16rem));
   padding: var(--space-1);
   box-sizing: border-box;
 }
