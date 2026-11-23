@@ -36,7 +36,7 @@ type MarkdownDocumentProps = {
   showSource?: boolean;
   onChangePosition?: (position: MarkdownChangePosition) => void;
   comparisonLayout?: 'full-document';
-  onChange?: (value: string) => void;
+  onChange?: (value: string, edits: readonly MarkdownSourceEdit[]) => void;
   onSelectionChange?: (selection: MarkdownSelection) => void;
   decorations?: readonly MarkdownRangeDecoration[];
   onDecorationClick?: (id: string) => void;
@@ -213,7 +213,14 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
             if (before.selected !== after.selected || before.positions.length !== after.positions.length) notePosition(update.state);
             const external = update.transactions.some((transaction) => transaction.annotation(externalSourceUpdate));
             if (update.docChanged && !external) {
-              latest.current.onChange?.(markdownValue(update.state));
+              const value = markdownValue(update.state);
+              const edits: MarkdownSourceEdit[] = [];
+              update.changes.iterChangedRanges((from, to, fromB, toB) => {
+                const range = markdownSourceRange(update.startState, { from, to });
+                const inserted = markdownSourceRange(update.state, { from: fromB, to: toB });
+                edits.push({ ...range, text: value.slice(inserted.start, inserted.end) });
+              });
+              latest.current.onChange?.(value, edits);
             }
             if (update.selectionSet || update.docChanged || external) {
               latest.current.onSelectionChange?.(markdownSelection(update.state));

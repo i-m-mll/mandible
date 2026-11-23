@@ -1,38 +1,41 @@
+import { Change } from '@codemirror/merge';
+import { ChangeSet } from '@codemirror/state';
 import type { BriefingAnnotation, BriefingAnnotationOperation } from '../../api';
 import { compareMarkdownWords } from '../../components/markdown/comparison';
-import type { MarkdownSourceRange } from '../../components/MarkdownDocument';
+import type { MarkdownSourceEdit, MarkdownSourceRange } from '../../components/markdown/source';
 
 type Replacement = Extract<BriefingAnnotationOperation, { annotation_kind: 'suggest_replacement' }>;
 type Segment = Pick<Replacement, 'start_offset' | 'end_offset' | 'quote' | 'replacement_text'>;
 
-export function briefingSuggestionText(source: string, annotations: readonly BriefingAnnotation[]) {
+export function briefingSuggestionDocument(source: string, annotations: readonly BriefingAnnotation[]) {
   let cursor = 0;
   const parts: string[] = [];
+  const edits: MarkdownSourceEdit[] = [];
   for (const annotation of [...annotations].sort((a, b) => a.start_offset - b.start_offset)) {
     const { start_offset: start, end_offset: end, quote, replacement_text: replacement } = annotation;
     if (annotation.annotation_kind !== 'suggest_replacement' || replacement === null
         || start < cursor || source.slice(start, end) !== quote) continue;
     parts.push(source.slice(cursor, start), replacement);
+    edits.push({ start, end, text: replacement });
     cursor = end;
   }
-  return parts.join('') + source.slice(cursor);
+  return { text: parts.join('') + source.slice(cursor), changes: suggestionEdits(source.length, edits) };
+}
+
+export function suggestionEdits(length: number, edits: readonly MarkdownSourceEdit[]) {
+  return ChangeSet.of(edits.map(({ start, end, text }) => ({ from: start, to: end, insert: text })), length, '\n');
 }
 
 const graphemes = new Intl.Segmenter();
 
-export function briefingSuggestionSegments(source: string, working: string): Segment[] {
+export function briefingSuggestionSegments(source: string, working: string, composition: ChangeSet): Segment[] {
+  const changes: Change[] = [];
+  composition.iterChangedRanges((start, end, newStart, newEnd) => changes.push(new Change(start, end, newStart, newEnd)));
   const anchors = graphemes.segment(source);
   const segments: { start: number; end: number; newStart: number; newEnd: number }[] = [];
-  for (const change of compareMarkdownWords(source, working)) {
+  for (const change of changes) {
     let { fromA: start, toA: end, fromB: newStart, toB: newEnd } = change;
-    while (start < end && newStart < newEnd && source[start] === working[newStart]) {
-      start++;
-      newStart++;
-    }
-    while (end > start && newEnd > newStart && source[end - 1] === working[newEnd - 1]) {
-      end--;
-      newEnd--;
-    }
+    if (source.slice(start, end) === working.slice(newStart, newEnd)) continue;
     const startGrapheme = anchors.containing(start);
     if (startGrapheme && startGrapheme.index < start) {
       newStart -= start - startGrapheme.index;
@@ -70,10 +73,10 @@ export function briefingSuggestionSegments(source: string, working: string): Seg
 }
 
 export function briefingSuggestionOperations(
-  source: string, working: string, existing: readonly BriefingAnnotation[],
+  source: string, working: string, existing: readonly BriefingAnnotation[], composition: ChangeSet,
 ): BriefingAnnotationOperation[] {
-  if (briefingSuggestionText(source, existing) === working) return [];
-  const segments = briefingSuggestionSegments(source, working);
+  if (briefingSuggestionDocument(source, existing).text === working) return [];
+  const segments = briefingSuggestionSegments(source, working, composition);
   const matching = new Set<string>();
   const replacements: Replacement[] = [];
   for (const segment of segments) {

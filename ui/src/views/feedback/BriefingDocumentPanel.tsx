@@ -12,7 +12,7 @@ import {
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { DocumentCommentSurface, type DocumentCommentThread, type useDocumentComments } from '../../components/shared/DocumentComments';
 import { BriefingDirectiveControls, BRIEFING_MARKDOWN_PREVIEW } from './BriefingDirectiveControls';
-import { briefingSuggestionOperations, briefingSuggestionText, suggestionRangeMap } from './briefing-suggestions';
+import { briefingSuggestionDocument, briefingSuggestionOperations, suggestionEdits, suggestionRangeMap } from './briefing-suggestions';
 
 type BriefingDocumentPanelProps = {
   briefingId: string;
@@ -78,7 +78,7 @@ export function BriefingDocumentPanel({
     directiveError: string | null } | null>(null);
   const [comparison, setComparison] = useState<{ key: string; text: string | undefined; error: string | null } | null>(null);
   const [selection, setSelection] = useState<MarkdownSelection | null>(null);
-  const [working, setWorking] = useState<string | null>(null);
+  const [working, setWorking] = useState<ReturnType<typeof briefingSuggestionDocument> | null>(null);
   const [failedWorking, setFailedWorking] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -148,8 +148,9 @@ export function BriefingDocumentPanel({
   const annotations = round.annotations ?? [];
   const replacements = useMemo(() => annotations.filter(annotation => annotation.annotation_kind === 'suggest_replacement'),
     [round.annotations]);
-  const persistedText = useMemo(() => briefingSuggestionText(source, replacements), [source, replacements]);
-  const workingText = working ?? persistedText;
+  const persisted = useMemo(() => briefingSuggestionDocument(source, replacements), [source, replacements]);
+  const persistedText = persisted.text;
+  const workingText = working?.text ?? persistedText;
   const dirty = workingText !== persistedText;
   const maySuggest = canInteract && source.length > 0 && !isLargeMarkdownDocument(source);
   const editing = maySuggest && suggesting;
@@ -192,19 +193,19 @@ export function BriefingDocumentPanel({
   const autosave = useRef(mutate);
   autosave.current = mutate;
   useEffect(() => {
-    if (!canInteract || busy || !dirty || workingText === failedWorking) return;
+    if (!canInteract || busy || !dirty || !working || workingText === failedWorking) return;
     const timer = window.setTimeout(() => {
-      const operations = briefingSuggestionOperations(source, workingText, replacements);
+      const operations = briefingSuggestionOperations(source, workingText, replacements, working.changes);
       void autosave.current(operations).then(() => {
         setStatus(null);
-        setWorking(current => current === workingText ? null : current);
+        setWorking(current => current === working ? null : current);
       }, error => {
         setFailedWorking(workingText);
         setStatus(error instanceof Error ? error.message : String(error));
       });
     }, 280);
     return () => window.clearTimeout(timer);
-  }, [dirty, canInteract, busy, source, workingText, failedWorking, replacements]);
+  }, [dirty, canInteract, busy, source, working, workingText, failedWorking, replacements]);
 
   const editSelection = (range: MarkdownSourceRange) => {
     if (!maySuggest) return;
@@ -220,7 +221,8 @@ export function BriefingDocumentPanel({
     range,
     author: annotation.presentation?.actor?.display_name || annotation.presentation?.actor?.slug
       || (draftAnnotation ? 'You' : null),
-    body: annotation.annotation_kind === 'suggest_replacement' ? annotation.replacement_text || annotation.quote : annotation.body,
+    body: annotation.annotation_kind === 'suggest_replacement'
+      ? [annotation.replacement_text || annotation.quote, annotation.body].filter(Boolean).join('\n') : annotation.body,
     createdAt: annotation.created_at,
     draft: draftAnnotation,
     onDelete: draftAnnotation && canInteract && !dirty ? async () => {
@@ -344,7 +346,13 @@ export function BriefingDocumentPanel({
           operatorComparison={workingText === source ? undefined : source} operatorAnnotations={operatorAnnotations}
           showSource={showSource} readOnly={!editing} ariaLabel="Pinned briefing document"
           directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} decorations={decorations}
-          onChange={value => { setWorking(value); setFailedWorking(null); }}
+          onChange={(text, edits) => {
+            setWorking(previous => {
+              const base = previous ?? persisted;
+              return { text, changes: base.changes.compose(suggestionEdits(base.text.length, edits)) };
+            });
+            setFailedWorking(null);
+          }}
           onSelectionChange={setSelection} onDecorationClick={id => comments.select(id)}
           onChangePosition={onChangePosition} />
         {Array.from(directiveHosts.current, ([element, itemId]) => {
