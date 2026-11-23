@@ -21,6 +21,8 @@ export type MarkdownDocumentHandle = {
   edit: (edits: readonly MarkdownSourceEdit[], selection?: MarkdownSourceRange) => void;
   moveChange: (direction: -1 | 1) => void;
   positionAt: (x: number, y: number) => number | null;
+  bounds: (range: MarkdownSourceRange) => DOMRect | null;
+  reveal: (range: MarkdownSourceRange, focus?: boolean) => void;
 };
 
 type MarkdownDocumentProps = {
@@ -140,6 +142,24 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
       const { from, to } = markdownEditorRange(editor.state, range);
       if (focus) editor.focus();
       editor.dispatch({ selection: EditorSelection.range(from, to), scrollIntoView: true, effects: expandUnchanged.of(from) });
+    },
+    bounds(range) {
+      const editor = view.current;
+      if (!editor) return null;
+      const { from, to } = markdownEditorRange(editor.state, range);
+      const start = editor.coordsAtPos(from, 1);
+      if (!start) return null;
+      const end = editor.coordsAtPos(to, -1);
+      const right = end && Math.abs(start.top - end.top) < start.bottom - start.top ? end.right : start.right;
+      return DOMRect.fromRect({ x: Math.min(start.left, right), y: start.top,
+        width: Math.abs(right - start.left), height: start.bottom - start.top });
+    },
+    reveal(range, focus = false) {
+      const editor = view.current;
+      if (!editor) return;
+      if (focus) editor.focus();
+      const { from } = markdownEditorRange(editor.state, range);
+      editor.dispatch({ effects: EditorView.scrollIntoView(from, { y: 'nearest' }) });
     },
     edit(edits, selection) {
       const editor = view.current;
