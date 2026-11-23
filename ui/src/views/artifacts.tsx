@@ -1312,7 +1312,7 @@ export function ArtifactDetail({
         )}
         <span className="sr-only" role="status">{draftStatus}</span>
           {editing || (markdownArtifact || showLineSource) && readReviewSource !== undefined ? (
-            <DocumentCommentSurface {...noteReview.surfaceProps}>
+            <DocumentCommentSurface {...noteReview.surfaceProps} readingMeasure="document">
                 {markdownArtifact ? <MarkdownDocument
                   {...noteReview.documentProps}
                   key={seriesRefValue || immutableArtifactRef}

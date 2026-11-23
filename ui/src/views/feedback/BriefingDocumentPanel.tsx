@@ -311,7 +311,7 @@ export function BriefingDocumentPanel({
     <section className="briefing-document__content" aria-label="Briefing document">
       {dirty && status && <DetailPaneNotice severity="error" density="compact">{status}</DetailPaneNotice>}
       {currentDocument && !currentDocument.documentError && <DocumentCommentSurface
-        controller={comments} documentRef={documentRef} navigationKey={`${briefingId}:${roundId}`}
+        controller={comments} documentRef={documentRef} readingMeasure="document" navigationKey={`${briefingId}:${roundId}`}
         threads={threads}
         position={range => {
           for (const { view, start, end } of directiveRefs.values()) {
