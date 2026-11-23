@@ -18,6 +18,7 @@ import { SidebarBriefingBundleIcon, SidebarGroupNode } from '../../components/sh
 import { SidebarItemBadge, SidebarItemRow } from '../../components/shared/SidebarItemRow';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { shortIdentityRef } from '../../identity-refs';
+import { formatRelativeTime } from '../../lib/format';
 import { queryClient } from '../../query/client';
 import { navigateTo } from '../../routing';
 import { authReviewHref } from '../auth-review-navigation';
@@ -279,8 +280,10 @@ export function BriefingGroupDetail({
                 return (
                   <li key={entry.id}>
                     <span {...appTip(decision.label)}><Icon name={decision.icon} label={decision.label} /></span>
-                    <strong>{entry.proposal.name}</strong>
-                    <time dateTime={new Date(entry.createdAt).toISOString()}>{dateLabel(entry.createdAt)}</time>
+                    <span className="briefing-group-detail__history-name">{entry.proposal.name}</span>
+                    <time dateTime={new Date(entry.createdAt).toISOString()}>
+                      {formatRelativeTime(entry.createdAt, { style: 'recent' })}
+                    </time>
                   </li>
                 );
               })}
@@ -325,7 +328,7 @@ export function BriefingGroupDetail({
                 <RequestListRow leading={<Icon name="custodyPackage" />} title={update.name}
                   selected={selectedUpdateId === update.id} selection="toggle" onSelect={() => selectPending(update.id)}
                   metadata={<><time className="auth-sidebar-item__metadata-text" dateTime={new Date(update.createdAt).toISOString()}>
-                    {dateLabel(update.createdAt)}</time>
+                    {formatRelativeTime(update.createdAt, { style: 'recent' })}</time>
                     <DocumentCount className="auth-sidebar-item__metadata-text" count={changesByProposal.get(update.id)?.length ?? 0} /></>}
                   actions={(['Accept', 'Dismiss'] as const).map(decision => {
                     const reason = decisionReason(update.id, decision);

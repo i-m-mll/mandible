@@ -258,7 +258,7 @@
   font-size: var(--text-sm);
 }
 
-.briefing-group-detail__history strong {
+.briefing-group-detail__history-name {
   color: var(--text-primary);
 }
 
