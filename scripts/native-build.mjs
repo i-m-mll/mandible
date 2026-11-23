@@ -62,7 +62,7 @@ export function stageNativeBuild({ worktree, root, candidate }) {
   const crate = path.join(source, 'src-tauri');
   fs.rmSync(source, { recursive: true, force: true });
   fs.mkdirSync(crate, { recursive: true });
-  const files = command('git', ['ls-files', '--', 'src-tauri'], worktree).split('\n').filter(Boolean);
+  const files = command('git', ['ls-files', '--', 'src-tauri', 'src/security/isolated-preview-effects.json'], worktree).split('\n').filter(Boolean);
   for (const file of files) {
     const destination = path.join(source, file);
     fs.mkdirSync(path.dirname(destination), { recursive: true });

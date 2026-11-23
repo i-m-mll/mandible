@@ -1,0 +1,7 @@
+[
+  "ledger:read",
+  "ledger:write",
+  "files:preview",
+  "preferences:instance",
+  "dialog:project-folder"
+]

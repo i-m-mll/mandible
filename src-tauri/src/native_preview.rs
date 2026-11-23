@@ -35,6 +35,13 @@ fn read_json(file: &Path) -> Result<Value, String> {
     serde_json::from_slice(&fs::read(file).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
+fn isolated_preview_effects() -> Value {
+    serde_json::from_str(include_str!(
+        "../../src/security/isolated-preview-effects.json"
+    ))
+    .expect("isolated preview effect contract must be valid JSON")
+}
+
 impl NativePreview {
     pub fn permits(&self, url: &tauri::Url) -> bool {
         url.origin().ascii_serialization() == self.origin
@@ -118,13 +125,7 @@ impl NativePreview {
             || instance["db_path"] != manifest["db"]
             || instance["db_path_source"] != "iab-preview-copy"
             || instance["source_db_path"] != manifest["sourceDb"]
-            || instance["allowed_effects"]
-                != serde_json::json!([
-                    "ledger:read",
-                    "ledger:write",
-                    "files:preview",
-                    "preferences:instance"
-                ])
+            || instance["allowed_effects"] != isolated_preview_effects()
             || health["startup_commit"]["hash"] != env["MANDIBLE_BACKEND_GENERATION"]
             || home != self.home
             || home.starts_with(&root)
@@ -301,8 +302,16 @@ mod tests {
         let health = serde_json::json!({ "ready": true, "warm": true, "startup_commit": { "hash": "generation" },
             "instance": { "role": "preview", "instance_id": instance, "public_origin": origin, "installation_id": "installation",
                 "db_path": preview.join("ledger.db"), "source_db_path": base.join("source.db"), "db_path_source": "iab-preview-copy",
-                "allowed_effects": ["ledger:read", "ledger:write", "files:preview", "preferences:instance"] } });
+                "allowed_effects": isolated_preview_effects() } });
         assert!(config.validate(&manifest, &health).is_ok());
+        for foreign_effect in ["process:external", "notes:source"] {
+            let mut foreign_health = health.clone();
+            foreign_health["instance"]["allowed_effects"]
+                .as_array_mut()
+                .unwrap()
+                .push(foreign_effect.into());
+            assert!(config.validate(&manifest, &foreign_health).is_err());
+        }
         let mut context = crate::native_context();
         let authority = context.runtime_authority_mut();
         authority.add_capability(capability(&config)).unwrap();

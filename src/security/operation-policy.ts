@@ -1,3 +1,4 @@
+import isolatedPreviewEffects from "./isolated-preview-effects.json";
 import type { InstanceRole } from "../types.js";
 
 /**
@@ -26,15 +27,14 @@ export const EFFECTS = [
 export type Effect = (typeof EFFECTS)[number];
 
 export const PRODUCTION_EFFECTS: readonly Effect[] = EFFECTS;
+export const ISOLATED_PREVIEW_EFFECTS: readonly Effect[] = isolatedPreviewEffects.map(value => {
+  const effect = EFFECTS.find(candidate => candidate === value);
+  if (effect === undefined || effect === "notes:source") throw new Error(`Invalid isolated preview effect: ${value}`);
+  return effect;
+});
+
 /** `notes:source`: write interface notes to the instance this preview was copied from. */
-export const STANDARD_PREVIEW_EFFECTS: readonly Effect[] = [
-  "ledger:read",
-  "ledger:write",
-  "files:preview",
-  "preferences:instance",
-  "notes:source",
-  "dialog:project-folder",
-];
+export const STANDARD_PREVIEW_EFFECTS: readonly Effect[] = [...ISOLATED_PREVIEW_EFFECTS, "notes:source"];
 
 export type Operation = {
   id: string;

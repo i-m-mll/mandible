@@ -3,6 +3,7 @@ import path from "node:path";
 import { resolvesToProductionDbPath } from "../../cli/production-db-guard.cjs";
 import type { InstanceInfo } from "../types.js";
 import {
+  ISOLATED_PREVIEW_EFFECTS,
   PRODUCTION_EFFECTS,
   STANDARD_PREVIEW_EFFECTS,
   type Effect,
@@ -36,7 +37,7 @@ export function authorizeEffects(
 export function effectsForInstance(role: InstanceInfo["role"], sourceDbPath: string | null): readonly Effect[] {
   if (role !== "preview") return PRODUCTION_EFFECTS;
   if (sourceDbPath !== null && resolvesToProductionDbPath(sourceDbPath)) return STANDARD_PREVIEW_EFFECTS;
-  return STANDARD_PREVIEW_EFFECTS.filter((effect) => effect !== "notes:source");
+  return ISOLATED_PREVIEW_EFFECTS;
 }
 
 export function validatePreviewWritableRoots(instance: InstanceInfo): void {
