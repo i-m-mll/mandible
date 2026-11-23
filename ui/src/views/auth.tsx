@@ -7,7 +7,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { AuthReviewRejectComposer, AuthReviewMarkdown, AuthReviewTextFile, AuthReviewDetachedDrafts, AuthReviewComments, AuthReviewCommentsButton, authReviewSelector,
   useAuthRequestReview, type AuthRequestReviewState } from './AuthRequestReview';
 import type { RequestReviewComment } from '../../../src/feedback/request-review';
-import { ChangeList, type ChangeListFilePicker, type DiffTargetReady } from '../components/ChangeList';
+import { ChangeList, type DiffTargetReady } from '../components/ChangeList';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { VIEW_SIDEBAR_GEOMETRY } from '../view-sidebar-geometry';
 import { IssuePill } from '../components/shared/IssuePill';
@@ -1020,7 +1020,12 @@ function AuthRequestDetail({
   const fullId = getAuthId(request);
   const status = getAuthStatus(request);
   const review = useAuthRequestReview(fullId, status, request.updated_at, request.lifecycle_revision, canWriteReview, onReject, onReturned);
+  const [changeOrder, setChangeOrder] = usePersistedViewState<'narrative' | 'files'>(
+    `auth-change-order:${fullId}`, value => value === 'files' ? 'files' : 'narrative', 'narrative',
+  );
   const hasNarrative = !review.readOnly && review.data?.round.owner.auth_request_id === fullId && !!review.data.narrative;
+  const narrativeOrder = hasNarrative && changeOrder === 'narrative' && !navigation.file
+    && review.navigation?.comment.source.kind !== 'request_file';
   const description = review.data?.round.bindings.find(binding => binding.source.kind === 'request_description');
   const comparedVersion = review.data?.versions.find(version => version.id === review.target?.id);
   const historical = review.target?.kind === 'revision';
@@ -1029,7 +1034,7 @@ function AuthRequestDetail({
   const revisionSelector = authReviewSelector(review, fullId, onSelectRequest);
   const showFileControls = viewMode === 'diff' && review.fileChangePosition.total > 0;
   const selectFile = (index: number) => {
-    const file = changeReport?.files[index];
+    const file = review.data?.narrative_report?.files[index];
     if (!file) return;
     review.setNavigation(null);
     review.clearSelection();
@@ -1039,7 +1044,8 @@ function AuthRequestDetail({
   };
   const selectComment = (comment: RequestReviewComment) => {
     if (review.readOnly) review.selectComparison();
-    setViewMode(comment.source.kind === 'request_file' ? 'diff' : 'abstract');
+    if (comment.source.kind === 'request_narrative') setChangeOrder('narrative');
+    setViewMode(comment.source.kind === 'request_description' ? 'abstract' : 'diff');
     review.setNavigation({ comment, token: crypto.randomUUID() });
   };
   const targetComment = review.navigation?.comment;
@@ -1179,11 +1185,11 @@ function AuthRequestDetail({
     </>
   );
 
-  const reviewedChanges = (filePicker?: ChangeListFilePicker) => (
+  const selectedDiffFile = commentTarget ?? navigation.file;
+  const reviewedChanges = () => (
     <ChangeList
             files={changeReport?.files}
-            hideToolbar
-            filePicker={filePicker}
+            expandFirst
             patch={authType === 'merge' || review.readOnly || changeReport ? undefined : diffRaw}
             emptyLabel={authType === 'merge' && request.change_report === null ? 'Change inventory unavailable' : undefined}
             scope={`auth:${getAuthId(request)}`}
@@ -1194,11 +1200,11 @@ function AuthRequestDetail({
             lineTarget={lineTarget}
             renderFileStatus={file => {
               const status = review.readOnly ? null : review.drafts.fileStatus(file.new_path);
-              const label = status === 'conflict' ? 'Edit conflict' : status === 'draft' || file.operator_edited ? 'Edited' : null;
-              return label && <span {...appTip(label)}><Icon name={status === 'conflict' ? 'warning' : 'toolEdit'} label={label} /></span>;
+              const label = status === 'conflict' ? 'Draft conflict' : status === 'draft' ? 'Review draft' : file.operator_edited ? 'Operator edit' : null;
+              return label && <span className="change-list__badge">{label}</span>;
             }}
-            renderTextFile={(_file, pair, index, view) => <AuthReviewTextFile review={review} pair={pair} index={index} view={view}
-              headerControls={Boolean(filePicker)} />}
+            renderTextFile={(file, pair, index, view) => <AuthReviewTextFile review={review} pair={pair} index={index} view={view}
+              headerControls={selectedDiffFile ? selectedDiffFile.oldPath === file.old_path && selectedDiffFile.newPath === file.new_path : index === 0} />}
             contentReady={review.readOnly ? Boolean(review.comparison) || !comparedVersion?.head : authType === 'merge'
               ? request.change_report !== undefined : request.diff_summary !== undefined}
             onTargetReady={(token, result) => {
@@ -1679,7 +1685,22 @@ function AuthRequestDetail({
               </section>)}
             </TrackedBriefingDisclosure>
           ))}
-          {reviewedChanges({ compactOpen: fileListOpen, onSelect: selectFile })}
+          {hasNarrative && <div className="auth-review__side" role="group" aria-label="Change order">
+            <button type="button" aria-pressed={narrativeOrder} onClick={() => {
+              review.setNavigation(null);
+              review.clearSelection();
+              setChangeOrder('narrative');
+              if (navigation.file) setViewMode('diff');
+            }}>Narrative order</button>
+            <button type="button" aria-pressed={!narrativeOrder} onClick={() => {
+              review.setNavigation(null);
+              review.clearSelection();
+              setChangeOrder('files');
+            }}>File order</button>
+          </div>}
+          {narrativeOrder
+            ? <AuthReviewNarrative key={review.data!.round.id} id={fullId} review={review} onFile={selectFile} />
+            : reviewedChanges()}
           </div>
       ) : (
           <div id="auth-detail-panel-abstract" className="auth-review__reasons" role="tabpanel" aria-labelledby="auth-detail-tab-abstract">
