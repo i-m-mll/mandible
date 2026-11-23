@@ -356,10 +356,10 @@ function AuthReviewMarkdownChange({ review, pair, index, wholeFile, onEdit, draf
   const binding = review.readOnly ? undefined : review.data?.round.bindings.find(item => item.source.kind === 'request_file'
     && item.source.file_index === index && item.source.side === active);
   return <>
-    <div role="group" aria-label="Markdown side" className="auth-review__side">
+    {!draft && <div role="group" aria-label="Markdown side" className="auth-review__side">
       {(['before', 'after'] as const).map(which => <button key={which} type="button" aria-pressed={active === which}
         onClick={() => { onSideChange(which); review.setNavigation(null); }}>{which === 'before' ? 'Before' : 'After'}</button>)}
-    </div>
+    </div>}
     <AuthReviewMarkdown key={active} review={review} binding={binding} value={pair[active].contents} onEdit={active === 'after' ? onEdit : undefined}
       comparison={active === 'after' ? pair.before.contents : undefined}
       operatorComparison={active === 'after' ? pair.operator_baseline : undefined} headerControls={headerControls}
