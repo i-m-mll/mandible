@@ -5,6 +5,7 @@ import { browserResourceKeys } from '../query/browserResources';
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'preact/hooks';
 
 import {
+  canReadBriefingLayouts,
   getBriefing,
   getBriefingSidebarSnapshot,
   ApiError,
@@ -167,9 +168,10 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
     ? routeResolution.entity.id : null;
   const viewActive = useViewActive();
   const [viewState, setViewState] = useBriefingCollectionViewState();
+  const groupUnavailable = Boolean(initialGroupKey && !entityRef && !canReadBriefingLayouts(instance));
   const sidebarQuery = useQuery({
     queryKey: browserResourceKeys.briefingSidebar,
-    queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal),
+    queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal, instance),
     enabled: viewActive,
     staleTime: ROUTE_DATA_FRESH_MS,
     refetchOnWindowFocus: true,
@@ -340,7 +342,8 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
     </>}>
       {isUnopenedEntityRoute(routeResolution) && routeResolution.status !== 'resolving' ? (
         <EntityRouteState kind="briefing" resolution={routeResolution} />
-      ) : hasExplicitTarget && routeStatus !== 'resolved' && routeStatus !== 'resolving' ? (
+      ) : groupUnavailable ? null
+      : hasExplicitTarget && routeStatus !== 'resolved' && routeStatus !== 'resolving' ? (
         <div role="alert" data-route-state={routeStatus}>
           {routeStatus === 'ambiguous' ? 'This Briefing reference matches more than one item. Open a link with a longer reference.'
               : routeStatus === 'error' ? `The Briefing link could not be resolved: ${(initialBriefingId ? explicitError : sidebarQuery.error)?.message}`
@@ -380,10 +383,10 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
 // Warmed Briefing queries stay for the page, so a later first visit still paints them.
 const WARMED_QUERY_GC_TIME_MS = Number.POSITIVE_INFINITY;
 
-export async function warmInitialData(params: Record<string, string>): Promise<void> {
+export async function warmInitialData(params: Record<string, string>, { instanceInfo }: { instanceInfo?: InstanceInfo | null } = {}): Promise<void> {
   const sidebar = await queryClient.fetchQuery({
     queryKey: browserResourceKeys.briefingSidebar,
-    queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal),
+    queryFn: ({ signal }) => getBriefingSidebarSnapshot(signal, instanceInfo),
     gcTime: WARMED_QUERY_GC_TIME_MS,
   });
   const viewState = readPersistedViewState(

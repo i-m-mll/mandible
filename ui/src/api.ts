@@ -206,7 +206,7 @@ export function canPerformOperation(
 }
 
 export function allowsInstanceEffect(
-  instance: InstanceInfo | null | undefined,
+  instance: Pick<InstanceInfo, 'allowed_effects'> | null | undefined,
   effect: string,
 ): boolean {
   return !instance || instance.allowed_effects.includes(effect);
@@ -1041,7 +1041,18 @@ export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {
 /** Resolve the ref an entity path names; the resolver reports resolved, not_found or ambiguous. */
 export async function resolveEntityRoute(kind: EntityKind, ref: string, signal?: AbortSignal): Promise<ResolverResult> {
   const response = await apiGet(`/api/refs/resolve?${new URLSearchParams({ kind, ref }).toString()}`, { signal });
-  return ((await response.json()) as ResolveRefResponse).resolution;
+  const body = await parseMaybeJson(response).catch(error => {
+    if (signal?.aborted) throw error;
+    return null;
+  }) as Partial<ResolveRefResponse> | null;
+  const resolution = body?.resolution;
+  if (!resolution || resolution.ref !== ref
+    || (resolution.status !== 'not_found'
+      && !(resolution.status === 'resolved' && resolution.entity && typeof resolution.entity === 'object')
+      && !(resolution.status === 'ambiguous' && Array.isArray(resolution.matches) && Number.isSafeInteger(resolution.total)))) {
+    throw new ApiError('The service returned an invalid link response.', response.status, 'invalid_ref_resolution');
+  }
+  return resolution;
 }
 
 // Bug: 0de95bf — history list rows omit diff/spec/output body blobs; the
@@ -4949,10 +4960,19 @@ export async function dismissBriefingGroupProposal(group: BriefingGroup, proposa
   return updated;
 }
 
-export async function getBriefingSidebarSnapshot(signal?: AbortSignal): Promise<BriefingSidebarSnapshot> {
+export function canReadBriefingLayouts(instance: Pick<InstanceInfo, 'allowed_effects'> | null | undefined): boolean {
+  return allowsInstanceEffect(instance, 'process:external');
+}
+
+export async function getBriefingSidebarSnapshot(
+  signal?: AbortSignal, instance?: Pick<InstanceInfo, 'allowed_effects'> | null,
+): Promise<BriefingSidebarSnapshot> {
   const embeddedInvalid: InvalidBriefingRow[] = [];
+  const readLayouts = canReadBriefingLayouts(instance);
   const [list, bundles, groups] = await Promise.all([
-    getBriefings(signal), getBriefingBundles(embeddedInvalid, signal), getBriefingGroups(embeddedInvalid, signal),
+    getBriefings(signal),
+    readLayouts ? getBriefingBundles(embeddedInvalid, signal) : [],
+    readLayouts ? getBriefingGroups(embeddedInvalid, signal) : [],
   ]);
   const invalidBriefings = new Map<string, InvalidBriefingRow>();
   for (const row of [...list.invalid, ...embeddedInvalid]) {
