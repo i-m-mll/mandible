@@ -1,6 +1,6 @@
-import { Icon } from '../icons/Icon';
-import { appTip } from './AppHoverTips';
 import type { JSX, Ref } from 'preact';
+import { Icon } from '../icons/Icon';
+import { DetailPaneIconAction } from './DetailPaneIconAction';
 
 export type DetailPaneMenuTriggerProps = {
   buttonRef?: Ref<HTMLButtonElement>;
@@ -17,18 +17,6 @@ export function DetailPaneMenuTrigger({
   expanded,
   onClick,
 }: DetailPaneMenuTriggerProps): JSX.Element {
-  return (
-    <button
-      ref={buttonRef}
-      type="button"
-      className="detail-pane-menu-trigger"
-      aria-label={label}
-      aria-haspopup="menu"
-      aria-expanded={expanded}
-      {...appTip(title)}
-      onClick={onClick}
-    >
-      <Icon name="more" />
-    </button>
-  );
+  return <DetailPaneIconAction ref={buttonRef} label={label} tip={title}
+    aria-haspopup="menu" aria-expanded={expanded} onClick={onClick}><Icon name="more" /></DetailPaneIconAction>;
 }

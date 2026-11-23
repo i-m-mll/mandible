@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { selectBriefingEditorText, stubBriefingEditorBounds } from './helpers/briefing-editor';
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
 import { UiRoundTripGate, createCopiedPreviewDatabase, exactTestInstanceEnv, installStorage, operatorSessionResponse } from './helpers/briefing-preview-fixtures';
 import { testRuntimeRoot } from './helpers/runtime-isolation';
@@ -33,6 +34,7 @@ import { seedRichBriefingDemo } from '../src/feedback/rich-briefing-demo';
 let noticeHost: HTMLElement;
 let restoreLayout: () => void;
 beforeEach(async () => {
+  stubBriefingEditorBounds();
   queryClient.clear();
   vi.stubGlobal('innerHeight', 4096);
   const elementRect = HTMLElement.prototype.getBoundingClientRect;
@@ -148,14 +150,16 @@ describe('copied-preview Briefing publication boundary', () => {
       fireEvent.click(rating);
       expect(rating.checked).toBe(true);
 
-      fireEvent.click(screen.getAllByRole('button', { name: 'Comment on directive' })[0]);
-      const annotationDialog = await screen.findByRole('dialog', { name: 'Add annotation' });
-      fireEvent.input(within(annotationDialog).getByLabelText('Comment'), { target: { value: 'Final IAB acceptance annotation.' } });
-      fireEvent.click(within(annotationDialog).getByRole('button', { name: 'Save' }));
-      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add annotation' })).toBeNull());
-      expect(await within(screen.getByRole('complementary', { name: 'Review comments' })).findByText(/Final IAB acceptance annotation/)).toBeTruthy();
+      const firstDirective = screen.getAllByLabelText('Directive text')[0];
+      const firstQuote = firstDirective.textContent!.trim();
+      selectBriefingEditorText(firstDirective, firstQuote);
+      fireEvent.click(await screen.findByRole('button', { name: 'Comment', exact: true }));
+      const composer = await screen.findByRole('textbox', { name: 'Add a comment…' });
+      fireEvent.input(composer, { target: { value: 'Final IAB acceptance annotation.' } });
+      fireEvent.keyDown(composer, { key: 'Enter' });
+      await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Add a comment…' })).toBeNull());
 
-      const submit = screen.getByRole('button', { name: 'Submit' });
+      const submit = screen.getByRole('button', { name: /^Send(?: \(\d+\))?$/ });
       await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
       fireEvent.click(submit);
       await waitFor(() => expect(mutationResponses).toHaveLength(3));
@@ -200,11 +204,11 @@ describe('copied-preview Briefing publication boundary', () => {
       view.unmount();
       clearApiGetCache();
       const reloadedView = render(shell());
-      const sidebar = await screen.findByRole('complementary', { name: 'Review comments' });
-      fireEvent.click(await within(sidebar).findByRole('button', { name: /Comments/ }));
-      expect(within(sidebar).getByText(/Final IAB acceptance annotation/)).toBeTruthy();
+      fireEvent.click(await screen.findByRole('button', { name: /^Comments/ }));
+      const comments = await screen.findByRole('dialog', { name: 'Comments' });
+      expect(within(comments).getByRole('button', { name: /Final IAB acceptance annotation/ })).toBeTruthy();
       await waitFor(() => expect((screen.getByRole('radio', { name: '4' }) as HTMLInputElement).checked).toBe(true));
-      expect(screen.getByRole('button', { name: 'Submit' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /^Send(?: \(\d+\))?$/ })).toBeTruthy();
       expect(roundOneSnapshot()).toEqual(roundOneBefore);
       expect(readPinnedBytes()).toEqual(pinnedBytes);
       reloadedView.unmount();

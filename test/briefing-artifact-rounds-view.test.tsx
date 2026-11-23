@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { stubBriefingEditorBounds } from './helpers/briefing-editor';
 import { installStorage, operatorSessionResponse } from './helpers/briefing-preview-fixtures';
 import { BRIEFING_EVENT_VALUES } from '../src/contracts';
 import { queryClient } from '../ui/src/query/client';
@@ -137,6 +138,7 @@ function detail(roundId = ROUND_TWO) {
 
 let noticeHost: HTMLElement;
 beforeEach(async () => {
+  stubBriefingEditorBounds();
   queryClient.clear();
   installStorage();
   clearApiGetCache();
@@ -307,8 +309,8 @@ describe('artifact-backed Briefing rounds', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy Briefing reference' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('briefing:65db040'));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Briefing actions' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Metadata' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Details' }));
     const metadata = screen.getByRole('dialog', { name: 'Briefing metadata' });
     expect(within(metadata).getByText('briefing-round:c76f940')).toBeTruthy();
     expect(within(metadata).queryByText(FULL_ROUND_ID)).toBeNull();
@@ -321,7 +323,7 @@ describe('artifact-backed Briefing rounds', () => {
     fireEvent.click(within(metadata).getByRole('button', { name: 'Close Briefing metadata' }));
 
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
-    const submit = screen.getByRole('button', { name: 'Submit' });
+    const submit = screen.getByRole('button', { name: /^Send(?: \(\d+\))?$/ });
     await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
     fireEvent.click(submit);
     await waitFor(() => expect(calls.filter((call) => call.method === 'POST').map((call) => call.url)).toEqual([
@@ -372,12 +374,15 @@ describe('artifact-backed Briefing rounds', () => {
     }));
     window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({ ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE, selectedCollectionId: 'briefing:briefing-1' }));
     render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
+    const roundSelect = await screen.findByRole('button', { name: 'Round occurrence' });
+    fireEvent.click(roundSelect);
     const roundOptions = await screen.findAllByRole('option');
-    expect(roundOptions.map((option) => option.getAttribute('value'))).toEqual([ROUND_TWO, ROUND_ONE]);
-    expect((screen.getByRole('combobox', { name: 'Round occurrence' }) as HTMLSelectElement).value).toBe(ROUND_TWO);
+    expect(roundOptions).toHaveLength(2);
+    expect(roundOptions[0].getAttribute('aria-selected')).toBe('true');
+    fireEvent.click(roundSelect);
     expect(await screen.findByText('Later')).toBeTruthy();
 
-    const latestSubmit = screen.getByRole('button', { name: 'Submit' }) as HTMLButtonElement;
+    const latestSubmit = screen.getByRole('button', { name: /^Send(?: \(\d+\))?$/ }) as HTMLButtonElement;
     expect(latestSubmit.getAttribute('aria-disabled')).toBe('true');
     fireEvent.keyDown(latestSubmit, { key: 'Enter' });
     fireEvent.click(latestSubmit);
@@ -392,18 +397,19 @@ describe('artifact-backed Briefing rounds', () => {
       `/api/briefings/briefing-1/rounds/${ROUND_TWO}/submit`,
     ]));
 
-    const roundSelect = screen.getByRole('combobox', { name: 'Round occurrence' }) as HTMLSelectElement;
-    roundSelect.value = ROUND_ONE;
-    fireEvent.input(roundSelect);
+    fireEvent.click(roundSelect);
+    fireEvent.click((await screen.findAllByRole('option'))[1]);
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').selectedRoundIds).toMatchObject({ 'briefing:briefing-1': ROUND_ONE }));
     expect(await screen.findByText('First')).toBeTruthy();
     expect(screen.queryByText('Later')).toBeNull();
     await act(async () => { await refreshBrowserResources(queryClient, [browserResourceKeys.briefings]); });
-    expect((screen.getByRole('combobox', { name: 'Round occurrence' }) as HTMLSelectElement).value).toBe(ROUND_ONE);
+    fireEvent.click(screen.getByRole('button', { name: 'Round occurrence' }));
+    expect((await screen.findAllByRole('option'))[1].getAttribute('aria-selected')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Round occurrence' }));
     expect(screen.getByText('First')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Keep' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('button', { name: 'Dismiss' }).getAttribute('aria-pressed')).toBe('false');
-    expect(screen.getByRole('button', { name: 'Submit' }).getAttribute('aria-disabled')).toBe('true');
+    expect(screen.getByRole('button', { name: /^Send(?: \(\d+\))?$/ }).getAttribute('aria-disabled')).toBe('true');
     expect(JSON.parse(window.localStorage.getItem(BRIEFING_VIEW_STATE_KEY) ?? '{}').selectedRoundIds).toMatchObject({ 'briefing:briefing-1': ROUND_ONE });
   });
 
@@ -425,7 +431,7 @@ describe('artifact-backed Briefing rounds', () => {
     render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     await waitFor(() => expect((screen.getByRole('button', { name: 'Dismiss' }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-    const submit = screen.getByRole('button', { name: 'Submit' });
+    const submit = screen.getByRole('button', { name: /^Send(?: \(\d+\))?$/ });
     await waitFor(() => expect(submit.getAttribute('aria-disabled')).toBe('false'));
     fireEvent.click(submit);
     const alert = await within(noticeHost).findByRole('alert');
@@ -490,7 +496,7 @@ describe('artifact-backed Briefing rounds', () => {
     </AppShellProvider>);
     const keep = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
     expect(keep.disabled).toBe(true);
-    expect(screen.getByRole('button', { name: 'Submit' }).getAttribute('aria-disabled')).toBe('true');
+    expect(screen.getByRole('button', { name: /^Send(?: \(\d+\))?$/ }).getAttribute('aria-disabled')).toBe('true');
   });
 
   it('fails closed when detail source bytes do not match the server-verified whole-document hash', async () => {
@@ -507,9 +513,9 @@ describe('artifact-backed Briefing rounds', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     render(<AppShellProvider value={{ noticeHost, active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}><BriefingDocumentRenderer briefingId="briefing-1" roundId={ROUND_TWO} instance={COPIED_PREVIEW_INSTANCE} /></AppShellProvider>);
-    await waitFor(() => expect(screen.getAllByText(/does not match its verified hash/)).toHaveLength(2));
+    await waitFor(() => expect(screen.getByText(/does not match its verified hash/)).toBeTruthy());
     expect(screen.queryByRole('button', { name: 'Keep' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Submit' }).getAttribute('aria-disabled')).toBe('true');
+    expect(screen.getByRole('button', { name: /^Send(?: \(\d+\))?$/ }).getAttribute('aria-disabled')).toBe('true');
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/api/artifacts/'))).toBe(false);
   });
 
@@ -552,8 +558,9 @@ describe('artifact-backed Briefing rounds', () => {
     render(<AppShellProvider value={{ active: true, rightSidebar: null, registerRightSidebar: () => () => undefined, registerInitialRouteLoad: () => undefined, setViewSidebarWidth: () => undefined }}><BriefingView instance={PRODUCTION_ALLOW_INSTANCE} /></AppShellProvider>);
     expect(await screen.findByRole('heading', { name: 'Recurring review' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Select briefing Recurring review' })).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: 'Briefing actions' }));
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename Briefing' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'More' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Details' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename', exact: true }));
 
     const dialog = screen.getByRole('dialog', { name: 'Rename Briefing' });
     const input = within(dialog).getByRole('textbox', { name: 'Briefing title' }) as HTMLInputElement;

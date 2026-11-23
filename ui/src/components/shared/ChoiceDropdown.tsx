@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
+import { appTip } from './AppHoverTips';
 import { DisclosureChevronIcon } from './DisclosureChevronIcon';
 import './ChoiceDropdown.css';
 
@@ -43,7 +44,7 @@ export function ChoiceDropdown({ label, prompt, value, choices, disabled = false
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) close();
   }}>
     <button type="button" ref={triggerRef} className="choice-dropdown__trigger" disabled={disabled}
-      aria-label={label} title={hint ? `${label} · ${hint}` : label} aria-description={hint} aria-haspopup="listbox" aria-expanded={open} aria-controls={menuId}
+      aria-label={label} {...appTip(hint ? `${label} · ${hint}` : label)} aria-description={hint} aria-haspopup="listbox" aria-expanded={open} aria-controls={menuId}
       onClick={() => open ? close() : show()}
       onKeyDown={event => {
         if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
