@@ -622,14 +622,15 @@ export function ArtifactDetail({
   ];
   const spaceActionDisabled = !spaceProjectId || spaceTargets.length === 0;
   const seriesRefValue = series ? seriesRecordRef(series) : '';
+  const canonicalSeriesRef = series ? canonicalArtifactSeriesRef(series.id) : '';
   const immutableArtifactRef = artifact.id;
   const selectedArtifactRef = selectedVersion?.id || immutableArtifactRef;
   const headerShortId = seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id);
-  const headerCopyValue = series ? canonicalArtifactSeriesRef(series.id) : immutableArtifactRef;
+  const headerCopyValue = canonicalSeriesRef || immutableArtifactRef;
   const headerCopyLabel = series ? 'Copy artifact series ref' : 'Copy artifact ref';
   const createdUpdated = artifactCreatedUpdated(artifact, series, versions);
   const identityRows: MetadataRow[] = [
-    ['Series', seriesRefValue, true, series ? canonicalArtifactSeriesRef(series.id) : seriesRefValue],
+    ['Series', seriesRefValue, true, canonicalSeriesRef],
     ['Selected version', selectedVersion ? `v${selectedVersion.version_no}` : 'Latest'],
     ['URI', artifact.uri, true],
     ['Content hash', artifact.content_hash, true],
@@ -732,7 +733,7 @@ export function ArtifactDetail({
   }, [metadataOpen, onMetadataOpenChange]);
 
   useEffect(() => {
-    if (!seriesRefValue) {
+    if (!canonicalSeriesRef) {
       setDraft(null);
       setDraftValue('');
       setEditMode(false);
@@ -741,7 +742,7 @@ export function ArtifactDetail({
     const controller = new AbortController();
     setDraftLoading(true);
     setDraftError(null);
-    getArtifactDraft(seriesRefValue, { signal: controller.signal })
+    getArtifactDraft(canonicalSeriesRef, { signal: controller.signal })
       .then((nextDraft) => {
         setDraft(nextDraft);
         setDraftValue(nextDraft?.content ?? '');
@@ -755,14 +756,14 @@ export function ArtifactDetail({
       })
       .finally(() => setDraftLoading(false));
     return () => controller.abort();
-  }, [seriesRefValue]);
+  }, [canonicalSeriesRef]);
 
   useEffect(() => {
-    if (!editMode || !draft || draftValue === draft.content || !seriesRefValue) return undefined;
+    if (!editMode || !draft || draftValue === draft.content || !canonicalSeriesRef) return undefined;
     setDraftSaving(true);
     const timer = window.setTimeout(() => {
       saveArtifactDraft({
-        ref: seriesRefValue,
+        ref: canonicalSeriesRef,
         base_version_id: draft.base_version_id,
         content: draftValue,
         media_type: editableState.mediaType,
@@ -781,7 +782,7 @@ export function ArtifactDetail({
       window.clearTimeout(timer);
       setDraftSaving(false);
     };
-  }, [draft, draftLabel, draftNote, draftValue, editMode, editableState.mediaType, seriesRefValue]);
+  }, [draft, draftLabel, draftNote, draftValue, editMode, editableState.mediaType, canonicalSeriesRef]);
 
   useEffect(() => {
     setDiffOpen(false);
@@ -866,11 +867,11 @@ export function ArtifactDetail({
   };
 
   const saveDraftNow = useCallback(async () => {
-    if (!seriesRefValue || !draft) return null;
+    if (!canonicalSeriesRef || !draft) return null;
     setDraftSaving(true);
     try {
       const saved = await saveArtifactDraft({
-        ref: seriesRefValue,
+        ref: canonicalSeriesRef,
         base_version_id: draft.base_version_id,
         content: draftValue,
         media_type: editableState.mediaType,
@@ -887,15 +888,15 @@ export function ArtifactDetail({
     } finally {
       setDraftSaving(false);
     }
-  }, [draft, draftLabel, draftNote, draftValue, editableState.mediaType, seriesRefValue]);
+  }, [draft, draftLabel, draftNote, draftValue, editableState.mediaType, canonicalSeriesRef]);
 
   const startEdit = useCallback(async () => {
-    if (!editableState.editable || !seriesRefValue || !baseVersion) return;
+    if (!editableState.editable || !canonicalSeriesRef || !baseVersion) return;
     setDraftSaving(true);
     setDraftError(null);
     try {
       const saved = await saveArtifactDraft({
-        ref: seriesRefValue,
+        ref: canonicalSeriesRef,
         base_version_id: draft?.base_version_id ?? baseVersion.id,
         content: draft?.content ?? editableState.sourceText,
         media_type: editableState.mediaType,
@@ -913,13 +914,13 @@ export function ArtifactDetail({
     } finally {
       setDraftSaving(false);
     }
-  }, [baseVersion, draft, draftLabel, draftNote, editableState, seriesRefValue]);
+  }, [baseVersion, draft, draftLabel, draftNote, editableState, canonicalSeriesRef]);
 
   const discardDraft = useCallback(async () => {
-    if (!seriesRefValue) return;
+    if (!canonicalSeriesRef) return;
     setDraftSaving(true);
     try {
-      await deleteArtifactDraft(seriesRefValue);
+      await deleteArtifactDraft(canonicalSeriesRef);
       setDraft(null);
       setDraftValue('');
       setEditMode(false);
@@ -930,16 +931,16 @@ export function ArtifactDetail({
     } finally {
       setDraftSaving(false);
     }
-  }, [seriesRefValue]);
+  }, [canonicalSeriesRef]);
 
   const publishDraft = useCallback(async (allowStale: boolean) => {
-    if (!seriesRefValue) return;
+    if (!canonicalSeriesRef) return;
     const saved = await saveDraftNow();
     if (!saved) return;
     setDraftSaving(true);
     try {
       const published = await publishArtifactDraft({
-        ref: seriesRefValue,
+        ref: canonicalSeriesRef,
         label: draftLabel || null,
         note: draftNote || null,
         allow_stale: allowStale,
@@ -956,15 +957,15 @@ export function ArtifactDetail({
     } finally {
       setDraftSaving(false);
     }
-  }, [draftLabel, draftNote, onVersionPublished, saveDraftNow, seriesRefValue]);
+  }, [draftLabel, draftNote, onVersionPublished, saveDraftNow, canonicalSeriesRef]);
 
   const rebaseDraft = useCallback(async () => {
-    if (!seriesRefValue) return;
+    if (!canonicalSeriesRef) return;
     const saved = await saveDraftNow();
     if (!saved) return;
     setDraftSaving(true);
     try {
-      const rebased = await rebaseArtifactDraft(seriesRefValue);
+      const rebased = await rebaseArtifactDraft(canonicalSeriesRef);
       setDraft(rebased);
       setDraftValue(rebased.content);
       setDraftStatus('Draft rebased; resolve conflict markers before publishing');
@@ -974,7 +975,7 @@ export function ArtifactDetail({
     } finally {
       setDraftSaving(false);
     }
-  }, [saveDraftNow, seriesRefValue]);
+  }, [saveDraftNow, canonicalSeriesRef]);
 
   const canWriteNotes = Boolean(noteQuery.data?.can_write) && !draftSaving;
   const noteReview = useStandingNoteComments({
@@ -989,7 +990,7 @@ export function ArtifactDetail({
       if (editing) {
         const saved = await saveDraftNow();
         if (!saved || saved.content !== captured) throw new Error('The draft changed before the note could be saved.');
-        setDraft(await postArtifactDraftStandingNote(seriesRefValue, { kind: 'add', range, body }, captured));
+        setDraft(await postArtifactDraftStandingNote(canonicalSeriesRef, { kind: 'add', range, body }, captured));
       } else {
         await postArtifactStandingNote(reviewVersionRef, { kind: 'add', range, body });
         await invalidateArtifactStandingNotes();
@@ -997,7 +998,7 @@ export function ArtifactDetail({
     } : undefined,
     onMutate: canWriteNotes && reviewVersionRef ? async (id, mutation) => {
       if (editing && draft.standing_notes?.some(note => note.id === id)) {
-        setDraft(await postArtifactDraftStandingNote(seriesRefValue, { ...mutation, id }));
+        setDraft(await postArtifactDraftStandingNote(canonicalSeriesRef, { ...mutation, id }));
       } else {
         await postArtifactStandingNote(reviewVersionRef, { ...mutation, id });
         await invalidateArtifactStandingNotes();
