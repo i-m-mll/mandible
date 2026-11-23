@@ -24,6 +24,7 @@ import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DisclosureChevronIcon } from '../components/shared/DisclosureChevronIcon';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { IconTabList, type IconTab } from '../components/shared/IconTabList';
+import type { MarkdownPreviewPolicy } from '../components/markdown/preview';
 
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { entityHref, viewHref } from '../routing';
@@ -881,6 +882,8 @@ type AuthDescriptionViewState = {
   referencesExpanded: boolean;
 };
 
+const AUTH_DESCRIPTION_PREVIEW: MarkdownPreviewPolicy = { softBreaks: 'preserve' };
+
 const DEFAULT_AUTH_DESCRIPTION_VIEW_STATE: AuthDescriptionViewState = {
   descriptionExpanded: true,
   referencesExpanded: true,
@@ -1680,7 +1683,7 @@ function AuthRequestDetail({
               >
                 <AuthReviewMarkdown review={review} binding={review.readOnly ? undefined : description}
                   value={typeof displayedDescription === 'string' ? displayedDescription : ''}
-                  label="Request description" />
+                  label="Request description" previewPolicy={AUTH_DESCRIPTION_PREVIEW} />
               </CollapsiblePanel>
               {referenceRefs.length > 0 && canIssueLink && (
                 <CollapsiblePanel
