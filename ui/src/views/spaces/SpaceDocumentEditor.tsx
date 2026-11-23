@@ -14,7 +14,8 @@ import { Icon } from '../../components/icons/Icon';
 import { appTip } from '../../components/shared/AppHoverTips';
 import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
-import { useStandingNoteReview } from '../../components/shared/StandingNoteReview';
+import { useStandingNoteComments } from '../../components/shared/StandingNoteComments';
+import { DocumentCommentsButton, DocumentCommentSurface } from '../../components/shared/DocumentComments';
 import { useProjectionQuery } from '../../query/useProjectionQuery';
 import { browserResourceKeys } from '../../query/browserResources';
 import { queryClient } from '../../query/client';
@@ -217,9 +218,10 @@ function SavedSpaceEditor({ spaceId, projectId, factPacket, instance = null, fet
     return notes.map(note => ({ ...note, anchor: note.anchor.status === 'detached' ? note.anchor : carry(note.anchor) }));
   }, [notes, noteQuery.data?.generation, draft.latest, draft.source]);
 
-  const standing = useStandingNoteReview({
+  const standing = useStandingNoteComments({
     scopeKey: spaceId, source: draft.source, rangeKind: 'text', notes: workingNotes,
-    documentRef: editor, open: commentsOpen, onOpenChange: setCommentsOpen, scrollOwnerRef: scroller,
+    documentRef: editor, drawerState: { open: commentsOpen, setOpen: setCommentsOpen },
+    onEdit: editable ? range => editor.current?.select(range) : undefined,
     onCreate: allowNote ? async (range, text, selectedSource) => {
       const current = await draft.saveCurrent(selectedSource);
       if (!current || current.source.slice(range.start_offset, range.end_offset) !== range.quote) {
@@ -358,7 +360,7 @@ function SavedSpaceEditor({ spaceId, projectId, factPacket, instance = null, fet
         onClick={() => void copyBlockLink()}><Icon name="copyLink" /></button>
       <button className="btn btn--ghost btn--sm" type="button" aria-label="Document sections" {...appTip('Document sections')}
         aria-expanded={outline} onClick={() => setOutline(!outline)}><Icon name="sidebarMenu" /></button>
-      {standing.toolbar}
+      <DocumentCommentsButton controller={standing.surfaceProps.controller} count={workingNotes.length} />
       <button className="btn btn--ghost btn--sm" type="button" aria-label="Publications and import" {...appTip('Publications and import')}
         onClick={() => setPublication(true)}><Icon name="history" /></button>
     </div>
@@ -373,7 +375,7 @@ function SavedSpaceEditor({ spaceId, projectId, factPacket, instance = null, fet
         <button type="button" onClick={() => { draft.acceptRemote(); setReviewedGeneration(null); }}>Discard local draft</button>
       </>}
     </>}>{null}</DetailPaneNotice>}
-    <div className="space-document__workspace" data-comments-open={String(commentsOpen)}>
+    <div className="space-document__workspace">
       {outline && <nav className="space-document__outline" aria-label="Document sections">
         {blocks.map(block => {
           const previous = previousSibling.get(block.block.parent_id);
@@ -396,6 +398,7 @@ function SavedSpaceEditor({ spaceId, projectId, factPacket, instance = null, fet
       </nav>}
       <div ref={scroller} className="space-document__scroller" onScroll={scroll}
         onDragOver={event => { if (dragged.current) event.preventDefault(); }} onDrop={placeDrop}>
+        <DocumentCommentSurface {...standing.surfaceProps}>
         <MarkdownDocument {...standing.documentProps} ariaLabel="Space document" value={draft.source} readOnly={!editable}
           directives={directives} previewPolicy={spaceFramePreview} editingExtension={frameEditing} comparison={draft.conflict && reviewedGeneration !== null ? draft.latest.source : undefined}
           onChange={draft.onChange} onSelectionChange={range => {
@@ -427,6 +430,7 @@ function SavedSpaceEditor({ spaceId, projectId, factPacket, instance = null, fet
             openPicker('reference', { start, end: range.end });
             return true;
           }} />
+        </DocumentCommentSurface>
         {recoveryEntries.length > 0 && <details className="space-document__recovery">
           <summary>Recovered block drafts</summary>
           {recoveryEntries.map(([id, markdown]) => <div key={id}>
@@ -435,7 +439,6 @@ function SavedSpaceEditor({ spaceId, projectId, factPacket, instance = null, fet
           </div>)}
         </details>}
       </div>
-      {standing.sidebar}
     </div>
     {publication && <SpaceExportDialog spaceId={spaceId} projectId={projectId} savedGeneration={draft.dirty ? null : draft.latest.generation}
       onClose={() => setPublication(false)} onImported={() => void queryClient.invalidateQueries()} />}
@@ -450,7 +453,6 @@ function SavedSpaceEditor({ spaceId, projectId, factPacket, instance = null, fet
       closeLabel="Close reference" embeddedFallback={{ scrollOwnerRef: scroller }}>
       {inspector && <ReferenceDetailContent target={inspector} />}
     </DetailPaneModal>
-    {standing.composer}
   </div>;
 }
 
