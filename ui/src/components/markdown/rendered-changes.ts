@@ -1,22 +1,23 @@
 import { markdown } from '@codemirror/lang-markdown';
 import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import { Chunk } from '@codemirror/merge';
-import { EditorState, Facet, Prec, StateEffect, StateField, type ChangeDesc, type Range, type Text, type Transaction } from '@codemirror/state';
+import { ChangeSet, EditorState, Facet, Prec, StateEffect, StateField, type ChangeDesc, type Range, type Text, type Transaction } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType } from '@codemirror/view';
 import { compareMarkdownWords } from './comparison';
 import { markdownPreview, markdownPreviewPolicy, previewRanges, type MarkdownPreviewPolicy } from './preview';
 import { markdownSyntax } from './syntax';
-import { exactMarkdownSource } from './source';
+import { exactMarkdownSource, markdownEditorRange, type MarkdownSourceRange } from './source';
 
 type Layer = 'agent' | 'operator';
 type ComparisonInput = {
   agent?: string;
   operator?: string;
+  operatorAnnotations?: readonly (MarkdownSourceRange & { id: string })[];
   collapse: boolean;
   source: boolean;
   policy?: MarkdownPreviewPolicy;
 };
-type Comparison = { original: EditorState; chunks: readonly Chunk[] };
+type Comparison = { original: EditorState; candidate: Text; chunks: readonly Chunk[] };
 
 export const comparisonInput = Facet.define<ComparisonInput, ComparisonInput | undefined>({
   combine: ([input]) => input,
@@ -28,15 +29,19 @@ const diffConfig = { override: compareMarkdownWords };
 
 function compare(
   state: EditorState, previous: Comparison | undefined, before: string | undefined,
-  previousInput: ComparisonInput | undefined, beforeKey: Layer, changes?: ChangeDesc,
+  previousInput: ComparisonInput | undefined, beforeKey: Layer, candidate = state.doc, changes?: ChangeDesc,
 ): Comparison | undefined {
   if (before === undefined) return;
   if (previous && before === previousInput?.[beforeKey]
       && state.facet(comparisonInput)?.source === previousInput?.source
       && state.facet(comparisonInput)?.policy === previousInput?.policy) {
-    return !changes || changes.empty ? previous : {
+    if (candidate.eq(previous.candidate)) return previous;
+    return {
       original: previous.original,
-      chunks: Chunk.updateB(previous.chunks, previous.original.doc, state.doc, changes, diffConfig),
+      candidate,
+      chunks: changes
+        ? Chunk.updateB(previous.chunks, previous.original.doc, candidate, changes, diffConfig)
+        : Chunk.build(previous.original.doc, candidate, diffConfig),
     };
   }
   const input = state.facet(comparisonInput);
@@ -49,24 +54,27 @@ function compare(
     ],
   });
   if (!input?.source) ensureSyntaxTree(original, original.doc.length);
-  return { original, chunks: Chunk.build(original.doc, state.doc, diffConfig) };
+  return { original, candidate, chunks: Chunk.build(original.doc, candidate, diffConfig) };
 }
 
 class DeletedText extends WidgetType {
   constructor(
     readonly original: EditorState, readonly from: number, readonly to: number, readonly layer: Layer,
-    readonly block: boolean,
+    readonly block: boolean, readonly paired: boolean, readonly annotationId: string | undefined,
   ) { super(); }
 
   eq(other: DeletedText) {
     return this.original === other.original && this.from === other.from
-      && this.to === other.to && this.layer === other.layer && this.block === other.block;
+      && this.to === other.to && this.layer === other.layer && this.block === other.block
+      && this.paired === other.paired && this.annotationId === other.annotationId;
   }
 
   toDOM(view: EditorView) {
     const owner = view.dom.ownerDocument;
     const deletion = owner.createElement(this.block ? 'div' : 'span');
     deletion.className = `markdown-change markdown-change--${this.layer} markdown-change--deletion`;
+    if (this.paired) deletion.classList.add('markdown-change--paired');
+    if (this.annotationId) deletion.dataset.markdownRangeId = this.annotationId;
     const fragment = previewRanges(this.original, view, this.from, this.to, this.block);
     deletion.append(fragment);
     return deletion;
@@ -95,6 +103,7 @@ type ChangeState = {
   positions: readonly number[];
   selected: number;
   expanded: readonly number[];
+  toWorking: ChangeSet | null;
 };
 
 function unchangedBlocks(
@@ -126,26 +135,36 @@ function unchangedBlocks(
 }
 
 function addChanges(
-  doc: Text, comparison: Comparison, layer: Layer, marks: Range<Decoration>[], suppressed: readonly Chunk[] = [],
+  doc: Text, comparison: Comparison, layer: Layer, marks: Range<Decoration>[], toWorking: ChangeSet | null,
+  annotations: readonly (Span & { id: string })[],
 ) {
   for (const chunk of comparison.chunks) {
     const lines = new Set<number>();
     for (const change of chunk.changes) {
-      const from = chunk.fromB + change.fromB;
-      const to = chunk.fromB + change.toB;
-      if (suppressed.some(operator => operator.fromB <= to && from < operator.toB
-          && operator.changes.some(part => operator.fromB + part.fromB <= to && operator.fromB + part.toB >= from))) continue;
+      const start = chunk.fromB + change.fromB;
+      const end = chunk.fromB + change.toB;
+      const from = toWorking?.mapPos(start, 1) ?? start;
+      const to = toWorking?.mapPos(end, -1) ?? end;
       const fromA = chunk.fromA + change.fromA;
       const toA = chunk.fromA + change.toA;
-      if (from < to) marks.push(Decoration.mark({
-        class: `markdown-change markdown-change--${layer} markdown-change--insertion`,
-      }).range(from, to));
+      const mark = (from: number, to: number) => {
+        if (from < to) marks.push(Decoration.mark({
+          class: `markdown-change markdown-change--${layer} markdown-change--insertion`,
+        }).range(from, to));
+      };
+      if (toWorking && start < end) {
+        toWorking.iterGaps((before, after, length) => {
+          const first = Math.max(before, start), last = Math.min(before + length, end);
+          if (first < last) mark(after + first - before, after + last - before);
+        });
+      } else mark(from, to);
       if (fromA < toA) {
         const line = comparison.original.doc.lineAt(fromA);
         const block = fromA === line.from && (toA > line.to || from === doc.lineAt(from).from && from === to);
+        const annotationId = annotations.find(annotation => annotation.from <= Math.max(from, to) && from <= annotation.to)?.id;
         marks.push(Decoration.widget({
-          widget: new DeletedText(comparison.original, fromA, toA, layer, block),
-          side: -1, block,
+          widget: new DeletedText(comparison.original, fromA, toA, layer, block, from < to, annotationId),
+          side: block ? -1 : 1, block,
         }).range(from));
       }
       for (let number = doc.lineAt(from).number; number <= doc.lineAt(Math.max(from, to - 1)).number; number++) {
@@ -159,8 +178,12 @@ function addChanges(
 function collectDecorations(state: EditorState, changes: ChangeState) {
   const marks: Range<Decoration>[] = [];
   const { agent, operator, expanded } = changes;
-  if (agent) addChanges(state.doc, agent, 'agent', marks, operator?.chunks);
-  if (operator) addChanges(state.doc, operator, 'operator', marks);
+  if (agent) addChanges(state.doc, agent, 'agent', marks, changes.toWorking, []);
+  if (operator) {
+    const annotations = (state.facet(comparisonInput)?.operatorAnnotations ?? []).map(item =>
+      ({ ...markdownEditorRange(state, item), id: item.id }));
+    addChanges(state.doc, operator, 'operator', marks, null, annotations);
+  }
   if (state.facet(comparisonInput)?.collapse && agent?.chunks.length && !operator) {
     unchangedBlocks(state, agent.chunks, expanded, marks);
   }
@@ -170,11 +193,20 @@ function collectDecorations(state: EditorState, changes: ChangeState) {
 function changeState(state: EditorState, previous?: ChangeState, transaction?: Transaction): ChangeState {
   const input = state.facet(comparisonInput);
   const previousInput = transaction?.startState.facet(comparisonInput);
-  const agent = compare(state, previous?.agent, input?.agent, previousInput, 'agent', transaction?.changes);
-  const operator = compare(state, previous?.operator, input?.operator, previousInput, 'operator', transaction?.changes);
+  const operator = compare(state, previous?.operator, input?.operator, previousInput, 'operator', state.doc, transaction?.changes);
+  const agent = compare(state, previous?.agent, input?.agent, previousInput, 'agent', operator?.original.doc,
+    operator || previous?.operator ? undefined : transaction?.changes);
+  const toWorking = operator === previous?.operator ? previous?.toWorking ?? null : operator
+    ? ChangeSet.of(operator.chunks.flatMap(chunk => chunk.changes.map(part => ({
+      from: chunk.fromA + part.fromA,
+      to: chunk.fromA + part.toA,
+      insert: state.doc.slice(chunk.fromB + part.fromB, chunk.fromB + part.toB),
+    }))), operator.original.doc.length) : null;
   const chunks = agent?.chunks ?? operator?.chunks;
-  const positions = chunks === (previous?.agent?.chunks ?? previous?.operator?.chunks) ? previous?.positions ?? []
-    : chunks?.map(chunk => Math.min(chunk.fromB, state.doc.length)) ?? [];
+  const positions = chunks === (previous?.agent?.chunks ?? previous?.operator?.chunks) && toWorking === previous?.toWorking
+    ? previous?.positions ?? []
+    : chunks?.map(chunk => agent && toWorking ? toWorking.mapPos(Math.min(chunk.fromB, toWorking.length))
+      : Math.min(chunk.fromB, state.doc.length)) ?? [];
   const requested = transaction?.effects.find(effect => effect.is(setChangePosition))?.value;
   const selected = requested ?? (positions === previous?.positions ? previous?.selected ?? 0 : 0);
   const expand = transaction?.effects.find(effect => effect.is(expandUnchanged))?.value;
@@ -182,7 +214,7 @@ function changeState(state: EditorState, previous?: ChangeState, transaction?: T
   const nextExpanded = expand === undefined ? expanded : [...expanded, expand];
   if (previous && agent === previous.agent && operator === previous.operator && selected === previous.selected
       && nextExpanded === previous.expanded) return previous;
-  return { agent, operator, positions, selected, expanded: nextExpanded };
+  return { agent, operator, positions, selected, expanded: nextExpanded, toWorking };
 }
 
 export const renderedChanges = StateField.define({
@@ -193,7 +225,8 @@ export const renderedChanges = StateField.define({
   update(previous, transaction) {
     const changes = changeState(transaction.state, previous.changes, transaction);
     return changes === previous.changes && syntaxTree(transaction.startState) === syntaxTree(transaction.state)
-      && transaction.startState.facet(comparisonInput)?.collapse === transaction.state.facet(comparisonInput)?.collapse ? previous
+      && transaction.startState.facet(comparisonInput)?.collapse === transaction.state.facet(comparisonInput)?.collapse
+      && transaction.startState.facet(comparisonInput)?.operatorAnnotations === transaction.state.facet(comparisonInput)?.operatorAnnotations ? previous
       : { changes, decorations: collectDecorations(transaction.state, changes) };
   },
   provide: field => Prec.low(EditorView.decorations.from(field, value => value.decorations)),

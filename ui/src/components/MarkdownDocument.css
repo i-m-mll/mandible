@@ -160,13 +160,22 @@ div.markdown-change--deletion > .cm-line {
 
 .markdown-document .cm-line.markdown-change__line {
   position: relative;
+  padding-inline-start: var(--space-2);
+}
+
+.markdown-document .cm-line.markdown-change__line.markdown-document__list {
+  padding-inline-start: calc(var(--markdown-list-indent) + var(--space-2));
+}
+
+.markdown-change--paired {
+  margin-inline-end: var(--space-1);
 }
 
 .markdown-change__line::before {
   content: '';
   position: absolute;
   inset-block: 0;
-  inset-inline-start: calc(-1 * var(--space-2));
+  inset-inline-start: 0;
   border-inline-start: thin solid var(--change-bar);
 }
 

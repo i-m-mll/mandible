@@ -230,18 +230,22 @@ export function BriefingDocumentPanel({
       ]);
     } : undefined,
   });
-  const workingReplacements = new Map<string, MarkdownSourceRange>();
-  let replacementEnd = 0;
-  let delta = 0;
-  for (const annotation of [...replacements].sort((a, b) => a.start_offset - b.start_offset)) {
-    if (annotation.start_offset < replacementEnd || annotation.replacement_text === null) continue;
-    const start = annotation.start_offset + delta;
-    const end = start + annotation.replacement_text.length;
-    const range = fromPersisted({ start, end });
-    if (range) workingReplacements.set(annotation.annotation_event_id, range);
-    delta += annotation.replacement_text.length - annotation.quote.length;
-    replacementEnd = annotation.end_offset;
-  }
+  const workingReplacements = useMemo(() => {
+    const ranges = new Map<string, MarkdownSourceRange>();
+    let replacementEnd = 0;
+    let delta = 0;
+    for (const annotation of [...replacements].sort((a, b) => a.start_offset - b.start_offset)) {
+      if (annotation.start_offset < replacementEnd || annotation.replacement_text === null) continue;
+      const start = annotation.start_offset + delta;
+      const end = start + annotation.replacement_text.length;
+      const range = fromPersisted({ start, end });
+      if (range) ranges.set(annotation.annotation_event_id, range);
+      delta += annotation.replacement_text.length - annotation.quote.length;
+      replacementEnd = annotation.end_offset;
+    }
+    return ranges;
+  }, [replacements, fromPersisted]);
+  const operatorAnnotations = useMemo(() => Array.from(workingReplacements, ([id, range]) => ({ ...range, id })), [workingReplacements]);
   const threads: DocumentCommentThread[] = [
     ...(standingNotes ?? []).map(note => ({
       id: note.id, quote: note.quote, body: note.body, author: note.author,
@@ -333,7 +337,7 @@ export function BriefingDocumentPanel({
         } : null}>
         <MarkdownDocument value={workingText} documentRef={documentRef}
           comparison={showChanges ? currentComparison?.text : undefined}
-          operatorComparison={workingText === source ? undefined : source}
+          operatorComparison={workingText === source ? undefined : source} operatorAnnotations={operatorAnnotations}
           showSource={showSource} readOnly={!editing} ariaLabel="Briefing document"
           directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} decorations={decorations}
           onChange={value => { setWorking(value); setFailedWorking(null); }}

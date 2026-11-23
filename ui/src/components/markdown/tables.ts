@@ -46,6 +46,7 @@ export function tableDecorations(state: EditorState) {
           hide(position, cell.from);
           if (column < columns) {
             decorations.push(Decoration.mark({
+              inclusive: true,
               class: column > 0 ? 'markdown-document__table-cell markdown-document__table-cell--divided'
                 : 'markdown-document__table-cell',
               attributes: { style: `grid-column: ${column + 1}; text-align: ${alignments[column]}` },

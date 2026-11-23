@@ -32,6 +32,7 @@ type MarkdownDocumentProps = {
   ariaLabel: string;
   comparison?: string;
   operatorComparison?: string;
+  operatorAnnotations?: readonly (MarkdownSourceRange & { id: string })[];
   showSource?: boolean;
   onChangePosition?: (position: MarkdownChangePosition) => void;
   comparisonLayout?: 'full-document';
@@ -125,6 +126,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
   const comparison = (props: MarkdownDocumentProps) => comparisonInput.of({
     agent: props.comparison,
     operator: props.operatorComparison,
+    operatorAnnotations: props.operatorAnnotations,
     collapse: props.readOnly && props.comparisonLayout !== 'full-document' && !props.showSource,
     source: Boolean(props.showSource),
     policy: props.previewPolicy,
@@ -283,7 +285,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
       compartments.rendered.reconfigure(preview(props)),
       compartments.comparison.reconfigure(comparison(props)),
     ] });
-  }, [props.comparison, props.operatorComparison, props.comparisonLayout, props.showSource, props.previewPolicy, props.readOnly]);
+  }, [props.comparison, props.operatorComparison, props.operatorAnnotations, props.comparisonLayout, props.showSource, props.previewPolicy, props.readOnly]);
 
   return (
     <div className={`markdown-document${props.showSource ? ' markdown-document--source' : ''}`}>
