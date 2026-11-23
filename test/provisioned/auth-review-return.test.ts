@@ -63,6 +63,7 @@ it('returns a quoted review through the CLI and signs a separately frozen edit o
 
     await page.goto(`${harness.base}/auth/${editableRequest.id.slice(0, 8)}`);
     await page.getByRole('tab', { name: 'Diff', exact: true }).click();
+    await page.getByRole('button', { name: 'File order', exact: true }).click();
     const proposal = page.locator('.document-comment-surface__text [aria-label="proposal.md after"]');
     await proposal.focus();
     await page.keyboard.press('Home');
