@@ -1,4 +1,4 @@
-import { GFM, type MarkdownConfig } from '@lezer/markdown';
+import { GFM, parser, type MarkdownConfig } from '@lezer/markdown';
 import { mathToken } from '../../lib/markdownMath';
 
 const mathSyntax: MarkdownConfig = {
@@ -49,3 +49,5 @@ const footnoteSyntax: MarkdownConfig = {
 };
 
 export const markdownSyntax = [GFM, mathSyntax, footnoteSyntax];
+
+export const markdownParser = parser.configure(markdownSyntax);

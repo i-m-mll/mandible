@@ -357,18 +357,12 @@ export function BriefingDocumentRenderer({
     && currentAnswerIds.every((id) => round.latest_frozen_membership!.answer_event_ids.includes(id))
     && currentAnnotationIds.every((id) => round.latest_frozen_membership!.annotation_event_ids.includes(id)));
   const emptyNoChange = !draftDiffers && currentAnswerIds.length === 0 && currentAnnotationIds.length === 0;
-  const submitReason = !canMutate
-    ? (round?.directive_binding?.reason || 'Submitting is unavailable for the current identity or instance.')
-    : round?.directive_binding?.status !== 'valid'
-      ? (round?.directive_binding?.reason || 'The directive binding is unavailable.')
-      : contentGate
-        || (pendingSuggestion ? 'Saving your suggestions…'
-          : requiredIncomplete ? 'Complete the required directives before submitting.'
-          : emptyNoChange ? 'Add an answer or annotation before submitting.'
-            : !draftDiffers && frozenMatches ? 'No answer or annotation changes since your latest submission.'
-              : null);
-
-  const submitDisabled = contentGate === null || busy || clearBusy || Boolean(submitReason);
+  const sendRestriction = !canMutate || round?.directive_binding?.status !== 'valid' || contentGate !== ''
+    ? 'Send unavailable'
+    : pendingSuggestion || busy || clearBusy ? 'Saving…'
+      : requiredIncomplete ? 'Answers required'
+        : emptyNoChange || (!draftDiffers && frozenMatches) ? 'Nothing to send' : null;
+  const submitDisabled = sendRestriction !== null;
 
   const submit = async () => {
     if (!round || !canMutate || busy || clearBusy || pendingSuggestion || contentGate !== '') return;
@@ -627,11 +621,18 @@ export function BriefingDocumentRenderer({
     ...currentBranch ? [currentBranch] : [],
     ...comparisonBranches.filter(branch => branch.name !== currentBranch?.name).slice(0, currentBranch ? 2 : 3),
   ];
-  const comparisonDefault = round?.document?.original_comparison_base?.target;
+  const defaultComparison = round?.document?.original_comparison_base
+    ?? (!comparisonChoice ? round?.document?.comparison_base : null);
+  const comparisonDefault = defaultComparison?.target;
+  const comparisonVersionRef = comparisonDefault?.kind === 'artifact_version'
+    ? comparisonDefault.artifact_version_id : defaultComparison?.artifact_version_id;
+  const matchingRound = comparisonVersionRef ? roundOptions.find(({ round: version }) =>
+    displayResourceRef(version.artifact_version_id) === displayResourceRef(comparisonVersionRef)) : undefined;
   const defaultComparisonLabel = displayContext?.proposalBundleId ? 'published version'
     : comparisonDefault?.kind === 'git_file'
       ? comparisonBranches.find(branch => branch.commit === comparisonDefault.commit)?.name ?? comparisonDefault.commit.slice(0, 8)
-      : round?.document?.previous_round_id ? 'previous round' : 'pinned version';
+      : matchingRound && matchingRound.round.id === round?.document?.previous_round_id ? 'previous round'
+        : matchingRound?.label ?? (comparisonVersionRef ? `version ${shortRouteId(comparisonVersionRef).replace(/^artifact-version:/, '')}` : null);
   const displayedRound = round && hideSubmittedAnnotations && !round.selected_submission_overlay
     ? { ...round, annotations: [] }
     : round;
@@ -735,7 +736,7 @@ export function BriefingDocumentRenderer({
                       {branch.name}{comparisonCommit === branch.commit && <Check className="app-icon" aria-hidden="true" />}
                     </button>)}
                   </> : <>
-                    {(round.document?.original_comparison_base || comparisonBranches.length > 0) &&
+                    {defaultComparisonLabel && (defaultComparison || displayContext?.proposalBundleId && comparisonChoice) &&
                       <button type="button" className="detail-pane-menu__item" role="menuitemradio" aria-checked={!comparisonChoice} onClick={() => chooseComparison('')}>
                         Compare with {defaultComparisonLabel}{!comparisonChoice && <Check className="app-icon" aria-hidden="true" />}
                       </button>}
@@ -756,7 +757,7 @@ export function BriefingDocumentRenderer({
                 </div>
               ) : null}
               {round.valid && !round.selected_submission_overlay && <DetailPaneIconAction className="briefing-send" label={pendingAnnotations.length ? `Send (${pendingAnnotations.length})` : 'Send'}
-                tip={submitReason ? `Send · ${submitReason}` : 'Send'} aria-disabled={submitDisabled} aria-busy={busy}
+                tip={sendRestriction ?? 'Send'} aria-disabled={submitDisabled} aria-busy={busy}
                 onClick={() => { if (!submitDisabled) void submit(); }}>
                 <ArrowUp className="app-icon" aria-hidden="true" />
                 {pendingAnnotations.length > 0 && <span className="sidebar-search-filter__badge" aria-hidden="true">{pendingAnnotations.length}</span>}

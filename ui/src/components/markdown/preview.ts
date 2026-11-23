@@ -1,3 +1,4 @@
+import type { SyntaxNode } from '@lezer/common';
 import { syntaxTree } from '@codemirror/language';
 import { Facet, StateEffect, StateField, type EditorState, type Range, type Transaction } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view';
@@ -10,7 +11,7 @@ import { isResourceRef, resourceRefHref } from '../../resource-refs';
 import { externalSourceUpdate, markdownEditorRange, markdownSourceRange, markdownValue, type MarkdownSelection } from './source';
 import { markdownTables, tableDecorations } from './tables';
 import { markdownCodeHighlighting } from './code-highlighting';
-import { footnoteLabel } from './syntax';
+import { footnoteLabel, markdownParser } from './syntax';
 import { SPACE_FRAME_NAMES } from '../../../../src/spaces/directives.js';
 
 export type MarkdownDirective = MarkdownSelection & {
@@ -56,6 +57,7 @@ function safeUrl(source: string, image: boolean): string | undefined {
 }
 
 type PreviewContent =
+  | { kind: 'soft-break' }
   | { kind: 'task'; checked: boolean }
   | { kind: 'image'; url: string; alt: string }
   | { kind: 'math'; formula: string; display: boolean }
@@ -72,6 +74,11 @@ class PreviewWidget extends WidgetType {
     const document = view.dom.ownerDocument;
     const content = this.content;
     switch (content.kind) {
+      case 'soft-break': {
+        const space = document.createElement('span');
+        space.textContent = ' ';
+        return space;
+      }
       case 'task': {
         const mark = document.createElement('span');
         mark.setAttribute('role', 'checkbox');
@@ -231,7 +238,7 @@ export const spaceFrameNavigation = EditorView.atomicRanges.of(view => {
   return Decoration.set(ranges, true);
 });
 
-function previewDecorations(state: EditorState, focused: boolean): DecorationSet {
+function previewDecorations(state: EditorState, focused: boolean, tree = syntaxTree(state)): DecorationSet {
   const marks: Range<Decoration>[] = [];
   const { directives, frontmatter } = state.field(specials);
   let directiveIndex = 0;
@@ -242,6 +249,24 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
   };
   const hide = ({ from, to }: Span) => {
     if (from < to) marks.push(Decoration.replace({ markdownPreviewReplacement: true,}).range(from, to));
+  };
+  const joinSoftBreaks = (node: SyntaxNode) => {
+    const markup = [...node.getChildren('HardBreak'), ...node.getChildren('Comment')];
+    const quoteMarks = node.getChildren('QuoteMark');
+    for (let line = state.doc.lineAt(node.from); line.to < node.to;) {
+      const next = state.doc.line(line.number + 1);
+      const start = line.to;
+      if (!markup.some(({ from, to }) => from <= start && start < to)) {
+        const quoteEnd = quoteMarks.filter(mark => next.from <= mark.from && mark.from <= next.to).at(-1)?.to ?? next.from;
+        const trailingSpace = line.text.match(/[ \t]+$/)?.[0].length ?? 0;
+        const leadingSpace = state.sliceDoc(quoteEnd, next.to).match(/^[ \t]+/)?.[0].length ?? 0;
+        const range = { from: start - trailingSpace, to: quoteEnd + leadingSpace };
+        if (hidden(range)) marks.push(Decoration.replace({
+          markdownPreviewReplacement: true, markdownSoftBreak: true, widget: new PreviewWidget({ kind: 'soft-break' }),
+        }).range(range.from, range.to));
+      }
+      line = next;
+    }
   };
   const mark = ({ from, to }: Span, className: string) => {
     if (from < to) marks.push(Decoration.mark({ class: className }).range(from, to));
@@ -287,7 +312,7 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
     marks.push(Decoration.replace({ markdownPreviewReplacement: true, widget, block }).range(directive.from, directive.to));
   }
 
-  syntaxTree(state).iterate({
+  tree.iterate({
     enter(ref) {
       if (ref.name === 'Document') return;
       if (frontmatter && ref.to <= frontmatter.end) return false;
@@ -362,6 +387,18 @@ function previewDecorations(state: EditorState, focused: boolean): DecorationSet
           }
           return false;
         }
+        case 'Paragraph':
+          joinSoftBreaks(node);
+          return;
+        case 'HardBreak':
+          if (hidden(node)) hide({ from: node.from, to: state.doc.lineAt(node.from).to });
+          return false;
+        case 'CommentBlock':
+          if (hidden(node)) marks.push(Decoration.replace({ markdownPreviewReplacement: true, block: true }).range(node.from, node.to));
+          return false;
+        case 'Comment':
+          if (hidden(node)) hide(node);
+          return false;
         case 'HTMLBlock':
         case 'HTMLTag':
           return false;
@@ -475,10 +512,10 @@ export function previewRanges(state: EditorState, view: EditorView, from: number
   const fragment = owner.createDocumentFragment();
   let sets = originalPreview.get(state);
   if (!sets) {
-    sets = [
-      state.field(specials, false) ? tableDecorations(state) : undefined,
-      state.field(specials, false) ? previewDecorations(state, false) : undefined,
-    ];
+    if (state.field(specials, false)) {
+      const tree = markdownParser.parse(state.doc.toString());
+      sets = [tableDecorations(state, tree), previewDecorations(state, false, tree)];
+    } else sets = [];
     originalPreview.set(state, sets);
   }
   const appendAttributes = (element: HTMLElement, decoration: Decoration) => {
@@ -489,17 +526,22 @@ export function previewRanges(state: EditorState, view: EditorView, from: number
     }
   };
   let position = from;
+  let blockLine: HTMLElement | null = null;
   while (position < to) {
     const line = state.doc.lineAt(position);
     const end = Math.min(line.to, to);
-    const parent = block ? owner.createElement('div') : fragment;
+    const parent: HTMLElement | DocumentFragment = block ? blockLine ?? owner.createElement('div') : fragment;
     const ranges: Range<Decoration>[] = [];
-    if (parent instanceof HTMLElement) parent.className = 'cm-line';
+    if (parent instanceof HTMLElement && !blockLine) parent.className = 'cm-line';
+    let joined: string | null = null;
     for (const set of sets) {
-      set?.between(position, end, (start, finish, decoration) => {
-        if (decoration.spec.attributes && start === finish && parent instanceof HTMLElement) {
+      set?.between(position, end + Number(end < to), (start, finish, decoration) => {
+        if (decoration.spec.markdownPreviewReplacement && !decoration.spec.block && start <= end && end < finish && end < to) {
+          joined = decoration.spec.markdownSoftBreak ? ' ' : '';
+        }
+        if (decoration.spec.attributes && start === finish && start <= end && parent instanceof HTMLElement && !blockLine) {
           appendAttributes(parent, decoration);
-        } else if (start === finish && parent instanceof HTMLElement && decoration.spec.class) {
+        } else if (start === finish && parent instanceof HTMLElement && !blockLine && decoration.spec.class) {
           appendAttributes(parent, decoration);
         } else if (start < end && finish > position) {
           ranges.push(decoration.range(start, finish));
@@ -514,7 +556,7 @@ export function previewRanges(state: EditorState, view: EditorView, from: number
       const active = ranges.filter(range => range.from <= start && range.to >= finish);
       const replacement = active.find(range => range.value.spec.markdownPreviewReplacement);
       if (replacement) {
-        if (replacement.value.spec.widget && start === Math.max(position, replacement.from)) {
+        if (replacement.value.spec.widget && !replacement.value.spec.markdownSoftBreak && start === Math.max(from, replacement.from)) {
           parent.append(replacement.value.spec.widget.toDOM(view));
         }
         continue;
@@ -528,8 +570,14 @@ export function previewRanges(state: EditorState, view: EditorView, from: number
       }
       parent.append(node);
     }
-    if (parent !== fragment) fragment.append(parent);
-    if (!block && end < to) fragment.append(owner.createTextNode('\n'));
+    if (joined !== null) {
+      if (joined) parent.append(owner.createTextNode(joined));
+      blockLine = parent instanceof HTMLElement ? parent : null;
+    } else {
+      if (parent !== fragment) fragment.append(parent);
+      else if (end < to) fragment.append(owner.createTextNode('\n'));
+      blockLine = null;
+    }
     position = end + 1;
   }
   return fragment;

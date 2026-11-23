@@ -2,14 +2,14 @@ import { syntaxTree } from '@codemirror/language';
 import { Prec, StateField, type EditorState, type Range } from '@codemirror/state';
 import { Decoration, EditorView } from '@codemirror/view';
 
-export function tableDecorations(state: EditorState) {
+export function tableDecorations(state: EditorState, tree = syntaxTree(state)) {
   const decorations: Range<Decoration>[] = [];
   const selection = state.selection.main;
   const caret = !state.readOnly && selection.empty ? selection.head : -1;
   const hide = (from: number, to: number) => {
     if (from < to) decorations.push(Decoration.replace({ markdownPreviewReplacement: true,}).range(from, to));
   };
-  syntaxTree(state).iterate({
+  tree.iterate({
     enter(ref) {
       if (ref.name !== 'Table') return;
       const table = ref.node;

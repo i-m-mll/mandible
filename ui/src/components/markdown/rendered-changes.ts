@@ -1,9 +1,9 @@
 import { markdown } from '@codemirror/lang-markdown';
-import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
-import { Chunk } from '@codemirror/merge';
+import { syntaxTree } from '@codemirror/language';
+import { Chunk, type Change } from '@codemirror/merge';
 import { ChangeSet, EditorState, Facet, Prec, StateEffect, StateField, type ChangeDesc, type Range, type Text, type Transaction } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType } from '@codemirror/view';
-import { compareMarkdownWords } from './comparison';
+import { compareMarkdownWords, compareRenderedMarkdown } from './comparison';
 import { markdownPreview, markdownPreviewPolicy, previewRanges, type MarkdownPreviewPolicy } from './preview';
 import { markdownSyntax } from './syntax';
 import { exactMarkdownSource, markdownEditorRange, type MarkdownSourceRange } from './source';
@@ -17,7 +17,12 @@ type ComparisonInput = {
   source: boolean;
   policy?: MarkdownPreviewPolicy;
 };
-type Comparison = { original: EditorState; candidate: Text; chunks: readonly Chunk[] };
+type Comparison = {
+  original: EditorState;
+  candidate: Text;
+  chunks: readonly Chunk[];
+  blockParts?: readonly Change[];
+};
 
 export const comparisonInput = Facet.define<ComparisonInput, ComparisonInput | undefined>({
   combine: ([input]) => input,
@@ -25,27 +30,20 @@ export const comparisonInput = Facet.define<ComparisonInput, ComparisonInput | u
 
 export const setChangePosition = StateEffect.define<number>();
 export const expandUnchanged = StateEffect.define<number>();
-const diffConfig = { override: compareMarkdownWords };
+const wordDiff = { override: compareMarkdownWords };
+
 
 function compare(
   state: EditorState, previous: Comparison | undefined, before: string | undefined,
   previousInput: ComparisonInput | undefined, beforeKey: Layer, candidate = state.doc, changes?: ChangeDesc,
 ): Comparison | undefined {
   if (before === undefined) return;
-  if (previous && before === previousInput?.[beforeKey]
-      && state.facet(comparisonInput)?.source === previousInput?.source
-      && state.facet(comparisonInput)?.policy === previousInput?.policy) {
-    if (candidate.eq(previous.candidate)) return previous;
-    return {
-      original: previous.original,
-      candidate,
-      chunks: changes
-        ? Chunk.updateB(previous.chunks, previous.original.doc, candidate, changes, diffConfig)
-        : Chunk.build(previous.original.doc, candidate, diffConfig),
-    };
-  }
   const input = state.facet(comparisonInput);
-  const original = EditorState.create({
+  const rendered = beforeKey === 'agent' && !input?.source;
+  const reuseOriginal = previous && before === previousInput?.[beforeKey]
+    && input?.source === previousInput?.source && input?.policy === previousInput?.policy;
+  if (reuseOriginal && candidate.eq(previous.candidate)) return previous;
+  const original = reuseOriginal ? previous.original : EditorState.create({
     doc: before,
     extensions: [
       exactMarkdownSource(before), EditorState.readOnly.of(true),
@@ -53,8 +51,17 @@ function compare(
       ...(input?.policy ? [markdownPreviewPolicy.of(input.policy)] : []),
     ],
   });
-  if (!input?.source) ensureSyntaxTree(original, original.doc.length);
-  return { original, candidate, chunks: Chunk.build(original.doc, candidate, diffConfig) };
+  if (rendered) {
+    const blockParts = compareRenderedMarkdown(original.doc.toString(), candidate.toString());
+    // CodeMirror smooths adjacent changes into a navigation chunk. Keep the
+    // authored block boundaries when placing the deleted text in that chunk.
+    return { original, candidate, blockParts,
+      chunks: Chunk.build(original.doc, candidate, { override: () => [...blockParts] }) };
+  }
+  const chunks = reuseOriginal && changes
+    ? Chunk.updateB(previous.chunks, original.doc, candidate, changes, wordDiff)
+    : Chunk.build(original.doc, candidate, wordDiff);
+  return { original, candidate, chunks };
 }
 
 class DeletedText extends WidgetType {
@@ -111,6 +118,7 @@ function unchangedBlocks(
 ) {
   const blocks: Span[] = [];
   for (let block = syntaxTree(state).topNode.firstChild; block; block = block.nextSibling) {
+    if (block.name === 'CommentBlock') continue;
     blocks.push({ from: state.doc.lineAt(block.from).from, to: state.doc.lineAt(block.to).to });
   }
   let index = 0;
@@ -138,41 +146,41 @@ function addChanges(
   doc: Text, comparison: Comparison, layer: Layer, marks: Range<Decoration>[], toWorking: ChangeSet | null,
   annotations: readonly (Span & { id: string })[],
 ) {
-  for (const chunk of comparison.chunks) {
-    const lines = new Set<number>();
-    for (const change of chunk.changes) {
-      const start = chunk.fromB + change.fromB;
-      const end = chunk.fromB + change.toB;
-      const from = toWorking?.mapPos(start, 1) ?? start;
-      const to = toWorking?.mapPos(end, -1) ?? end;
-      const fromA = chunk.fromA + change.fromA;
-      const toA = chunk.fromA + change.toA;
-      const mark = (from: number, to: number) => {
-        if (from < to) marks.push(Decoration.mark({
-          class: `markdown-change markdown-change--${layer} markdown-change--insertion`,
-        }).range(from, to));
-      };
-      if (toWorking && start < end) {
-        toWorking.iterGaps((before, after, length) => {
-          const first = Math.max(before, start), last = Math.min(before + length, end);
-          if (first < last) mark(after + first - before, after + last - before);
-        });
-      } else mark(from, to);
-      if (fromA < toA) {
-        const line = comparison.original.doc.lineAt(fromA);
-        const block = fromA === line.from && (toA > line.to || from === doc.lineAt(from).from && from === to);
-        const annotationId = annotations.find(annotation => annotation.from <= Math.max(from, to) && from <= annotation.to)?.id;
-        marks.push(Decoration.widget({
-          widget: new DeletedText(comparison.original, fromA, toA, layer, block, from < to, annotationId),
-          side: block ? -1 : 1, block,
-        }).range(from));
-      }
-      for (let number = doc.lineAt(from).number; number <= doc.lineAt(Math.max(from, to - 1)).number; number++) {
-        lines.add(doc.line(number).from);
-      }
+  const lines = new Set<number>();
+  const changes = comparison.blockParts ?? comparison.chunks.flatMap(chunk =>
+    chunk.changes.map(change => ({
+      fromA: chunk.fromA + change.fromA, toA: chunk.fromA + change.toA,
+      fromB: chunk.fromB + change.fromB, toB: chunk.fromB + change.toB,
+    })));
+  for (const change of changes) {
+    const { fromA, toA, fromB: start, toB: end } = change;
+    const from = toWorking?.mapPos(start, 1) ?? start;
+    const to = toWorking?.mapPos(end, -1) ?? end;
+    const mark = (from: number, to: number) => {
+      if (from < to) marks.push(Decoration.mark({
+        class: `markdown-change markdown-change--${layer} markdown-change--insertion`,
+      }).range(from, to));
+    };
+    if (toWorking && start < end) {
+      toWorking.iterGaps((before, after, length) => {
+        const first = Math.max(before, start), last = Math.min(before + length, end);
+        if (first < last) mark(after + first - before, after + last - before);
+      });
+    } else mark(from, to);
+    if (fromA < toA) {
+      const line = comparison.original.doc.lineAt(fromA);
+      const block = fromA === line.from && (toA > line.to || from === doc.lineAt(from).from && from === to);
+      const annotationId = annotations.find(annotation => annotation.from <= Math.max(from, to) && from <= annotation.to)?.id;
+      marks.push(Decoration.widget({
+        widget: new DeletedText(comparison.original, fromA, toA, layer, block, from < to, annotationId),
+        side: block ? -1 : 1, block,
+      }).range(from));
     }
-    for (const position of lines) marks.push(Decoration.line({ class: `markdown-change__line markdown-change__line--${layer}` }).range(position));
+    for (let number = doc.lineAt(from).number; number <= doc.lineAt(Math.max(from, to - 1)).number; number++) {
+      lines.add(doc.line(number).from);
+    }
   }
+  for (const position of lines) marks.push(Decoration.line({ class: `markdown-change__line markdown-change__line--${layer}` }).range(position));
 }
 
 function collectDecorations(state: EditorState, changes: ChangeState) {
