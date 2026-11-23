@@ -277,7 +277,7 @@ export function authReviewMarkdownMarks(review: AuthRequestReviewState, binding?
 
 export function AuthReviewMarkdown({
   review, binding, value, comparison, operatorComparison, label, wholeFile, directives, previewPolicy,
-  span, onEdit, draft, headerControls, embedded = [], readingMeasure,
+  span, onEdit, draft, headerControls, changeNavigation, embedded = [], readingMeasure,
 }: {
   review: AuthRequestReviewState;
   binding?: Binding;
@@ -292,6 +292,7 @@ export function AuthReviewMarkdown({
   onEdit?: (range: MarkdownSelection) => void;
   draft?: Pick<AuthReviewFileDraft, 'source' | 'writable' | 'change'>;
   headerControls?: boolean;
+  changeNavigation?: boolean;
   embedded?: readonly TextSpan[];
   readingMeasure?: Parameters<typeof DocumentCommentSurface>[0]['readingMeasure'];
 }) {
@@ -330,7 +331,7 @@ export function AuthReviewMarkdown({
     thread.range && thread.range.start >= item.start && thread.range.end <= item.end));
   const contents = <MarkdownDocument value={draft?.source ?? value} comparison={review.showChanges ? comparison : undefined}
     operatorComparison={review.showChanges ? operatorComparison ?? (draft ? value : undefined) : undefined}
-    showSource={review.showSource}
+    showSource={review.showSource} changeNavigation={changeNavigation}
     onChangePosition={headerControls ? review.reportFileChangePosition : undefined}
     comparisonLayout={wholeFile ? 'full-document' : undefined} readOnly={!draft?.writable} ariaLabel={label}
     directives={directives} previewPolicy={previewPolicy} documentRef={document}
@@ -367,7 +368,7 @@ function AuthReviewMarkdownChange({ review, pair, index, wholeFile, onEdit, draf
     <AuthReviewMarkdown key={active} review={review} binding={binding} value={pair[active].contents} onEdit={active === 'after' ? onEdit : undefined}
       comparison={active === 'after' ? pair.before.contents : undefined}
       operatorComparison={active === 'after' ? pair.operator_baseline : undefined} headerControls={headerControls}
-      draft={active === 'after' ? draft : undefined} wholeFile={wholeFile}
+      draft={active === 'after' ? draft : undefined} wholeFile={wholeFile} changeNavigation
       label={`${pair[active].name} ${active}`} />
   </>;
 }
@@ -564,7 +565,7 @@ export function AuthReviewTextFile({ review, pair, index, view, section, headerC
   const pinned = markdown
     ? section ? <AuthReviewMarkdown review={review} binding={binding} value={shown.after.contents}
       comparison={shown.before.contents} label={pair.after.name}
-      span={section.after} wholeFile onEdit={openTextEdit} draft={editing} />
+      span={section.after} wholeFile changeNavigation onEdit={openTextEdit} draft={editing} />
       : <AuthReviewMarkdownChange review={review} pair={pair} index={index} wholeFile={view.wholeFile} onEdit={openTextEdit}
         headerControls={headerControls} draft={editing} side={side} onSideChange={setSide} />
     : review.readOnly ? view.defaultContent
