@@ -161,3 +161,5 @@ a retry with different destination changes fails. The immutable receipt records
 manual provenance as a null composition run and retains all custody anchors.
 For reviewed documents, route installation remains a separate authenticated
 action after acceptance.
+
+Group pages list pending proposals above the current documents. Selecting a proposal shows the documents it changes. Accept uses the matching frozen review candidate. Dismiss removes the proposal from the pending list and records it in group history, including when acceptance requires a protected merge. The group configuration API accepts `expected_bundle_refs` to check the ordered proposals before applying an update.

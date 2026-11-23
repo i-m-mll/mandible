@@ -1,4 +1,4 @@
-import type { TrackedBriefingDocument, TrackedBriefingProposal } from "../../src/contracts";
+import type { BriefingGroupProposalChanges, TrackedBriefingDocument, TrackedBriefingProposal } from "../../src/contracts";
 import type { StandingNoteMutation } from '../../src/feedback/standing-notes';
 import type { ReviewRange, StandingNote, StandingNotePresentation } from '../../src/feedback/review-types';
 import type { RequestReview } from '../../src/feedback/request-review';
@@ -206,7 +206,7 @@ export function canPerformOperation(
 }
 
 export function allowsInstanceEffect(
-  instance: InstanceInfo | null | undefined,
+  instance: Pick<InstanceInfo, 'allowed_effects'> | null | undefined,
   effect: string,
 ): boolean {
   return !instance || instance.allowed_effects.includes(effect);
@@ -1041,7 +1041,18 @@ export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {
 /** Resolve the ref an entity path names; the resolver reports resolved, not_found or ambiguous. */
 export async function resolveEntityRoute(kind: EntityKind, ref: string, signal?: AbortSignal): Promise<ResolverResult> {
   const response = await apiGet(`/api/refs/resolve?${new URLSearchParams({ kind, ref }).toString()}`, { signal });
-  return ((await response.json()) as ResolveRefResponse).resolution;
+  const body = await parseMaybeJson(response).catch(error => {
+    if (signal?.aborted) throw error;
+    return null;
+  }) as Partial<ResolveRefResponse> | null;
+  const resolution = body?.resolution;
+  if (!resolution || resolution.ref !== ref
+    || (resolution.status !== 'not_found'
+      && !(resolution.status === 'resolved' && resolution.entity && typeof resolution.entity === 'object')
+      && !(resolution.status === 'ambiguous' && Array.isArray(resolution.matches) && Number.isSafeInteger(resolution.total)))) {
+    throw new ApiError('The service returned an invalid link response.', response.status, 'invalid_ref_resolution');
+  }
+  return resolution;
 }
 
 // Bug: 0de95bf — history list rows omit diff/spec/output body blobs; the
@@ -1052,23 +1063,29 @@ export async function getAuthRequestDetail(requestId: string): Promise<Record<st
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
 }
 
-export async function getAuthDiffFile(requestId: string, index: number, signal?: AbortSignal, against?: string, round?: string): Promise<DiffFilePair> {
+export async function getAuthDiffFile(requestId: string, index: number, signal?: AbortSignal, against?: string, round?: string, revision?: string): Promise<DiffFilePair> {
   const query = new URLSearchParams();
   if (against) query.set('against', against);
   if (round) query.set('round', round);
+  if (revision) query.set('revision', revision);
   const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/files/${index}${query.size ? `?${query}` : ''}`, { signal });
   return await response.json() as DiffFilePair;
 }
 
 export type AuthReviewPrecondition = { expected_revision: number | null; expected_custody_generation: number };
-export type AuthReviewProjection = RequestReview & { precondition: AuthReviewPrecondition; status: string; proof_digest: string };
+export type AuthReviewProjection = RequestReview & {
+  precondition: AuthReviewPrecondition;
+  status: string;
+  proof_digest: string;
+  review_candidate_blocker: string | null;
+};
 export async function getAuthReview(requestId: string, signal?: AbortSignal): Promise<AuthReviewProjection> {
   const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review`, { signal });
   return await response.json();
 }
 
-export async function getAuthReviewComparison(requestId: string, against: string, signal: AbortSignal) {
-  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review/changes?against=${encodeURIComponent(against)}`, { signal });
+export async function getAuthReviewComparison(requestId: string, target: { kind: 'against' | 'revision'; id: string }, signal: AbortSignal) {
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review/changes?${target.kind}=${encodeURIComponent(target.id)}`, { signal });
   return await response.json() as import('../../src/contracts').AuthChangeReport;
 }
 
@@ -1421,6 +1438,13 @@ export async function scanIssues<T>(): Promise<T[]> {
 /** Force-scan a single repo by ID. Used to unblock deep-link 404s on daemon reload. */
 export async function scanIssueRepo(repoId: string): Promise<void> {
   await apiPost(`/api/issues/${encodeURIComponent(repoId)}/scan`);
+}
+
+export async function chooseAndAddWorkProject(): Promise<import('../../src/work-scanner').RepoInfo | null> {
+  const response = await apiPost('/api/work/repos/add', {});
+  if (response.status === 204) return null;
+  invalidateApiGetCache('/api/work/repos');
+  return response.json();
 }
 
 export async function triggerWorkScan(): Promise<void> {
@@ -3365,9 +3389,11 @@ export async function getArtifactVersions(
   return payload.history;
 }
 
-export async function getArtifactDiff(from: string, to: string): Promise<ArtifactDiffResult> {
-  const query = buildQuery({ a: from, b: to, format: 'contents' });
-  const response = await apiGet(`/api/artifacts/diff${query}`);
+export async function getArtifactDiff(from: string, to: string, options: {
+  format?: 'contents' | 'patch'; signal?: AbortSignal;
+} = {}): Promise<ArtifactDiffResult> {
+  const query = buildQuery({ a: from, b: to, format: options.format ?? 'contents' });
+  const response = await apiGet(`/api/artifacts/diff${query}`, { signal: options.signal });
   const payload = (await parseMaybeJson(response)) as { diff: ArtifactDiffResult };
   return payload.diff;
 }
@@ -4465,7 +4491,8 @@ export function normalizeBriefingRoundProjection(payload: unknown): BriefingRoun
     if (!id || !quote || typeof row.author !== 'string' || typeof row.body !== 'string') return [];
     const placement = briefingCarriedRange(row.anchor, document?.source);
     if (!placement) return [];
-    return [{ id, quote, body: row.body, author: row.author, anchor: placement, can_edit: false, resolved: row.resolved === true }];
+    return [{ id, quote, body: row.body, author: row.author, anchor: placement, can_edit: false,
+      created_at: briefingOptionalNumber(row.created_at) ?? undefined, resolved: row.resolved === true }];
   });
   if ((rawState === 'open' && latestSubmissionForActor !== null)
       || (rawState === 'submitted' && latestSubmissionForActor === null)) valid = false;
@@ -4593,6 +4620,8 @@ export type BriefingGroup = {
   archivedAt?: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  proposalChanges?: BriefingGroupProposalChanges[];
+  draftCommentBriefingIds?: string[];
   trackedProposals?: TrackedBriefingProposal[];
   destinations: Array<{ logicalArtifactId: string; publicationMode: 'reviewed-document' | 'published-report' | null;
     routeKeys: string[] }>;
@@ -4853,6 +4882,10 @@ export function normalizeBriefingGroups(payload: unknown, invalid: InvalidBriefi
       archivedAt: briefingOptionalNumber(group.archived_at),
       current,
       updates,
+      proposalChanges: Array.isArray(group.proposal_changes) ? group.proposal_changes as BriefingGroupProposalChanges[] : [],
+      draftCommentBriefingIds: Array.isArray(group.draft_comment_briefing_ids) ? group.draft_comment_briefing_ids.filter(
+        (id): id is string => typeof id === 'string',
+      ) : [],
       trackedProposals: Array.isArray(group.tracked_proposals) ? group.tracked_proposals as TrackedBriefingProposal[] : [],
       destinations,
       destinationHistory,
@@ -4910,10 +4943,36 @@ export async function dispositionBriefingGroupProposal(
   return { group, disposition, changed: root.changed };
 }
 
-export async function getBriefingSidebarSnapshot(signal?: AbortSignal): Promise<BriefingSidebarSnapshot> {
+export async function dismissBriefingGroupProposal(group: BriefingGroup, proposalId: string): Promise<BriefingGroup> {
+  const response = await apiPut(`${BRIEFING_GROUPS_PATH}/${encodeURIComponent(group.id)}/configuration`, {
+    current_bundle_ref: group.current?.id ?? null,
+    expected_bundle_refs: group.updates.map(update => update.id),
+    bundle_refs: group.updates.filter(update => update.id !== proposalId).map(update => update.id),
+  });
+  const root = briefingRecord(await parseMaybeJson(response));
+  const invalid: InvalidBriefingRow[] = [];
+  const updated = normalizeBriefingGroups({ groups: [root.group] }, invalid)[0];
+  if (!updated || invalid.length > 0 || typeof root.changed !== 'boolean') {
+    throw new Error('The Briefing proposal dismissal response is invalid.');
+  }
+  invalidateApiGetCache(BRIEFING_GROUPS_PATH);
+  void refreshBrowserResources(queryClient, browserResourceKeysForEvent('briefing:group-configuration-updated'));
+  return updated;
+}
+
+export function canReadBriefingLayouts(instance: Pick<InstanceInfo, 'allowed_effects'> | null | undefined): boolean {
+  return allowsInstanceEffect(instance, 'process:external');
+}
+
+export async function getBriefingSidebarSnapshot(
+  signal?: AbortSignal, instance?: Pick<InstanceInfo, 'allowed_effects'> | null,
+): Promise<BriefingSidebarSnapshot> {
   const embeddedInvalid: InvalidBriefingRow[] = [];
+  const readLayouts = canReadBriefingLayouts(instance);
   const [list, bundles, groups] = await Promise.all([
-    getBriefings(signal), getBriefingBundles(embeddedInvalid, signal), getBriefingGroups(embeddedInvalid, signal),
+    getBriefings(signal),
+    readLayouts ? getBriefingBundles(embeddedInvalid, signal) : [],
+    readLayouts ? getBriefingGroups(embeddedInvalid, signal) : [],
   ]);
   const invalidBriefings = new Map<string, InvalidBriefingRow>();
   for (const row of [...list.invalid, ...embeddedInvalid]) {

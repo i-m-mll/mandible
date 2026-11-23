@@ -1,96 +1,256 @@
-.detail-pane-shell__body:has(.review-comments) {
-  container-type: size;
+.review-range {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  text-decoration: underline var(--accent-blue);
+  text-underline-offset: 0.15em;
 }
 
-.review-comments {
-  position: sticky;
-  inset-block-start: 0;
-  align-self: start;
-  min-width: 0;
+.document-comment-surface {
+  position: relative;
+  container-type: inline-size;
 }
 
-.review-comments .review-comments__scroll {
-  max-height: min(500px, calc(100cqh - 4rem));
-  overscroll-behavior: contain;
+.document-comment-surface__layout {
+  position: relative;
+  column-gap: var(--space-2);
 }
 
-.review-comments__quote[aria-current="true"] {
-  border-inline-start-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+.document-comments-button {
+  position: relative;
 }
 
-.review-comments__list {
-  list-style: none;
-  margin: 0;
+.document-comments-button .sidebar-search-filter__badge {
+  position: absolute;
+  inset-block-start: calc(-1 * var(--space-1));
+  inset-inline-end: calc(-1 * var(--space-1));
+}
+
+.document-comments__composer,
+.document-comments__thread-popover {
+  inline-size: min(var(--comment-card-width), calc(100vw - 2 * var(--space-2)));
+}
+
+.document-comments__drawer {
+  inline-size: min(18rem, calc(100vw - 2 * var(--space-2)));
+  gap: var(--space-1);
+  font-size: var(--font-ui-size);
+}
+
+.document-comments__drawer .sidebar-search-filter {
+  --chrome-text-increment: calc(var(--app-chrome-ui-font-size) - var(--app-chrome-reference-font-size));
   padding: 0;
 }
 
-.review-comments__entry {
-  display: grid;
-  gap: 0.25rem;
-  padding-block: 0.5rem;
+.document-comments__drawer .sidebar-item-row__detail {
+  white-space: pre-wrap;
+  text-align: start;
+  color: var(--text-muted);
   overflow-wrap: anywhere;
 }
 
-.review-comments__entry + .review-comments__entry {
-  border-top: 1px solid var(--border-muted);
+.document-comments__drawer .document-comments__detached .sidebar-item-row__select {
+  height: auto;
 }
 
-.review-comments__meta {
+.document-comments__popover {
+  z-index: var(--z-anchored-menu);
+  overflow: visible;
+}
+
+.document-comments__rail {
+  flex-direction: row;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  font-size: var(--font-ui-size);
+  visibility: hidden;
+}
+
+.document-comments__composer,
+.document-comments__thread-popover {
+  inset-block-start: calc(var(--comment-y) + var(--space-1));
+  inset-inline-start: clamp(max(var(--space-2), var(--comment-pane-left)), calc(var(--comment-x) - var(--comment-card-width) / 2),
+    calc(min(var(--comment-pane-right), 100vw - var(--space-2)) - var(--comment-card-width)));
+  padding: var(--space-1);
+  box-sizing: border-box;
+}
+
+.document-comments__margin {
+  display: none;
+}
+
+.document-comments__gutter {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: calc(-1 * var(--space-4));
+  inline-size: var(--app-header-control-size);
+  pointer-events: none;
+}
+
+.document-comments__gutter > div {
+  position: absolute;
+  inset-inline: 0;
+  pointer-events: auto;
+}
+
+.document-comment.sidebar-item-row {
+  display: grid;
+  gap: var(--space-1);
+  padding: calc(var(--sidebar-item-row-padding-block) * var(--sidebar-item-row-padding-block-scale))
+    calc(var(--sidebar-item-row-padding-inline) * var(--sidebar-item-row-padding-inline-scale));
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.document-comment[data-selected=true],
+.document-comment[data-hovered=true],
+.document-comment:focus-visible {
+  background: var(--surface-hover);
+}
+
+[data-markdown-range-id].review-range[data-comment-active] {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.document-comment[data-draft=true] {
+  outline: 1px dashed var(--border-muted);
+  outline-offset: -1px;
+}
+
+.document-comments__thread-popover:has(> .document-comment[data-draft=true]) {
+  border-style: dashed;
+}
+
+.document-comments__thread-popover > .document-comment {
+  background: transparent;
+  outline: none;
+}
+
+.document-comment__author {
+  display: inline-grid;
+  place-items: center;
+  inline-size: var(--space-5);
+  block-size: var(--space-5);
+  border-radius: var(--radius-panel);
+  background: var(--surface-hover);
+  font-size: var(--text-xs);
+  flex: none;
+}
+
+.document-comment__author .app-icon {
+  inline-size: var(--text-sm);
+  block-size: var(--text-sm);
+}
+
+.document-comment__meta,
+.document-comment__actions,
+.document-comment__input-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.25rem;
-  font-size: 0.85em;
+  gap: var(--space-1);
 }
 
-.review-comments__quote {
-  display: block;
-  min-width: 0;
-  width: 100%;
+.document-comment__meta {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.document-comment__actions {
+  position: absolute;
+  inset-block-start: var(--space-1);
+  inset-inline-end: var(--space-1);
+}
+
+.document-comment__body {
+  white-space: pre-wrap;
+}
+
+.document-comment__reply {
+  padding-inline-start: var(--space-2);
+  border-inline-start: 1px solid var(--border-subtle);
+}
+
+.document-comment__reply-trigger {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
   text-align: start;
-  white-space: pre-wrap;
-  margin: 0;
-  padding: 0.25rem 0.5rem;
-  border-inline-start: 2px solid var(--border-muted);
+  padding: 0;
 }
 
-.review-comments__body {
-  white-space: pre-wrap;
+.document-comment:not(:is(:hover, :focus-within, [data-selected=true])) > .document-comment__reply-trigger {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
 
-.review-comments__thread {
-  display: grid;
-  gap: 0.5rem;
-  list-style: none;
-  margin: 0;
-  padding-inline-start: 0.5rem;
-  border-inline-start: 2px solid var(--border-muted);
+.document-comment__composer textarea {
+  flex: 1;
+  min-inline-size: 0;
+  max-block-size: 12rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: var(--space-1);
+  resize: none;
+  field-sizing: content;
 }
 
-.review-comments__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
+.document-comment__composer textarea:focus {
+  outline: none;
 }
 
-.review-range {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+.document-comment__send {
+  --chat-circle-action-bg: var(--accent);
+  --chat-circle-action-fg: var(--surface-main);
+  --chat-circle-action-hit-size: var(--app-header-control-size);
+  --chat-circle-action-visual-size: var(--space-6);
+  --chat-circle-action-icon-size: var(--text-sm);
 }
 
-.artifact-note-review {
+.document-comment__send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@container (min-width: 56rem) {
+  .document-comment-surface[data-reading-measure=prose] > .document-comment-surface__layout > .document-comment-surface__text {
+    max-inline-size: 40rem;
+  }
+}
+
+.document-comment-surface[data-comment-margin=true] > .document-comment-surface__layout:has(> :is(.document-comments__margin, .document-comments__composer)) {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  gap: var(--space-2);
 }
 
-.artifact-note-review:has(> .review-comments [aria-expanded="true"]) {
-  grid-template-columns: minmax(0, 1fr) minmax(12rem, 27%);
+.document-comment-surface[data-comment-margin=true] > .document-comment-surface__layout
+  > :is(.document-comment-surface__text, .document-comments__margin, .document-comments__composer) {
+  grid-area: 1 / 1;
+  min-inline-size: 0;
 }
 
-@media (max-width: 800px) {
-  .artifact-note-review:has(> .review-comments [aria-expanded="true"]) {
-    grid-template-columns: minmax(0, 1fr);
-  }
+.document-comment-surface[data-comment-margin=true] > .document-comment-surface__layout
+  > :is(.document-comments__margin, .document-comments__composer) {
+  justify-self: start;
+  inline-size: var(--comment-card-width);
+  margin-inline-start: var(--comment-margin-start);
+}
+
+.document-comment-surface[data-comment-margin=true] > .document-comment-surface__layout > .document-comments__margin {
+  display: flow-root;
+}
+
+.document-comment-surface[data-comment-margin=true] > :is(.document-comments__gutter, .document-comments__thread-popover) {
+  display: none;
+}
+
+.document-comment-surface[data-comment-margin=true] > .document-comment-surface__layout > .document-comments__composer {
+  position: relative;
+  inset: auto;
+  margin-block-start: var(--comment-local-y);
 }

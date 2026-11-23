@@ -1,248 +1,369 @@
-import { useState } from 'preact/hooks';
-
-import { dispositionBriefingGroupProposal, type BriefingBundleLeaf, type BriefingGroup } from '../../api';
-import { TrackedBriefingDocumentPanel } from './TrackedBriefingDocumentPanel';
-import type { FeedbackCollection } from './collection-model';
-import { authReviewHref } from '../auth-review-navigation';
+import { useQuery } from '@tanstack/preact-query';
+import { useId, useRef, useState } from 'preact/hooks';
+import type { BriefingGroupDocumentChange, TrackedBriefingProposal } from '../../../../src/contracts';
+import {
+  dismissBriefingGroupProposal, dispositionBriefingGroupProposal, getArtifactDiff,
+  type BriefingBundle, type BriefingBundleLayoutEntry, type BriefingBundleLeaf, type BriefingGroup,
+} from '../../api';
+import { Icon, type IconName } from '../../components/icons/Icon';
+import { appTip } from '../../components/shared/AppHoverTips';
+import { ContextualAction } from '../../components/shared/ContextualAction';
 import { DetailPaneHeader } from '../../components/shared/DetailPaneHeader';
+import { DetailPaneMenuTrigger } from '../../components/shared/DetailPaneMenuTrigger';
+import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
+import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../../components/shared/DetailPaneShell';
+import { RequestListRow } from '../../components/shared/RequestListRow';
+import { SidebarBriefingBundleIcon, SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
+import { SidebarItemBadge, SidebarItemRow } from '../../components/shared/SidebarItemRow';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { shortIdentityRef } from '../../identity-refs';
+import { formatRelativeTime } from '../../lib/format';
+import { queryClient } from '../../query/client';
+import { navigateTo } from '../../routing';
+import { authReviewHref } from '../auth-review-navigation';
+import type { FeedbackCollection } from './collection-model';
+import { TrackedBriefingDocumentContent } from './TrackedBriefingDocumentPanel';
 
 export type BriefingGroupDetailProps = {
   group: BriefingGroup;
   selectedUpdateId: string | null;
   onSelectUpdate(updateId: string | null): void;
   onDisposition?(group: BriefingGroup): void;
+  onRefresh?(): void;
   onSelectBriefing?(briefing: FeedbackCollection): void;
 };
 
-export function BriefingGroupDetail({
-  group,
-  selectedUpdateId,
-  onSelectUpdate,
-  onDisposition,
-  onSelectBriefing,
-}: BriefingGroupDetailProps): JSX.Element {
-  const [busy, setBusy] = useState<'accepted' | 'rejected' | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  const baseName = group.current?.name === 'Original' ? 'Base' : group.current?.name;
-  const selectedProposal = group.updates.find((update) => update.id === selectedUpdateId) ?? null;
-  const layout = (selectedProposal ?? group.current)?.layout ?? [];
-  const proposals = group.trackedProposals ?? [];
-  const subgroupMembers = (entry: Extract<(typeof layout)[number], { kind: 'subgroup' }>): BriefingBundleLeaf[] =>
-    entry.members ?? entry.briefings.map(briefing => ({ kind: 'briefing', briefing }));
-  const showsTracked = layout.some(entry => entry.kind === 'tracked'
-    || (entry.kind === 'subgroup' && subgroupMembers(entry).some(leaf => leaf.kind === 'tracked')));
-  const renderLeaf = (entry: BriefingBundleLeaf) => {
-    if (entry.kind === 'briefing') return <li key={entry.briefing.id}>
-      <button type="button" onClick={() => onSelectBriefing?.(entry.briefing)}>{entry.briefing.label}</button>
-    </li>;
-    const { tracked } = entry;
-    const matches = proposals.filter(proposal => proposal.members.some(member =>
-      member.project_id === tracked.project_id && member.path === tracked.path));
-    return <li key={`${tracked.project_id}:${tracked.path}`}>
-      <TrackedBriefingDocumentPanel document={tracked} pending={matches.length}>
-        {matches.map(proposal => <a key={proposal.request_id} href={authReviewHref(proposal.request_ref, 'diff')}>{proposal.title}</a>)}
-      </TrackedBriefingDocumentPanel>
-    </li>;
+const ACCEPT_BLOCKERS: Readonly<Record<string, string>> = {
+  briefing_review_repository_authority_required: 'Accept after the protected merge',
+  briefing_review_base_required: 'Set a current bundle first',
+  briefing_review_provenance_drift: 'The proposal was made for a different revision',
+  briefing_review_tracked_layout_drift: 'Tracked files require a protected merge',
+  briefing_review_proposal_incomplete: 'A proposed document is unavailable',
+  briefing_review_base_incomplete: 'A current document is unavailable',
+  briefing_review_base_ambiguous: 'The current group lists a document twice',
+  briefing_review_proposal_ambiguous: 'The proposal lists a document twice',
+  briefing_review_custody_unavailable: 'The proposed document is unavailable',
+  briefing_review_submission_required: 'Send a review for each changed document first',
+  briefing_review_change_required: 'There are no changes to accept',
+};
+
+const HISTORY_DECISION: Record<NonNullable<BriefingGroup['history']>[number]['kind'], { icon: IconName; label: string }> = {
+  accepted: { icon: 'markRead', label: 'Accepted' },
+  promoted: { icon: 'mergeRequest', label: 'Merged' },
+  dismissed: { icon: 'dismiss', label: 'Dismissed' },
+  rejected: { icon: 'dismiss', label: 'Rejected' },
+};
+
+function subgroupMembers(entry: Extract<BriefingBundleLayoutEntry, { kind: 'subgroup' }>): BriefingBundleLeaf[] {
+  return entry.members ?? entry.briefings.map(briefing => ({ kind: 'briefing', briefing }));
+}
+
+function withRemovedMembers(
+  proposed: readonly BriefingBundleLayoutEntry[], current: readonly BriefingBundleLayoutEntry[],
+  changes: readonly BriefingGroupDocumentChange[],
+): BriefingBundleLayoutEntry[] {
+  const removed = new Set(changes.flatMap(change => change.kind === 'removed' ? [change.base_briefing_id] : []));
+  const result = [...proposed];
+  const wasRemoved = (leaf: BriefingBundleLeaf) => leaf.kind === 'briefing' && removed.has(leaf.briefing.collectionId);
+  for (const entry of current) {
+    if (entry.kind === 'subgroup') {
+      const members = subgroupMembers(entry).filter(wasRemoved);
+      if (!members.length) continue;
+      const index = result.findIndex(candidate => candidate.kind === 'subgroup' && candidate.name === entry.name);
+      const existing = result[index];
+      if (existing?.kind === 'subgroup') result[index] = { ...existing, members: [...subgroupMembers(existing), ...members] };
+      else result.push({ ...entry, members });
+    } else if (wasRemoved(entry)) result.push(entry);
+  }
+  return result;
+}
+
+function LinesChanged({ additions, deletions }: { additions: number | null; deletions: number | null }) {
+  if (additions === null && deletions === null) return null;
+  return (
+    <>
+      {additions !== null ? <span className="auth-change-file__added" aria-label={`${additions} added`}>+{additions}</span> : null}
+      {deletions !== null ? <span className="auth-change-file__deleted" aria-label={`${deletions} removed`}>−{deletions}</span> : null}
+    </>
+  );
+}
+
+function mergedCounts(files: TrackedBriefingProposal['files']) {
+  const sum = (key: 'additions' | 'deletions') => {
+    const counted = files.flatMap(file => file[key] ?? []);
+    return counted.length === files.length && counted.length ? counted.reduce((total, count) => total + count, 0) : null;
   };
-  const reviewCandidate = group.reviewCandidates?.find((candidate) => candidate.proposalBundleId === selectedUpdateId) ?? null;
-  const publishedReportCount = group.destinations.filter((destination) => destination.publicationMode === 'published-report').length;
-  const reviewedDocumentCount = group.destinations.filter((destination) => destination.publicationMode === 'reviewed-document').length;
-  const disposition = async (decision: 'accepted' | 'rejected') => {
-    if (!selectedProposal || !group.current || !reviewCandidate?.ready || !reviewCandidate.bindingDigest || busy) return;
-    const verb = decision === 'accepted' ? 'accept' : 'reject';
-    if (typeof window !== 'undefined' && !window.confirm(
-      `${verb[0].toUpperCase()}${verb.slice(1)} “${selectedProposal.name}” against the current Base?`,
-    )) return;
-    setBusy(decision);
-    setStatus(null);
+  return { additions: sum('additions'), deletions: sum('deletions') };
+}
+
+function DocumentCount({ count, className }: { count: number; className?: string }) {
+  return <span className={className}>{count} {count === 1 ? 'document' : 'documents'}</span>;
+}
+
+function CustodyChangeCount({ change }: { change: BriefingGroupDocumentChange }) {
+  const before = change.kind === 'modified' ? change.base_artifact_version_id : null;
+  const after = change.kind === 'modified' ? change.proposal_artifact_version_id : null;
+  const stats = useQuery({
+    queryKey: ['briefing-compare-stats', before, after],
+    queryFn: ({ signal }) => getArtifactDiff(before!, after!, { format: 'patch', signal }),
+    enabled: before !== null && after !== null,
+    staleTime: Infinity,
+    retry: false,
+  }, queryClient).data?.stats;
+  if (change.kind === 'added') return <SidebarItemBadge ariaLabel="Added document">+1</SidebarItemBadge>;
+  if (change.kind === 'removed') return <SidebarItemBadge ariaLabel="Removed document">−1</SidebarItemBadge>;
+  return stats ? <LinesChanged additions={stats.added} deletions={stats.removed} /> : null;
+}
+
+function groupLeafId(entry: BriefingBundleLeaf) {
+  return entry.kind === 'briefing' ? entry.briefing.collectionId : `${entry.tracked.project_id}:${entry.tracked.path}`;
+}
+
+function dateLabel(timestamp: number) {
+  return new Date(timestamp).toLocaleDateString();
+}
+
+export function BriefingGroupDetail({
+  group, selectedUpdateId, onSelectUpdate, onDisposition, onRefresh, onSelectBriefing,
+}: BriefingGroupDetailProps): JSX.Element {
+  const id = useId();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const [openTrackedId, setOpenTrackedId] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const historyButton = useRef<HTMLButtonElement>(null);
+  const historyPanel = useRef<HTMLDivElement>(null);
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const moreMenu = useRef<HTMLDivElement>(null);
+  const historyStyle = useAnchoredMenu({
+    open: historyOpen, anchorRef: historyButton, menuRef: historyPanel, onDismiss: () => setHistoryOpen(false),
+  });
+  const moreStyle = useAnchoredMenu({
+    open: moreOpen, anchorRef: moreButton, menuRef: moreMenu, onDismiss: () => setMoreOpen(false),
+  });
+
+  const selectedProposal = group.updates.find(update => update.id === selectedUpdateId);
+  const trackedProposals = group.trackedProposals ?? [];
+  const selectedRequest = trackedProposals.find(proposal => proposal.request_id === selectedUpdateId);
+  const currentLayout = group.current?.layout ?? [];
+  const changesByProposal = new Map(group.proposalChanges?.map(update => [update.proposal_bundle_id, update.members]));
+  const selectedChanges = selectedProposal ? changesByProposal.get(selectedProposal.id) ?? [] : [];
+  const changesByDocument = new Map(selectedChanges.map(change => [
+    change.kind === 'removed' ? change.base_briefing_id : change.proposal_briefing_id, change,
+  ]));
+  const displayedLayout = selectedProposal
+    ? withRemovedMembers(selectedProposal.layout, currentLayout, selectedChanges)
+    : currentLayout;
+  const countLayout = group.current ? currentLayout : selectedProposal?.layout ?? [];
+  const documentCount = countLayout.reduce((count, entry) => count + (entry.kind === 'subgroup' ? subgroupMembers(entry).length : 1), 0);
+  const candidateByProposal = new Map(group.reviewCandidates?.map(candidate => [candidate.proposalBundleId, candidate]));
+  const unsent = new Set(group.draftCommentBriefingIds);
+  const history = group.history ?? [];
+
+  const selectPending = (updateId: string) => onSelectUpdate(updateId === selectedUpdateId ? null : updateId);
+  const decisionReason = (proposalId: string, decision: 'Accept' | 'Dismiss'): string | null => {
+    const candidate = candidateByProposal.get(proposalId);
+    if (group.archivedAt != null) return 'This group is archived';
+    if (!candidate || !onDisposition) return `${decision} is unavailable for this session`;
+    if (decision === 'Dismiss') return null;
+    return candidate.ready && candidate.bindingDigest && group.current ? null
+      : ACCEPT_BLOCKERS[candidate.blockerCode ?? ''] ?? 'Accept is unavailable for this proposal';
+  };
+
+  const disposition = async (update: BriefingBundle, decision: 'Accept' | 'Dismiss') => {
+    if (busy || decisionReason(update.id, decision)) return;
+    setBusy(update.id);
+    setError(null);
     try {
-      const result = await dispositionBriefingGroupProposal(group.id, {
-        decision,
-        expectedBaseBundleId: group.current.id,
-        proposalBundleId: selectedProposal.id,
-        bindingDigest: reviewCandidate.bindingDigest,
-        destinationChanges: reviewCandidate.destinationChanges,
-      });
-      setStatus(result.changed
-        ? `Proposal ${decision === 'accepted' ? 'accepted as Base' : 'rejected'}.`
-        : `Proposal was already ${decision}.`);
-      onDisposition?.(result.group);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      if (decision === 'Dismiss') {
+        onDisposition?.(await dismissBriefingGroupProposal(group, update.id));
+      } else {
+        const candidate = candidateByProposal.get(update.id)!;
+        const result = await dispositionBriefingGroupProposal(group.id, {
+          decision: 'accepted',
+          expectedBaseBundleId: group.current!.id,
+          proposalBundleId: update.id,
+          bindingDigest: candidate.bindingDigest!,
+          destinationChanges: candidate.destinationChanges,
+        });
+        onDisposition?.(result.group);
+      }
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+      onRefresh?.();
     } finally {
       setBusy(null);
     }
   };
+
+  const renderLeaf = (entry: BriefingBundleLeaf) => {
+    const leafId = groupLeafId(entry);
+    const change = changesByDocument.get(leafId);
+    const tracked = entry.kind === 'tracked' ? entry.tracked : null;
+    const match = tracked && selectedRequest?.members.find(member => member.project_id === tracked.project_id && member.path === tracked.path);
+    const files = match ? (selectedRequest?.files ?? []).filter(file => match.file_indexes.includes(file.index)) : [];
+    const touched = Boolean(change || match);
+    const dimmed = Boolean(selectedUpdateId && !touched);
+    const label = entry.kind === 'briefing' ? entry.briefing.label : entry.tracked.path;
+    const openTracked = openTrackedId === leafId;
+    const hasDraft = unsent.has(leafId);
+    const firstFile = files[0];
+    return (
+      <li key={leafId} className={`feedback-collection-row${dimmed ? ' briefing-group-detail__document--dimmed' : ''}`}>
+        <SidebarItemRow
+          className="sidebar-item-row--fixed-badges"
+          label={label}
+          selectionLabel={`Open ${label}`}
+          selectionDescription={hasDraft ? 'Unsent comments' : undefined}
+          selected={openTracked}
+          onSelect={() => {
+            if (entry.kind === 'briefing') onSelectBriefing?.(entry.briefing);
+            else if (selectedRequest && firstFile) navigateTo(authReviewHref(selectedRequest.request_ref, 'diff', {
+              oldPath: firstFile.old_path, newPath: firstFile.new_path,
+            }));
+            else setOpenTrackedId(openTracked ? null : leafId);
+          }}
+          badges={<>
+            {tracked ? <SidebarItemBadge>{tracked.project_key}</SidebarItemBadge> : (
+              <span {...appTip('Held by Mandible, not in a repository')}><Icon name="custodyPackage" size={14} /></span>
+            )}
+            {hasDraft ? <span className="briefing-group-detail__draft-dot" {...appTip('Unsent comments')} /> : null}
+            {change ? <CustodyChangeCount change={change} /> : null}
+            {match ? <LinesChanged {...mergedCounts(files)} /> : null}
+          </>}
+        />
+        {openTracked && tracked && !match ? <TrackedBriefingDocumentContent document={tracked} /> : null}
+      </li>
+    );
+  };
+
   return (
     <DetailPaneShell
       className="briefing-group-detail"
       header={(
         <DetailPaneHeader
-          variant="standard"
-          identity={{
-            entityLabel: 'Briefing group',
-            displayRef: group.key,
-            canonicalRef: group.id,
-          }}
+          variant="compact"
           title={group.name}
+          supportingMetadata={<DocumentCount count={documentCount} />}
+          actions={<>
+            <span {...appTip(history.length ? 'History' : 'No decisions yet')}>
+              <ContextualAction ref={historyButton} presentation="compact" aria-label="History" aria-haspopup="dialog"
+                aria-expanded={historyOpen} disabled={history.length === 0} onClick={() => setHistoryOpen(open => !open)}>
+                <Icon name="history" />
+              </ContextualAction>
+            </span>
+            <DetailPaneMenuTrigger buttonRef={moreButton} label="More" expanded={moreOpen}
+              onClick={() => setMoreOpen(open => !open)} />
+            {moreOpen ? (
+              <div ref={moreMenu} className="auth-detail__actions-menu app-anchored-menu" role="menu" aria-label="More"
+                popover="manual" style={moreStyle}>
+                <button type="button" className="auth-detail__actions-item" role="menuitem"
+                  onClick={() => { setMoreOpen(false); setDetailsOpen(true); }}>Details</button>
+              </div>
+            ) : null}
+          </>}
         />
       )}
       bodyClassName="briefing-group-detail__body"
-    >
-      <div className="briefing-group-detail__sections">
-        {group.archivedAt != null ? (
-          <p className="briefing-empty" role="status">Archived collection. Its bundles, Briefings, and review history remain intact.</p>
-        ) : null}
-        {group.destinations.length > 0 ? (
-          <div className="briefing-empty">
-            <p>
-            Owns {group.destinations.length} recurring destination{group.destinations.length === 1 ? '' : 's'}
-            {publishedReportCount > 0 ? `: ${publishedReportCount} published report${publishedReportCount === 1 ? '' : 's'}` : ''}
-            {publishedReportCount > 0 && reviewedDocumentCount > 0 ? ' and ' : ''}
-            {reviewedDocumentCount > 0 ? `${reviewedDocumentCount} reviewed document${reviewedDocumentCount === 1 ? '' : 's'}` : ''}.
-            Published reports advance Current without Accept or Reject and do not imply human endorsement.
-            </p>
-            <ul>
-              {group.destinations.map((destination) => (
-                <li key={destination.logicalArtifactId}>
-                  {shortIdentityRef(destination.logicalArtifactId)}: {destination.publicationMode ?? 'unrouted'}
-                  {destination.routeKeys.length ? ` · ${destination.routeKeys.join(', ')}` : ''}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        <section className="briefing-group-detail__current" aria-labelledby="briefing-group-current-title">
-          <div className="briefing-group-detail__intro">
-            <h3 id="briefing-group-current-title">Base</h3>
-            <p>The current layout and comparison base for reviewed documents. Published reports can be placed directly.</p>
-          </div>
-          {group.current ? (
-            <button
-              type="button"
-              className={`briefing-group-detail__update briefing-group-detail__current-card${selectedUpdateId === null ? ' briefing-group-detail__update--selected' : ''}`}
-              aria-label={`Show Base layout ${baseName}`}
-              aria-pressed={selectedUpdateId === null}
-              onClick={() => onSelectUpdate(null)}
-            >
-              <span className="briefing-group-detail__update-name">{baseName}</span>
-              <span className="briefing-group-detail__update-ref">{shortIdentityRef(group.current.id)}</span>
-            </button>
-          ) : (
-            <p className="briefing-empty">No Base layout is available.</p>
-          )}
-        </section>
-        <section className="briefing-group-detail__updates" aria-labelledby="briefing-group-updates-title">
-          <div className="briefing-group-detail__intro">
-            <h3 id="briefing-group-updates-title">Proposed updates</h3>
-            <p>Choose which proposed update supplies this group’s sidebar layout.</p>
-          </div>
-          {group.updates.length === 0 ? (
-            <p className="briefing-empty">No proposed updates are available.</p>
-          ) : (
-            <ul className="briefing-group-detail__update-list">
-              {group.updates.map((update) => {
-                const selected = update.id === selectedUpdateId;
+      notice={error ? <DetailPaneNotice severity="error" density="compact" title="Proposal could not be updated">{error}</DetailPaneNotice> : null}
+      overlays={<>
+        {historyOpen ? (
+          <div ref={historyPanel} className="sidebar-search-filter__panel sidebar-search-filter__panel--popover app-anchored-menu"
+            popover="manual" role="dialog" aria-label="History" style={historyStyle}>
+            <ul className="briefing-group-detail__history">
+              {history.map(entry => {
+                const decision = HISTORY_DECISION[entry.kind];
                 return (
-                  <li key={update.id}>
-                    <button
-                      type="button"
-                      className={`briefing-group-detail__update${selected ? ' briefing-group-detail__update--selected' : ''}`}
-                      aria-label={`Preview proposed update ${update.name}`}
-                      aria-pressed={selected}
-                      onClick={() => onSelectUpdate(update.id)}
-                    >
-                      <span className="briefing-group-detail__update-name">{update.name}</span>
-                      <span className="briefing-group-detail__update-ref">{shortIdentityRef(update.id)}</span>
-                    </button>
+                  <li key={entry.id}>
+                    <span {...appTip(decision.label)}><Icon name={decision.icon} label={decision.label} /></span>
+                    <span className="briefing-group-detail__history-name">{entry.proposal.name}</span>
+                    <time dateTime={new Date(entry.createdAt).toISOString()}>
+                      {formatRelativeTime(entry.createdAt, { style: 'recent' })}
+                    </time>
                   </li>
                 );
               })}
             </ul>
-          )}
-          {selectedProposal ? (
-            <div className="briefing-group-detail__review" aria-label="Human review disposition">
-              {reviewCandidate?.ready ? (
-                <>
-                  <p>
-                    Frozen review ready for {reviewCandidate.items.filter((item) => item.changed).length} changed document{reviewCandidate.items.filter((item) => item.changed).length === 1 ? '' : 's'}
-                    {reviewCandidate.layoutChanged ? ', a layout change' : ''}
-                    {reviewCandidate.destinationChanges.length > 0 ? `, and ${reviewCandidate.destinationChanges.length} destination move${reviewCandidate.destinationChanges.length === 1 ? '' : 's'}` : ''}.
-                  </p>
-                  <div className="briefing-group-detail__review-actions">
-                    <button type="button" className="briefing-group-detail__accept" disabled={busy !== null}
-                      onClick={() => void disposition('accepted')}>{busy === 'accepted' ? 'Accepting…' : 'Accept as Base'}</button>
-                    <button type="button" className="briefing-group-detail__reject" disabled={busy !== null}
-                      onClick={() => void disposition('rejected')}>{busy === 'rejected' ? 'Rejecting…' : 'Reject proposal'}</button>
-                  </div>
-                </>
-              ) : (
-                <p>{reviewCandidate?.blockerMessage ?? 'This proposal is not eligible for human-reviewed disposition.'}</p>
-              )}
-            </div>
-          ) : null}
-          {status ? <p className="briefing-group-detail__review-status" role="status">{status}</p> : null}
-        </section>
-        {showsTracked ? (
-          <section aria-label="Group documents">
-            <ul>{layout.map(entry => entry.kind === 'subgroup'
-              ? <li key={entry.name}><span>{entry.name}</span><ul>{subgroupMembers(entry).map(renderLeaf)}</ul></li>
-              : renderLeaf(entry))}</ul>
-          </section>
+          </div>
         ) : null}
-        {proposals.length ? (
-          <section aria-label="Merge requests">
-            <h3>Merge requests</h3>
-            <ul>{proposals.map(proposal => (
-              <li key={proposal.request_id}>
-                <a href={authReviewHref(proposal.request_ref, 'diff')}>{proposal.title}</a> · {proposal.project_key}
-                {proposal.depends_on.length ? <ul aria-label="Depends on">{proposal.depends_on.map(dep => (
-                  <li key={dep.requested_id}>Depends on {dep.request_id
-                    ? <a href={authReviewHref(dep.request_id, 'diff')}>{shortIdentityRef(dep.request_id)}</a>
-                    : shortIdentityRef(dep.requested_id)} · {dep.state}</li>
-                ))}</ul> : null}
+        <DetailPaneModal open={detailsOpen} onClose={() => setDetailsOpen(false)} titleId={`${id}-details`}
+          title="Details" closeLabel="Close details" panelClassName="briefing-detail__metadata">
+          <dl>
+            <div><dt>Group</dt><dd>{group.key}</dd></div>
+            <div><dt>Created</dt><dd>{dateLabel(group.createdAt)}</dd></div>
+            <div><dt>Updated</dt><dd>{dateLabel(group.updatedAt)}</dd></div>
+            {group.archivedAt ? <div><dt>Archived</dt><dd>{dateLabel(group.archivedAt)}</dd></div> : null}
+            {group.destinations.map(destination => (
+              <div key={destination.logicalArtifactId}><dt>{shortIdentityRef(destination.logicalArtifactId)}</dt>
+                <dd>{destination.routeKeys.join(', ') || destination.publicationMode}</dd></div>
+            ))}
+          </dl>
+        </DetailPaneModal>
+      </>}
+    >
+      <div className="briefing-group-detail__sections app-list-chrome">
+        {trackedProposals.length || group.updates.length ? (
+          <ul className="feedback-collections-sidebar__list" aria-label="Pending changes">
+            {trackedProposals.map(proposal => {
+              const href = authReviewHref(proposal.request_ref, 'diff');
+              return (
+                <li key={proposal.request_id} className="feedback-collection-row">
+                  <RequestListRow leading={<Icon name="mergeRequest" />} title={proposal.title}
+                    selected={selectedUpdateId === proposal.request_id} selection="toggle"
+                    onSelect={() => selectPending(proposal.request_id)}
+                    metadata={<><DocumentCount className="auth-sidebar-item__metadata-text" count={proposal.members.length} />
+                      <LinesChanged {...mergedCounts(proposal.files ?? [])} /></>}
+                    actions={<ContextualAction presentation="compact" aria-label="Open the request"
+                      {...appTip('Open the request')} onClick={() => navigateTo(href)}><Icon name="openLink" /></ContextualAction>}
+                  />
+                </li>
+              );
+            })}
+            {group.updates.map(update => (
+              <li key={update.id} className="feedback-collection-row">
+                <RequestListRow leading={<Icon name="custodyPackage" />} title={update.name}
+                  selected={selectedUpdateId === update.id} selection="toggle" onSelect={() => selectPending(update.id)}
+                  metadata={<><time className="auth-sidebar-item__metadata-text" dateTime={new Date(update.createdAt).toISOString()}>
+                    {formatRelativeTime(update.createdAt, { style: 'recent' })}</time>
+                    <DocumentCount className="auth-sidebar-item__metadata-text" count={changesByProposal.get(update.id)?.length ?? 0} /></>}
+                  actions={(['Accept', 'Dismiss'] as const).map(decision => {
+                    const reason = decisionReason(update.id, decision);
+                    return (
+                      <span key={decision} tabIndex={reason ? 0 : undefined} {...appTip(reason ?? decision)}>
+                        <ContextualAction presentation="compact" aria-label={decision}
+                          disabled={busy !== null || reason !== null}
+                          onClick={() => void disposition(update, decision)}>
+                          <Icon name={decision === 'Accept' ? 'markRead' : 'dismiss'} />
+                        </ContextualAction>
+                      </span>
+                    );
+                  })}
+                />
               </li>
-            ))}</ul>
-          </section>
+            ))}
+          </ul>
         ) : null}
-        {(group.history?.length ?? 0) > 0 ? (
-          <section className="briefing-group-detail__history" aria-label="History">
-            <details>
-              <summary>History ({group.history?.length ?? 0})</summary>
-              <ul className="briefing-group-detail__history-list">
-                {(group.history ?? []).map((entry) => (
-                  <li key={entry.id}>
-                    <span>{entry.kind === 'promoted' ? 'Promoted to Base'
-                      : entry.kind === 'accepted' ? 'Accepted as Base'
-                        : entry.kind === 'rejected' ? 'Rejected' : 'Dismissed'}</span>
-                    <strong>{entry.proposal.name}</strong>
-                    <span>{new Date(entry.createdAt).toLocaleString()}</span>
-                    {entry.priorBase ? <span>Previous Base: {entry.priorBase.name === 'Original' ? 'Base' : entry.priorBase.name}</span> : null}
-                  </li>
-                ))}
-              </ul>
-            </details>
-          </section>
-        ) : null}
-        {group.destinationHistory.length > 0 ? (
-          <section className="briefing-group-detail__history" aria-label="Destination history">
-            <details>
-              <summary>Report placement history ({group.destinationHistory.length})</summary>
-              <ul className="briefing-group-detail__history-list">
-                {group.destinationHistory.map((entry) => (
-                  <li key={entry.id}>
-                    <span>{entry.priorGroupId === null ? 'Placed' : entry.resultingGroupId === group.id ? 'Moved in' : 'Moved out'}</span>
-                    <strong>{shortIdentityRef(entry.logicalArtifactId)}</strong>
-                    <span>{new Date(entry.createdAt).toLocaleString()}</span>
-                    <span>By {shortIdentityRef(entry.actorUserId)}</span>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          </section>
-        ) : null}
+        <ul className="feedback-collections-sidebar__list sidebar-group-contents" aria-label="Documents">
+          {displayedLayout.map(entry => entry.kind === 'subgroup' ? (
+            <li key={`subgroup:${entry.name}`} className="feedback-collection-row">
+              <SidebarGroupNode id={`${id}-${entry.name}`} presentation="folder" label={entry.name} bodyAs="ul"
+                bodyClassName="feedback-collections-sidebar__list" count={subgroupMembers(entry).length} countVisibility="interaction"
+                leadingIcon={<SidebarBriefingBundleIcon expanded={!collapsed.has(entry.name)} />}
+                expanded={!collapsed.has(entry.name)}
+                onToggle={() => setCollapsed(current => {
+                  const updated = new Set(current);
+                  if (!updated.delete(entry.name)) updated.add(entry.name);
+                  return updated;
+                })}>
+                {subgroupMembers(entry).map(renderLeaf)}
+              </SidebarGroupNode>
+            </li>
+          ) : renderLeaf(entry))}
+        </ul>
       </div>
     </DetailPaneShell>
   );

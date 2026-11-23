@@ -7,7 +7,9 @@ import { isMarkdownFile } from '../../../src/presentation/markdown-file';
 import { diffFileKey, type DiffFileIdentity } from './diff-file-identity';
 import { appTip } from './shared/AppHoverTips';
 import { DetailPaneNotice } from './shared/DetailPaneNotice';
-import { CollapsiblePanel } from './shared/CollapsiblePanel';
+import { CollapsiblePanel, type CollapsiblePanelProps } from './shared/CollapsiblePanel';
+import { SidebarItemRow } from './shared/SidebarItemRow';
+import { ContextualAction } from './shared/ContextualAction';
 import { Icon } from './icons/Icon';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import type { DiffLineRange, DiffMode, PierreDiffInput } from './PierreFileDiff';
@@ -25,11 +27,27 @@ export type ChangeListFile = Omit<GitChangeFile, 'additions' | 'deletions'> & {
 };
 export type ChangeListTarget = DiffFileIdentity & { navigationToken: string };
 
+export function ChangeFileDisclosure({ file, titleRef, ...panel }: Pick<CollapsiblePanelProps, 'children' | 'expanded' | 'onExpandedChange' | 'actions'> & {
+  file: Pick<ChangeListFile, 'old_path' | 'new_path'>;
+  titleRef?: (node: HTMLSpanElement | null) => void;
+}) {
+  const name = file.new_path ?? file.old_path ?? 'Changes';
+  return <CollapsiblePanel {...panel} className="change-list__file" toggleClassName="change-list__file-toggle"
+    title={<span class="change-list__path" {...appTip(name)} ref={titleRef}>
+      {file.old_path && file.new_path && file.old_path !== file.new_path ? `${file.old_path} → ${file.new_path}` : name}
+    </span>} />;
+}
+
 export type ChangeTextFileView = {
   wholeFile: boolean;
   mode: DiffMode;
   wrap: boolean;
   defaultContent: ComponentChild;
+};
+
+export type ChangeListFilePicker = {
+  compactOpen: boolean;
+  onSelect: (index: number) => void;
 };
 
 export type ChangeListProps = {
@@ -40,6 +58,8 @@ export type ChangeListProps = {
   revision?: string;
   ariaLabel: string;
   emptyLabel?: string;
+  hideToolbar?: boolean;
+  filePicker?: ChangeListFilePicker;
   loadFile?: (file: ChangeListFile, index: number, signal: AbortSignal) => Promise<DiffFilePair>;
   target?: ChangeListTarget;
   contentReady?: boolean;
@@ -145,7 +165,7 @@ export function ChangeList(props: ChangeListProps) {
 }
 
 export function ChangeInventoryList({
-  files = emptyFiles, scope, revision, ariaLabel, emptyLabel = 'No changes', loadFile, target, contentReady = true, onTargetReady, onLineSelection, lineTarget, renderTextFile, renderFileStatus,
+  files = emptyFiles, scope, revision, ariaLabel, emptyLabel = 'No changes', loadFile, target, contentReady = true, onTargetReady, onLineSelection, lineTarget, renderTextFile, renderFileStatus, hideToolbar, filePicker,
 }: ChangeListProps) {
   const [view, setView] = usePersistedViewState(`mandible:changes:${scope}`, viewState, defaultView);
   const headings = useRef(new Map<string, HTMLElement>());
@@ -172,9 +192,20 @@ export function ChangeInventoryList({
 
   const large = useMemo(() => files.length > 12 || files.reduce((sum, file) => sum + (file.additions ?? 0) + (file.deletions ?? 0), 0) > 600, [files]);
   const partial = files.some(file => file.patch?.isPartial);
-  return (
+  const selectedIndex = targetIndex < 0 ? Math.max(0, files.findIndex(file => file.operator_edited)) : targetIndex;
+  const toggleViewed = (key: string, fileRevision: string) => setView(current => {
+    const viewed = { ...current.viewed };
+    if (viewed[key] === fileRevision) delete viewed[key];
+    else viewed[key] = fileRevision;
+    return { ...current, viewed };
+  });
+  const counts = (file: ChangeListFile) => file.additions == null || file.deletions == null ? null : <>
+    <span class="change-list__add">+{file.additions}</span>
+    <span class="change-list__del">−{file.deletions}</span>
+  </>;
+  const changes = (
     <section class="change-list" aria-label={ariaLabel} data-diff-mode={view.mode}>
-      {files.length > 0 && <div class="change-list__toolbar">
+      {!hideToolbar && files.length > 0 && <div class="change-list__toolbar">
         <div role="group" aria-label="Diff layout">
           {(['unified', 'split'] as const).map(mode => {
             const label = mode === 'unified' ? 'Unified' : 'Split';
@@ -190,6 +221,7 @@ export function ChangeInventoryList({
           onClick={() => setView(current => ({ ...current, wrap: !current.wrap }))}><Icon name="wrapLines" /></button>
       </div>}
       {files.map((file, index) => {
+        if (filePicker && index !== selectedIndex) return null;
         const name = file.new_path ?? file.old_path ?? 'Changes';
         const key = viewKey(file, index);
         const fileRevision = versionKey(file, revision);
@@ -201,38 +233,26 @@ export function ChangeInventoryList({
         const status = file.change_kind === 'modified' ? null : labels[file.change_kind];
         const targeted = index === targetIndex && (target?.navigationToken !== handled.current?.token || handled.current?.kind !== 'file');
         const expanded = targeted || (view.expanded[key] ?? (!large && index === 0));
-        return <CollapsiblePanel key={key} className="change-list__file"
-          toggleClassName="change-list__file-toggle"
+        return <ChangeFileDisclosure key={key} file={file}
           expanded={expanded}
           onExpandedChange={next => setView(current => ({
             ...current, expanded: { ...current.expanded, [key]: next },
           }))}
-          title={<span class="change-list__path" {...appTip(name)}
-            ref={node => { if (node) headings.current.set(key, node); else headings.current.delete(key); }}>
-            {file.old_path && file.new_path && file.old_path !== file.new_path ? `${file.old_path} → ${file.new_path}` : name}
-          </span>}
+          titleRef={node => { if (node) headings.current.set(key, node); else headings.current.delete(key); }}
           actions={<>
-            {renderFileStatus?.(file)}
-            {status && <span class="change-list__badge">{status}</span>}
-            {file.whitespace_only && <span class="change-list__badge">Whitespace only</span>}
+            {!filePicker && renderFileStatus?.(file)}
+            {!hideToolbar && status && <span class="change-list__badge">{status}</span>}
+            {!hideToolbar && file.whitespace_only && <span class="change-list__badge">Whitespace only</span>}
             {modeChanged && <span class="change-list__badge">Mode {file.old_object!.mode} → {file.new_object!.mode}</span>}
             {gitlink ? <span class="change-list__badge">Gitlink</span>
               : binary ? <span class="change-list__badge">Binary</span>
-              : !modeOnly && file.additions !== undefined && file.deletions !== undefined && <>
-              <span class="change-list__add">+{file.additions}</span>
-              <span class="change-list__del">−{file.deletions}</span>
-            </>}
-            {viewed !== undefined && viewed !== fileRevision && <span class="change-list__badge">Changed since viewed</span>}
-            <button type="button" class="change-list__viewed" {...appTip("Mark viewed")}
+              : !modeOnly && !filePicker && !hideToolbar && counts(file)}
+            {!hideToolbar && viewed !== undefined && viewed !== fileRevision && <span class="change-list__badge">Changed since viewed</span>}
+            {!filePicker && !hideToolbar && <button type="button" class="change-list__viewed" {...appTip("Mark viewed")}
               aria-label={`Viewed ${name}`} aria-pressed={viewed === fileRevision}
-              onClick={() => setView(current => {
-                const viewed = { ...current.viewed };
-                if (viewed[key] === fileRevision) delete viewed[key];
-                else viewed[key] = fileRevision;
-                return { ...current, viewed };
-              })}>
+              onClick={() => toggleViewed(key, fileRevision)}>
               <Icon name="menuSelected" size={14} />
-            </button>
+            </button>}
           </>}
         >
           {gitlink && <p aria-label="Gitlink revisions">
@@ -250,9 +270,29 @@ export function ChangeInventoryList({
               : loadFile!(file, index, signal)}
             lineTarget={index === targetIndex ? lineTarget : undefined}
             onLineSelection={onLineSelection ? (range, quote) => onLineSelection(file, index, range, quote) : undefined} />}
-        </CollapsiblePanel>;
+        </ChangeFileDisclosure>;
       })}
       {!files.length && contentReady && <div class="change-list__empty">{emptyLabel}</div>}
     </section>
   );
+  if (!filePicker || !files.length) return changes;
+  return <div class={`change-list-layout${filePicker.compactOpen ? ' change-list-layout--open' : ''}`}>
+    <nav class="change-list-layout__files" aria-label="Changed files">
+      {files.map((file, index) => {
+        const key = viewKey(file, index);
+        const fileRevision = versionKey(file, revision);
+        const name = file.new_path ?? file.old_path ?? 'Changes';
+        const viewed = view.viewed[key] === fileRevision;
+        return <SidebarItemRow key={key} label={name} selectionLabel={name} selected={index === selectedIndex}
+          className="sidebar-item-row--fixed-badges"
+          ariaCurrent={index === selectedIndex ? 'true' : undefined} onSelect={() => filePicker.onSelect(index)}
+          badges={<>{renderFileStatus?.(file)}{counts(file)}</>}
+          actions={<ContextualAction aria-label={`Viewed ${name}`} {...appTip('Mark viewed')}
+            aria-pressed={viewed} onClick={() => toggleViewed(key, fileRevision)}>
+            <Icon name="menuSelected" />
+          </ContextualAction>} />;
+      })}
+    </nav>
+    {changes}
+  </div>;
 }

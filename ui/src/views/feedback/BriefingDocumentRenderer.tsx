@@ -1,5 +1,9 @@
-import { appTip } from '../../components/shared/AppHoverTips';
-import { NativeSelect } from '../../components/shared/NativeSelect';
+import { ArrowUp, Check, ChevronLeft, ChevronRight, Clipboard, Download, Pencil, Trash2 } from 'lucide-preact';
+import { ChoiceDropdown } from '../../components/shared/ChoiceDropdown';
+import { DetailPaneIconAction } from '../../components/shared/DetailPaneIconAction';
+import { DocumentChangeActions } from '../../components/shared/DocumentChangeActions';
+import { DocumentCommentsButton, useDocumentComments } from '../../components/shared/DocumentComments';
+import { isLargeMarkdownDocument, type MarkdownChangePosition, type MarkdownDocumentHandle } from '../../components/MarkdownDocument';
 import { useQuery } from '@tanstack/preact-query';
 import { queryClient } from '../../query/client';
 import { ROUTE_DATA_FRESH_MS } from '../../query/policy';
@@ -55,7 +59,6 @@ export type BriefingDocumentRendererProps = {
   onBriefingChange?(briefing: BriefingProjection | null): void;
   onTitleChange?(title: string): void;
   onRoundChange?(roundId: string | null): void;
-  keepSubmittedAnnotations?: boolean;
 };
 
 type SubmissionSort = { field: 'date' | 'actor' | 'annotations'; direction: 'asc' | 'desc' };
@@ -140,7 +143,6 @@ export function BriefingDocumentRenderer({
   onBriefingChange,
   onTitleChange,
   onRoundChange,
-  keepSubmittedAnnotations = false,
 }: BriefingDocumentRendererProps): JSX.Element {
   const active = useViewActive();
   const [draft, setDraft] = useState<BriefingDraft>({});
@@ -150,7 +152,14 @@ export function BriefingDocumentRenderer({
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [contentGate, setContentGate] = useState<string | null>(null);
-  const [annotationEditing, setAnnotationEditing] = useState(false);
+  const [pendingSuggestion, setPendingSuggestion] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+  const [showSource, setShowSource] = useState(false);
+  const [showChanges, setShowChanges] = useState(true);
+  const [changePosition, setChangePosition] = useState<MarkdownChangePosition>({ index: 0, total: 0 });
+  const [branchPicker, setBranchPicker] = useState(false);
+  const documentRef = useRef<MarkdownDocumentHandle>(null);
+  const comments = useDocumentComments(`${briefingId}:${roundId ?? 'latest'}`);
   const [documentFailure, setDocumentFailure] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
@@ -169,10 +178,11 @@ export function BriefingDocumentRenderer({
   const [comparisonBranch, comparisonCommit = null] = comparisonChoice.split(' ');
   const chooseComparison = (value: string) => {
     setComparisonPreference({ scope: comparisonPreferenceKey, value });
+    setShowChanges(true);
+    setActionsOpen(false);
     if (value) storageOrNull()?.setItem(comparisonPreferenceKey, value);
     else storageOrNull()?.removeItem(comparisonPreferenceKey);
   };
-  const [hideSubmittedAnnotations, setHideSubmittedAnnotations] = useState(false);
   const [resultId, setResultId] = useState<string | null>(null);
   const [resultCopied, setResultCopied] = useState(false);
   const [submissionSort, setSubmissionSort] = useState<SubmissionSort>({ field: 'date', direction: 'desc' });
@@ -187,6 +197,7 @@ export function BriefingDocumentRenderer({
     anchorRef: actionsTriggerRef,
     menuRef: actionsMenuRef,
     onDismiss: () => setActionsOpen(false),
+    onEscape: branchPicker ? () => setBranchPicker(false) : undefined,
   });
   const mutationSequence = useRef(0);
   const selectionKey = (overlayId: string | null) => `${briefingId}:${roundId ?? 'latest'}:${overlayId ?? 'respond-now'}`;
@@ -272,13 +283,15 @@ export function BriefingDocumentRenderer({
     mutationSequence.current += 1;
     setBusy(false);
     setContentGate(null);
+    setPendingSuggestion(false);
+    setSuggesting(false);
+    setChangePosition({ index: 0, total: 0 });
     setDocumentFailure(null);
     setValidationErrors({});
     setStatus(null);
     setExportBusy(false);
     setExportError(null);
     setMutationError(null);
-    setHideSubmittedAnnotations(false);
     setResultId(null);
     setResultCopied(false);
     setClearConfirmOpen(false);
@@ -304,9 +317,8 @@ export function BriefingDocumentRenderer({
     setStatus(null);
   };
 
-  const canMutate = Boolean(
-    !load.loading
-    && load.error === null
+  const canEditRound = Boolean(
+    load.error === null
     && round?.valid
     && !round.selected_submission_overlay
     && round.briefing_id === briefingId
@@ -322,6 +334,7 @@ export function BriefingDocumentRenderer({
     && round.directive_binding?.status === 'valid'
     && instance?.allowed_effects?.includes('ledger:write') === true,
   );
+  const canMutate = canEditRound && !load.loading;
   const requiredIncomplete = Boolean(round?.items.some((item) => item.item_kind === 'item' && item.revision.required && !meaningful(draft[item.id] ?? null)));
   const draftDiffers = Boolean(round?.items.some((item) => item.item_kind === 'item'
     && !responseValuesEqual(draft[item.id] ?? null, item.effective_response?.value ?? null)));
@@ -340,21 +353,15 @@ export function BriefingDocumentRenderer({
     && currentAnswerIds.every((id) => round.latest_frozen_membership!.answer_event_ids.includes(id))
     && currentAnnotationIds.every((id) => round.latest_frozen_membership!.annotation_event_ids.includes(id)));
   const emptyNoChange = !draftDiffers && currentAnswerIds.length === 0 && currentAnnotationIds.length === 0;
-  const submitReason = !canMutate
-    ? (round?.directive_binding?.reason || 'Submitting is unavailable for the current identity or instance.')
-    : round?.directive_binding?.status !== 'valid'
-      ? (round?.directive_binding?.reason || 'The directive binding is unavailable.')
-      : contentGate
-        || (annotationEditing ? 'Save or cancel the text replacement.'
-          : requiredIncomplete ? 'Complete the required directives before submitting.'
-          : emptyNoChange ? 'Add an answer or annotation before submitting.'
-            : !draftDiffers && frozenMatches ? 'No answer or annotation changes since your latest submission.'
-              : null);
-
-  const submitDisabled = contentGate === null || busy || clearBusy || Boolean(submitReason);
+  const sendRestriction = !canMutate || round?.directive_binding?.status !== 'valid' || contentGate !== ''
+    ? 'Send unavailable'
+    : pendingSuggestion || busy || clearBusy ? 'Saving…'
+      : requiredIncomplete ? 'Answers required'
+        : emptyNoChange || (!draftDiffers && frozenMatches) ? 'Nothing to send' : null;
+  const submitDisabled = sendRestriction !== null;
 
   const submit = async () => {
-    if (!round || !canMutate || busy || clearBusy || annotationEditing || contentGate !== '') return;
+    if (!round || !canMutate || busy || clearBusy || pendingSuggestion || contentGate !== '') return;
     const mutation = ++mutationSequence.current;
     const submittedRoundId = round.selected_round_id;
     const mutationIsCurrent = () => mutationSequence.current === mutation
@@ -440,7 +447,8 @@ export function BriefingDocumentRenderer({
       currentSelection.current = selectionKey(null);
       setResultId(submission.submission_id);
       setResultCopied(false);
-      setHideSubmittedAnnotations(!keepSubmittedAnnotations);
+      documentRef.current?.resetHistory();
+      setSuggesting(false);
       const refreshed = await reconcile(null);
       if (refreshed) setDraft(effectiveDraft(refreshed.items));
       window.requestAnimationFrame(() => shelfBodyRef.current?.scrollTo({ top: 0 }));
@@ -481,7 +489,6 @@ export function BriefingDocumentRenderer({
   const selectSubmissionOverlay = (submission: BriefingSubmissionOverlaySummary | null) => {
     const overlayId = submission?.id ?? null;
     setSelectedOverlayId(overlayId);
-    setHideSubmittedAnnotations(false);
     setResultId(null);
     currentSelection.current = selectionKey(overlayId);
   };
@@ -602,11 +609,27 @@ export function BriefingDocumentRenderer({
   const artifactVersionRef = artifactVersionId
     ? artifactVersionId.startsWith('artifact-version:') ? artifactVersionId : `artifact-version:${artifactVersionId}`
     : null;
-  const displayedRound = round && hideSubmittedAnnotations && !round.selected_submission_overlay
-    ? { ...round, annotations: [] }
-    : round;
+  const comparisonBranches = round?.document?.comparison_branches ?? [];
+  const currentBranch = comparisonBranches.find(branch => branch.commit === comparisonCommit)
+    ?? (comparisonCommit && comparisonBranch ? { name: comparisonBranch, commit: comparisonCommit } : null);
+  const menuBranches = [
+    ...currentBranch ? [currentBranch] : [],
+    ...comparisonBranches.filter(branch => branch.name !== currentBranch?.name).slice(0, currentBranch ? 2 : 3),
+  ];
+  const defaultComparison = round?.document?.original_comparison_base
+    ?? (!comparisonChoice ? round?.document?.comparison_base : null);
+  const comparisonDefault = defaultComparison?.target;
+  const comparisonVersionRef = comparisonDefault?.kind === 'artifact_version'
+    ? comparisonDefault.artifact_version_id : defaultComparison?.artifact_version_id;
+  const matchingRound = comparisonVersionRef ? roundOptions.find(({ round: version }) =>
+    displayResourceRef(version.artifact_version_id) === displayResourceRef(comparisonVersionRef)) : undefined;
+  const defaultComparisonLabel = displayContext?.proposalBundleId ? 'published version'
+    : comparisonDefault?.kind === 'git_file'
+      ? comparisonBranches.find(branch => branch.commit === comparisonDefault.commit)?.name ?? comparisonDefault.commit.slice(0, 8)
+      : matchingRound && matchingRound.round.id === round?.document?.previous_round_id ? 'previous round'
+        : matchingRound?.label ?? (comparisonVersionRef ? `version ${shortRouteId(comparisonVersionRef).replace(/^artifact-version:/, '')}` : null);
   const body = load.loading && !round
-    ? <div className="briefing-empty" role="status">Loading Briefing…</div>
+    ? null
     : load.error && !round
       ? <div className="briefing-empty">Briefing content is temporarily unavailable.</div>
       : !round
@@ -620,27 +643,15 @@ export function BriefingDocumentRenderer({
                   Complete {Object.keys(validationErrors).length} required answer{Object.keys(validationErrors).length === 1 ? '' : 's'}.
                 </div>
               ) : null}
-              {round.document?.comparison_branches?.length ? (
-                <div className="briefing-document__comparison">
-                  <NativeSelect aria-label="Compare with" value={comparisonChoice}
-                    onChange={(event) => chooseComparison(event.currentTarget.value)}>
-                    <option value="">Pinned comparison</option>
-                    {comparisonChoice && !round.document.comparison_branches.some((branch) =>
-                      branch.name === comparisonBranch && branch.commit === comparisonCommit) && (
-                      <option value={comparisonChoice}>{comparisonBranch} ({comparisonCommit?.slice(0, 8)})</option>
-                    )}
-                    {round.document.comparison_branches.map((branch) =>
-                      <option key={branch.name} value={`${branch.name} ${branch.commit}`}>{branch.name}</option>)}
-                  </NativeSelect>
-                </div>
-              ) : null}
               {round.document ? (
-                <BriefingDocumentPanel briefingId={briefingId} briefingTitle={title} roundId={round.selected_round_id} round={displayedRound!} canMutate={canMutate && !busy && !clearBusy && contentGate === ''} draftIdentity={draftScope} onRefresh={() => reconcile(selectedOverlayId)}
-                  draft={draft}
-                  validationErrors={validationErrors}
-                  onDirectiveValue={setValue}
-                  onAnnotationEditChange={setAnnotationEditing}
-                  onContentGateChange={setContentGate}
+                <BriefingDocumentPanel key={`${round.selected_round_id}:${selectedOverlayId ?? ''}`}
+                  briefingId={briefingId} roundId={round.selected_round_id} round={round}
+                  canMutate={canEditRound && !busy && !clearBusy} draftIdentity={draftScope}
+                  documentRef={documentRef} comments={comments} showChanges={showChanges} showSource={showSource}
+                  suggesting={suggesting} onSuggest={() => setSuggesting(true)} onChangePosition={setChangePosition}
+                  onRefresh={() => reconcile(selectedOverlayId)} draft={draft}
+                  validationErrors={validationErrors} onDirectiveValue={setValue}
+                  onPendingSuggestionChange={setPendingSuggestion} onContentGateChange={setContentGate}
                   onDocumentFailureChange={setDocumentFailure} />
               ) : null}
               <div className="sr-only" role="status" aria-live="polite">{status}</div>
@@ -652,7 +663,6 @@ export function BriefingDocumentRenderer({
       className="briefing-detail"
       headerClassName="briefing-detail__header"
       bodyClassName="briefing-detail__body"
-      footerClassName="briefing-detail__footer"
       headerRef={headerRef}
       ariaBusy={load.loading}
       notice={load.error || exportError || mutationError || (round && !round.valid) || documentFailure ? (
@@ -675,100 +685,138 @@ export function BriefingDocumentRenderer({
             copyLabel: 'Copy Briefing reference',
           }}
           title={title}
-          titleTooltip={title}
-          supportingMetadata={description ? <p className="briefing-detail__description">{description}</p> : undefined}
           state={round && selectedIsNewest
             ? (round.publication_mode === 'published-report' ? 'Current report' : 'Latest')
             : undefined}
           selector={round ? {
             label: round.publication_mode === 'published-report' ? 'Report history' : 'Round occurrence',
             control: (
-              <NativeSelect
-                aria-label={round.publication_mode === 'published-report' ? 'Report history' : 'Round occurrence'}
-                value={round.selected_round_id}
-                onInput={(event) => onRoundChange?.(event.currentTarget.value === round.latest_round_id ? null : event.currentTarget.value)}
-              >
-                {roundOptions.map(({ round: summary, label }) => <option key={summary.id} value={summary.id}>{label}</option>)}
-              </NativeSelect>
+              <ChoiceDropdown
+                label={round.publication_mode === 'published-report' ? 'Report history' : 'Round occurrence'}
+                prompt="History" value={round.selected_round_id}
+                choices={roundOptions.map(({ round: summary, label }) => ({ value: summary.id, label }))}
+                onChange={value => onRoundChange?.(value === round.latest_round_id ? null : value)}
+              />
             ),
             selectedCanonicalRef: round.selected_round_id,
             copyLabel: 'Copy selected round reference',
           } : undefined}
           actions={round ? (
             <>
-              <DetailPaneMenuTrigger
-                buttonRef={actionsTriggerRef}
-                label="Briefing actions"
-                expanded={actionsOpen}
-                onClick={() => setActionsOpen((open) => !open)}
-              />
+              {round.document?.comparison_base && <DocumentChangeActions shown={showChanges} position={changePosition}
+                onToggle={() => setShowChanges(current => !current)} onStep={direction => documentRef.current?.moveChange(direction)} />}
+              {canEditRound && round.document?.source && !isLargeMarkdownDocument(round.document.source) && (
+                <DetailPaneIconAction label="Suggest edits" aria-pressed={suggesting} disabled={contentGate !== ''}
+                  onClick={() => setSuggesting(current => !current)}>
+                  <Pencil className="app-icon" aria-hidden="true" />
+                </DetailPaneIconAction>
+              )}
+              {round.document && <DocumentCommentsButton controller={comments} count={
+                (round.annotations?.length ?? 0) + (round.carried_annotations?.length ?? 0)
+                + (round.standing_notes?.filter(note => !note.resolved).length ?? 0)
+              } />}
+              <DetailPaneMenuTrigger buttonRef={actionsTriggerRef} label="More" expanded={actionsOpen}
+                onClick={() => { setBranchPicker(false); setActionsOpen(open => !open); }} />
               {actionsOpen ? (
-                <div
-                  ref={actionsMenuRef}
-                  className="briefing-detail__actions-menu app-anchored-menu"
-                  role="menu"
-                  popover="manual"
-                  style={actionsMenuStyle}
-                >
-                  {userKind === 'human' ? (
-                    <button type="button" role="menuitem" onClick={openRename}>Rename Briefing</button>
-                  ) : null}
-                  <button type="button" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Metadata</button>
-                  {round.latest_submission_for_actor ? (
-                    <button type="button" role="menuitem" disabled={exportBusy} onClick={() => void exportReviewedMarkdown()}>
-                      {exportBusy ? 'Exporting reviewed Markdown…' : 'Export reviewed Markdown'}
-                    </button>
-                  ) : null}
-                  {artifactVersionRef ? (
-                    <a role="menuitem" href={artifactDetailHref(displayResourceRef(artifactVersionRef))} onClick={() => setActionsOpen(false)}>Go to artifact version</a>
-                  ) : null}
+                <div ref={actionsMenuRef} className="detail-pane-menu app-anchored-menu"
+                  role="menu" popover="manual" style={actionsMenuStyle}>
+                  {branchPicker ? <>
+                    <button type="button" className="detail-pane-menu__item" role="menuitem" onClick={() => setBranchPicker(false)}><ChevronLeft className="app-icon" aria-hidden="true" />Compare with</button>
+                    {comparisonBranches.map(branch => <button key={branch.name} type="button" className="detail-pane-menu__item" role="menuitemradio"
+                      aria-checked={comparisonCommit === branch.commit}
+                      onClick={() => chooseComparison(`${branch.name} ${branch.commit}`)}>
+                      {branch.name}{comparisonCommit === branch.commit && <Check className="app-icon" aria-hidden="true" />}
+                    </button>)}
+                  </> : <>
+                    {defaultComparisonLabel && (defaultComparison || displayContext?.proposalBundleId && comparisonChoice) &&
+                      <button type="button" className="detail-pane-menu__item" role="menuitemradio" aria-checked={!comparisonChoice} onClick={() => chooseComparison('')}>
+                        Compare with {defaultComparisonLabel}{!comparisonChoice && <Check className="app-icon" aria-hidden="true" />}
+                      </button>}
+                    {menuBranches.map(branch => <button key={branch.name} type="button" className="detail-pane-menu__item" role="menuitemradio"
+                      aria-checked={comparisonCommit === branch.commit}
+                      onClick={() => chooseComparison(`${branch.name} ${branch.commit}`)}>
+                      Compare with {branch.name}{comparisonCommit === branch.commit && <Check className="app-icon" aria-hidden="true" />}
+                    </button>)}
+                    {comparisonBranches.length > 0 && <button type="button" className="detail-pane-menu__item" role="menuitem" onClick={() => setBranchPicker(true)}>
+                      Another branch…<ChevronRight className="app-icon" aria-hidden="true" />
+                    </button>}
+                    {round.document && <button type="button" className="detail-pane-menu__item" role="menuitemcheckbox" aria-checked={showSource}
+                      onClick={() => { setShowSource(current => !current); setActionsOpen(false); }}>
+                      Show source{showSource && <Check className="app-icon" aria-hidden="true" />}
+                    </button>}
+                    <button type="button" className="detail-pane-menu__item" role="menuitem" onClick={() => { setActionsOpen(false); setMetadataOpen(true); }}>Details</button>
+                  </>}
                 </div>
               ) : null}
+              {round.valid && !round.selected_submission_overlay && <DetailPaneIconAction className="briefing-send" label={pendingAnnotations.length ? `Send (${pendingAnnotations.length})` : 'Send'}
+                tip={sendRestriction ?? 'Send'} aria-disabled={submitDisabled} aria-busy={busy}
+                onClick={() => { if (!submitDisabled) void submit(); }}>
+                <ArrowUp className="app-icon" aria-hidden="true" />
+                {pendingAnnotations.length > 0 && <span className="sidebar-search-filter__badge" aria-hidden="true">{pendingAnnotations.length}</span>}
+              </DetailPaneIconAction>}
             </>
           ) : undefined}
           actionsLabel="Briefing actions"
         />
       )}
-      footer={round?.valid ? {
-        content: (
-          <div className="briefing-footer-content">
-            <div className="briefing-footer-actions">
-              {resultId ? (
-                <button type="button" className="btn btn--sm btn--success briefing-copy-result" onClick={() => void copyResultId()}>
-                  {resultCopied ? 'Copied result ID' : 'Copy result ID'}
+      overlays={(
+        <>
+          <DetailPaneModal
+            open={renameOpen}
+            onClose={() => { if (!renameBusy) setRenameOpen(false); }}
+            titleId="briefing-rename-title"
+            title="Rename Briefing"
+            closeLabel="Close Rename Briefing"
+            excludeAboveRef={headerRef}
+            scrollOwnerSelector=".feedback-collection-shell__content"
+            panelClassName="briefing-detail__rename"
+          >
+            <form className="briefing-detail__rename-form" onSubmit={(event) => void renameBriefing(event)}>
+              <label htmlFor="briefing-rename-input">Briefing title</label>
+              <input id="briefing-rename-input" autoFocus value={renameTitle}
+                disabled={renameBusy} onInput={(event) => setRenameTitle(event.currentTarget.value)} />
+              {renameError ? <DetailPaneNotice severity="error" title="Briefing rename failed">{renameError}</DetailPaneNotice> : null}
+              <div className="briefing-detail__rename-actions">
+                <button type="button" className="btn btn--ghost btn--sm" disabled={renameBusy} onClick={() => setRenameOpen(false)}>Cancel</button>
+                <button type="submit" className="briefing-primary" disabled={renameBusy || !renameTitle.trim() || renameTitle.trim() === title}>
+                  {renameBusy ? 'Saving…' : 'Save'}
                 </button>
-              ) : null}
-              <button
-                type="button"
-                className="briefing-primary"
-                aria-disabled={submitDisabled}
-                aria-busy={busy}
-                aria-describedby={submitReason ? 'briefing-submit-reason' : undefined}
-                {...appTip(submitReason ?? undefined)}
-                onClick={(event) => { if (submitDisabled && !requiredIncomplete) { event.preventDefault(); return; } void submit(); }}
-                onKeyDown={(event) => {
-                  if (!submitReason || !requiredIncomplete || (event.key !== 'Enter' && event.key !== ' ')) return;
-                  event.preventDefault();
-                  void submit();
-                }}
-              >
-                Submit
-              </button>
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm briefing-clear"
-                disabled={busy || clearBusy || (!round.selected_submission_overlay && pendingAnnotations.length > 0 && !canMutate)}
-                onClick={requestClear}
-              >
-                Clear
-              </button>
-              {submitReason ? <span id="briefing-submit-reason" className="sr-only">{submitReason}</span> : null}
+              </div>
+            </form>
+          </DetailPaneModal>
+          <DetailPaneModal
+            open={metadataOpen}
+            onClose={() => setMetadataOpen(false)}
+            titleId="briefing-metadata-title"
+            title="Briefing metadata"
+            closeLabel="Close Briefing metadata"
+            excludeAboveRef={headerRef}
+            scrollOwnerSelector=".feedback-collection-shell__content"
+            panelClassName="briefing-detail__metadata"
+          >
+            {description && <p>{description}</p>}
+            <div className="detail-pane-header__actions">
+              {userKind === 'human' && <DetailPaneIconAction label="Rename" onClick={() => { setMetadataOpen(false); openRename(); }}>
+                <Pencil className="app-icon" aria-hidden="true" />
+              </DetailPaneIconAction>}
+              {round?.latest_submission_for_actor && <DetailPaneIconAction label="Export reviewed Markdown" disabled={exportBusy}
+                onClick={() => void exportReviewedMarkdown()}><Download className="app-icon" aria-hidden="true" /></DetailPaneIconAction>}
+              {resultId && <DetailPaneIconAction label={resultCopied ? 'Copied result ID' : 'Copy result ID'} onClick={() => void copyResultId()}>
+                <Clipboard className="app-icon" aria-hidden="true" />
+              </DetailPaneIconAction>}
+              {(round?.selected_submission_overlay || pendingAnnotations.length > 0 || draftDiffers) && <DetailPaneIconAction
+                label={round?.selected_submission_overlay ? 'Return to draft' : 'Delete drafts'}
+                disabled={busy || pendingSuggestion || clearBusy || (!round?.selected_submission_overlay && !canMutate)}
+                onClick={() => { setMetadataOpen(false); requestClear(); }}><Trash2 className="app-icon" aria-hidden="true" /></DetailPaneIconAction>}
             </div>
-            {round.submission_overlays.length === 0 ? (
-              <div className="briefing-submission-shelf briefing-submission-shelf--inactive">Annotation sets (0)</div>
-            ) : (
+            <dl>
+              <div><dt>Round occurrence</dt><dd>{selectedSummary ? roundLabels.get(selectedSummary.id) : 'Unavailable'}</dd></div>
+              {round ? <div><dt>Round ID</dt><dd><DetailHeaderIdentity shortId={shortRouteId(round.selected_round_id)} copyValue={round.selected_round_id} copyLabel="Copy full round ID" /></dd></div> : null}
+              {artifactVersionRef ? <div><dt>Pinned artifact version</dt><dd><DetailHeaderIdentity shortId={displayResourceRef(artifactVersionRef)} copyValue={artifactVersionRef} copyLabel="Copy exact artifact-version ref" /> <a href={artifactDetailHref(displayResourceRef(artifactVersionRef))}>Open artifact</a></dd></div> : null}
+            </dl>
+            {round && round.submission_overlays.length > 0 && (
               <details className="briefing-submission-shelf">
-                <summary>Annotation sets ({round.submission_overlays.length})</summary>
+                <summary>History</summary>
                 <div ref={shelfBodyRef} className="briefing-submission-shelf__body">
                   <table role="grid" aria-label="Annotation sets for this round">
                     <thead>
@@ -809,49 +857,6 @@ export function BriefingDocumentRenderer({
                 </div>
               </details>
             )}
-          </div>
-        ),
-      } : undefined}
-      overlays={(
-        <>
-          <DetailPaneModal
-            open={renameOpen}
-            onClose={() => { if (!renameBusy) setRenameOpen(false); }}
-            titleId="briefing-rename-title"
-            title="Rename Briefing"
-            closeLabel="Close Rename Briefing"
-            excludeAboveRef={headerRef}
-            scrollOwnerSelector=".feedback-collection-shell__content"
-            panelClassName="briefing-detail__rename"
-          >
-            <form className="briefing-detail__rename-form" onSubmit={(event) => void renameBriefing(event)}>
-              <label htmlFor="briefing-rename-input">Briefing title</label>
-              <input id="briefing-rename-input" autoFocus value={renameTitle}
-                disabled={renameBusy} onInput={(event) => setRenameTitle(event.currentTarget.value)} />
-              {renameError ? <DetailPaneNotice severity="error" title="Briefing rename failed">{renameError}</DetailPaneNotice> : null}
-              <div className="briefing-detail__rename-actions">
-                <button type="button" className="btn btn--ghost btn--sm" disabled={renameBusy} onClick={() => setRenameOpen(false)}>Cancel</button>
-                <button type="submit" className="briefing-primary" disabled={renameBusy || !renameTitle.trim() || renameTitle.trim() === title}>
-                  {renameBusy ? 'Saving…' : 'Save'}
-                </button>
-              </div>
-            </form>
-          </DetailPaneModal>
-          <DetailPaneModal
-            open={metadataOpen}
-            onClose={() => setMetadataOpen(false)}
-            titleId="briefing-metadata-title"
-            title="Briefing metadata"
-            closeLabel="Close Briefing metadata"
-            excludeAboveRef={headerRef}
-            scrollOwnerSelector=".feedback-collection-shell__content"
-            panelClassName="briefing-detail__metadata"
-          >
-            <dl>
-              <div><dt>Round occurrence</dt><dd>{selectedSummary ? roundLabels.get(selectedSummary.id) : 'Unavailable'}</dd></div>
-              {round ? <div><dt>Round ID</dt><dd><DetailHeaderIdentity shortId={shortRouteId(round.selected_round_id)} copyValue={round.selected_round_id} copyLabel="Copy full round ID" /></dd></div> : null}
-              {artifactVersionRef ? <div><dt>Pinned artifact version</dt><dd><DetailHeaderIdentity shortId={displayResourceRef(artifactVersionRef)} copyValue={artifactVersionRef} copyLabel="Copy exact artifact-version ref" /></dd></div> : null}
-            </dl>
           </DetailPaneModal>
           <DetailPaneModal
             open={clearConfirmOpen}

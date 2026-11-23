@@ -15,6 +15,7 @@ const desktopOutputs = {
   MANDIBLE_DESKTOP_SQLITE_LIBRARY: 'src-tauri/resources/libsqlite3.dylib',
   MANDIBLE_DESKTOP_TRUST_HELPER: 'src-tauri/resources/local-ca-trust-helper',
   MANDIBLE_DESKTOP_APPROVAL_HELPER: 'src-tauri/resources/MandibleApproval.app',
+  MANDIBLE_DESKTOP_PROJECT_FOLDER_HELPER: 'src-tauri/resources/MandibleProjectFolder.app',
   MANDIBLE_DESKTOP_RUNTIME_DIR: 'src-tauri/resources/bun-runtime',
 };
 const cargoTarget = 'src-tauri/target';

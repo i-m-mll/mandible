@@ -4,7 +4,10 @@ import { startPushSession, pushSingleRepo, getPushStatus, type PushScope } from 
 import type { RouteRegistrar } from "../server.js";
 import { queryString, sendJson } from "./http.js";
 import { parseCheckoutRelocation } from "../checkout-relocation.js";
-import { ClientAuthzError, requireIdentity } from "../client-auth/authz.js";
+import { ClientAuthzError, requireIdentity, requireOperator } from "../client-auth/authz.js";
+import { getDb } from "../db.js";
+import { chooseProjectFolder } from "../project-folder-dialog.js";
+import * as z from "zod";
 import { isGitObjectId, readGitFilePair } from "../git-change-review.js";
 
 type BranchSort = "recency" | "name" | "activity";
@@ -67,7 +70,11 @@ export function filterAndSortBranches(
   return sorted;
 }
 
-export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner): WorkScanner {
+export function registerWorkRoutes(
+  server: RouteRegistrar,
+  scanner?: WorkScanner,
+  pickProjectFolder = chooseProjectFolder,
+): WorkScanner {
   const workScanner = scanner ?? new WorkScanner();
   const resolveRepo = (repoId: string) => {
     const repo = workScanner.getRepoById(repoId);
@@ -110,17 +117,41 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     sendJson(res, 200, updated);
   }, { operation: { id: "put:/api/work/repos/:id", effects: ["ledger:write"], requestSchema: null, reportingCategory: "work" }, fileRpc: "deny" });
 
+  let addingProject = false;
   server.post("/api/work/repos/add", async (req, res) => {
-    const body = req.body as { root?: string; name?: string } | undefined;
-    if (!body?.root) { sendJson(res, 400, { error: "root required" }); return; }
-    try {
-      const repo = await workScanner.addRepo(body.root, { name: body.name });
-      if (!repo) { sendJson(res, 409, { error: "already tracked" }); return; }
-      sendJson(res, 201, repo);
-    } catch (e) {
-      sendJson(res, 400, { error: (e as Error).message });
+    const operator = requireOperator(getDb(), req);
+    if (operator.source !== "local_os_user" && operator.source !== "installation_context") {
+      throw new ClientAuthzError(403, "local_dashboard_required", "The project folder panel is available from the local dashboard.");
     }
-  }, { operation: { id: "post:/api/work/repos/add", effects: ({ instanceRole }) => instanceRole === "preview" ? ["ledger:write","files:preview","process:external"] : ["ledger:write","files:production","process:external"], requestSchema: null, reportingCategory: "work" }, fileRpc: "deny" });
+    if (addingProject) {
+      sendJson(res, 409, { error: "The project folder panel is already open." });
+      return;
+    }
+    addingProject = true;
+    try {
+      const selection = await pickProjectFolder(req.signal);
+      if (!selection.ok) {
+        sendJson(res, 503, { error: selection.error });
+        return;
+      }
+      if (selection.path === null || req.signal?.aborted) {
+        res.status(204).empty?.();
+        return;
+      }
+      const repo = await workScanner.addRepo(selection.path);
+      if (!repo) { sendJson(res, 409, { error: "This project is already tracked." }); return; }
+      sendJson(res, 201, repo);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      addingProject = false;
+    }
+  }, { operation: {
+    id: "post:/api/work/repos/add",
+    effects: ({ instanceRole }) => ["ledger:write", instanceRole === "preview" ? "files:preview" : "files:production", "dialog:project-folder"],
+    requestSchema: z.strictObject({}),
+    reportingCategory: "work",
+  }, fileRpc: "deny" });
 
   server.delete("/api/work/repos/:id", (req, res) => {
     const id = req.params.id;

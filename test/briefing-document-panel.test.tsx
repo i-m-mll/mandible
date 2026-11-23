@@ -1,15 +1,41 @@
 // @vitest-environment jsdom
 import { EditorView } from '@codemirror/view';
+import { undo } from '@codemirror/commands';
 import { createHash } from 'node:crypto';
-import { cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
-import { useState } from 'preact/hooks';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from './helpers/dom.js';
+import { useRef, useState } from 'preact/hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { establishTestClientAccess } from './helpers/local-client-access';
 import { __resetBrowserSessionForTests } from '../ui/src/client-auth-token';
 import type { BriefingResponseValue, BriefingRoundProjection } from '../ui/src/api';
 
-import { BriefingDocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
+import { BriefingDocumentPanel as DocumentPanel } from '../ui/src/views/feedback/BriefingDocumentPanel';
+import type { MarkdownDocumentHandle } from '../ui/src/components/MarkdownDocument';
+import { DocumentCommentsButton, useDocumentComments } from '../ui/src/components/shared/DocumentComments';
+import { installReadingBrowserFixture } from './helpers/reading-browser-fixture';
+import { selectBriefingEditorText, stubBriefingEditorBounds } from './helpers/briefing-editor';
+
+function BriefingDocumentPanel(props: Pick<Parameters<typeof DocumentPanel>[0],
+  'briefingId' | 'roundId' | 'round' | 'canMutate' | 'onRefresh' | 'draft' | 'onDirectiveValue'> & { deferProjection?: boolean }) {
+  const [suggesting, setSuggesting] = useState(false);
+  const [refreshed, setRefreshed] = useState<BriefingRoundProjection | null>(null);
+  const controller = useDocumentComments(props.roundId);
+  const documentRef = useRef<MarkdownDocumentHandle>(null);
+  const projection = refreshed ?? props.round;
+  return <>
+    <DocumentCommentsButton controller={controller} count={projection.annotations?.length ?? 0} />
+    <DocumentPanel {...props} round={projection} comments={controller} documentRef={documentRef}
+      draftIdentity={null} showChanges showSource={false} suggesting={suggesting} onSuggest={() => setSuggesting(true)}
+      onRefresh={async () => {
+        const updated = await props.onRefresh();
+        if (updated && !props.deferProjection) setRefreshed(updated);
+        return updated;
+      }}
+      onChangePosition={() => {}} onPendingSuggestionChange={() => {}}
+      onDocumentFailureChange={() => {}} onContentGateChange={() => {}} />
+  </>;
+}
 
 const source = 'Intro\n:::spec-item{key="plan" type="verdict" required="true"}\nPlan\n:::\n';
 const directiveStart = source.indexOf(':::');
@@ -83,10 +109,16 @@ function content() {
   };
 }
 
-beforeEach(establishTestClientAccess);
+let restoreLayout: () => void;
+beforeEach(() => {
+  establishTestClientAccess();
+  stubBriefingEditorBounds();
+  restoreLayout = installReadingBrowserFixture();
+});
 
 afterEach(() => {
   cleanup();
+  restoreLayout();
   __resetBrowserSessionForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -105,7 +137,7 @@ describe('Briefing document panel', () => {
 
     render(<BriefingDocumentPanel
       briefingId="briefing-1"
-      briefingTitle="Review plan"
+
       round={round({ document: {
         artifact_version_id: 'artifact-version:version-1',
         content_hash: createHash('sha256').update(authoritativeSource).digest('hex'),
@@ -134,7 +166,7 @@ describe('Briefing document panel', () => {
     const source = profiledSource;
     const start = source.indexOf(':::'); const bodyStart = source.indexOf('Body'); const bodyEnd = source.indexOf('\n:::', bodyStart);
     const definitionDigest = createHash('sha256').update(source.slice(start, bodyEnd + 4)).digest('hex');
-    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({
+    render(<BriefingDocumentPanel briefingId="briefing-1" roundId="round-1" round={round({
       document: {
         artifact_version_id: 'artifact-version:version-1',
         content_hash: createHash('sha256').update(profiledSource).digest('hex'),
@@ -153,57 +185,93 @@ describe('Briefing document panel', () => {
     expect(screen.getByLabelText('Directive text').querySelector('img[src]')).toBeNull();
   });
 
-  it('edits a selected directive in the mounted Markdown editor without changing its pinned anchor', async () => {
-    const posts: any[] = [];
-    const refresh = vi.fn(async () => round());
+  it('edits a selected directive in the mounted Markdown editor and keeps the pinned anchor', async () => {
+    const posts: unknown[] = [];
+    const refresh = vi.fn(async () => round({ annotations: [annotation({
+      annotation_event_id: 'annotation-new', annotation_kind: 'suggest_replacement', body: null,
+      replacement_text: 'Revised plan', presentation: { source: 'current_draft', actor: null },
+    })] }));
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (!init?.method) return json(content());
-      posts.push({ url, body: JSON.parse(String(init.body)) });
+      posts.push({ url: String(input), body: JSON.parse(String(init?.body)) });
       return json({ annotation_event_ids: ['annotation-new'] });
     }));
 
-    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round()} canMutate onRefresh={refresh} />);
-    const commentButton = await screen.findByRole('button', { name: 'Comment on directive' }) as HTMLButtonElement;
-    await waitFor(() => expect(commentButton.disabled).toBe(false));
-    fireEvent.click(commentButton);
-    const dialog = screen.getByRole('dialog', { name: 'Add annotation' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
-    expect(posts).toHaveLength(0);
+    render(<BriefingDocumentPanel briefingId="briefing-1" roundId="round-1" round={round()} canMutate onRefresh={refresh} />);
+    selectBriefingEditorText(await screen.findByLabelText('Directive text'), 'Plan');
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit', exact: true }));
     const mountedEditor = () => EditorView.findFromDOM(screen.getByLabelText('Pinned briefing document').closest('.cm-editor') as HTMLElement)!;
     const surface = mountedEditor();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Edit text' }));
     await waitFor(() => expect(surface.state.readOnly).toBe(false));
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(mountedEditor()).toBe(surface);
     await waitFor(() => expect(surface.state.sliceDoc(surface.state.selection.main.from, surface.state.selection.main.to)).toBe('Plan'));
-    const outside = surface.state.doc.toString();
-    surface.dispatch({ changes: { from: 0, to: 1, insert: 'X' }, userEvent: 'input.type' });
-    expect(surface.state.doc.toString()).toBe(outside);
     surface.dispatch(surface.state.replaceSelection('Revised plan'));
-    fireEvent.input(screen.getByLabelText('Note (optional)'), { target: { value: 'Explain the premise.' } });
-    fireEvent.submit(screen.getByRole('form', { name: 'Text replacement' }));
+    expect(mountedEditor()).toBe(surface);
+    expect(screen.queryByRole('dialog')).toBeNull();
 
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]).toEqual({
       url: '/api/briefings/briefing-1/rounds/round-1/annotations',
       body: {
         annotations: [{
-          operation: 'set',
-          kind: 'suggest_replacement',
-          start_offset: bodyStart,
-          end_offset: bodyEnd,
-          quote: 'Plan',
-          replacement_text: 'Revised plan',
-          body: 'Explain the premise.',
+          operation: 'set', kind: 'suggest_replacement', start_offset: bodyStart, end_offset: bodyEnd,
+          quote: 'Plan', replacement_text: 'Revised plan', body: null,
         }],
       },
     });
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.queryByRole('form', { name: 'Text replacement' })).toBeNull());
-    expect(mountedEditor()).toBe(surface);
-    expect(surface.state.doc.toString()).toBe(outside);
-    expect(surface.state.readOnly).toBe(true);
+    expect(surface.state.doc.toString()).toBe(source.replace('Plan', 'Revised plan'));
+  });
+
+  it('replaces only the visible paragraph tail and retracts the saved suggestion on undo', async () => {
+    const quote = 'operations room.';
+    const source = '# Checklist\n\nTell the support team in the operations room.\n\nAn unchanged paragraph.\n\n## Runbook\n';
+    const before = source.replace('support', 'release').replace('Runbook', 'Instructions');
+    const from = source.indexOf(quote);
+    const to = from + quote.length;
+    const replacement = 'release bridge.';
+    const original = round({ items: [], document: { ...round().document!, source,
+      profile: 'mandible-briefing.v3', content_hash: createHash('sha256').update(source).digest('hex'),
+      comparison_base: { artifact_version_id: 'artifact-version:version-0', source: before,
+        content_hash: createHash('sha256').update(before).digest('hex') },
+    } });
+    const saved = { ...original, annotations: [annotation({
+      annotation_event_id: 'suggestion', annotation_kind: 'suggest_replacement', body: null,
+      start_offset: from, end_offset: to, quote, replacement_text: replacement,
+      presentation: { source: 'current_draft', actor: null },
+    })] } as BriefingRoundProjection;
+    const refresh = vi.fn(async () => saved);
+    const posts: { annotations: unknown[] }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      posts.push(JSON.parse(String(init?.body)));
+      return json({ annotation_event_ids: ['suggestion'] });
+    }));
+    const panel = (round: BriefingRoundProjection) => <BriefingDocumentPanel
+      briefingId="briefing-1" roundId="round-1" round={round} canMutate onRefresh={refresh} deferProjection />;
+    const view = render(panel(original));
+    const content = await screen.findByLabelText('Pinned briefing document');
+    const editor = EditorView.findFromDOM(content.closest<HTMLElement>('.cm-editor')!)!;
+    expect(await screen.findByText('1 unchanged block')).toBeTruthy();
+
+    // Browsers place the endpoint at the first glyph of the next block,
+    // beyond its invisible heading syntax and the collapsed paragraph.
+    act(() => editor.dispatch({ selection: { anchor: from, head: source.indexOf('Runbook') } }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit', exact: true }));
+    await waitFor(() => expect(editor.state.readOnly).toBe(false));
+    act(() => editor.dispatch(editor.state.replaceSelection(replacement)));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(editor.state.doc.toString()).toBe(source.replace(quote, replacement));
+    expect(posts[0]?.annotations).toEqual([{
+      operation: 'set', kind: 'suggest_replacement', body: null,
+      start_offset: from, end_offset: to, quote, replacement_text: replacement,
+    }]);
+
+    view.rerender(panel(saved));
+    act(() => { expect(undo(editor)).toBe(true); });
+    expect(editor.state.doc.toString()).toBe(source);
+    await waitFor(() => expect(posts[1]?.annotations).toEqual([
+      { operation: 'retract', annotation_event_id: 'suggestion' },
+    ]));
+    view.rerender(panel(original));
+    expect(editor.state.doc.toString()).toBe(source);
   });
 
   it('posts an exact sub-selection across CRLF and a surrogate pair', async () => {
@@ -214,19 +282,16 @@ describe('Briefing document panel', () => {
     }));
     const source = 'Lead 😀\r\ncontinued.';
     const quote = '😀\r\ncon';
-    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1"
+    render(<BriefingDocumentPanel briefingId="briefing-1" roundId="round-1"
       round={round({ items: [], document: { ...round().document!,
         profile: 'mandible-briefing.v3', source,
         content_hash: createHash('sha256').update('\uFEFF' + source).digest('hex'), utf8_bom: true,
       } })} canMutate onRefresh={async () => null} />);
-    const content = await screen.findByLabelText('Pinned briefing document');
-    const editor = EditorView.findFromDOM(content.closest('.cm-editor') as HTMLElement)!;
-    editor.dispatch({ selection: { anchor: 5, head: 11 } });
-    const action = screen.getByRole('button', { name: 'Comment on selection' }) as HTMLButtonElement;
-    await waitFor(() => expect(action.disabled).toBe(false));
-    fireEvent.click(action);
-    fireEvent.input(within(screen.getByRole('dialog')).getByLabelText('Comment'), { target: { value: 'Comment on the middle.' } });
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Save' }));
+    selectBriefingEditorText(await screen.findByLabelText('Pinned briefing document'), '😀\ncon');
+    fireEvent.click(await screen.findByRole('button', { name: 'Comment', exact: true }));
+    const composer = await screen.findByRole('textbox', { name: 'Add a comment…' });
+    fireEvent.input(composer, { target: { value: 'Comment on the middle.' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0].annotations[0]).toEqual({
       operation: 'set', kind: 'comment', start_offset: 5, end_offset: 12,
@@ -242,19 +307,19 @@ describe('Briefing document panel', () => {
       posts.push(body);
       return json({ annotation_event_ids: body.annotations.map((_: unknown, index: number) => `event-${index}`) });
     }));
-    render(<BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Review plan" roundId="round-1" round={round({ annotations: [annotation({
+    render(<BriefingDocumentPanel briefingId="briefing-1" roundId="round-1" round={round({ annotations: [annotation({
       presentation: { source: 'current_draft', actor: null },
-    })] as any })} canMutate onRefresh={async () => round()} />);
+    })] as any })} canMutate onRefresh={async () => round({ annotations: [annotation({ presentation: { source: 'current_draft', actor: null } })] })} />);
 
     const keepButton = await screen.findByRole('button', { name: 'Keep' }) as HTMLButtonElement;
     await waitFor(() => expect(keepButton.disabled).toBe(false));
     fireEvent.click(screen.getByRole('button', { name: 'Comments (1)' }));
-    const sidebar = screen.getByRole('complementary', { name: 'Review comments' });
-    expect(within(sidebar).getByText('Clarify this.')).toBeTruthy();
-    fireEvent.click(within(sidebar).getByRole('button', { name: 'Edit comment by You' }));
-    expect(screen.getByRole('dialog', { name: 'Edit annotation' })).toBeTruthy();
-    fireEvent.input(within(screen.getByRole('dialog')).getByLabelText('Comment'), { target: { value: 'Revised note.' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const drawer = screen.getByRole('dialog', { name: 'Comments' });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Clarify this.' }));
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit', exact: true }))[0]);
+    const composer = (await screen.findAllByRole('textbox', { name: 'Add a comment…' }))[0];
+    fireEvent.input(composer, { target: { value: 'Revised note.' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0].annotations).toEqual([
       { operation: 'retract', annotation_event_id: 'annotation-1' },
@@ -263,10 +328,8 @@ describe('Briefing document panel', () => {
         quote: 'Plan', body: 'Revised note.', replacement_text: null,
       },
     ]);
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-
-    fireEvent.click(within(sidebar).getByRole('button', { name: 'Edit comment by You' }));
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Add a comment…' })).toBeNull());
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Delete', exact: true }))[0]);
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts[1].annotations).toEqual([{ operation: 'retract', annotation_event_id: 'annotation-1' }]);
   });
@@ -319,7 +382,7 @@ describe('Briefing document panel', () => {
     }));
     function Harness({ canMutate = true }: { canMutate?: boolean }) {
       const [draft, setDraft] = useState<Record<string, BriefingResponseValue | null>>({});
-      return <BriefingDocumentPanel briefingId="briefing-1" briefingTitle="Document review" roundId="round-1" round={variantRound}
+      return <BriefingDocumentPanel briefingId="briefing-1" roundId="round-1" round={variantRound}
         canMutate={canMutate} onRefresh={async () => null} draft={draft}
         onDirectiveValue={(id, value) => { changes.push({ id, value }); setDraft((current) => ({ ...current, [id]: value })); }} />;
     }
@@ -339,12 +402,11 @@ describe('Briefing document panel', () => {
     await screen.findByText('Detailed policy with more words.');
     expect(screen.queryByText('This is a layout and rail specimen.')).toBeNull();
     expect((screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Comment on directive' }));
-    const dialog = screen.getByRole('dialog', { name: 'Add annotation' });
-    expect(within(dialog).getByText('Detailed policy with more words.')).toBeTruthy();
-    expect(within(dialog).queryByText(/alternative|layout and rail specimen/)).toBeNull();
-    fireEvent.input(within(dialog).getByLabelText('Comment'), { target: { value: 'Keep the detailed wording.' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    selectBriefingEditorText(screen.getByLabelText('Directive text'), 'Detailed policy with more words.');
+    fireEvent.click(await screen.findByRole('button', { name: 'Comment', exact: true }));
+    const composer = await screen.findByRole('textbox', { name: 'Add a comment…' });
+    fireEvent.input(composer, { target: { value: 'Keep the detailed wording.' } });
+    fireEvent.keyDown(composer, { key: 'Enter' });
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0].annotations).toEqual([{
       operation: 'set', kind: 'comment', start_offset: detailedStart, end_offset: detailedEnd,
@@ -355,6 +417,6 @@ describe('Briefing document panel', () => {
 
     view.rerender(<Harness canMutate={false} />);
     expect((screen.getByRole('button', { name: 'Next text variant' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Comment on directive' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Comment', exact: true })).toBeNull();
   });
 });

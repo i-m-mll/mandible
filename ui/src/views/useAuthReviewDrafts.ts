@@ -204,6 +204,10 @@ export function useAuthReviewDrafts(id: string, review: AuthReviewProjection | n
   const projection = review?.round.owner.auth_request_id === id ? review : null;
   session.receive(projection, available && Boolean(projection));
   useEffect(() => () => session.finish(), [session]);
+  const editedPaths = new Set([
+    ...[...session.rows.values()].filter(row => row.text !== null).map(row => row.path),
+    ...[...session.entries.values()].filter(entry => entry.control.dirty).map(entry => entry.path),
+  ]);
   const forFile = (index: number, pair: Extract<DiffFilePair, { kind: 'text' }>) => {
     const eligible = projection?.editable_files.find(file => file.index === index);
     if (!eligible || !withinReviewLimit(pair.before.contents) || !withinReviewLimit(pair.after.contents)) return null;
@@ -213,6 +217,10 @@ export function useAuthReviewDrafts(id: string, review: AuthReviewProjection | n
   };
   return {
     forFile,
+    forPath: (path: string) => {
+      const entry = session.entries.get(path);
+      return entry ? session.file(path, entry.head) : null;
+    },
     fileStatus: (path: string | null) => {
       if (!path) return null;
       const row = session.rows.get(path);
@@ -222,8 +230,8 @@ export function useAuthReviewDrafts(id: string, review: AuthReviewProjection | n
     },
     detached: [...session.rows.values()].filter(row => row.conflict === 'detached').map(row => session.file(row.path, '')),
     flush: () => session.flush(),
-    hasEdits: [...session.rows.values()].some(row => row.text !== null) ||
-      [...session.entries.values()].some(entry => entry.control.dirty),
+    hasEdits: editedPaths.size > 0,
+    editedPaths,
     hasConflicts: [...session.rows.values()].some(row => row.conflict !== null) ||
       [...session.entries.values()].some(entry => entry.control.conflict),
   };

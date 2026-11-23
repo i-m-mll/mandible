@@ -476,7 +476,7 @@ export type GitChangeFile = Pick<AuthChangeFile,
 export type DiffFileContents = { name: string; contents: string };
 
 export type DiffFilePair =
-  | { kind: "text"; before: DiffFileContents; after: DiffFileContents }
+  | { kind: "text"; before: DiffFileContents; after: DiffFileContents; operator_baseline?: string }
   | { kind: "binary" };
 
 /**
@@ -1719,6 +1719,7 @@ export type TrackedBriefingProposal = {
   project_id: string;
   project_key: string;
   members: TrackedBriefingMatch[];
+  files: Array<Pick<AuthChangeFile, "old_path" | "new_path" | "additions" | "deletions"> & { index: number }>;
   depends_on: AuthDependencyProjection[];
 };
 export type TrackedBriefingReviewGroup<Tracked extends TrackedBriefingReference = TrackedBriefingDocument> = {
@@ -1751,6 +1752,8 @@ export type BriefingGroup = {
   archived_at: number | null;
   current: BriefingBundle | null;
   updates: BriefingBundle[];
+  proposal_changes: BriefingGroupProposalChanges[];
+  draft_comment_briefing_ids: string[];
   tracked_proposals: TrackedBriefingProposal[];
   destinations: BriefingGroupDestination[];
   destination_history: Array<{ id: string; logical_artifact_id: string; prior_group_id: string | null;
@@ -1758,6 +1761,15 @@ export type BriefingGroup = {
   review_candidates: BriefingGroupReviewCandidate[];
   history: BriefingGroupDisposition[];
 };
+export type BriefingGroupProposalChanges = {
+  proposal_bundle_id: string;
+  members: BriefingGroupDocumentChange[];
+};
+export type BriefingGroupDocumentChange =
+  | { kind: "added"; proposal_briefing_id: string }
+  | { kind: "removed"; base_briefing_id: string }
+  | { kind: "modified"; base_briefing_id: string; proposal_briefing_id: string;
+      base_artifact_version_id: string | null; proposal_artifact_version_id: string | null };
 export type BriefingGroupDestination = {
   logical_artifact_id: string;
   group_id: string;

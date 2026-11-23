@@ -181,7 +181,7 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - {{command auth.review.approval}} - Operator-only exact review receipt for terminal approval of a round with comments, answers, or frozen edits. Review the receipt and its pinned comparison before passing the file to `auth approve --review`.
 - When a request's status ends or suspends it, and whenever a consequent action changes state afterwards, Mandible reports the request's outcome to the session that answers for it at the start of that session's next turn. The report states the status and names every consequent action that is not done. Each change is reported once, to that session only.
 
-Standing notes attach selected text to an exact artifact version. They are saved when written and appear read-only on briefing rounds for that version. Use `mandible artifact notes <artifact-ref>` to read them on demand.
+Standing notes attach selected text to an exact artifact version. They are saved when written and appear read-only on briefing rounds for that version. In the artifact and Spaces views, note authors can resolve and reopen their notes. Use `mandible artifact notes <artifact-ref>` to read them on demand.
 
 ## Execution Identity
 

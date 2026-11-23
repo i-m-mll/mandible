@@ -13,7 +13,7 @@ export type StandingNoteSource = {
   rangeKind: ReviewRangeKind;
 };
 
-export type StandingNoteMutation = { kind: "edit"; body: string } | { kind: "resolve" } | { kind: "retract" };
+export type StandingNoteMutation = { kind: "edit"; body: string } | { kind: "resolve" | "reopen" | "retract" };
 
 const sourceKey = (reference: StandingSourceReference) => reference.kind === "artifact_version"
   ? reference.artifact_version_id : reference.history_id;
@@ -102,7 +102,7 @@ export function parseStandingNoteRange(value: Record<string, unknown>): ReviewRa
 }
 
 export function parseStandingNoteMutation(value: Record<string, unknown>): StandingNoteMutation | null {
-  if (value.kind === "resolve" || value.kind === "retract") return { kind: value.kind };
+  if (value.kind === "resolve" || value.kind === "reopen" || value.kind === "retract") return { kind: value.kind };
   return value.kind === "edit" && typeof value.body === "string" && value.body.trim()
     ? { kind: "edit", body: value.body.trim() } : null;
 }
@@ -120,7 +120,8 @@ export function mutateStandingNote(db: Db, documentKey: string, actorUserId: str
         id: string; round_id: string; body: string; standing_note_resolved: number;
       } | undefined;
     if (!prior) return { ok: false, reason: "stale_annotation" };
-    if (mutation.kind === "resolve" && prior.standing_note_resolved === 1
+    const resolved = mutation.kind === "resolve" ? 1 : mutation.kind === "reopen" ? 0 : prior.standing_note_resolved;
+    if ((mutation.kind === "resolve" || mutation.kind === "reopen") && resolved === prior.standing_note_resolved
       || mutation.kind === "edit" && mutation.body === prior.body) return { ok: true, id: noteId };
     const actor: ReviewActor = { roundId: prior.round_id, owner: { kind: "standing_document", document_key: documentKey }, actorUserId };
     const retracted = appendReviewAnnotation(db, actor, { id: prior.round_id, source: "" },
@@ -132,7 +133,7 @@ export function mutateStandingNote(db: Db, documentKey: string, actorUserId: str
       SELECT ?, round_id, document_binding_id, operation, annotation_kind, start_offset, end_offset, quote, ?,
         actor_user_id, ?, ?, COALESCE(standing_note_root_id, id), ?, standing_note_draft_origin
       FROM briefing_annotation_events WHERE id = ?`).run(randomUUID(), mutation.kind === "edit" ? mutation.body : prior.body,
-      now, requestOriginJson(), mutation.kind === "resolve" ? 1 : prior.standing_note_resolved, prior.id);
+      now, requestOriginJson(), resolved, prior.id);
     return { ok: true, id: noteId };
   })();
 }

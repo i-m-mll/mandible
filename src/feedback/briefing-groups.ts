@@ -9,6 +9,7 @@ import type {
   BriefingBundleLeaf,
   BriefingGroup,
   BriefingGroupDestinationChange,
+  BriefingGroupDocumentChange,
   BriefingGroupDisposition,
   BriefingGroupReviewLayoutEntry,
   BriefingGroupReviewCandidate,
@@ -25,6 +26,7 @@ import { briefingIdsForBundles, enforceActivePlacement, type PlacementOverride }
 import { resolveId } from "../entity-refs.js";
 import { hydrateTrackedBriefingDocuments, trackedBriefingReader, type StoredTrackedBriefingDocument } from "./tracked-briefing-files.js";
 import { trackedBriefingProposals } from "./tracked-briefing-reviews.js";
+import { reviewRoundsWithUnsentComments } from "./review-store.js";
 
 export function resolveGroupId(db: Db, groupRef: string): string {
   const trimmed = groupRef.trim();
@@ -110,6 +112,29 @@ function reviewLayout(rows: readonly ReviewSnapshotRow[]): BriefingGroupReviewLa
     logical_artifact_id: row.artifact_id ?? "",
     artifact_version_id: row.artifact_version_id ?? "",
   }));
+}
+
+function briefingDocumentKey(row: ReviewSnapshotRow): string {
+  return row.artifact_id ?? row.briefing_id;
+}
+
+function proposalDocumentChanges(
+  base: readonly ReviewSnapshotRow[], proposal: readonly ReviewSnapshotRow[],
+): BriefingGroupDocumentChange[] {
+  const baseByDocument = new Map(base.map(row => [briefingDocumentKey(row), row]));
+  const actualChanges: BriefingGroupDocumentChange[] = [];
+  for (const proposed of proposal) {
+    const key = briefingDocumentKey(proposed);
+    const current = baseByDocument.get(key);
+    baseByDocument.delete(key);
+    if (!current) actualChanges.push({ kind: "added", proposal_briefing_id: proposed.briefing_id });
+    else if (current.content_hash !== proposed.content_hash) actualChanges.push({
+      kind: "modified", base_briefing_id: current.briefing_id, proposal_briefing_id: proposed.briefing_id,
+      base_artifact_version_id: current.artifact_version_id, proposal_artifact_version_id: proposed.artifact_version_id,
+    });
+  }
+  for (const row of baseByDocument.values()) actualChanges.push({ kind: "removed", base_briefing_id: row.briefing_id });
+  return actualChanges;
 }
 
 export type BriefingGroupDestinationChangeInput = {
@@ -218,6 +243,7 @@ function humanReviewCandidate(
   input: { groupId: string; expectedBaseBundleId: string | null; proposalBundleId: string;
     operatorUserId: string; destinationChanges?: readonly BriefingGroupDestinationChangeInput[] },
   reader = trackedBriefingReader(db),
+  snapshots?: { base: ReviewSnapshotRow[]; proposal: ReviewSnapshotRow[] },
 ): BriefingGroupReviewCandidate {
   if (input.expectedBaseBundleId === null) return blockedReviewCandidate(
     input.proposalBundleId, null, null, "briefing_review_base_required",
@@ -242,8 +268,8 @@ function humanReviewCandidate(
     input.proposalBundleId, input.expectedBaseBundleId, compositionRunId,
     "briefing_review_tracked_layout_drift", "Edit tracked membership in the bundle layout.",
   );
-  const baseRows = reviewBundleSnapshot(db, input.expectedBaseBundleId);
-  const proposalRows = reviewBundleSnapshot(db, input.proposalBundleId);
+  const baseRows = snapshots?.base ?? reviewBundleSnapshot(db, input.expectedBaseBundleId);
+  const proposalRows = snapshots?.proposal ?? reviewBundleSnapshot(db, input.proposalBundleId);
   if (proposalRows.length === 0 || proposalRows.some((row) => row.archived_at !== null || !row.round_id
       || !row.artifact_version_id || !row.artifact_id || !row.content_hash)) return blockedReviewCandidate(
     input.proposalBundleId, input.expectedBaseBundleId, compositionRunId,
@@ -400,13 +426,34 @@ export function readBriefingGroup(db: Db, groupRef: string, viewer: BriefingBund
     .get(id) as Omit<BriefingGroup, "current" | "updates"> & { current_bundle_id: string | null };
   const { current_bundle_id: currentBundleId, ...projection } = group;
   const reader = trackedBriefingReader(db);
+  const current = currentBundleId === null ? null : readBriefingBundle(db, currentBundleId, viewer, reader);
+  const updates = updateIds(db, id).map(bundleId => readBriefingBundle(db, bundleId, viewer, reader));
+  const baseSnapshot = currentBundleId === null ? [] : reviewBundleSnapshot(db, currentBundleId);
+  const proposalSnapshots = new Map(updates.map(update => [update.id, reviewBundleSnapshot(db, update.id)]));
+  const visibleSnapshot = (bundle: BriefingBundle | null, snapshot: readonly ReviewSnapshotRow[]) => {
+    const visibleIds = new Set(bundle?.members.map(({ briefing }) => briefing.id));
+    return snapshot.filter(row => visibleIds.has(row.briefing_id));
+  };
+  const visibleBase = visibleSnapshot(current, baseSnapshot);
+  const visibleProposals = updates.map(update => ({
+    id: update.id, snapshot: visibleSnapshot(update, proposalSnapshots.get(update.id)!),
+  }));
+  const displayedBriefings = [...visibleBase, ...visibleProposals.flatMap(update => update.snapshot)];
+  const draftRounds = viewer.humanReviewOperator
+    ? reviewRoundsWithUnsentComments(db, [...new Set(displayedBriefings.flatMap(row => row.round_id ?? []))], viewer.userId)
+    : new Set<string>();
   return {
     ...projection,
     request_origin: requestOriginFromRow(projection),
-    current: currentBundleId === null ? null : readBriefingBundle(db, currentBundleId, viewer, reader),
+    current,
     tracked_proposals: viewer.operator && currentBundleId !== null
       ? trackedBriefingProposals(db, trackedBundleMembers(db, currentBundleId)) : [],
-    updates: updateIds(db, id).map((bundleId) => readBriefingBundle(db, bundleId, viewer, reader)),
+    updates,
+    proposal_changes: visibleProposals.map(update => ({
+      proposal_bundle_id: update.id, members: proposalDocumentChanges(visibleBase, update.snapshot),
+    })),
+    draft_comment_briefing_ids: [...new Set(displayedBriefings.flatMap(row =>
+      row.round_id !== null && draftRounds.has(row.round_id) ? [row.briefing_id] : []))],
     destinations: (db.prepare(`SELECT owner.logical_artifact_id, owner.group_id,
         MIN(policy.publication_mode) AS publication_mode, owner.created_at, owner.updated_at,
         (SELECT json_group_array(route_key) FROM (SELECT route_key FROM briefing_destination_routes
@@ -427,10 +474,10 @@ export function readBriefingGroup(db: Db, groupRef: string, viewer: BriefingBund
         json_extract(before_json, '$.owner_group_id') = ? OR
         json_extract(after_json, '$.group_id') = ?)
       ORDER BY created_at DESC, id DESC`).all(id, id) as BriefingGroup["destination_history"],
-    review_candidates: viewer.humanReviewOperator === true
-      ? updateIds(db, id).map((proposalBundleId) => humanReviewCandidate(db, {
-      groupId: id, expectedBaseBundleId: currentBundleId, proposalBundleId, operatorUserId: viewer.userId,
-      }, reader)) : [],
+    review_candidates: viewer.humanReviewOperator === true && group.archived_at === null
+      ? updates.map(update => humanReviewCandidate(db, {
+        groupId: id, expectedBaseBundleId: currentBundleId, proposalBundleId: update.id, operatorUserId: viewer.userId,
+      }, reader, { base: baseSnapshot, proposal: proposalSnapshots.get(update.id)! })) : [],
     history: readBriefingGroupHistory(db, id, viewer),
   };
 }
@@ -1090,12 +1137,14 @@ export function createBriefingGroup(
 
 export function configureBriefingGroup(
   db: Db, groupRef: string,
-  input: { currentBundleRef: string | null; bundleRefs: readonly string[]; placementOverride?: PlacementOverride },
+  input: { currentBundleRef: string | null; bundleRefs: readonly string[];
+    expectedBundleRefs?: readonly string[]; placementOverride?: PlacementOverride },
   viewer: BriefingBundleViewer, now = Date.now(),
 ): { group: BriefingGroup; changed: boolean } {
   const groupId = resolveGroupId(db, groupRef);
   return mutateBriefing(db, "briefing_group", groupId, () => {
   const bundleIds = resolveDistinctBundles(db, input.bundleRefs);
+  const expectedBundleIds = input.expectedBundleRefs === undefined ? null : resolveDistinctBundles(db, input.expectedBundleRefs);
   const currentBundleId = input.currentBundleRef === null ? null : resolveBundleId(db, input.currentBundleRef);
   if (currentBundleId !== null && bundleIds.includes(currentBundleId)) {
     throw new BriefingStoreError("current_bundle_ref must not also appear in bundle_refs");
@@ -1105,6 +1154,9 @@ export function configureBriefingGroup(
     const current = db.prepare("SELECT current_bundle_id, archived_at FROM briefing_groups WHERE id = ?")
       .get(groupId) as { current_bundle_id: string | null; archived_at: number | null };
     const previousUpdates = updateIds(db, groupId);
+    if (expectedBundleIds !== null && JSON.stringify(previousUpdates) !== JSON.stringify(expectedBundleIds)) {
+      throw new BriefingStoreError("The group's proposals changed", 409, "briefing_group_updates_drift");
+    }
     if (current.current_bundle_id === currentBundleId
         && JSON.stringify(previousUpdates) === JSON.stringify(bundleIds)) return false;
     if (current.current_bundle_id !== null && current.current_bundle_id !== currentBundleId) {

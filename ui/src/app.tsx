@@ -68,7 +68,6 @@ import {
   retryClientAccess,
   subscribeClientAccessState,
 } from './client-auth-token';
-import { keepSubmittedBriefingAnnotations } from './views/feedback/briefing-preferences';
 import { DetailPaneNotice } from './components/shared/DetailPaneNotice';
 import { PreviewAppearanceTools } from './components/preview/PreviewAppearanceTools';
 import { useDashboardConnection, useDashboardStartupFrame } from './hooks/useDashboardConnection';
@@ -2510,7 +2509,6 @@ function App(): JSX.Element {
           return (
             <LazyBriefingView
               instance={instanceInfo}
-              keepSubmittedAnnotations={keepSubmittedBriefingAnnotations(state.settings)}
               entityRef={tabRoute.entity?.ref ?? null}
               initialGroupKey={tabRoute.params.group ?? null}
               initialRoundId={tabRoute.params.round ?? null}

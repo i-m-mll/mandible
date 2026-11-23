@@ -24,10 +24,14 @@ export async function sourceBuild(directory, mode = 'build', { timeout = 60_000 
     return { name: `${project}-${checking || project === 'ui' ? 'check' : 'emit'}`, args };
   });
   if (mode === 'build') commands.push({ name: 'ui-bundle', args: ['ui/esbuild.config.js'] });
-  const results = await Promise.all(commands.map(({ name, args }) => new Promise(resolve => {
+  const stages = commands.map(({ name, args }) => ({ name, executable: process.execPath, args: ['--no-install', ...args] }));
+  if (!checking && process.platform === 'darwin') {
+    stages.push({ name: 'project-folder-helper', executable: '/bin/sh', args: ['scripts/build-project-folder-helper.sh'] });
+  }
+  const results = await Promise.all(stages.map(({ name, executable, args }) => new Promise(resolve => {
     const started = performance.now();
     console.error(`[source-build] ${name} started`);
-    const child = spawn(process.execPath, ['--no-install', ...args], { cwd: directory, stdio: 'inherit', timeout });
+    const child = spawn(executable, args, { cwd: directory, stdio: 'inherit', timeout });
     child.once('error', error => {
       console.error(`[source-build] ${name} failed elapsed_ms=${(performance.now() - started).toFixed(1)} error=${error.message}`);
       resolve({ args, error });

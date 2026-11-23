@@ -61,7 +61,8 @@
       "minimumSystemVersion": "15.0",
       "files": {
         "Library/LaunchAgents": "resources/app-payload/Contents/Library/LaunchAgents",
-        "Helpers/MandibleApproval.app": "resources/app-payload/Contents/Helpers/MandibleApproval.app"
+        "Helpers/MandibleApproval.app": "resources/app-payload/Contents/Helpers/MandibleApproval.app",
+        "Helpers/MandibleProjectFolder.app": "resources/app-payload/Contents/Helpers/MandibleProjectFolder.app"
       },
       "entitlements": null,
       "frameworks": [

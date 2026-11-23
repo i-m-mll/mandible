@@ -3,6 +3,7 @@ import type { ComponentChildren, JSX } from 'preact';
 import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { ContextualAction } from './ContextualAction';
+import { appTip } from './AppHoverTips';
 import { OfficialProviderMark, type OfficialProviderMarkKind } from './OfficialProviderMark';
 import { SidebarReorderHandle } from './SidebarReorderHandle';
 import type { SidebarReorderBinding } from './sidebar-order';
@@ -18,6 +19,7 @@ export type SidebarItemRowProps = {
   trailingReveal?: 'interaction' | 'persistent-pin';
   leading?: ComponentChildren;
   badges?: ComponentChildren;
+  detail?: ComponentChildren;
   actions?: ComponentChildren;
   selectRef?: (element: HTMLButtonElement | null) => void;
   tabIndex?: number;
@@ -64,6 +66,7 @@ export function SidebarItemRow({
   trailingReveal = 'interaction',
   leading,
   badges,
+  detail,
   actions,
   selectRef,
   tabIndex,
@@ -113,7 +116,7 @@ export function SidebarItemRow({
         aria-description={selectionDescription ?? (provider ? `Provider: ${provider.label}` : undefined)}
         aria-current={ariaCurrent}
         tabIndex={tabIndex}
-        title={label}
+        {...appTip(label)}
         onClick={onSelect}
         aria-describedby={reorder?.control['aria-describedby']}
         aria-keyshortcuts={reorder?.control['aria-keyshortcuts']}
@@ -127,6 +130,7 @@ export function SidebarItemRow({
           <span className="sidebar-item-row__label">{label}</span>
           {badges ? <span className="sidebar-item-row__badges">{badges}</span> : null}
         </span>
+        {detail !== undefined ? <span className="sidebar-item-row__detail">{detail}</span> : null}
       </button>
       {hasProviderSlot || actions || reorder?.handleOnly ? (
         <span

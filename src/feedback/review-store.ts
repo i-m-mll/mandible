@@ -51,15 +51,30 @@ export function reviewDocumentBindings(db: Db, roundId: string): ReviewDocumentB
   }));
 }
 
+const EFFECTIVE_REVIEW_ANNOTATION = `e.operation = 'set'
+  AND NOT EXISTS (SELECT 1 FROM briefing_annotation_events r WHERE r.retracts_event_id = e.id)`;
+
 export function effectiveReviewAnnotations(db: Db, roundId: string, actorUserId: string): ReviewAnnotation[] {
   return db.prepare(
     `SELECT id AS annotation_event_id, document_binding_id, annotation_kind, start_offset, end_offset,
             quote, body, replacement_text, created_at
        FROM briefing_annotation_events e
-      WHERE round_id = ? AND actor_user_id = ? AND operation = 'set'
-        AND NOT EXISTS (SELECT 1 FROM briefing_annotation_events r WHERE r.retracts_event_id = e.id)
+      WHERE round_id = ? AND actor_user_id = ? AND ${EFFECTIVE_REVIEW_ANNOTATION}
       ORDER BY created_at, rowid`,
   ).all(roundId, actorUserId) as ReviewAnnotation[];
+}
+
+export function reviewRoundsWithUnsentComments(db: Db, roundIds: readonly string[], actorUserId: string): Set<string> {
+  if (roundIds.length === 0) return new Set();
+  const rows = db.prepare(`SELECT DISTINCT e.round_id FROM briefing_annotation_events e
+    WHERE e.round_id IN (SELECT value FROM json_each(?)) AND e.actor_user_id = ?
+      AND e.annotation_kind = 'comment' AND ${EFFECTIVE_REVIEW_ANNOTATION}
+      AND NOT EXISTS (
+        SELECT 1 FROM briefing_submission_annotations a WHERE a.annotation_event_id = e.id
+          AND a.submission_id = (SELECT id FROM briefing_submissions
+            WHERE round_id = e.round_id AND actor_user_id = e.actor_user_id ORDER BY ordinal DESC LIMIT 1)
+      )`).all(JSON.stringify(roundIds), actorUserId) as Array<{ round_id: string }>;
+  return new Set(rows.map(({ round_id }) => round_id));
 }
 
 export function reviewSubmissionAnnotations(db: Db, submissionId: string): ReviewAnnotation[] {

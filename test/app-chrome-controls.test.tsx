@@ -46,6 +46,8 @@ it('shows one shared fast tip for disabled controls and keyboard focus, preservi
   expect(screen.getByRole('tooltip').textContent).toBe('Back');
   expect(back.hasAttribute('disabled')).toBe(true);
   expect(back.hasAttribute('title')).toBe(false);
+  act(() => back.setAttribute('data-app-tip', 'Go back'));
+  await screen.findByText('Go back', { selector: '[role=tooltip]' });
   const menu = screen.getByRole('button', { name: 'Menu' });
   act(() => menu.focus());
   await screen.findByText('Open menu', { selector: '[role=tooltip]' });

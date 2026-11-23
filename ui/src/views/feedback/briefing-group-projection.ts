@@ -48,3 +48,10 @@ export function briefingGroupOwnsUpdate(
   return owners.get(updateId) === group
     && group.updates.some((candidate) => candidate.id === updateId);
 }
+
+export function briefingGroupOwnsPendingChange(
+  group: BriefingGroup, id: string, owners: BriefingGroupBundleOwners,
+): boolean {
+  return briefingGroupOwnsUpdate(group, id, owners)
+    || group.trackedProposals?.some(proposal => proposal.request_id === id) === true;
+}

@@ -185,6 +185,20 @@
   min-width: 0;
 }
 
+.sidebar-item-row--fixed-badges .sidebar-item-row__content {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+.sidebar-item-row--fixed-badges .sidebar-item-row__label {
+  text-overflow: ellipsis;
+}
+
+.sidebar-item-row--fixed-badges .sidebar-item-row__badges {
+  flex: none;
+  white-space: nowrap;
+}
+
 .sidebar-item-row__badge {
   display: inline-flex;
   align-items: center;

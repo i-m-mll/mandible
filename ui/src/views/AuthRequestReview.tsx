@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import type { ComponentChildren } from 'preact';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import type { ComponentChildren, RefObject } from 'preact';
 import { useAuthReviewDrafts, type AuthReviewFileDraft } from './useAuthReviewDrafts';
 import type { ChangeTextFileView } from '../components/ChangeList';
 import { lazy, Suspense } from 'preact/compat';
@@ -14,35 +14,41 @@ import {
   annotateAuthReview, answerAuthReview, freezeAuthReview, getAuthReview, getAuthReviewComparison, mutateAuthReviewThread, returnAuthReview,
   type AuthReviewProjection, type BriefingResponseValue,
 } from '../api';
-import { MarkdownDocument, type MarkdownDocumentHandle, type MarkdownSelection, type MarkdownDirectives, type MarkdownRangeDecoration } from '../components/MarkdownDocument';
-import { ReviewCommentsSidebar } from '../components/shared/ReviewCommentsSidebar';
-import { ContextualAction } from '../components/shared/ContextualAction';
-import { DetailPaneModal } from '../components/shared/DetailPaneModal';
+import { MarkdownDocument, type MarkdownChangePosition, type MarkdownDocumentHandle, type MarkdownSelection, type MarkdownDirectives, type MarkdownRangeDecoration } from '../components/MarkdownDocument';
+import {
+  DocumentCommentsButton, DocumentCommentsDrawer, DocumentCommentSurface, useDocumentComments,
+  type DocumentCommentThread,
+} from '../components/shared/DocumentComments';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
 import { Icon } from '../components/icons/Icon';
-import { NativeSelect } from '../components/shared/NativeSelect';
+import { ChoiceDropdown } from '../components/shared/ChoiceDropdown';
+import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { quoteReviewLines } from '../../../src/feedback/review-ranges';
-import type { DiffLineRange } from '../components/PierreFileDiff';
+import type { DiffLineRange, PierreLineHandle } from '../components/PierreFileDiff';
 
-type Binding = AuthReviewProjection['round']['bindings'][number];
+export type AuthReviewBinding = AuthReviewProjection['round']['bindings'][number];
+type Binding = AuthReviewBinding;
 type Selection = ReviewRange & { bindingId: string };
 type Navigation = { comment: RequestReviewComment; token: string };
-export type ReviewDecision = 'return' | 'reject';
 
-export function useAuthRequestReview(id: string, status: string, updatedAt: unknown, canWrite: boolean,
+export function useAuthRequestReview(id: string, status: string, updatedAt: unknown, revision: number | null | undefined, canWrite: boolean,
   onReject: (id: string, reason: string) => void | Promise<void>,
   onReturned?: (signal: AbortSignal) => Promise<void>,
 ) {
   const [data, setData] = useState<AuthReviewProjection | null>(null);
-  const [selection, setSelection] = useState<Selection | null>(null);
   const [navigation, setNavigation] = useState<Navigation | null>(null);
-  const [editor, setEditor] = useState<Selection | null>(null);
-  const [replyTarget, setReplyTarget] = useState<RequestReviewComment | null>(null);
-  const [decision, setDecision] = useState<ReviewDecision | null>(null);
+  const [rejecting, setRejecting] = useState(false);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [commentsOpen, setCommentsOpen] = useState(false);
+  const comments = useDocumentComments(id);
+  const [showSource, setShowSource] = useState(false);
+  const [showChanges, setShowChanges] = useState(true);
+  const [fileChangePosition, setFileChangePosition] = useState<MarkdownChangePosition>({ index: 0, total: 0 });
+  const fileDocument = useRef<MarkdownDocumentHandle>(null);
+  const reportFileChangePosition = useCallback((next: MarkdownChangePosition) => {
+    setFileChangePosition(current => current.index === next.index && current.total === next.total ? current : next);
+  }, []);
   const request = useRef<AbortController>();
   const refresh = useCallback(async () => {
     request.current?.abort();
@@ -58,7 +64,7 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
   useEffect(() => {
     void refresh().catch(() => undefined);
     return () => request.current?.abort();
-  }, [refresh, status, updatedAt]);
+  }, [refresh, status, updatedAt, revision]);
   useEffect(() => {
     const onReviewUpdate = (event: Event) => {
       const changed = (event as CustomEvent<{ request_id: string }>).detail.request_id;
@@ -67,27 +73,49 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
     window.addEventListener(DOMAIN_EVENTS.AUTH_REVIEW_UPDATED, onReviewUpdate);
     return () => window.removeEventListener(DOMAIN_EVENTS.AUTH_REVIEW_UPDATED, onReviewUpdate);
   }, [data?.versions, id, refresh]);
+  useEffect(() => {
+    if (status !== 'pending') return;
+    const recheck = () => { void refresh().catch(() => undefined); };
+    window.addEventListener('focus', recheck);
+    window.addEventListener(DOMAIN_EVENTS.WORK_BRANCH_UPDATED, recheck);
+    return () => {
+      window.removeEventListener('focus', recheck);
+      window.removeEventListener(DOMAIN_EVENTS.WORK_BRANCH_UPDATED, recheck);
+    };
+  }, [status, refresh]);
 
-  const [against, setAgainst] = useState('');
-  const [comparison, setComparison] = useState<{ against: string; report: AuthChangeReport }>();
+  type ComparisonTarget = { kind: 'against' | 'revision'; id: string };
+  const [target, setTarget] = useState<ComparisonTarget>();
+  const [comparison, setComparison] = useState<{ target: ComparisonTarget; report: AuthChangeReport }>();
+  const targetHead = data?.versions.find(version => version.id === target?.id)?.head;
+  const displayedHead = data?.versions.find(version => version.id === id)?.head;
   const [comparisonError, setComparisonError] = useState<string | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     setComparisonError(null);
-    if (against && data?.versions.find(version => version.id === id)?.head && data.versions.find(version => version.id === against)?.head) void getAuthReviewComparison(id, against, controller.signal).then(report => {
-      if (!controller.signal.aborted) setComparison({ against, report });
+    if (target && targetHead && (target.kind === 'revision' || displayedHead)) void getAuthReviewComparison(id, target, controller.signal).then(report => {
+      if (!controller.signal.aborted) setComparison({ target, report });
     }, error => {
       if (!controller.signal.aborted) setComparisonError(error instanceof Error ? error.message : String(error));
     });
     return () => controller.abort();
-  }, [id, against, data?.versions.find(version => version.id === id)?.head, data?.versions.find(version => version.id === against)?.head]);
-  const compare = (id: string) => { setSelection(null); setNavigation(null); setAgainst(id); };
-  const available = status === 'pending' && data?.status === 'pending' && data.precondition.expected_revision !== null && canWrite && !against;
+  }, [id, target, targetHead, displayedHead]);
+  const selectComparison = (next?: ComparisonTarget) => { comments.select(null); setNavigation(null); setTarget(next); };
+  const readOnly = Boolean(target);
+  const available = status === 'pending' && data?.status === 'pending' && data.precondition.expected_revision !== null && canWrite && !readOnly;
   const threadAvailable = Boolean(canWrite && data?.round.owner.auth_request_id === id && data.status === status
-    && data.precondition.expected_revision !== null && (status === 'pending' || status === 'returned'));
+    && data.precondition.expected_revision !== null && (status === 'pending' || status === 'returned') && !readOnly);
   const drafts = useAuthReviewDrafts(id, data, Boolean(available));
-  const openDecision = (next: ReviewDecision) => {
-    setDecision(next);
+  const [activeFile, setActiveFile] = useState<{ path: string; format: 'markdown' | 'lines' } | null>(null);
+  const activateFile = useCallback((path: string, format: 'markdown' | 'lines') => {
+    setActiveFile(current => current?.path === path && current.format === format ? current : { path, format });
+  }, []);
+  const clearActiveFile = useCallback((path: string) => {
+    setActiveFile(current => current?.path === path ? null : current);
+  }, []);
+  const activeDraft = available && activeFile ? drafts.forPath(activeFile.path) : null;
+  const openReject = () => {
+    setRejecting(true);
     setText('');
     setError(null);
   };
@@ -105,13 +133,16 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
       setBusy(false);
     }
   };
-  const saveComment = () => {
-    if (!available || !data || !editor || !text.trim()) return;
-    const { bindingId, ...range } = editor;
-    void act(async () => {
-      await annotateAuthReview(id, data.precondition, bindingId, { ...range, operation: 'set', kind: 'comment', body: text });
-      await refresh();
-    }, () => { setEditor(null); setSelection(null); setCommentsOpen(true); });
+  const permission = useRef({ id, data, available, threadAvailable });
+  permission.current = { id, data, available, threadAvailable };
+  const commentOn = async (selection: Selection, body: string) => {
+    const current = permission.current;
+    if (current.id !== id || !current.available || !current.data?.round.bindings.some(binding => binding.id === selection.bindingId)) {
+      throw new Error('This request can no longer be commented on.');
+    }
+    const { bindingId, ...range } = selection;
+    await annotateAuthReview(id, current.data.precondition, bindingId, { ...range, operation: 'set', kind: 'comment', body });
+    await refresh();
   };
   const freeze = async (showCandidate: () => void) => {
     if (!available || !data || drafts.hasConflicts || !drafts.hasEdits) return;
@@ -121,37 +152,37 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
       if (onReturned) await onReturned(new AbortController().signal);
     }, () => {
       setNavigation(null);
-      setSelection(null);
+      comments.select(null);
       showCandidate();
     });
   };
-  const submitDecision = () => {
-    if (decision === 'return' && available && data) {
-      void act(async () => {
-        await returnAuthReview(id, data, text, await drafts.flush());
-        setData(old => old && { ...old, status: 'returned' });
-        await refresh().catch(() => undefined);
-        if (onReturned) void onReturned(new AbortController().signal).catch(() => undefined);
-      }, () => setDecision(null));
-    } else if (decision === 'reject') {
-      void act(async () => { await onReject(id, text); }, () => setDecision(null));
-    }
-  };
-  const remove = (annotation: RequestReviewComment) => {
-    if (!available || !data || annotation.origin_request_id !== id) return;
+  const returnToRequester = () => {
+    if (!available || !data) return;
     void act(async () => {
-      await annotateAuthReview(id, data.precondition, annotation.document_binding_id, {
-        operation: 'retract', annotation_event_id: annotation.annotation_event_id,
-      });
-      await refresh();
+      await returnAuthReview(id, data, '', await drafts.flush());
+      setData(old => old && { ...old, status: 'returned' });
+      await refresh().catch(() => undefined);
+      if (onReturned) void onReturned(new AbortController().signal).catch(() => undefined);
     }, () => undefined);
   };
-  const changeThread = (comment: RequestReviewComment, mutation: ReviewThreadMutation) => {
-    if (!threadAvailable || !data?.annotations.some(note => note.annotation_event_id === comment.annotation_event_id)) return;
-    void act(async () => {
-      await mutateAuthReviewThread(id, data.precondition, comment.annotation_event_id, mutation);
-      await refresh();
-    }, () => setReplyTarget(null));
+  const submitReject = () => { void act(async () => { await onReject(id, text); }, () => setRejecting(false)); };
+  const remove = async (annotation: RequestReviewComment) => {
+    const current = permission.current;
+    if (!current.available || !current.data?.active_annotation_event_ids?.includes(annotation.annotation_event_id)) {
+      throw new Error('This comment can no longer be deleted.');
+    }
+    await annotateAuthReview(id, current.data.precondition, annotation.document_binding_id, {
+      operation: 'retract', annotation_event_id: annotation.annotation_event_id,
+    });
+    await refresh();
+  };
+  const changeThread = async (comment: RequestReviewComment, mutation: ReviewThreadMutation) => {
+    const current = permission.current;
+    if (!current.threadAvailable || !current.data?.annotations.some(note => note.annotation_event_id === comment.annotation_event_id)) {
+      throw new Error('This thread can no longer be changed.');
+    }
+    await mutateAuthReviewThread(id, current.data.precondition, comment.annotation_event_id, mutation);
+    await refresh();
   };
   const answerQuestion = (key: string, value: BriefingResponseValue | null) => {
     if (!available || !data || busy) return;
@@ -166,32 +197,42 @@ export function useAuthRequestReview(id: string, status: string, updatedAt: unkn
       await refresh();
     }, () => undefined);
   };
-  const select = (binding: Binding | undefined, range: ReviewRange | null) => {
-    if (!available || against || !binding) return;
-    setSelection(current => range ? { ...range, bindingId: binding.id } : current?.bindingId === binding.id ? null : current);
+  const threads = (data?.annotations ?? []).map((comment): DocumentCommentThread => {
+    const draft = data?.status === 'pending' && !!data.active_annotation_event_ids?.includes(comment.annotation_event_id);
+    const writable = threadAvailable && comment.annotation_kind === 'comment';
+    const resolved = comment.thread.resolved;
+    return {
+      id: comment.annotation_event_id, quote: comment.quote, range: range(comment),
+      author: comment.author?.display_name ?? null, provider: providerOf(comment.author), createdAt: comment.created_at,
+      body: comment.body ?? '', resolved, draft,
+      replies: comment.thread.events.flatMap(event => event.operation === 'reply'
+        ? [{ id: event.id, author: event.author?.display_name ?? null, provider: providerOf(event.author),
+          createdAt: event.created_at, body: event.body }]
+        : []),
+      onDelete: draft && available && !comment.thread.events.length ? () => remove(comment) : undefined,
+      onResolve: writable && !resolved ? () => changeThread(comment, { operation: 'resolve' }) : undefined,
+      onReopen: writable && resolved ? () => changeThread(comment, { operation: 'reopen' }) : undefined,
+      onReply: writable && !resolved ? body => changeThread(comment, { operation: 'reply', body }) : undefined,
+    };
+  });
+  const draftCommentCount = threads.filter(thread => thread.draft).length;
+  const openDraftCommentCount = threads.filter(thread => thread.draft && !thread.resolved).length;
+  return { data, navigation, setNavigation, comments, threads, draftCommentCount, openDraftCommentCount, available, target, selectComparison, readOnly, drafts,
+    comparison: comparison?.target === target ? comparison?.report : undefined, comparisonError,
+    openReject, returnToRequester, freeze, busy, error, answerQuestion, commentOn,
+    activeDraft, activeFile, activateFile, clearActiveFile,
+    showSource, setShowSource, showChanges, setShowChanges, fileChangePosition, fileDocument, reportFileChangePosition,
+    clearSelection: () => comments.select(null),
+    rejecting, text, setText, submitReject,
+    closeReject: () => { if (!busy) { setRejecting(false); setError(null); } },
   };
-  const markdownSelection = (binding: Binding | undefined, selection: MarkdownSelection) =>
-    select(binding, selection.quote ? { start_offset: selection.start, end_offset: selection.end, quote: selection.quote } : null);
-  const lineSelection = (index: number, range: DiffLineRange | null, quote?: string) => {
-    const binding = data?.round.bindings.find(item => item.source.kind === 'request_file' && item.source.file_index === index
-      && (range ? item.source.side === range.side : item.id === selection?.bindingId));
-    select(binding, range && quote ? { start_offset: range.startLine - 1, end_offset: range.endLine, quote } : null);
-  };
-  return { data, navigation, setNavigation, commentsOpen, setCommentsOpen, available, against, compare, drafts,
-    comparison: comparison?.against === against ? comparison.report : undefined, comparisonError,
-    openDecision, freeze, selection, lineSelection, markdownSelection, remove, busy, error, answerQuestion,
-    clearSelection: () => setSelection(null),
-    comment: () => { setEditor(selection); setText(''); setError(null); },
-    commentOnMarkdown: (binding: Binding, selection: MarkdownSelection) => {
-      if (!available || !selection.quote) return;
-      setEditor({ bindingId: binding.id, start_offset: selection.start, end_offset: selection.end, quote: selection.quote });
-      setText(''); setError(null);
-    },
-    threadAvailable, replyTarget, changeThread,
-    reply: (comment: RequestReviewComment) => { setReplyTarget(comment); setText(''); setError(null); },
-    editor, decision, text, setText, saveComment, submitDecision,
-    close: () => { if (!busy) { setEditor(null); setReplyTarget(null); setDecision(null); setError(null); } },
-  };
+}
+
+function providerOf(author: RequestReviewComment['author']): 'openai' | 'anthropic' | undefined {
+  if (author?.kind !== 'agent') return undefined;
+  if (author.slug.startsWith('codex')) return 'openai';
+  if (author.slug.startsWith('claude')) return 'anthropic';
+  return undefined;
 }
 
 export type AuthRequestReviewState = ReturnType<typeof useAuthRequestReview>;
@@ -200,173 +241,152 @@ function range(comment: RequestReviewComment) {
   return comment.anchor.status === 'detached' ? null : { start: comment.anchor.start_offset, end: comment.anchor.end_offset };
 }
 
-export function AuthReviewSidebar({ review, id, onNavigate, children }: {
-  review: AuthRequestReviewState;
-  id: string;
-  onNavigate: (comment: RequestReviewComment) => void;
-  children: ComponentChildren;
-}) {
-  const annotations = review.data?.annotations ?? [];
-  return <div className={`auth-review${review.commentsOpen ? ' auth-review--with-comments' : ''}`}>
-    <div className="auth-review__content">{children}</div>
-    {review.data && <div className="auth-review__sidebar">
-      {review.available && !review.against && <ContextualAction
-        aria-label="Comment on selection" title="Comment on selection" onClick={review.comment}
-        disabled={!review.selection || review.busy}>
-        <Icon name="comment" />
-      </ContextualAction>}
-      <ReviewCommentsSidebar open={review.commentsOpen} setOpen={review.setCommentsOpen}
-        selectedId={review.navigation?.comment.annotation_event_id ?? null}
-        onNavigate={(_range, id) => {
-          const annotation = annotations.find(comment => comment.annotation_event_id === id);
-          if (annotation) onNavigate(annotation);
-        }}
-        comments={annotations.map(comment => ({
-          id: comment.annotation_event_id,
-          quote: comment.quote,
-          range: range(comment),
-          status: comment.origin_request_id === id ? undefined : comment.anchor.status,
-          author: comment.source.kind === 'request_description' ? 'Description'
-            : comment.source.kind === 'request_narrative' ? 'Narrative'
-            : `${comment.source.path} · ${comment.source.side === 'before' ? 'Before' : 'After'}`,
-          content: <>{comment.body}
-            {review.available && comment.origin_request_id === id && !comment.thread.events.length && <ContextualAction aria-label="Remove comment"
-              title="Remove comment" disabled={review.busy} onClick={() => review.remove(comment)}>
-              <Icon name="dismiss" />
-            </ContextualAction>}</>,
-          thread: {
-            resolved: comment.thread.resolved,
-            events: comment.thread.events.map(event => ({
-              id: event.id,
-              author: event.operation === 'reply' ? (event.actor_role === 'operator' ? 'Operator' : 'Requester') : undefined,
-              content: event.operation === 'reply' ? event.body
-                : `${{ address: 'Addressed in', resolve: 'Resolved on', reopen: 'Reopened on' }[event.operation]} ${event.request_ref}`,
-            })),
-            actions: review.threadAvailable && <>
-              <button type="button" className="btn btn--ghost" disabled={review.busy} onClick={() => review.reply(comment)}>Reply</button>
-              <button type="button" className="btn btn--ghost" disabled={review.busy}
-                onClick={() => review.changeThread(comment, { operation: comment.thread.resolved ? 'reopen' : 'resolve' })}>
-                {comment.thread.resolved ? 'Reopen' : 'Resolve'}
-              </button>
-            </>,
-          },
-        }))} />
-      {review.error && !review.editor && !review.replyTarget && !review.decision
-        && <DetailPaneNotice severity="error" density="compact">{review.error}</DetailPaneNotice>}
-    </div>}
-  </div>;
+export function AuthReviewCommentsButton({ review }: { review: AuthRequestReviewState }) {
+  return <DocumentCommentsButton controller={review.comments} count={review.threads.filter(thread => !thread.resolved).length} />;
 }
 
-export function authReviewMarkdownMarks(review: AuthRequestReviewState, binding?: Binding, span?: TextSpan): MarkdownRangeDecoration[] {
-  return (review.data?.annotations ?? []).flatMap(comment => {
-    const anchor = binding && comment.document_binding_id === binding.id && range(comment);
-    if (!anchor) return [];
+export function AuthReviewComments({ review, onNavigate }: {
+  review: AuthRequestReviewState;
+  onNavigate(comment: RequestReviewComment): void;
+}) {
+  return <DocumentCommentsDrawer controller={review.comments} threads={review.threads} onNavigate={thread => {
+    if (!thread.range) return;
+    const annotation = review.data?.annotations.find(comment => comment.annotation_event_id === thread.id);
+    if (annotation) onNavigate(annotation);
+  }} />;
+}
+
+export function authReviewDocumentThreads(review: AuthRequestReviewState, binding: Binding | undefined, span?: TextSpan): DocumentCommentThread[] {
+  if (!binding) return [];
+  const ids = new Set(review.data?.annotations.filter(note => note.document_binding_id === binding.id).map(note => note.annotation_event_id));
+  return review.threads.flatMap(thread => {
+    const anchor = thread.range;
+    if (!anchor || !ids.has(thread.id)) return [];
     const start = span ? Math.max(anchor.start, span.start) - span.start : anchor.start;
     const end = span ? Math.min(anchor.end, span.end) - span.start : anchor.end;
-    return end > start ? [{ start, end, id: comment.annotation_event_id, className: 'review-range' }] : [];
+    return end > start ? [{ ...thread, range: { start, end } }] : [];
   });
 }
 
-export function AuthReviewMarkdown({ review, binding, value, comparison, label, wholeFile, directives, previewPolicy, span }: {
+export function authReviewMarkdownMarks(review: AuthRequestReviewState, binding?: Binding, span?: TextSpan): MarkdownRangeDecoration[] {
+  return authReviewDocumentThreads(review, binding, span).flatMap(thread => !thread.resolved && thread.range
+    ? [{ ...thread.range, id: thread.id, className: 'review-range' }] : []);
+}
+
+export function AuthReviewMarkdown({ review, binding, value, comparison, operatorComparison, label, wholeFile, directives, previewPolicy, span, onEdit, draft, headerControls, embedded = [] }: {
   review: AuthRequestReviewState;
   binding?: Binding;
   value: string;
   comparison?: string;
+  operatorComparison?: string;
   label: string;
   wholeFile?: boolean;
   directives?: MarkdownDirectives;
   previewPolicy?: Parameters<typeof MarkdownDocument>[0]['previewPolicy'];
   span?: TextSpan;
+  onEdit?: (range: MarkdownSelection) => void;
+  draft?: Pick<AuthReviewFileDraft, 'source' | 'writable' | 'change'>;
+  headerControls?: boolean;
+  embedded?: readonly TextSpan[];
 }) {
-  const document = useRef<MarkdownDocumentHandle>(null);
+  const localDocument = useRef<MarkdownDocumentHandle>(null);
+  const document = headerControls ? review.fileDocument : localDocument;
   const container = useRef<HTMLDivElement>(null);
+  const [selected, setSelected] = useState<MarkdownSelection | null>(null);
+  const editSelection = useRef<MarkdownSelection>();
+  useLayoutEffect(() => {
+    if (!draft?.writable || !editSelection.current) return;
+    const selection = editSelection.current;
+    const frame = requestAnimationFrame(() => {
+      document.current?.select(selection);
+      editSelection.current = undefined;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [draft?.writable, document]);
   const target = review.navigation;
   useLayoutEffect(() => {
     if (!target || !binding || target.comment.document_binding_id !== binding.id) return;
     const anchor = range(target.comment);
     if (!anchor || span && (anchor.start < span.start || anchor.end > span.end)) return;
+    review.comments.select(target.comment.annotation_event_id);
     container.current?.scrollIntoView({ block: 'nearest' });
-    document.current?.select({ start: anchor.start - (span?.start ?? 0), end: anchor.end - (span?.start ?? 0) });
+    document.current?.reveal({ start: anchor.start - (span?.start ?? 0), end: anchor.end - (span?.start ?? 0) });
   }, [target?.token, binding?.id, span?.start, span?.end]);
-  return <div ref={container}><MarkdownDocument value={value} comparison={comparison}
-    comparisonLayout={wholeFile ? 'full-document' : undefined} readOnly ariaLabel={label}
-    directives={directives} previewPolicy={previewPolicy} documentRef={document} decorations={authReviewMarkdownMarks(review, binding, span)}
-    onSelectionChange={selection => review.markdownSelection(binding,
-      { ...selection, start: selection.start + (span?.start ?? 0), end: selection.end + (span?.start ?? 0) })} /></div>;
+  const selection = !draft && binding && selected?.quote && value.slice(selected.start, selected.end) === selected.quote ? {
+    range: selected,
+    onEdit: onEdit ? () => { editSelection.current = selected; onEdit(selected); } : undefined,
+    onComment: review.available && !review.readOnly ? (body: string) => review.commentOn({
+      bindingId: binding.id, start_offset: selected.start + (span?.start ?? 0), end_offset: selected.end + (span?.start ?? 0),
+      quote: selected.quote,
+    }, body).then(() => setSelected(null)) : undefined,
+  } : null;
+  const threads = authReviewDocumentThreads(review, binding, span).filter(thread => !embedded.some(item =>
+    thread.range && thread.range.start >= item.start && thread.range.end <= item.end));
+  const contents = <MarkdownDocument value={draft?.source ?? value} comparison={review.showChanges ? comparison : undefined}
+    operatorComparison={review.showChanges ? operatorComparison ?? (draft ? value : undefined) : undefined}
+    showSource={review.showSource}
+    onChangePosition={headerControls ? review.reportFileChangePosition : undefined}
+    comparisonLayout={wholeFile ? 'full-document' : undefined} readOnly={!draft?.writable} ariaLabel={label}
+    directives={directives} previewPolicy={previewPolicy} documentRef={document}
+    decorations={draft ? undefined : authReviewMarkdownMarks(review, binding, span)} onChange={draft?.change}
+    onDecorationClick={review.comments.select} onSelectionChange={setSelected} />;
+  return <div ref={container}>{binding ? <DocumentCommentSurface controller={review.comments} selection={selection}
+    threads={draft ? [] : threads} documentRef={document} drawer={false}
+    navigationKey={`auth.${binding.id}.${span?.start ?? 0}`}>{contents}</DocumentCommentSurface> : contents}</div>;
 }
 
-export function AuthReviewMarkdownChange({ review, pair, index, wholeFile }: {
+export function AuthReviewMarkdownChange({ review, pair, index, wholeFile, onEdit, draft, headerControls }: {
   review: AuthRequestReviewState;
   pair: Extract<DiffFilePair, { kind: 'text' }>;
   index: number;
   wholeFile: boolean;
+  onEdit?: (range: MarkdownSelection) => void;
+  draft?: AuthReviewFileDraft;
+  headerControls?: boolean;
 }) {
-  const [side, setSide] = useState<'before' | 'after'>(pair.after.contents ? 'after' : 'before');
-  const target = review.against ? null : review.navigation?.comment.source;
+  const target = review.readOnly ? null : review.navigation?.comment.source;
   const targetSide = target?.kind === 'request_file' && target.file_index === index ? target.side : undefined;
-  const active = targetSide ?? side;
-  const binding = review.against ? undefined : review.data?.round.bindings.find(item => item.source.kind === 'request_file'
+  const active = targetSide ?? 'after';
+  const binding = review.readOnly ? undefined : review.data?.round.bindings.find(item => item.source.kind === 'request_file'
     && item.source.file_index === index && item.source.side === active);
-  return <>
-    <div role="group" aria-label="Markdown side" className="auth-review__side">
-      {(['before', 'after'] as const).map(which => <button key={which} type="button" aria-pressed={active === which}
-        onClick={() => { setSide(which); review.setNavigation(null); }}>{which === 'before' ? 'Before' : 'After'}</button>)}
-    </div>
-    <AuthReviewMarkdown key={active} review={review} binding={binding} value={pair[active].contents}
-      comparison={active === 'after' ? pair.before.contents : undefined} wholeFile={wholeFile} label={`${pair[active].name} ${active}`} />
-  </>;
+  return <AuthReviewMarkdown key={active} review={review} binding={binding} value={pair[active].contents} onEdit={active === 'after' ? onEdit : undefined}
+    comparison={active === 'after' ? pair.before.contents : undefined}
+    operatorComparison={active === 'after' ? pair.operator_baseline : undefined} headerControls={headerControls}
+    draft={active === 'after' ? draft : undefined} wholeFile={wholeFile}
+    label={`${pair[active].name} ${active}`} />;
 }
 
-export function authReviewSelector(review: AuthRequestReviewState, id: string, onSelect: (id: string) => void, openDiff: () => void) {
+export function authReviewSelector(review: AuthRequestReviewState, id: string, onSelect: (id: string) => void) {
   const versions = review.data?.versions;
   if (!versions || versions.length < 2) return undefined;
-  const selected = versions.find(version => version.id === id);
+  const value = review.target?.kind === 'revision' ? review.target.id : id;
+  const choices = versions.map((version, index) => ({ value: version.id, label: `Revision ${index + 1}` }));
   return {
-    label: 'Request revision',
-    selectedCanonicalRef: id,
-    selectedCopyRef: selected ? `auth:${selected.short_id}` : undefined,
-    control: <div className="auth-review__versions">
-      <NativeSelect aria-label="Request revision" value={id} onChange={event => onSelect(event.currentTarget.value)}>
-        {versions.flatMap((version, index) => version.id.includes('@') ? [] : [<option key={version.id} value={version.id}>
-          {index + 1} · {version.short_id} · {version.status}
-        </option>])}
-      </NativeSelect>
-      <NativeSelect aria-label="Compare revisions" value={review.against} onChange={event => {
-        review.compare(event.currentTarget.value);
-        if (event.currentTarget.value) openDiff();
-      }}>
-        <option value="">Protected base</option>
-        {versions.flatMap((version, index) => version.id !== id && (version.head && selected?.head || version.description !== selected?.description)
-          ? [<option key={version.id} value={version.id}>Revision {index + 1}</option>] : [])}
-      </NativeSelect>
-    </div>,
+    label: 'History',
+    selectedCanonicalRef: value,
+    copyReference: false as const,
+    control: <ChoiceDropdown label="Request revision" prompt="History" value={value} choices={choices}
+      hint={choices.find(choice => choice.value === value)?.label} triggerIcon={<Icon name="history" />}
+      onChange={revision => {
+        if (revision.includes('@')) review.selectComparison({ kind: 'revision', id: revision });
+        else if (revision === id) review.selectComparison();
+        else onSelect(revision);
+      }} />,
   };
 }
 
-export function AuthReviewDialog({ review }: { review: AuthRequestReviewState }) {
-  const label = review.replyTarget ? 'Reply' : review.editor ? 'Comment' : review.decision === 'return' ? 'Return for revision' : 'Reject request';
-  const quote = review.replyTarget?.quote ?? review.editor?.quote;
-  return <DetailPaneModal open={Boolean(review.editor || review.replyTarget || review.decision)} onClose={review.close}
-    titleId="auth-review-decision" title={label} closeLabel="Close review dialog">
-    <form className="auth-review__dialog" onSubmit={event => {
-      event.preventDefault();
-      if (review.replyTarget) review.changeThread(review.replyTarget, { operation: 'reply', body: review.text });
-      else if (review.editor) review.saveComment();
-      else review.submitDecision();
-    }}>
-      {quote && <blockquote className="review-comments__quote">{quote}</blockquote>}
-      <label>{review.replyTarget ? 'Reply' : review.editor ? 'Comment' : 'Reason (optional)'}
-        <textarea value={review.text} rows={4} onInput={event => review.setText(event.currentTarget.value)} />
-      </label>
-      {review.error && <div role="alert">{review.error}</div>}
-      <button type="submit" className="btn" disabled={review.busy
-        || (review.decision === 'return' && review.drafts.hasConflicts)
-        || Boolean((review.editor || review.replyTarget) && !review.text.trim())}>
-        {review.replyTarget ? 'Reply' : review.editor ? 'Save comment'
-          : review.decision === 'return' ? (review.drafts.hasEdits ? 'Return with edits' : 'Return') : 'Reject'}
-      </button>
-    </form>
-  </DetailPaneModal>;
+export function AuthReviewRejectComposer({ review, anchor }: { review: AuthRequestReviewState; anchor: RefObject<HTMLButtonElement> }) {
+  const menuRef = useRef<HTMLFormElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const style = useAnchoredMenu({ open: review.rejecting, anchorRef: anchor, menuRef, focusRef: inputRef, onDismiss: review.closeReject });
+  if (!review.rejecting) return null;
+  return <form ref={menuRef} className="auth-review__dialog app-anchored-menu" aria-label="Reject request"
+    popover="manual" style={style} onSubmit={event => { event.preventDefault(); review.submitReject(); }}>
+    <textarea ref={inputRef} aria-label="Reason (optional)" placeholder="Reason (optional)" value={review.text}
+      onInput={event => review.setText(event.currentTarget.value)} />
+    {review.error && <DetailPaneNotice severity="error" density="compact">{review.error}</DetailPaneNotice>}
+    <button type="submit" className="btn btn--danger btn--sm" disabled={review.busy}>Reject</button>
+  </form>;
 }
 
 const PierreDraftDiff = lazy(() => import('../components/PierreFileDiff').then(module => ({ default: module.PierreFileDiff })));
@@ -381,30 +401,19 @@ function PierreReviewDraft({ draft, pair, view, editable }: {
   return <div inert={editable && !draft.writable}>
     <Suspense fallback={null}>
       <PierreDraftDiff input={input} mode={view.mode} wrap={view.wrap} wholeFile
-        ariaLabel={`Review draft for ${draft.path}`} onEditChange={editable ? draft.change : undefined} />
+        ariaLabel={pair.after.name} onEditChange={editable ? draft.change : undefined} />
     </Suspense>
   </div>;
 }
 
-export function AuthReviewDraftControls({ draft, available }: { draft: AuthReviewFileDraft; available: boolean }) {
+function AuthReviewDraftNotices({ draft, available }: {
+  draft: AuthReviewFileDraft; available: boolean;
+}) {
   return <>
-    <div className="auth-review__side" role="group" aria-label={`Draft actions for ${draft.path}`}>
-      {available && draft.mergeConflict !== 'detached' && <ContextualAction
-        aria-label={draft.editing ? 'Close review editor' : 'Edit proposed text'}
-        title={draft.editing ? 'Close review editor' : 'Edit proposed text'}
-        aria-pressed={draft.editing} disabled={draft.busy} onClick={draft.toggle}>
-        <Icon name={draft.editing ? 'markRead' : 'toolEdit'} />
-      </ContextualAction>}
-      {available && draft.edited && <ContextualAction aria-label={draft.mergeConflict === 'detached' ? 'Discard draft' : 'Revert to proposed text'}
-        title={draft.mergeConflict === 'detached' ? 'Discard draft' : 'Revert to proposed text'}
-        disabled={draft.busy || draft.writeConflict} onClick={draft.revert}>
-        <Icon name="history" />
-      </ContextualAction>}
-      {draft.mergeConflict === 'overlap' && available && <button type="button" className="btn"
-        disabled={draft.busy || draft.writeConflict} onClick={draft.resolve}>Resolve conflict</button>}
-    </div>
-    {draft.mergeConflict && <DetailPaneNotice density="compact" severity="info">
-      <Icon name="warning" /> {draft.mergeConflict === 'detached' ? 'Detached review draft' : 'Review draft conflict'}
+    {draft.mergeConflict && <DetailPaneNotice density="compact" severity="warning"
+      actions={draft.mergeConflict === 'overlap' && available && <button type="button" className="btn btn--sm"
+        disabled={draft.busy || draft.writeConflict} onClick={draft.resolve}>Resolve conflict</button>}>
+      {draft.mergeConflict === 'detached' ? 'File no longer in this revision' : 'Edits conflict with a newer revision'}
     </DetailPaneNotice>}
     {draft.error && <DetailPaneNotice density="compact" severity="error" title={draft.path}
       actions={draft.writeConflict && available ? <div className="auth-review__side">
@@ -416,58 +425,117 @@ export function AuthReviewDraftControls({ draft, available }: { draft: AuthRevie
   </>;
 }
 
-export function AuthReviewTextFile({ review, pair, index, view, section }: {
+function AuthReviewLineDiff({ review, pair, shown, index, view, section }: {
+  review: AuthRequestReviewState; pair: TextPair; shown: TextPair; index: number;
+  view: Omit<ChangeTextFileView, 'defaultContent'>;
+  section?: NarrativeHunk;
+}) {
+  const lineRef = useRef<PierreLineHandle>(null);
+  const [pending, setPending] = useState<{ range: DiffLineRange; bindingId: string; quote: string }>();
+  const input = useMemo(() => ({ ...shown, kind: 'contents' as const }), [shown]);
+  const bindings = review.data?.round.bindings.filter(binding => binding.source.kind === 'request_file'
+    && binding.source.file_index === index && binding.source.format === 'lines') ?? [];
+  const offset = (side: DiffLineRange['side']) => section ? pair[side].contents.slice(0, section[side].start).split('\n').length - 1 : 0;
+  const sideFor = (id: string) => {
+    const source = review.data?.annotations.find(note => note.annotation_event_id === id)?.source;
+    return source?.kind === 'request_file' ? source.side : undefined;
+  };
+  const threads = bindings.flatMap(binding => authReviewDocumentThreads(review, binding)).flatMap(thread => {
+    const side = sideFor(thread.id);
+    if (!side || !thread.range) return [];
+    const start = Math.max(0, thread.range.start - offset(side));
+    const end = Math.min(shown[side].contents.split('\n').length, thread.range.end - offset(side));
+    return end > start ? [{ ...thread, range: { start, end } }] : [];
+  });
+  const lines = threads.flatMap(thread => !thread.resolved && thread.range ? [{
+    id: thread.id, active: thread.id === review.comments.selected || thread.id === review.comments.hovered, side: sideFor(thread.id)!,
+    startLine: thread.range.start + 1, endLine: thread.range.end,
+  }] : []);
+  const gutterSelection = useMemo(() => pending && ({
+    range: { start: pending.range.startLine - 1, end: pending.range.endLine },
+    send: (body: string) => review.commentOn({
+      bindingId: pending.bindingId,
+      start_offset: pending.range.startLine - 1 + offset(pending.range.side),
+      end_offset: pending.range.endLine + offset(pending.range.side),
+      quote: pending.quote,
+    }, body),
+  }), [pending]);
+  const target = review.navigation && lines.find(line => line.id === review.navigation?.comment.annotation_event_id);
+  return <DocumentCommentSurface controller={review.comments} threads={threads} selection={null} drawer={false}
+    gutterSelection={gutterSelection}
+    position={(range, id) => {
+      const side = id ? sideFor(id) : pending?.range.side;
+      return side ? lineRef.current?.bounds({ side, startLine: range.start + 1, endLine: range.end }) ?? null : null;
+    }}>
+    <Suspense fallback={null}><PierreDraftDiff input={input} mode={view.mode} wrap={view.wrap} wholeFile={view.wholeFile}
+      ariaLabel={shown.after.name} lineRef={lineRef}
+      lineTarget={target && review.navigation ? { ...target, token: review.navigation.token } : undefined}
+      lineReview={{
+        lines, onHover: review.comments.hover, onOpen: review.comments.select,
+        onComment: review.available && !review.readOnly ? selected => {
+          const binding = bindings.find(item => item.source.kind === 'request_file' && item.source.side === selected.side);
+          const quote = quoteReviewLines(shown[selected.side].contents, selected.startLine - 1, selected.endLine);
+          if (binding && quote) setPending({ range: selected, bindingId: binding.id, quote });
+        } : undefined,
+      }} /></Suspense>
+  </DocumentCommentSurface>;
+}
+
+export function AuthReviewTextFile({ review, pair, index, view, section, headerControls }: {
   review: AuthRequestReviewState; pair: TextPair; index: number;
   view: Omit<ChangeTextFileView, 'defaultContent'> & { defaultContent?: ComponentChildren };
   section?: NarrativeHunk;
+  headerControls?: boolean;
 }) {
-  const shown = section ? narrativeHunkPair(pair, section) : pair;
+  const shown = useMemo(() => section ? narrativeHunkPair(pair, section) : pair, [pair, section?.after.start, section?.after.end, section?.before.start, section?.before.end]);
   const bindings = review.data?.round.bindings ?? [];
   const binding = bindings.find(({ source }) => source.kind === 'request_file' && source.file_index === index && source.side === 'after');
   const markdown = binding?.source.kind === 'request_file' ? binding.source.format === 'markdown' : isMarkdownFile(pair.after.name);
-  const pinned = !section
-    ? (markdown ? <AuthReviewMarkdownChange review={review} pair={pair} index={index} wholeFile={view.wholeFile} /> : view.defaultContent)
-    : markdown
-      ? <AuthReviewMarkdown review={review} binding={binding} value={shown.after.contents} comparison={shown.before.contents}
-          label={pair.after.name} span={section.after} wholeFile />
-      : <Suspense fallback={null}><PierreDraftDiff input={{ ...shown, kind: 'contents' }} mode={view.mode} wrap={view.wrap} wholeFile
-          ariaLabel={shown.after.name} onLineSelection={range => {
-            if (!range) { review.lineSelection(index, null); return; }
-            const side = range.side;
-            const preceding = pair[side].contents.slice(0, section[side].start).split('\n').length - 1;
-            const original = { side, startLine: range.startLine + preceding, endLine: range.endLine + preceding };
-            review.lineSelection(index, original, quoteReviewLines(pair[side].contents, original.startLine - 1, original.endLine));
-          }} /></Suspense>;
-  const fileDraft = !review.against ? review.drafts.forFile(index, pair) : null;
-  if (!fileDraft) return <>{pinned}</>;
-  const span = section && narrativeDraftSpan(pair.after.contents, fileDraft.source, section.after);
-  if (section && !span) return <>{pinned}</>;
-  const draft = span ? { ...fileDraft, source: fileDraft.source.slice(span.start, span.end),
-    change: (source: string) => fileDraft.change(fileDraft.source.slice(0, span.start) + source + fileDraft.source.slice(span.end)) } : fileDraft;
-  const label = `Review draft for ${draft.path}`;
+  const fileDraft = !review.readOnly ? review.drafts.forFile(index, pair) : null;
+  const path = fileDraft?.path;
+  useLayoutEffect(() => {
+    if (headerControls && !markdown) review.reportFileChangePosition({ index: 0, total: 0 });
+  }, [headerControls, markdown, review.reportFileChangePosition]);
+  useLayoutEffect(() => {
+    if (!headerControls || !path) return;
+    review.activateFile(path, markdown ? 'markdown' : 'lines');
+    return () => review.clearActiveFile(path);
+  }, [headerControls, path, markdown, review.activateFile, review.clearActiveFile]);
+  const openTextEdit = fileDraft && review.available ? () => {
+    review.setNavigation(null);
+    review.clearSelection();
+    review.activateFile(fileDraft.path, markdown ? 'markdown' : 'lines');
+    fileDraft.toggle();
+  } : undefined;
+  const span = fileDraft && section && narrativeDraftSpan(pair.after.contents, fileDraft.source, section.after);
+  const draft = fileDraft && (span ? { ...fileDraft, source: fileDraft.source.slice(span.start, span.end),
+    change: (source: string) => fileDraft.change(fileDraft.source.slice(0, span.start) + source + fileDraft.source.slice(span.end)) } : fileDraft);
   const target = review.navigation?.comment.source;
   const jump = target?.kind === 'request_file' && target.file_index === index;
+  const editing = draft?.editing && !jump && (!section || span) ? draft : undefined;
+  const pinned = markdown
+    ? section ? <AuthReviewMarkdown review={review} binding={binding} value={shown.after.contents}
+      comparison={shown.before.contents} label={pair.after.name}
+      span={section.after} wholeFile onEdit={openTextEdit} draft={editing} />
+      : <AuthReviewMarkdownChange review={review} pair={pair} index={index} wholeFile={view.wholeFile} onEdit={openTextEdit}
+        headerControls={headerControls} draft={editing} />
+    : review.readOnly ? view.defaultContent
+      : <AuthReviewLineDiff review={review} pair={pair} shown={shown} index={index} view={view} section={section} />;
+  if (!draft || section && !span) return <>{pinned}</>;
   return <>
-    <AuthReviewDraftControls draft={{ ...draft, toggle: () => {
-      review.setNavigation(null);
-      review.clearSelection();
-      draft.toggle();
-    } }} available={Boolean(review.available)} />
-    {draft.editing && !jump ? (markdown
-      ? <MarkdownDocument value={draft.source} readOnly={!draft.writable} comparison={section ? shown.before.contents : pair.after.contents}
-        comparisonLayout={view.wholeFile ? 'full-document' : undefined} ariaLabel={label} onChange={draft.change} />
-      : <>
+    <AuthReviewDraftNotices draft={draft} available={Boolean(review.available)} />
+    {editing && !markdown ? <>
         {section && pinned}
         <PierreReviewDraft key={`${draft.externalVersion}:${Boolean(review.available)}`}
           editable={Boolean(review.available)} draft={draft} pair={shown} view={{ ...view, defaultContent: null }} />
-      </>) : pinned}
+      </> : pinned}
   </>;
 }
 
 function DetachedDraft({ draft, available }: { draft: AuthReviewFileDraft; available: boolean }) {
   const [expanded, setExpanded] = useState(true);
   return <CollapsiblePanel title={draft.path} expanded={expanded} onExpandedChange={setExpanded}>
-    <AuthReviewDraftControls draft={draft} available={available} />
+    <AuthReviewDraftNotices draft={draft} available={available} />
     <pre className="auth-review__detached-draft">{draft.source}</pre>
   </CollapsiblePanel>;
 }

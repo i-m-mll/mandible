@@ -62,7 +62,7 @@ export function stageNativeBuild({ worktree, root, candidate }) {
   const crate = path.join(source, 'src-tauri');
   fs.rmSync(source, { recursive: true, force: true });
   fs.mkdirSync(crate, { recursive: true });
-  const files = command('git', ['ls-files', '--', 'src-tauri'], worktree).split('\n').filter(Boolean);
+  const files = command('git', ['ls-files', '--', 'src-tauri', 'src/security/isolated-preview-effects.json'], worktree).split('\n').filter(Boolean);
   for (const file of files) {
     const destination = path.join(source, file);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -81,7 +81,8 @@ export function stageNativeBuild({ worktree, root, candidate }) {
     externalBin: config.bundle.externalBin.map(file => path.join(binaries, path.basename(file))),
     macOS: { ...config.bundle.macOS, signingIdentity: '-', frameworks: [sqliteLibrary],
       files: { ...config.bundle.macOS.files, 'Library/LaunchAgents': path.join(payload, 'Library/LaunchAgents'),
-        'Helpers/MandibleApproval.app': path.join(payload, 'Helpers/MandibleApproval.app') } } };
+        'Helpers/MandibleApproval.app': path.join(payload, 'Helpers/MandibleApproval.app'),
+        'Helpers/MandibleProjectFolder.app': path.join(payload, 'Helpers/MandibleProjectFolder.app') } } };
   fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
   const bun = command('/bin/sh', [path.join(worktree, 'scripts/bun-runtime.sh')], worktree);
   const temporary = path.join(buildRoot, 'tmp'); fs.mkdirSync(temporary, { recursive: true });
@@ -91,7 +92,8 @@ export function stageNativeBuild({ worktree, root, candidate }) {
     CARGO_PROFILE_DEV_DEBUG: '0', MANDIBLE_DESKTOP_BOOTSTRAP_DIR: bootstrap,
     MANDIBLE_DESKTOP_PAYLOAD_CONTENTS: payload, MANDIBLE_DESKTOP_BINARIES_DIR: binaries,
     MANDIBLE_DESKTOP_SQLITE_LIBRARY: sqliteLibrary, MANDIBLE_DESKTOP_TRUST_HELPER: path.join(generated, 'local-ca-trust-helper'),
-    MANDIBLE_DESKTOP_APPROVAL_HELPER: path.join(generated, 'MandibleApproval.app') };
+    MANDIBLE_DESKTOP_APPROVAL_HELPER: path.join(generated, 'MandibleApproval.app'),
+    MANDIBLE_DESKTOP_PROJECT_FOLDER_HELPER: path.join(generated, 'MandibleProjectFolder.app') };
   const toolchain = nativeToolchain(worktree);
   const fingerprint = createHash('sha256').update(JSON.stringify({ candidate, config, toolchain,
     profile: 'dev-debug-0', cargoBuildDir: env.CARGO_BUILD_BUILD_DIR, cargoTargetDir: env.CARGO_TARGET_DIR })).digest('hex');

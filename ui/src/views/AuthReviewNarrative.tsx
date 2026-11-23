@@ -1,4 +1,5 @@
 import { createPortal } from 'preact/compat';
+import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { AuthChangeReport, DiffFilePair } from '../../../src/contracts';
 import {
@@ -6,9 +7,13 @@ import {
   type NarrativeHunk, type NarrativeReference,
 } from '../../../src/feedback/request-narrative';
 import { getAuthDiffFile, type AuthReviewProjection } from '../api';
-import { ChangeList } from '../components/ChangeList';
-import type { MarkdownDirective, MarkdownDirectiveRenderer } from '../components/MarkdownDocument';
-import { AuthReviewMarkdown, AuthReviewTextFile, authReviewMarkdownMarks, type AuthRequestReviewState } from './AuthRequestReview';
+import { ChangeFileDisclosure, ChangeList } from '../components/ChangeList';
+import { Icon } from '../components/icons/Icon';
+import { appTip } from '../components/shared/AppHoverTips';
+import { DocumentCommentSurface, type DocumentCommentSelection } from '../components/shared/DocumentComments';
+import type { MarkdownDirective, MarkdownDirectiveRenderer, MarkdownDocumentHandle, MarkdownSelection } from '../components/MarkdownDocument';
+import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { AuthReviewMarkdown, AuthReviewTextFile, authReviewDocumentThreads, authReviewMarkdownMarks, type AuthReviewBinding, type AuthRequestReviewState } from './AuthRequestReview';
 import { BRIEFING_MARKDOWN_PREVIEW, BriefingDirectiveControls } from './feedback/BriefingDirectiveControls';
 import { authReviewHref } from './auth-review-navigation';
 
@@ -25,6 +30,8 @@ export function AuthReviewNarrative({ id, review, onFile }: {
   onFile: (index: number) => void;
 }) {
   const data = review.data!;
+  const [collapsed, setCollapsed] = usePersistedViewState<string[]>(`mandible:auth:narrative:${data.round.id}`,
+    value => Array.isArray(value) ? value.filter(key => typeof key === 'string') : [], []);
   const source = data.narrative!;
   const binding = data.round.bindings.find(item => item.source.kind === 'request_narrative')!;
   const report = useMemo(() => data.narrative_report, [data.round.id]);
@@ -48,6 +55,7 @@ export function AuthReviewNarrative({ id, review, onFile }: {
     const redraw = () => queueMicrotask(() => redrawHosts(value => value + 1));
     const render: MarkdownDirectiveRenderer = Object.assign((node: MarkdownDirective, owner: Document) => {
       const element = owner.createElement('div');
+      if (node.name === 'change') element.className = 'auth-review__narrative-embed';
       hosts.current.set(element, node.start);
       redraw();
       return { element, destroy: () => { hosts.current.delete(element); redraw(); } };
@@ -83,59 +91,80 @@ export function AuthReviewNarrative({ id, review, onFile }: {
   }
   const remainingFiles = files.flatMap((file, index) => loaded.get(index) || indices.includes(index) && !loaded.has(index)
     ? [] : [{ file, index }]);
-  const marks = authReviewMarkdownMarks(review, binding);
-  const fileReference = (index: number, label: string) => {
+  const disclosure = (index: number, key: string, children: ComponentChildren) => {
     const file = files[index];
-    return <a href={authReviewHref(id, 'diff', { oldPath: file.old_path, newPath: file.new_path })} onClick={event => {
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      event.preventDefault();
-      onFile(index);
-    }}>{label}</a>;
+    return <ChangeFileDisclosure key={key} file={file} expanded={!collapsed.includes(key)}
+      onExpandedChange={expanded => setCollapsed(current => expanded ? current.filter(item => item !== key) : [...current, key])}
+      actions={<a class="contextual-action" aria-label="Open file" {...appTip('Open file')}
+        href={authReviewHref(id, 'diff', { oldPath: file.old_path, newPath: file.new_path })} onClick={event => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault();
+          onFile(index);
+        }}><Icon name="openLink" size={14} /></a>}>
+      {children}
+    </ChangeFileDisclosure>;
   };
   const change = (entry: FileReview, index: number, hunk: NarrativeHunk) =>
     <AuthReviewTextFile review={review} pair={entry.pair} index={index} view={sectionView} section={hunk} />;
 
   return <div className="auth-review__narrative">
     <AuthReviewMarkdown review={review} binding={binding} value={source} label="Review narrative"
-      directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW} />
+      directives={allowlist} previewPolicy={BRIEFING_MARKDOWN_PREVIEW}
+      embedded={data.narrative_questions.map(({ directive }) => ({ start: directive.body_start_offset, end: directive.body_end_offset }))} />
     {[...hosts.current].map(([element, offset]) => {
       const embed = byOffset.get(offset);
       if (embed?.kind === 'change') {
         const { reference } = embed;
         const entry = loaded.get(reference.index);
         const hunk = matched.get(reference);
-        return createPortal(<section className="auth-review__narrative-change" aria-label={reference.path}>
-          {fileReference(reference.index, reference.path)}
-          {entry && hunk && change(entry, reference.index, hunk)}
-        </section>, element);
+        return entry && hunk
+          ? createPortal(disclosure(reference.index, `inline:${offset}`, change(entry, reference.index, hunk)), element)
+          : null;
       }
       if (embed?.kind === 'question') {
-        const { question } = embed;
-        const { directive } = question;
-        const answer = (_id: string, value: Parameters<typeof review.answerQuestion>[1]) => review.answerQuestion(directive.key, value);
-        return createPortal(<BriefingDirectiveControls item={{ id: question.id, directive, revision: {
-          response_type: directive.type, required: directive.required, options: directive.options, variants: directive.variants,
-        } }} source={source} current={question.effective_response?.value ?? null}
-          canInteract={Boolean(review.available) && !review.busy} decorations={marks} onDirectiveValue={answer} onTextBlur={answer}
-          onSelect={selection => review.markdownSelection(binding, selection)}
-          onComment={selection => review.commentOnMarkdown(binding, selection)}
-          onDecorationClick={() => review.setCommentsOpen(true)} />, element);
+        return createPortal(<NarrativeQuestion question={embed.question} review={review} source={source} binding={binding} />, element);
       }
       return null;
     })}
-    {[...loaded].sort(([a], [b]) => a - b).map(([index, entry]) => entry && entry.hunks.some(hunk => !covered.has(hunk)) && (
-      <section key={index} className="auth-review__narrative-change" aria-label={entry.pair.after.name}>
-        {fileReference(index, files[index].new_path ?? files[index].old_path ?? entry.pair.after.name)}
-        {entry.hunks.filter(hunk => !covered.has(hunk)).map(hunk => <div key={hunk.before.start + ':' + hunk.after.start}>
-          {change(entry, index, hunk)}
-        </div>)}
-      </section>
-    ))}
-    {remainingFiles.length > 0 && <ChangeList
+    {[...loaded].sort(([a], [b]) => a - b).map(([index, entry]) => {
+      const remaining = entry?.hunks.filter(hunk => !covered.has(hunk));
+      return entry && remaining?.length ? disclosure(index, `remaining:${index}`, remaining.map(hunk =>
+        <div key={hunk.before.start + ':' + hunk.after.start}>{change(entry, index, hunk)}</div>)) : null;
+    })}
+    {remainingFiles.length > 0 && <ChangeList hideToolbar
       files={remainingFiles.map(({ file }) => file)} scope={`auth:${id}:narrative`} revision={report?.comparison.head_sha}
       loadFile={(_file, index, signal) => getAuthDiffFile(id, remainingFiles[index].index, signal, undefined, data.round.id)}
-      onLineSelection={(_file, index, range, quote) => review.lineSelection(remainingFiles[index].index, range, quote)}
       renderTextFile={(_file, pair, index, view) => <AuthReviewTextFile review={review} pair={pair} index={remainingFiles[index].index} view={view} />}
       ariaLabel="Other request changes" />}
   </div>;
+}
+
+function NarrativeQuestion({ question, review, source, binding }: {
+  question: Question; review: AuthRequestReviewState; source: string; binding: AuthReviewBinding;
+}) {
+  const { directive } = question;
+  const document = useRef<MarkdownDocumentHandle>(null);
+  const [selected, setSelected] = useState<MarkdownSelection | null>(null);
+  const span = { start: directive.body_start_offset, end: directive.body_end_offset };
+  const selection: DocumentCommentSelection | null = selected?.quote ? {
+    range: { start: selected.start - span.start, end: selected.end - span.start },
+    onComment: review.available ? async body => {
+      await review.commentOn({ bindingId: binding.id, start_offset: selected.start, end_offset: selected.end, quote: selected.quote }, body);
+      setSelected(null);
+    } : undefined,
+  } : null;
+  const threads = authReviewDocumentThreads(review, binding, span);
+  const target = review.navigation;
+  useEffect(() => {
+    const thread = threads.find(entry => entry.id === target?.comment.annotation_event_id);
+    if (thread?.range) document.current?.reveal(thread.range);
+  }, [target?.token]);
+  return <DocumentCommentSurface controller={review.comments} threads={threads} selection={selection} drawer={false}
+    documentRef={document} navigationKey={`auth.${binding.id}.${span.start}`}>
+    <BriefingDirectiveControls item={{ id: question.id, directive, revision: {
+      response_type: directive.type, required: directive.required, options: directive.options, variants: directive.variants,
+    } }} source={source} current={question.effective_response?.value ?? null} canInteract={Boolean(review.available)}
+      decorations={authReviewMarkdownMarks(review, binding)} onDirectiveValue={(_id, value) => review.answerQuestion(directive.key, value)}
+      onSelect={setSelected} onDecorationClick={review.comments.select} documentRef={document} />
+  </DocumentCommentSurface>;
 }
