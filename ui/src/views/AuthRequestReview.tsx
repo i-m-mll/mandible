@@ -20,7 +20,6 @@ import {
   type DocumentCommentThread,
 } from '../components/shared/DocumentComments';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
-import { Icon } from '../components/icons/Icon';
 import { ChoiceDropdown } from '../components/shared/ChoiceDropdown';
 import { useAnchoredMenu } from '../hooks/useAnchoredMenu';
 import { quoteReviewLines } from '../../../src/feedback/review-ranges';
@@ -356,22 +355,40 @@ export function AuthReviewMarkdownChange({ review, pair, index, wholeFile, onEdi
     label={`${pair[active].name} ${active}`} />;
 }
 
-export function authReviewSelector(review: AuthRequestReviewState, id: string, onSelect: (id: string) => void) {
+export function authReviewComparisonChoices(review: AuthRequestReviewState, id: string) {
+  const versions = review.data?.versions ?? [];
+  const selected = versions.find(version => version.id === id);
+  return [{ value: '', label: 'Protected base' }, ...versions.flatMap((version, index) =>
+    version.id !== id && (version.head && selected?.head || version.description !== selected?.description)
+      ? [{ value: version.id, label: `Revision ${index + 1}` }] : [])];
+}
+
+export function authReviewSelector(review: AuthRequestReviewState, id: string, onSelect: (id: string) => void, openDiff: () => void) {
   const versions = review.data?.versions;
   if (!versions || versions.length < 2) return undefined;
   const value = review.target?.kind === 'revision' ? review.target.id : id;
-  const choices = versions.map((version, index) => ({ value: version.id, label: `Revision ${index + 1}` }));
+  const selected = versions.find(version => version.id === value);
+  const choices = versions.map((version, index) => ({ value: version.id, label: `${index + 1} · ${version.short_id} · ${version.status}` }));
   return {
-    label: 'History',
+    label: 'Request revision',
     selectedCanonicalRef: value,
-    copyReference: false as const,
-    control: <ChoiceDropdown label="Request revision" prompt="History" value={value} choices={choices}
-      hint={choices.find(choice => choice.value === value)?.label} triggerIcon={<Icon name="history" />}
-      onChange={revision => {
-        if (revision.includes('@')) review.selectComparison({ kind: 'revision', id: revision });
-        else if (revision === id) review.selectComparison();
-        else onSelect(revision);
-      }} />,
+    selectedCopyRef: selected && `auth:${selected.short_id}${value.includes('@') ? value.slice(value.indexOf('@')) : ''}`,
+    control: <div className="auth-review__versions">
+      <ChoiceDropdown label="Request revision" prompt="Request revision" value={value} choices={choices}
+        onChange={revision => {
+          if (revision.includes('@')) {
+            review.selectComparison({ kind: 'revision', id: revision });
+            openDiff();
+          } else if (revision === id) review.selectComparison();
+          else onSelect(revision);
+        }} />
+      <ChoiceDropdown label="Compare revisions" prompt="Compare revisions" value={review.target?.kind === 'against' ? review.target.id : ''}
+        choices={authReviewComparisonChoices(review, value)} disabled={review.target?.kind === 'revision'}
+        onChange={against => {
+          review.selectComparison(against ? { kind: 'against', id: against } : undefined);
+          if (against) openDiff();
+        }} />
+    </div>,
   };
 }
 

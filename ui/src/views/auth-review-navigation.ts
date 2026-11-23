@@ -9,6 +9,7 @@ export type AuthActionViewState = { expanded: boolean; actionIds: string[] };
 export type AuthInfoSnapshot = {
   requestId: string;
   breakdown: AuthChangeBreakdownViewState;
+  description: { descriptionExpanded: boolean; referencesExpanded: boolean };
   actions: AuthActionViewState;
   showSpec: boolean;
   showDirtyNote: boolean;
@@ -42,12 +43,14 @@ function reviewHistory(): ReviewHistory | null {
   const stored = record(record(window.history.state)[HISTORY_KEY]);
   if (stored.version !== 1 || typeof stored.entryId !== 'string') return null;
   const info = record(stored.info);
+  const description = record(info.description);
   const actions = record(info.actions);
   return {
     version: 1, entryId: stored.entryId,
     ...(typeof info.requestId === 'string' ? { info: {
       requestId: info.requestId,
       breakdown: normalizeAuthChangeBreakdownViewState(info.breakdown, DEFAULT_AUTH_CHANGE_BREAKDOWN_VIEW_STATE),
+      description: { descriptionExpanded: description.descriptionExpanded !== false, referencesExpanded: description.referencesExpanded !== false },
       actions: { expanded: actions.expanded !== false, actionIds: Array.isArray(actions.actionIds) ? actions.actionIds.filter((id): id is string => typeof id === 'string') : [] },
       showSpec: info.showSpec === true, showDirtyNote: info.showDirtyNote !== false,
       outerOffset: offset(info.outerOffset),
