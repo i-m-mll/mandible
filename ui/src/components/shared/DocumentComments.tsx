@@ -446,39 +446,47 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
   const compose = geometry.composer;
   const popup = activeThread && geometry[activeThread.id];
   return <div className="document-comment-surface" ref={surface}>
-    <div className="document-comment-surface__text" ref={documentContent}
-      onPointerDown={event => {
-        if (event.button === 0 && event.target instanceof Element
-          && event.target.closest('.document-comment-surface__text') === documentContent.current) {
-          setSelecting(true);
-          setContextMenu(null);
-          if (!hoveredId(event.target)) controller.select(null);
-        }
-      }}
-      onPointerOver={event => {
-        const id = hoveredId(event.target);
-        if (id) controller.hover(id);
-      }}
-      onPointerOut={event => {
-        const id = hoveredId(event.target);
-        if (id && id !== hoveredId(event.relatedTarget)) controller.hover(null);
-      }}
-      onContextMenu={event => {
-        if (!liveSelection || !(event.target instanceof Element)
-          || event.target.closest('.document-comment-surface__text') !== documentContent.current) return;
-        event.preventDefault();
-        setContextMenu({ x: event.clientX, y: event.clientY });
-      }}>{children}</div>
+    <div className="document-comment-surface__layout">
+      <div className="document-comment-surface__text" ref={documentContent}
+        onPointerDown={event => {
+          if (event.button === 0 && event.target instanceof Element
+            && event.target.closest('.document-comment-surface__text') === documentContent.current) {
+            setSelecting(true);
+            setContextMenu(null);
+            if (!hoveredId(event.target)) controller.select(null);
+          }
+        }}
+        onPointerOver={event => {
+          const id = hoveredId(event.target);
+          if (id) controller.hover(id);
+        }}
+        onPointerOut={event => {
+          const id = hoveredId(event.target);
+          if (id && id !== hoveredId(event.relatedTarget)) controller.hover(null);
+        }}
+        onContextMenu={event => {
+          if (!liveSelection || !(event.target instanceof Element)
+            || event.target.closest('.document-comment-surface__text') !== documentContent.current) return;
+          event.preventDefault();
+          setContextMenu({ x: event.clientX, y: event.clientY });
+        }}>{children}</div>
+      {ordered.length > 0 && <div className="document-comments__margin" ref={margin}>
+        {ordered.map(thread => {
+          const top = Math.max(geometry[thread.id].localY, lowerEdge);
+          const gap = top - lowerEdge;
+          lowerEdge = top + (footprints[thread.id] ?? 0);
+          return <div key={thread.id} data-thread={thread.id} style={{ marginBlockStart: gap }}>
+            <ThreadCard controller={controller} thread={thread} />
+          </div>;
+        })}
+      </div>}
+      {composer && compose && <div className="sidebar-search-filter__panel sidebar-search-filter__panel--popover document-comments__popover document-comments__composer"
+        style={{ '--comment-x': `${compose.left}px`, '--comment-y': `${compose.bottom}px`, '--comment-local-y': `${compose.localY}px`,
+          '--comment-pane-left': `${compose.paneLeft}px`, '--comment-pane-right': `${compose.paneRight}px` }}>
+        <CommentInput label="Add a comment…" autoFocus onSend={composer.send} onCancel={() => setComposer(null)} />
+      </div>}
+    </div>
     {panelError && <DetailPaneNotice severity="error" density="compact">{panelError}</DetailPaneNotice>}
-    {ordered.length > 0 && <div className="document-comments__margin" ref={margin}>
-      {ordered.map(thread => {
-        const top = Math.max(geometry[thread.id].localY, lowerEdge);
-        lowerEdge = top + (footprints[thread.id] ?? 0);
-        return <div key={thread.id} data-thread={thread.id} style={{ top }}>
-          <ThreadCard controller={controller} thread={thread} />
-        </div>;
-      })}
-    </div>}
     {ordered.length > 0 && <div className="document-comments__gutter">
       {ordered.map(thread => <div key={thread.id} style={{ top: geometry[thread.id].localY }}>
         <ContextualAction presentation="compact" aria-label="Open comment" {...appTip('Comment')}
@@ -501,11 +509,6 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
           documentRef?.current?.select({ start: liveSelection.range.end, end: liveSelection.range.end });
         }
       }}>{actions}</div>}
-    {composer && compose && <div className="sidebar-search-filter__panel sidebar-search-filter__panel--popover document-comments__popover document-comments__composer"
-      style={{ '--comment-x': `${compose.left}px`, '--comment-y': `${compose.bottom}px`, '--comment-local-y': `${compose.localY}px`,
-        '--comment-pane-left': `${compose.paneLeft}px`, '--comment-pane-right': `${compose.paneRight}px` }}>
-      <CommentInput label="Add a comment…" autoFocus onSend={composer.send} onCancel={() => setComposer(null)} />
-    </div>}
     {activeThread && popup && !composer && <div className="sidebar-search-filter__panel sidebar-search-filter__panel--popover document-comments__popover document-comments__thread-popover"
       style={{ '--comment-x': `${popup.left}px`, '--comment-y': `${popup.bottom}px`,
         '--comment-pane-left': `${popup.paneLeft}px`, '--comment-pane-right': `${popup.paneRight}px` }}>
