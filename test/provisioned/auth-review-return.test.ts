@@ -19,7 +19,7 @@ it('returns a quoted review through the CLI and signs a separately frozen edit o
     const reviewResponse = await reviewLoaded;
     expect(reviewResponse.ok(), await reviewResponse.text()).toBe(true);
 
-    const returnButton = page.getByRole('button', { name: 'Return to requester', exact: true });
+    const returnButton = page.getByRole('button', { name: 'Return', exact: true });
     await returnButton.waitFor();
     expect(await returnButton.isDisabled()).toBe(true);
     const description = page.locator('.document-comment-surface__text [aria-label="Request description"]');
@@ -62,7 +62,7 @@ it('returns a quoted review through the CLI and signs a separately frozen edit o
       'Clarify the proposal.\n\n:::change{path="proposal.md"}\nProposed wording\n:::\n');
 
     await page.goto(`${harness.base}/auth/${editableRequest.id.slice(0, 8)}`);
-    await page.getByRole('tab', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Diff', exact: true }).click();
     const proposal = page.locator('.document-comment-surface__text [aria-label="proposal.md after"]');
     await proposal.focus();
     await page.keyboard.press('Home');

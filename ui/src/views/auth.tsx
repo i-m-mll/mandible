@@ -13,7 +13,6 @@ import { IssuePill } from '../components/shared/IssuePill';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneHeader } from '../components/shared/DetailPaneHeader';
 import { appTip } from '../components/shared/AppHoverTips';
-import { DetailPaneIconAction } from '../components/shared/DetailPaneIconAction';
 import { DetailPaneMenuTrigger } from '../components/shared/DetailPaneMenuTrigger';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneNotice } from '../components/shared/DetailPaneNotice';
@@ -22,7 +21,7 @@ import { ContextualAction } from '../components/shared/ContextualAction';
 import { EntityTimestamps } from '../components/shared/EntityTimestamps';
 import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DisclosureChevronIcon } from '../components/shared/DisclosureChevronIcon';
-import { SidebarCountBadge, SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { IconTabList, type IconTab } from '../components/shared/IconTabList';
 
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
@@ -903,7 +902,6 @@ function AuthRequestDetail({
   onReject,
   onReturned,
   canWriteReview,
-  canReject,
   executionOutput,
   notice,
   autoShowConsoleOnApproval = true,
@@ -918,11 +916,10 @@ function AuthRequestDetail({
   history?: boolean;
   branchMerged?: boolean;
   actionBundle?: JSX.Element | null;
-  renderActions: (review: AuthRequestReviewState, openCandidate: () => void) => JSX.Element | null;
+  renderActions: (review: AuthRequestReviewState, openCandidate: () => void, rejectButton: RefObject<HTMLButtonElement>) => JSX.Element | null;
   onReject: (id: string, reason: string) => void | Promise<void>;
   onReturned?: (signal: AbortSignal) => Promise<void>;
   canWriteReview: boolean;
-  canReject: boolean;
   executionOutput?: string;
   notice?: JSX.Element | null;
   autoShowConsoleOnApproval?: boolean;
@@ -1011,6 +1008,7 @@ function AuthRequestDetail({
   };
   const headerRef = useRef<HTMLElement>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const rejectButton = useRef<HTMLButtonElement>(null);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
   const actionsMenuStyle = useAnchoredMenu({
     open: actionsOpen,
@@ -1194,6 +1192,10 @@ function AuthRequestDetail({
           idPrefix="auth-detail"
           className="auth-detail__mode-tabs"
         />
+      </div>
+      <div className="auth-detail__action-strip">
+        {renderActions(review, () => setViewMode('diff'), rejectButton)}
+        <AuthReviewRejectComposer review={review} anchor={rejectButton} />
       </div>
     </>
   );
@@ -1467,13 +1469,8 @@ function AuthRequestDetail({
                         review.selectComparison(choice.value ? { kind: 'against', id: choice.value } : undefined);
                         setViewMode('diff');
                       })}>Compare with {choice.label}</button>)}
-                  {status === 'pending' && !review.readOnly && <button type="button" className="auth-detail__actions-item"
-                    role="menuitem" disabled={!canReject || review.busy}
-                    onClick={() => { setActionsOpen(false); review.openReject(); }}>Reject</button>}
                 </div>
               )}
-              <AuthReviewRejectComposer review={review} anchor={actionsTriggerRef} />
-              {renderActions(review, () => setViewMode('diff'))}
             </div>
           )}
           actionsLabel="Approval header actions"
@@ -3122,7 +3119,7 @@ export function AuthQueueView({
   }, [branchFilter, filterMode, repoFilter, sortMode, typeFilter]);
 
   // Render the action buttons for the selected request in the detail panel
-  const renderDetailActions = (request: AuthRequest, review: AuthRequestReviewState, openCandidate: () => void): JSX.Element | null => {
+  const renderDetailActions = (request: AuthRequest, review: AuthRequestReviewState, openCandidate: () => void, rejectButton: RefObject<HTMLButtonElement>): JSX.Element | null => {
     const id = getAuthId(request);
     const status = getAuthStatus(request);
     const isFailed = isFailedLikeStatus(status);
@@ -3134,6 +3131,7 @@ export function AuthQueueView({
     // Bug: 645f8a8 — while the daemon is not ready (rebuilding / starting), all
     // mutating actions are blocked. Kept separate from actionDisabled (in-flight)
     // so it doesn't trip the "Submitting…" label when nothing is actually queued.
+    const rejectAllowed = daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/reject`);
     const retryAllowed = daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/retry`);
     const approvalAllowed = daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/approve`);
     const actionDisabled = inFlight.has(id);
@@ -3157,7 +3155,43 @@ export function AuthQueueView({
       );
     }
 
-    if (isExecuting || review.readOnly) return null;
+    if (review.readOnly) return null;
+    // During the inFlight window (API call in progress, status still 'pending'),
+    // show a single disabled "Submitting…" button so users get immediate feedback.
+    if (isSubmitting) {
+      return (
+        <div className="auth-actions">
+          <button
+            type="button"
+            className="btn btn--success btn--submitting"
+            disabled
+          >
+            {approvalPhaseLabel(approvalPhases.get(id))}
+          </button>
+          {getApprovalTier(request) === 'signed' && (
+            <button type="button" className="btn btn--ghost" onClick={() => {
+              void cancelApprovalProof(id).catch((error) => setActionError(id, error, 'Could not cancel signing.', { kind: 'approve' }));
+            }}>Cancel signing</button>
+          )}
+        </div>
+      );
+    }
+
+    if (isExecuting) {
+      return (
+        <div className="auth-actions">
+          <button
+            type="button"
+            className="btn btn--ghost btn--submitting"
+            disabled
+          >
+            Executing…
+          </button>
+        </div>
+      );
+    }
+
+
 
     const dependencyBlocked = requestPrerequisites(request).some(prerequisite => !prerequisite.ready);
     const shown = review.data;
@@ -3174,8 +3208,7 @@ export function AuthQueueView({
       : acceptance === 'stale' ? 'Package acceptance is out of date'
       : acceptance === 'none' ? 'Package acceptance is required' : null;
     const prepareAllowed = canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/review/freeze`);
-    const approveBlocked = isSubmitting ? approvalPhaseLabel(approvalPhases.get(id))
-      : review.busy ? 'Review update in progress'
+    const approveBlocked = review.busy ? 'Review update in progress'
       : !approvalAllowed ? 'Approval is unavailable'
       : acceptanceBlocker ?? (dependencyBlocked ? 'Prerequisites are incomplete'
       : request.publication_blocker ? publicationBlockerTitle(request.publication_blocker)
@@ -3189,35 +3222,28 @@ export function AuthQueueView({
     const returning = review.openDraftCommentCount + editedPaths.size;
     // Resolving a thread hides it from the badge, but its annotation still belongs to the unsent round.
     const hasUnsentReview = review.draftCommentCount > 0 || editedPaths.size > 0;
-    const returnBlocked = !review.available || review.busy || isSubmitting || !currentReview
+    const returnBlocked = !review.available || review.busy || !currentReview
       ? 'Return is unavailable' : review.drafts.hasConflicts ? 'Resolve draft conflicts'
       : hasUnsentReview ? null : 'No comments or edits to return';
-    const confirming = Boolean(request.merge_effective_head_sha && proof && !review.drafts.hasEdits);
     const approvalTip = approveBlocked ?? (review.drafts.hasEdits ? 'Review edited candidate' : approveTitle(getApprovalTier(request)));
     return (
       <div className="auth-actions">
-        <span className="auth-action-tip" tabIndex={returnBlocked ? 0 : undefined} {...appTip(returnBlocked ?? undefined)}>
-          <DetailPaneIconAction className="auth-return" label="Return to requester" disabled={Boolean(returnBlocked)}
-            aria-description={returning ? `${returning} unsent` : undefined} onClick={review.returnToRequester}>
-            <Icon name="returnReview" />
-            <SidebarCountBadge count={returning} />
-          </DetailPaneIconAction>
-        </span>
         <span className="auth-action-tip" tabIndex={approveBlocked ? 0 : undefined} {...appTip(approvalTip)}>
-          <button type="button" className={`btn ${confirming ? 'btn--active' : 'btn--success'} btn--sm auth-approve`} disabled={Boolean(approveBlocked)}
+          <button type="button" className="btn btn--success" disabled={Boolean(approveBlocked)}
             onClick={() => {
               if (approveBlocked) return;
               if (review.drafts.hasEdits) void review.freeze(openCandidate);
               else handleApprove(id, proof);
-            }}>
-            {acceptance === 'running' || isSubmitting || review.busy
-              ? <span className="auth-execution-callout__spinner" aria-hidden="true" /> : <Icon name="approve" />}
-            Approve
-          </button>
+            }}>Approve</button>
         </span>
-        {isSubmitting && getApprovalTier(request) === 'signed' && <DetailPaneIconAction label="Cancel signing" onClick={() => {
-          void cancelApprovalProof(id).catch(error => setActionError(id, error, 'Could not cancel signing.', { kind: 'approve' }));
-        }}><Icon name="dismiss" /></DetailPaneIconAction>}
+        {status === 'pending' && <>
+          <span className="auth-action-tip" tabIndex={returnBlocked ? 0 : undefined} {...appTip(returnBlocked ?? undefined)}>
+            <button type="button" className="btn btn--ghost" disabled={Boolean(returnBlocked)}
+              aria-description={returning ? `${returning} unsent` : undefined} onClick={review.returnToRequester}>Return</button>
+          </span>
+          <button type="button" className="btn btn--danger" ref={rejectButton} disabled={!rejectAllowed || review.busy}
+            onClick={review.openReject}>Reject</button>
+        </>}
       </div>
     );
   };
@@ -3501,11 +3527,10 @@ export function AuthQueueView({
                   initialViewState={restoredInfo?.actions}
                 />
               )}
-              renderActions={(review, openCandidate) => renderDetailActions(request, review, openCandidate)}
+              renderActions={(review, openCandidate, rejectButton) => renderDetailActions(request, review, openCandidate, rejectButton)}
               onReject={onReject}
               onReturned={onRefreshAuthProjection}
               canWriteReview={daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/return`)}
-              canReject={daemonReady && canPerformOperation(instance, 'POST', `/api/auth/request/${encodeURIComponent(id)}/reject`)}
               autoShowConsoleOnApproval={autoShowConsoleOnApproval}
               autoReturnToAbstractOnSuccess={autoReturnToAbstractOnSuccess}
             />
