@@ -233,6 +233,26 @@ describe('dashboard API GET cache', () => {
     expect(queryClient.getQueryState(browserResourceKeys.briefingSidebar)?.isInvalidated).toBe(true);
   });
 
+  it('keeps Briefing links available when the instance cannot read layouts', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) !== '/api/briefings') throw new Error('Unexpected layout read');
+      return jsonResponse({ briefings: [{ id: 'policy', title: 'Policy', latest_round_id: 'round' }] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getBriefingSidebarSnapshot(undefined, { allowed_effects: ['ledger:read'] })).resolves.toMatchObject({
+      briefings: [{ collectionId: 'policy' }], bundles: [], groups: [],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a malformed ref response without replacing a service failure', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ kind: 'briefing', ref: 'policy', status: 'resolved' }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Ledger unavailable' }), { status: 503 })));
+    await expect(api.resolveEntityRoute('briefing', 'policy')).rejects.toMatchObject({ code: 'invalid_ref_resolution' });
+    await expect(api.resolveEntityRoute('briefing', 'policy')).rejects.toMatchObject({ status: 503, message: 'Ledger unavailable' });
+  });
+
   it('invalidates a cached Space fact packet after a Space mutation', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
