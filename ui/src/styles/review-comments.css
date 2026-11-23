@@ -1,5 +1,7 @@
 .review-range {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
+  text-decoration: underline var(--accent-blue);
+  text-underline-offset: 0.15em;
 }
 
 .document-comment-surface {
@@ -17,13 +19,13 @@
   inset-inline-end: calc(-1 * var(--space-1));
 }
 
-.document-comments__drawer,
 .document-comments__composer,
 .document-comments__thread-popover {
   inline-size: min(16rem, calc(100vw - 2 * var(--space-2)));
 }
 
 .document-comments__drawer {
+  inline-size: min(18rem, calc(100vw - 2 * var(--space-2)));
   gap: var(--space-1);
   font-size: var(--font-ui-size);
 }
@@ -70,30 +72,22 @@
   box-sizing: border-box;
 }
 
-.document-comments__margin,
+.document-comments__margin {
+  display: none;
+}
+
 .document-comments__gutter {
   position: absolute;
   inset-block: 0;
-  inset-inline-end: 0;
+  inset-inline-end: calc(-1 * var(--space-4));
+  inline-size: var(--app-header-control-size);
   pointer-events: none;
 }
 
-.document-comments__margin {
-  display: none;
-  inset-inline: calc(40rem + var(--space-2)) auto;
-  inline-size: min(16rem, calc(100% - 40rem - var(--space-2)));
-}
-
-.document-comments__margin > div,
 .document-comments__gutter > div {
   position: absolute;
   inset-inline: 0;
   pointer-events: auto;
-}
-
-.document-comments__gutter {
-  inline-size: var(--app-header-control-size);
-  inset-inline-end: calc(-1 * var(--space-4));
 }
 
 .document-comment.sidebar-item-row {
@@ -213,19 +207,31 @@
 }
 
 @container (min-width: 56rem) {
+  .document-comment-surface__layout:has(> :is(.document-comments__margin, .document-comments__composer)) {
+    display: grid;
+    grid-template-columns: minmax(0, 40rem) minmax(0, 16rem);
+    column-gap: var(--space-2);
+    align-items: start;
+  }
   .document-comment-surface__text {
+    grid-area: 1 / 1;
+    min-inline-size: 0;
     max-inline-size: 40rem;
   }
   .document-comments__margin {
-    display: block;
+    display: flow-root;
+    grid-area: 1 / 2;
+    min-inline-size: 0;
   }
   .document-comments__gutter,
   .document-comments__thread-popover {
     display: none;
   }
   .document-comments__composer {
-    position: absolute;
-    inset: var(--comment-local-y) auto auto calc(40rem + var(--space-2));
-    inline-size: min(16rem, calc(100% - 40rem - var(--space-2)));
+    position: relative;
+    grid-area: 1 / 2;
+    inset: auto;
+    margin-block-start: var(--comment-local-y);
+    inline-size: auto;
   }
 }
