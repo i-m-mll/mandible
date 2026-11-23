@@ -14,6 +14,7 @@ import { changeEditRef } from "../src/feedback/change-edit-git.js";
 import { narrativeHunks, requestNarrativeChanges, resolveNarrativeChange } from "../src/feedback/request-narrative.js";
 import { readGitFilePair } from "../src/git-change-review.js";
 import { readRequestReview } from "../src/feedback/request-review.js";
+import { frozenOperatorBaseline } from "../src/feedback/request-drafts.js";
 import { reviewSubmissionAnnotations, reviewSubmissionTargets, submittedChangeEdit } from "../src/feedback/review-store.js";
 import { addOrUpdateCheckout, addProject } from "../src/ledger/project-registry.js";
 import { buildProtectedBranchGuardProjection, writeProtectedBranchGuardProjection } from "../src/protected-branch-guard.js";
@@ -173,11 +174,17 @@ it("freezes and lands the reviewed merge with a single signature and exact revie
     expect(file).toMatchObject({ operator_edited: true });
     expect(git(repo, ["cat-file", "blob", file.new_object!.oid])).toBe(mergedText.trimEnd());
     expect(git(repo, ["cat-file", "blob", file.old_object!.oid])).toContain("Independent protected update.");
+    expect(await frozenOperatorBaseline(frozen, file, mergedText))
+      .toBe(requesterText.replace("Base wording.", "Independent protected update."));
     await expect(queue.approveAsOperator(request.id, caller, revision, firstProof)).rejects.toMatchObject({ code: "lifecycle_conflict" });
     let proof = { proof_digest: queue.reviewApprovalProof(frozen), round_id: reviewed.round.id, annotation_event_ids: [] };
     git(repo, ["update-ref", ref, requester, effective]);
-    try { await expect(queue.approveAsOperator(request.id, caller, revision, proof)).rejects.toMatchObject({ code: "merge_check_failed" }); }
+    try {
+      expect(await queue.reviewCandidateBlocker(frozen)).toBeTruthy();
+      await expect(queue.approveAsOperator(request.id, caller, revision, proof)).rejects.toMatchObject({ code: "merge_check_failed" });
+    }
     finally { git(repo, ["update-ref", ref, effective, requester]); }
+    expect(await queue.reviewCandidateBlocker(frozen)).toBeNull();
     expect(signer.touches).toHaveLength(0);
     expect(git(repo, ["rev-parse", "main"])).toBe(base);
     const reviewInput = async (requestId: string) => {

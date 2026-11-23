@@ -4,6 +4,7 @@ import { REVIEW_EDIT_MAX_BYTES } from "../feedback/request-draft-types.js";
 import * as z from "zod";
 import { collectAuthMergeReview, type AuthMergeReviewCollectionResult } from "../auth-change-report.js";
 import { requestReviewRound, requestReviewVersions, readRequestReview, returnedRequestReview } from "../feedback/request-review.js";
+import { frozenOperatorBaseline } from "../feedback/request-drafts.js";
 import { exactAgentRef } from "../ambient-provider-identity.js";
 import { responsibilityActor, sessionResponsibilityActor } from "../responsibility.js";
 import { describeCustodyHolder } from "../work-unit-custody.js";
@@ -441,8 +442,11 @@ export function registerAuthRoutes(
       return;
     }
     const result = await readGitFilePair(request.target_repo_root, report.comparison, file);
-    if (result.ok) res.json(result.file);
-    else res.status(result.status).json({ error: result.error });
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    const pair = result.file;
+    const baseline = pair.kind === "text" && against === undefined
+      ? await frozenOperatorBaseline(request, file, pair.after.contents) : null;
+    res.json(baseline === null ? pair : { ...pair, operator_baseline: baseline });
   }, { operation: { id: "get:/api/auth/request/:id/files/:index", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
   app.get("/api/auth/request/:id/review", async (req, res) => {
@@ -455,9 +459,11 @@ export function registerAuthRoutes(
       const proof_digest = authQueue.reviewApprovalProof(request);
       const retainTrackedReviews = allowTrackedReviewRetention && authQueue.externalEffectsAllowed
         && req.client_identity?.effect_ceiling.includes("files:production");
-      res.json({ ...await readRequestReview(db, request, isUserRequest(db, req) ? viewer.user_id : null,
-        Boolean(retainTrackedReviews)),
-        precondition, status: request.status, proof_digest });
+      const [review, review_candidate_blocker] = await Promise.all([
+        readRequestReview(db, request, isUserRequest(db, req) ? viewer.user_id : null, Boolean(retainTrackedReviews)),
+        authQueue.reviewCandidateBlocker(request),
+      ]);
+      res.json({ ...review, precondition, status: request.status, proof_digest, review_candidate_blocker });
     } catch (error) { handleQueueError(error, res); }
   }, { operation: { id: "get:/api/auth/request/:id/review", effects: ["ledger:read", "ledger:write", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 

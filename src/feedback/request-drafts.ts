@@ -37,8 +37,7 @@ export async function readEditFile(request: AuthRequest, path: string): Promise<
   return { file, pair: pair.file };
 }
 
-// A frozen file is displayed from the merged tree. Transfer only the operator's new change back to the effective tree.
-async function projectFrozenDraft(request: AuthRequest, path: string, text: string, shown: TextPair) {
+async function readFrozenEditFile(request: AuthRequest, path: string) {
   const root = request.target_repo_root!;
   const head = request.merge_effective_head_sha!;
   let source = await readChangeEditFile(root, head, path);
@@ -53,7 +52,24 @@ async function projectFrozenDraft(request: AuthRequest, path: string, text: stri
     source = await readChangeEditFile(root, head, path);
   }
   if (!source || !validEditText(source.text)) return null;
-  return { path, object: source.object, ...await carryFileText(shown.after.contents, text, source.text) };
+  return { path, ...source };
+}
+
+// A frozen file is displayed from the merged tree. Transfer only the operator's new change back to the effective tree.
+async function projectFrozenDraft(request: AuthRequest, path: string, text: string, shown: TextPair) {
+  const source = await readFrozenEditFile(request, path);
+  if (!source) return null;
+  return { path: source.path, object: source.object, ...await carryFileText(shown.after.contents, text, source.text) };
+}
+
+export async function frozenOperatorBaseline(request: AuthRequest, file: AuthChangeFile, candidate: string): Promise<string | null> {
+  if (!file.operator_edited || !file.new_path || !request.merge_head_sha || !request.merge_effective_head_sha || !request.target_repo_root) return null;
+  const edit = await readFrozenEditFile(request, file.new_path);
+  if (!edit) return null;
+  const parent = await readChangeEditFile(request.target_repo_root, request.merge_head_sha, edit.path);
+  if (!parent || !validEditText(parent.text) || !validEditText(candidate)) return null;
+  const baseline = await carryFileText(edit.text, parent.text, candidate);
+  return baseline.conflict ? null : baseline.text;
 }
 
 export function requestDrafts(db: Db, requestId: string, actorUserId: string): RequestReviewDraft[] {

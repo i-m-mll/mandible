@@ -1061,7 +1061,12 @@ export async function getAuthDiffFile(requestId: string, index: number, signal?:
 }
 
 export type AuthReviewPrecondition = { expected_revision: number | null; expected_custody_generation: number };
-export type AuthReviewProjection = RequestReview & { precondition: AuthReviewPrecondition; status: string; proof_digest: string };
+export type AuthReviewProjection = RequestReview & {
+  precondition: AuthReviewPrecondition;
+  status: string;
+  proof_digest: string;
+  review_candidate_blocker: string | null;
+};
 export async function getAuthReview(requestId: string, signal?: AbortSignal): Promise<AuthReviewProjection> {
   const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/review`, { signal });
   return await response.json();
