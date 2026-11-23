@@ -7,7 +7,7 @@ import { parseCheckoutRelocation } from "../checkout-relocation.js";
 import { ClientAuthzError, requireIdentity, requireOperator } from "../client-auth/authz.js";
 import { getDb } from "../db.js";
 import { chooseProjectFolder } from "../project-folder-dialog.js";
-import { z } from "zod";
+import * as z from "zod";
 import { isGitObjectId, readGitFilePair } from "../git-change-review.js";
 
 type BranchSort = "recency" | "name" | "activity";
@@ -70,7 +70,11 @@ export function filterAndSortBranches(
   return sorted;
 }
 
-export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner): WorkScanner {
+export function registerWorkRoutes(
+  server: RouteRegistrar,
+  scanner?: WorkScanner,
+  pickProjectFolder = chooseProjectFolder,
+): WorkScanner {
   const workScanner = scanner ?? new WorkScanner();
   const resolveRepo = (repoId: string) => {
     const repo = workScanner.getRepoById(repoId);
@@ -125,7 +129,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     }
     addingProject = true;
     try {
-      const selection = await chooseProjectFolder(req.signal);
+      const selection = await pickProjectFolder(req.signal);
       if (!selection.ok) {
         sendJson(res, 503, { error: selection.error });
         return;
