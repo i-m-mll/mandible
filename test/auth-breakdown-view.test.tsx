@@ -34,10 +34,6 @@ it('scopes item positions by request, tab and directory while preserving folding
   expect(screen.getByRole('navigation', { name: 'Change report directory' }).textContent).toContain('a-long-reviewed-directory');
   fireEvent.click(screen.getByRole('tab', { name: 'Language' }));
   expect(items().scrollTop).toBe(184);
-  fireEvent.click(screen.getByRole('button', { name: 'Change breakdown', exact: true }));
-  expect(screen.queryByRole('region', { name: 'Change breakdown items' })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Change breakdown', exact: true }));
-  expect(items().scrollTop).toBe(184);
   view.rerender(<AuthChangeBreakdown requestId="read-b" report={report} />);
   await waitFor(() => expect(screen.getByRole('button', { name: /TypeScript/ }).getAttribute('aria-expanded')).toBe('false'));
   fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
