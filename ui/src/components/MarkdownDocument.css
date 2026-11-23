@@ -3,12 +3,6 @@
   overflow-wrap: anywhere;
 }
 
-.markdown-document__navigation {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.25rem;
-}
-
 .markdown-document .cm-content {
   font-variant-ligatures: none;
 }
@@ -130,4 +124,61 @@
 
 .markdown-document__footnote {
   font-size: 0.9em;
+}
+
+.markdown-document--source .cm-content {
+  font-family: var(--font-mono);
+}
+
+.markdown-change {
+  --change-colour: var(--accent-green);
+  background-color: color-mix(in srgb, var(--change-colour), transparent 82%);
+  box-decoration-break: clone;
+}
+
+.markdown-change--deletion {
+  --change-colour: var(--accent-red);
+  text-decoration: line-through;
+  text-decoration-color: var(--change-colour);
+}
+
+.markdown-change--operator {
+  --change-colour: var(--accent-blue);
+}
+
+div.markdown-change--deletion {
+  background: transparent;
+  box-shadow: inset var(--space-1) 0 var(--change-colour);
+  padding-inline-start: var(--space-2);
+}
+
+div.markdown-change--deletion > .cm-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  inline-size: fit-content;
+}
+
+.markdown-document .cm-line.markdown-change__line {
+  position: relative;
+}
+
+.markdown-change__line::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc(-1 * var(--space-2));
+  border-inline-start: thin solid var(--change-bar);
+}
+
+.markdown-change__line--agent { --change-bar: var(--accent-green); }
+.markdown-change__line--operator { --change-bar: var(--accent-blue); }
+
+.markdown-change__unchanged.contextual-action {
+  inline-size: 100%;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  border-block: thin solid var(--border-muted);
+  border-radius: 0;
+  margin-block: var(--space-2);
+  padding-block: var(--space-1);
 }
