@@ -14,7 +14,7 @@ import { DetailPaneModal } from '../../components/shared/DetailPaneModal';
 import { DetailPaneNotice } from '../../components/shared/DetailPaneNotice';
 import { DetailPaneShell } from '../../components/shared/DetailPaneShell';
 import { RequestListRow } from '../../components/shared/RequestListRow';
-import { SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
+import { SidebarBriefingBundleIcon, SidebarGroupNode } from '../../components/shared/SidebarGroupNode';
 import { SidebarItemBadge, SidebarItemRow } from '../../components/shared/SidebarItemRow';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { shortIdentityRef } from '../../identity-refs';
@@ -96,8 +96,8 @@ function mergedCounts(files: TrackedBriefingProposal['files']) {
   return { additions: sum('additions'), deletions: sum('deletions') };
 }
 
-function DocumentCount({ count }: { count: number }) {
-  return <span>{count} {count === 1 ? 'document' : 'documents'}</span>;
+function DocumentCount({ count, className }: { count: number; className?: string }) {
+  return <span className={className}>{count} {count === 1 ? 'document' : 'documents'}</span>;
 }
 
 function CustodyChangeCount({ change }: { change: BriefingGroupDocumentChange }) {
@@ -301,7 +301,7 @@ export function BriefingGroupDetail({
         </DetailPaneModal>
       </>}
     >
-      <div className="briefing-group-detail__sections">
+      <div className="briefing-group-detail__sections app-list-chrome">
         {trackedProposals.length || group.updates.length ? (
           <ul className="feedback-collections-sidebar__list" aria-label="Pending changes">
             {trackedProposals.map(proposal => {
@@ -311,7 +311,8 @@ export function BriefingGroupDetail({
                   <RequestListRow leading={<Icon name="mergeRequest" />} title={proposal.title}
                     selected={selectedUpdateId === proposal.request_id} selection="toggle"
                     onSelect={() => selectPending(proposal.request_id)}
-                    metadata={<><DocumentCount count={proposal.members.length} /><LinesChanged {...mergedCounts(proposal.files ?? [])} /></>}
+                    metadata={<><DocumentCount className="auth-sidebar-item__metadata-text" count={proposal.members.length} />
+                      <LinesChanged {...mergedCounts(proposal.files ?? [])} /></>}
                     actions={<ContextualAction presentation="compact" aria-label="Open the request"
                       {...appTip('Open the request')} onClick={() => navigateTo(href)}><Icon name="openLink" /></ContextualAction>}
                   />
@@ -322,12 +323,13 @@ export function BriefingGroupDetail({
               <li key={update.id}>
                 <RequestListRow leading={<Icon name="custodyPackage" />} title={update.name}
                   selected={selectedUpdateId === update.id} selection="toggle" onSelect={() => selectPending(update.id)}
-                  metadata={<><time dateTime={new Date(update.createdAt).toISOString()}>{dateLabel(update.createdAt)}</time>
-                    <DocumentCount count={changesByProposal.get(update.id)?.length ?? 0} /></>}
+                  metadata={<><time className="auth-sidebar-item__metadata-text" dateTime={new Date(update.createdAt).toISOString()}>
+                    {dateLabel(update.createdAt)}</time>
+                    <DocumentCount className="auth-sidebar-item__metadata-text" count={changesByProposal.get(update.id)?.length ?? 0} /></>}
                   actions={(['Accept', 'Dismiss'] as const).map(decision => {
                     const reason = decisionReason(update.id, decision);
                     return (
-                      <span key={decision} {...appTip(reason ?? decision)}>
+                      <span key={decision} tabIndex={reason ? 0 : undefined} {...appTip(reason ?? decision)}>
                         <ContextualAction presentation="compact" aria-label={decision}
                           disabled={busy !== null || reason !== null}
                           onClick={() => void disposition(update, decision)}>
@@ -341,10 +343,12 @@ export function BriefingGroupDetail({
             ))}
           </ul>
         ) : null}
-        <ul className="feedback-collections-sidebar__list" aria-label="Documents">
+        <ul className="feedback-collections-sidebar__list sidebar-group-contents" aria-label="Documents">
           {displayedLayout.map(entry => entry.kind === 'subgroup' ? (
             <li key={`subgroup:${entry.name}`}>
-              <SidebarGroupNode id={`${id}-${entry.name}`} presentation="nested" label={entry.name} bodyAs="ul"
+              <SidebarGroupNode id={`${id}-${entry.name}`} presentation="folder" label={entry.name} bodyAs="ul"
+                bodyClassName="feedback-collections-sidebar__list" count={subgroupMembers(entry).length} countVisibility="interaction"
+                leadingIcon={<SidebarBriefingBundleIcon expanded={!collapsed.has(entry.name)} />}
                 expanded={!collapsed.has(entry.name)}
                 onToggle={() => setCollapsed(current => {
                   const updated = new Set(current);
