@@ -3,6 +3,7 @@ import type { ComponentChildren, JSX } from 'preact';
 import { useCallback, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { ContextualAction } from './ContextualAction';
+import { appTip } from './AppHoverTips';
 import { OfficialProviderMark, type OfficialProviderMarkKind } from './OfficialProviderMark';
 import { SidebarReorderHandle } from './SidebarReorderHandle';
 import type { SidebarReorderBinding } from './sidebar-order';
@@ -19,6 +20,7 @@ export type SidebarItemRowProps = {
   leading?: ComponentChildren;
   badges?: ComponentChildren;
   detail?: ComponentChildren;
+  labelTip?: 'app';
   actions?: ComponentChildren;
   selectRef?: (element: HTMLButtonElement | null) => void;
   tabIndex?: number;
@@ -66,6 +68,7 @@ export function SidebarItemRow({
   leading,
   badges,
   detail,
+  labelTip,
   actions,
   selectRef,
   tabIndex,
@@ -115,7 +118,8 @@ export function SidebarItemRow({
         aria-description={selectionDescription ?? (provider ? `Provider: ${provider.label}` : undefined)}
         aria-current={ariaCurrent}
         tabIndex={tabIndex}
-        title={detail === undefined ? label : undefined}
+        title={labelTip ? undefined : label}
+        {...(labelTip ? appTip(label) : {})}
         onClick={onSelect}
         aria-describedby={reorder?.control['aria-describedby']}
         aria-keyshortcuts={reorder?.control['aria-keyshortcuts']}

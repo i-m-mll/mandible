@@ -100,15 +100,14 @@
   container-type: inline-size;
 }
 
-.document-comment-surface__text {
-  max-inline-size: 40rem;
-  padding-inline-end: var(--app-header-control-size);
+.document-comments-button {
+  position: relative;
 }
 
 .document-comments-button .sidebar-search-filter__badge {
   position: absolute;
-  inset-block-start: 0;
-  inset-inline-end: 0;
+  inset-block-start: calc(-1 * var(--space-1));
+  inset-inline-end: calc(-1 * var(--space-1));
 }
 
 .document-comments__drawer,
@@ -148,6 +147,10 @@
   transform: translate(-50%, calc(-100% - var(--space-1)));
 }
 
+.document-comments__rail[data-context-menu=true] {
+  transform: none;
+}
+
 .document-comments__composer,
 .document-comments__thread-popover {
   inset-block-start: calc(var(--comment-y) + var(--space-1));
@@ -166,7 +169,8 @@
 
 .document-comments__margin {
   display: none;
-  inline-size: min(16rem, calc(100% - 40rem));
+  inset-inline: calc(40rem + var(--space-2)) auto;
+  inline-size: min(16rem, calc(100% - 40rem - var(--space-2)));
 }
 
 .document-comments__margin > div,
@@ -178,12 +182,14 @@
 
 .document-comments__gutter {
   inline-size: var(--app-header-control-size);
+  inset-inline-end: calc(-1 * var(--space-4));
 }
 
 .document-comment.sidebar-item-row {
   display: grid;
   gap: var(--space-1);
-  padding: var(--space-2);
+  padding: calc(var(--sidebar-item-row-padding-block) * var(--sidebar-item-row-padding-block-scale))
+    calc(var(--sidebar-item-row-padding-inline) * var(--sidebar-item-row-padding-inline-scale));
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-size: var(--text-sm);
@@ -191,7 +197,8 @@
 }
 
 .document-comment[data-selected=true],
-.document-comment[data-hovered=true] {
+.document-comment[data-hovered=true],
+.document-comment:focus-visible {
   background: var(--surface-hover);
 }
 
@@ -209,7 +216,7 @@
   place-items: center;
   inline-size: var(--space-5);
   block-size: var(--space-5);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-panel);
   background: var(--surface-hover);
   font-size: var(--text-xs);
   flex: none;
@@ -258,6 +265,12 @@
   padding: 0;
 }
 
+.document-comment:not(:is(:hover, :focus-within, [data-selected=true])) > .document-comment__reply-trigger {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .document-comment__composer textarea {
   flex: 1;
   min-inline-size: 0;
@@ -290,7 +303,7 @@
 
 @container (min-width: 56rem) {
   .document-comment-surface__text {
-    padding-inline-end: 0;
+    max-inline-size: 40rem;
   }
   .document-comments__margin {
     display: block;
@@ -301,6 +314,7 @@
   }
   .document-comments__composer {
     position: absolute;
-    inset: var(--comment-local-y) 0 auto auto;
+    inset: var(--comment-local-y) auto auto calc(40rem + var(--space-2));
+    inline-size: min(16rem, calc(100% - 40rem - var(--space-2)));
   }
 }

@@ -84,6 +84,13 @@ export function DocumentCommentsDrawer({ controller, threads, onNavigate }: {
   const menu = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState('');
   const [showResolved, setShowResolved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = (action: ThreadAction) => {
+    setError(null);
+    void Promise.resolve().then(action).catch(failure => setError(
+      failure instanceof Error ? failure.message : String(failure),
+    ));
+  };
   const style = useAnchoredMenu({
     open: controller.open, anchorRef: controller.anchor, menuRef: menu, onDismiss: () => controller.setOpen(false),
   });
@@ -98,12 +105,17 @@ export function DocumentCommentsDrawer({ controller, threads, onNavigate }: {
   const row = (thread: DocumentCommentThread) => {
     const label = typeof thread.body === 'string' ? thread.body : thread.quote;
     return <SidebarItemRow key={thread.id} label={label} selectionLabel={label} selected={controller.selected === thread.id}
-      className={thread.range ? undefined : 'document-comments__detached'}
+      className={thread.range ? undefined : 'document-comments__detached'} labelTip="app"
       leading={<CommentAuthor message={thread} />}
       detail={thread.range ? undefined : <s>{thread.quote}</s>}
-      actions={thread.onReopen && <CommentAction label="Reopen" icon={History} onClick={thread.onReopen} />}
+      actions={<>
+        {thread.onReopen && <CommentAction label="Reopen" icon={History} onClick={() => run(thread.onReopen!)} />}
+        {!thread.range && thread.onResolve && <CommentAction label="Resolve" icon={Check} onClick={() => run(thread.onResolve!)} />}
+        {!thread.range && thread.onDelete && <CommentAction label="Delete" icon={Trash2} onClick={() => run(thread.onDelete!)} />}
+      </>}
       onSelect={() => {
         controller.select(thread.id);
+        if (!thread.range) return;
         controller.setOpen(false);
         onNavigate(thread);
       }} />;
@@ -117,6 +129,7 @@ export function DocumentCommentsDrawer({ controller, threads, onNavigate }: {
           onClick={() => setShowResolved(!showResolved)}><Check className="app-icon" aria-hidden="true" /></ContextualAction>
         <CommentAction label="Close" icon={X} onClick={() => controller.setOpen(false)} />
       </>} />
+    {error && <DetailPaneNotice severity="error" density="compact">{error}</DetailPaneNotice>}
     {items.filter(thread => thread.range).map(row)}
     {detached.length > 0 && <div className="sidebar-search-filter__section">
       <div className="sidebar-search-filter__label">Text no longer present</div>
@@ -158,7 +171,7 @@ function CommentInput({ initial = '', label, autoFocus, onSend, onCancel }: {
   }, [autoFocus]);
   useLayoutEffect(() => {
     const element = input.current;
-    if (!element || CSS.supports('field-sizing', 'content')) return;
+    if (!element || globalThis.CSS?.supports('field-sizing', 'content')) return;
     element.style.height = 'auto';
     element.style.height = `${element.scrollHeight}px`;
   }, [value]);
@@ -222,7 +235,7 @@ function ThreadCard({ controller, thread }: { controller: CommentController; thr
   </>;
   return <article className="sidebar-item-row document-comment contextual-action-owner"
     data-selected={controller.selected === thread.id} data-hovered={controller.hovered === thread.id}
-    data-draft={Boolean(thread.draft)} aria-label="Comment thread"
+    data-draft={Boolean(thread.draft)} aria-label="Comment thread" tabIndex={0}
     onPointerEnter={() => controller.hover(thread.id)} onPointerLeave={() => controller.hover(null)}>
     <div className="document-comment__actions contextual-action-group">
       {thread.onEdit && typeof thread.body === 'string' && <CommentAction label="Edit" icon={Pencil} onClick={() => setEdit(true)} />}
@@ -261,13 +274,19 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
   const documentContent = useRef<HTMLDivElement>(null);
   const [geometry, setGeometry] = useState<Record<string, Geometry>>({});
   const [composer, setComposer] = useState<Composer | null>(null);
-  const [contextMenu, setContextMenu] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [selecting, setSelecting] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const shown = threads.filter(thread => thread.range && !thread.resolved);
   const liveSelection = selection && selection.range.start < selection.range.end && !composer ? selection : null;
   const activeThread = shown.find(item => item.id === controller.selected);
   const previousScope = useRef(controller.scopeKey);
+  useLayoutEffect(() => {
+    const document = documentRef?.current;
+    if (!composer || !document) return;
+    document.previewComment?.(composer.range);
+    return () => document.previewComment?.(null);
+  }, [composer, documentRef]);
   useLayoutEffect(() => {
     if (gutterSelection) setComposer(gutterSelection);
   }, [gutterSelection]);
@@ -278,7 +297,7 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
     if (previousScope.current === controller.scopeKey) return;
     previousScope.current = controller.scopeKey;
     setComposer(null);
-    setContextMenu(false);
+    setContextMenu(null);
     setPanelError(null);
   }, [controller.scopeKey]);
 
@@ -324,9 +343,9 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
       if (frame) return;
       frame = requestAnimationFrame(() => { frame = 0; positionOverlays(); });
     };
-    const observer = new ResizeObserver(schedule);
-    observer.observe(content);
-    observer.observe(outer);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
+    observer?.observe(content);
+    observer?.observe(outer);
     window.addEventListener('scroll', schedule, true);
     window.addEventListener('resize', schedule);
     const endDrag = () => { setSelecting(false); schedule(); };
@@ -337,7 +356,7 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
     positionOverlays();
     return () => {
       if (frame) cancelAnimationFrame(frame);
-      observer.disconnect();
+      observer?.disconnect();
       window.removeEventListener('scroll', schedule, true);
       window.removeEventListener('resize', schedule);
       window.removeEventListener('pointerup', endDrag, true);
@@ -388,16 +407,16 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : String(error));
     }
-    setContextMenu(false);
+    setContextMenu(null);
   };
   const actions = liveSelection && <>
     {liveSelection.onComment && <CommentAction label="Comment" icon={MessageSquare} onClick={() => {
       setComposer({ range: liveSelection.range, send: liveSelection.onComment! });
-      setContextMenu(false);
+      setContextMenu(null);
       setPanelError(null);
     }} />}
     {liveSelection.onEdit && <CommentAction label="Edit" icon={Pencil} onClick={() => {
-      liveSelection.onEdit?.(); setContextMenu(false);
+      liveSelection.onEdit?.(); setContextMenu(null);
     }} />}
     {(navigationKey || liveSelection.onCopyLink) && <CommentAction label="Copy link" icon={Link} onClick={() => void copy()} />}
   </>;
@@ -405,7 +424,7 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
   const [footprints, setFootprints] = useState<Record<string, number>>({});
   const margin = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    if (!margin.current) return;
+    if (!margin.current || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(entries => setFootprints(old => {
       const next = { ...old };
       for (const entry of entries) {
@@ -428,7 +447,7 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
         if (event.button === 0 && event.target instanceof Element
           && event.target.closest('.document-comment-surface__text') === documentContent.current) {
           setSelecting(true);
-          setContextMenu(false);
+          setContextMenu(null);
           if (!hoveredId(event.target)) controller.select(null);
         }
       }}
@@ -444,7 +463,7 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
         if (!liveSelection || !(event.target instanceof Element)
           || event.target.closest('.document-comment-surface__text') !== documentContent.current) return;
         event.preventDefault();
-        setContextMenu(true);
+        setContextMenu({ x: event.clientX, y: event.clientY });
       }}>{children}</div>
     {panelError && <DetailPaneNotice severity="error" density="compact">{panelError}</DetailPaneNotice>}
     {ordered.length > 0 && <div className="document-comments__margin" ref={margin}>
@@ -467,12 +486,14 @@ export function DocumentCommentSurface({ controller, threads, selection, documen
       </div>)}
     </div>}
     {liveSelection && !selecting && band && <div className="sidebar-search-filter__panel sidebar-search-filter__panel--popover document-comments__popover document-comments__rail"
-      role="toolbar" aria-label="Selection actions" data-context-menu={contextMenu} style={{ left: band.left, top: band.top }}
+      role={contextMenu ? 'group' : 'toolbar'} aria-label="Selection actions"
+      data-context-menu={Boolean(contextMenu)}
+      style={{ left: contextMenu?.x ?? band.left, top: contextMenu?.y ?? band.top }}
       onPointerDown={event => event.preventDefault()}
       onKeyDown={event => {
         if (event.key === 'Escape') {
           event.preventDefault();
-          setContextMenu(false);
+          setContextMenu(null);
           documentRef?.current?.select({ start: liveSelection.range.end, end: liveSelection.range.end });
         }
       }}>{actions}</div>}
