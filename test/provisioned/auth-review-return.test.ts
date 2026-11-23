@@ -31,6 +31,15 @@ it('returns a quoted review through the CLI and signs a separately frozen edit o
     await page.getByRole('textbox', { name: 'Add a comment…' }).fill(comment);
     expect(await page.getByRole('dialog').count()).toBe(0);
     await page.getByRole('button', { name: 'Send', exact: true }).click();
+    const commentsButton = page.getByRole('button', { name: 'Comments (1)', exact: true });
+    await commentsButton.waitFor();
+    expect(await returnButton.getAttribute('aria-description')).toBe('1 unsent');
+    const thread = page.getByRole('article', { name: 'Comment thread' }).filter({ hasText: comment }).first();
+    await thread.hover();
+    await thread.getByRole('button', { name: 'Resolve', exact: true }).click();
+    await page.getByRole('button', { name: 'Comments', exact: true }).waitFor();
+    expect(await returnButton.getAttribute('aria-description')).toBeNull();
+    expect(await returnButton.isEnabled()).toBe(true);
     const saved = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/return'));
     await returnButton.click();
     const response = await saved;

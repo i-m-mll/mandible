@@ -7,7 +7,7 @@ import { isMarkdownFile } from '../../../src/presentation/markdown-file';
 import { diffFileKey, type DiffFileIdentity } from './diff-file-identity';
 import { appTip } from './shared/AppHoverTips';
 import { DetailPaneNotice } from './shared/DetailPaneNotice';
-import { CollapsiblePanel } from './shared/CollapsiblePanel';
+import { CollapsiblePanel, type CollapsiblePanelProps } from './shared/CollapsiblePanel';
 import { SidebarItemRow } from './shared/SidebarItemRow';
 import { ContextualAction } from './shared/ContextualAction';
 import { Icon } from './icons/Icon';
@@ -26,6 +26,17 @@ export type ChangeListFile = Omit<GitChangeFile, 'additions' | 'deletions'> & {
   patch?: Extract<PierreDiffInput, { kind: 'patch' }>['file'];
 };
 export type ChangeListTarget = DiffFileIdentity & { navigationToken: string };
+
+export function ChangeFileDisclosure({ file, titleRef, ...panel }: Pick<CollapsiblePanelProps, 'children' | 'expanded' | 'onExpandedChange' | 'actions'> & {
+  file: Pick<ChangeListFile, 'old_path' | 'new_path'>;
+  titleRef?: (node: HTMLSpanElement | null) => void;
+}) {
+  const name = file.new_path ?? file.old_path ?? 'Changes';
+  return <CollapsiblePanel {...panel} className="change-list__file" toggleClassName="change-list__file-toggle"
+    title={<span class="change-list__path" {...appTip(name)} ref={titleRef}>
+      {file.old_path && file.new_path && file.old_path !== file.new_path ? `${file.old_path} → ${file.new_path}` : name}
+    </span>} />;
+}
 
 export type ChangeTextFileView = {
   wholeFile: boolean;
@@ -222,16 +233,12 @@ export function ChangeInventoryList({
         const status = file.change_kind === 'modified' ? null : labels[file.change_kind];
         const targeted = index === targetIndex && (target?.navigationToken !== handled.current?.token || handled.current?.kind !== 'file');
         const expanded = targeted || (view.expanded[key] ?? (!large && index === 0));
-        return <CollapsiblePanel key={key} className="change-list__file"
-          toggleClassName="change-list__file-toggle"
+        return <ChangeFileDisclosure key={key} file={file}
           expanded={expanded}
           onExpandedChange={next => setView(current => ({
             ...current, expanded: { ...current.expanded, [key]: next },
           }))}
-          title={<span class="change-list__path" {...appTip(name)}
-            ref={node => { if (node) headings.current.set(key, node); else headings.current.delete(key); }}>
-            {file.old_path && file.new_path && file.old_path !== file.new_path ? `${file.old_path} → ${file.new_path}` : name}
-          </span>}
+          titleRef={node => { if (node) headings.current.set(key, node); else headings.current.delete(key); }}
           actions={<>
             {!filePicker && renderFileStatus?.(file)}
             {!hideToolbar && status && <span class="change-list__badge">{status}</span>}
@@ -263,7 +270,7 @@ export function ChangeInventoryList({
               : loadFile!(file, index, signal)}
             lineTarget={index === targetIndex ? lineTarget : undefined}
             onLineSelection={onLineSelection ? (range, quote) => onLineSelection(file, index, range, quote) : undefined} />}
-        </CollapsiblePanel>;
+        </ChangeFileDisclosure>;
       })}
       {!files.length && contentReady && <div class="change-list__empty">{emptyLabel}</div>}
     </section>

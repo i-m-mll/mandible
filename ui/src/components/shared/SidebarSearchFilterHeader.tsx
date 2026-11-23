@@ -148,9 +148,7 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
             onClick={props.filterTrigger.onToggle}
           >
             {props.filterTrigger.kind === 'menu' ? <Icon name="sidebarMenu" /> : <Icon name="filter" />}
-            {props.filterTrigger.count !== undefined && props.filterTrigger.count > 0 ? (
-              <span className="sidebar-search-filter__badge">{props.filterTrigger.count}</span>
-            ) : null}
+            <SidebarCountBadge count={props.filterTrigger.count} />
           </button>
         ) : null}
         {props.actions?.map(({ icon, label, tip, disabled, busy, pressed, onClick }) => (
@@ -187,6 +185,10 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
       ) : null}
     </div>
   );
+}
+
+export function SidebarCountBadge({ count = 0 }: { count?: number }) {
+  return count > 0 ? <span aria-hidden="true" className="sidebar-search-filter__badge">{count}</span> : null;
 }
 
 function isInsideInactivePanel(input: HTMLInputElement): boolean {

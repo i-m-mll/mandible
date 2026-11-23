@@ -42,7 +42,6 @@ it('reviews changed Git text beside its reasons and uses the same draft in file 
   git('add', first, second);
   git('commit', '-m', 'Propose the reviewed changes');
   const { changeReport } = await computeAuthMergeReviewMetadata(root, 'main', branch);
-  const paths = changeReport.files.map(file => file.new_path);
   const narrative = [
     'Show delivery before custody.',
     ':::change{path="second.md"}\nReport the current lifecycle.\n:::',
@@ -112,9 +111,8 @@ it('reviews changed Git text beside its reasons and uses the same draft in file 
     const compare = beforeEdit.find(editor => editor.textContent?.includes('Snapshot'));
     expect(compare?.textContent).toContain('Local base');
     expect(beforeEdit.some(editor => editor.textContent?.includes('refresh'))).toBe(true);
-    const groups = screen.getAllByRole('region').filter(region => paths.includes(region.getAttribute('aria-label') ?? ''));
-    expect(groups.map(group => group.getAttribute('aria-label'))).toEqual([second, first, first, first]);
-    expect(within(groups[2]).queryByRole('textbox')).toBeNull();
+    const groups = screen.getAllByRole('region', { name: /^(second|first)\.md$/ });
+    expect(groups.map(group => within(group).getByRole('button', { name: /^(second|first)\.md$/ }).textContent)).toEqual([second, first, first]);
     expect(screen.queryByRole('link', { name: '../outside.md' })).toBeNull();
     expect([...loads].sort()).toEqual([0, 1]);
 

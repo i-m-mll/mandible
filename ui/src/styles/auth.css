@@ -2104,14 +2104,20 @@
   overflow-wrap: anywhere;
 }
 
+.auth-review__reasons {
+  font-size: var(--text-md);
+}
+
 .auth-review__narrative {
   display: grid;
   gap: var(--space-3);
+  min-width: 0;
 }
 
-.auth-review__narrative-change {
+.auth-review__narrative .document-comment-surface__layout:not(:has(> :is(.document-comments__margin, .document-comments__composer))) > .document-comment-surface__text {
+  max-inline-size: none;
+}
+
+.auth-review__narrative-embed:not(:empty) {
   margin-block: var(--space-2);
-  padding: var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
 }

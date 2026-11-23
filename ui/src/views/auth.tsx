@@ -25,7 +25,7 @@ import { ContextualAction } from '../components/shared/ContextualAction';
 import { EntityTimestamps } from '../components/shared/EntityTimestamps';
 import { CollapsiblePanel } from '../components/shared/CollapsiblePanel';
 import { DisclosureChevronIcon } from '../components/shared/DisclosureChevronIcon';
-import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { SidebarCountBadge, SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { IconTabList, type IconTab } from '../components/shared/IconTabList';
 
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
@@ -1682,7 +1682,7 @@ function AuthRequestDetail({
           {reviewedChanges({ compactOpen: fileListOpen, onSelect: selectFile })}
           </div>
       ) : (
-          <div id="auth-detail-panel-abstract" role="tabpanel" aria-labelledby="auth-detail-tab-abstract">
+          <div id="auth-detail-panel-abstract" className="auth-review__reasons" role="tabpanel" aria-labelledby="auth-detail-tab-abstract">
           {hasNarrative ? <AuthReviewNarrative key={review.data!.round.id} id={fullId} review={review} onFile={selectFile} /> : <>
             {descriptionText && <AuthReviewMarkdown review={review} binding={review.readOnly ? undefined : description}
               value={descriptionText}
@@ -3138,10 +3138,12 @@ export function AuthQueueView({
     for (const file of request.change_report?.files ?? []) {
       if (file.operator_edited && file.new_path) editedPaths.add(file.new_path);
     }
-    const returning = review.draftCommentCount + editedPaths.size;
+    const returning = review.openDraftCommentCount + editedPaths.size;
+    // Resolving a thread hides it from the badge, but its annotation still belongs to the unsent round.
+    const hasUnsentReview = review.draftCommentCount > 0 || editedPaths.size > 0;
     const returnBlocked = !review.available || review.busy || isSubmitting || !currentReview
       ? 'Return is unavailable' : review.drafts.hasConflicts ? 'Resolve draft conflicts'
-      : returning ? null : 'No comments or edits to return';
+      : hasUnsentReview ? null : 'No comments or edits to return';
     const confirming = Boolean(request.merge_effective_head_sha && proof && !review.drafts.hasEdits);
     const approvalTip = approveBlocked ?? (review.drafts.hasEdits ? 'Review edited candidate' : approveTitle(getApprovalTier(request)));
     return (
@@ -3150,7 +3152,7 @@ export function AuthQueueView({
           <DetailPaneIconAction className="auth-return" label="Return to requester" disabled={Boolean(returnBlocked)}
             aria-description={returning ? `${returning} unsent` : undefined} onClick={review.returnToRequester}>
             <Icon name="returnReview" />
-            {returning > 0 && <span className="sidebar-search-filter__badge" aria-hidden="true">{returning}</span>}
+            <SidebarCountBadge count={returning} />
           </DetailPaneIconAction>
         </span>
         <span className="auth-action-tip" tabIndex={approveBlocked ? 0 : undefined} {...appTip(approvalTip)}>
