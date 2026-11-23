@@ -1,19 +1,14 @@
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { markdown } from '@codemirror/lang-markdown';
-import {
-  getOriginalDoc, goToNextChunk, goToPreviousChunk, originalDocChangeEffect, unifiedMergeView,
-} from '@codemirror/merge';
 import { Compartment, EditorSelection, EditorState, StateEffect, StateField } from '@codemirror/state';
 import { Decoration, EditorView, keymap, type DecorationSet } from '@codemirror/view';
 import type { Ref } from 'preact';
 import { useImperativeHandle, useLayoutEffect, useRef } from 'preact/hooks';
-import { Icon } from './icons/Icon';
-import { appTip } from './shared/AppHoverTips';
 import {
   editMarkdownSource, exactMarkdownSource, externalSourceUpdate, markdownEditorRange, markdownSelection, markdownSourceRange,
-  markdownValue, replaceMarkdownSource, textReplacement, type MarkdownSelection, type MarkdownSourceEdit, type MarkdownSourceRange,
+  markdownValue, replaceMarkdownSource, type MarkdownSelection, type MarkdownSourceEdit, type MarkdownSourceRange,
 } from './markdown/source';
-import { compareMarkdownWords } from './markdown/comparison';
+import { comparisonInput, expandUnchanged, renderedChanges, setChangePosition } from './markdown/rendered-changes';
 import { markdownPreview, markdownDirectives, markdownPreviewPolicy, type MarkdownDirectives, type MarkdownPreviewPolicy } from './markdown/preview';
 import { markdownSyntax } from './markdown/syntax';
 import './MarkdownDocument.css';
@@ -24,6 +19,7 @@ export type MarkdownRangeDecoration = MarkdownSourceRange & { id: string; classN
 export type MarkdownDocumentHandle = {
   select: (range: MarkdownSourceRange, focus?: boolean) => void;
   edit: (edits: readonly MarkdownSourceEdit[], selection?: MarkdownSourceRange) => void;
+  moveChange: (direction: -1 | 1) => void;
   positionAt: (x: number, y: number) => number | null;
 };
 
@@ -33,6 +29,9 @@ type MarkdownDocumentProps = {
   readOnly: boolean;
   ariaLabel: string;
   comparison?: string;
+  operatorComparison?: string;
+  showSource?: boolean;
+  onChangePosition?: (position: MarkdownChangePosition) => void;
   comparisonLayout?: 'full-document';
   onChange?: (value: string) => void;
   onSelectionChange?: (selection: MarkdownSelection) => void;
@@ -44,6 +43,8 @@ type MarkdownDocumentProps = {
   directives?: MarkdownDirectives;
   previewPolicy?: MarkdownPreviewPolicy;
 };
+
+export type MarkdownChangePosition = { index: number; total: number };
 
 const editLimit = 128 * 1024;
 
@@ -83,24 +84,12 @@ function commentRanges(state: EditorState, decorations: readonly MarkdownRangeDe
   }), true);
 }
 
-function compareWith(original: string | undefined, layout: MarkdownDocumentProps['comparisonLayout']) {
-  return original === undefined ? [] : unifiedMergeView({
-    original: EditorState.create({ doc: original }).doc,
-    ...(layout === 'full-document' ? {} : { collapseUnchanged: { margin: 3, minSize: 4 } }),
-    mergeControls: false,
-    allowInlineDiffs: true,
-    syntaxHighlightDeletions: false,
-    diffConfig: { override: compareMarkdownWords },
-  });
-}
-
 const editorTheme = EditorView.theme({
   '&': { fontFamily: 'inherit', color: 'inherit', fontSize: 'inherit' },
   '&.cm-focused': { outline: 'none' },
   '.cm-scroller': { fontFamily: 'inherit', lineHeight: 'inherit' },
   '.cm-content': { fontFamily: 'inherit', padding: '0' },
   '.cm-line': { padding: '0' },
-  '.cm-deletedChunk .cm-line': { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
 });
 
 export function MarkdownDocument(props: MarkdownDocumentProps) {
@@ -124,12 +113,25 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
     mode: new Compartment(),
     label: new Compartment(),
     comparison: new Compartment(),
+    rendered: new Compartment(),
     directives: new Compartment(),
     previewPolicy: new Compartment(),
     editing: new Compartment(),
   }).current;
-  const activeComparison = useRef({ value: props.comparison, layout: props.comparisonLayout });
   const readOnly = props.readOnly || (props.syntax === 'markdown' && isLargeMarkdownDocument(props.value));
+
+  const comparison = (props: MarkdownDocumentProps) => comparisonInput.of({
+    agent: props.comparison,
+    operator: props.operatorComparison,
+    collapse: props.readOnly && props.comparisonLayout !== 'full-document' && !props.showSource,
+    source: Boolean(props.showSource),
+    policy: props.previewPolicy,
+  });
+  const preview = (props: MarkdownDocumentProps & { syntax: 'markdown' | 'plain' }) => props.syntax === 'markdown' && !props.showSource ? markdownPreview : [];
+  const notePosition = (state: EditorState) => {
+    const { selected, positions } = state.field(renderedChanges).changes;
+    latest.current.onChangePosition?.({ index: positions.length ? selected + 1 : 0, total: positions.length });
+  };
 
   useImperativeHandle(props.documentRef ?? null, () => ({
     select(range, focus = true) {
@@ -137,12 +139,23 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
       if (!editor) return;
       const { from, to } = markdownEditorRange(editor.state, range);
       if (focus) editor.focus();
-      editor.dispatch({ selection: EditorSelection.range(from, to), scrollIntoView: true });
+      editor.dispatch({ selection: EditorSelection.range(from, to), scrollIntoView: true, effects: expandUnchanged.of(from) });
     },
     edit(edits, selection) {
       const editor = view.current;
       if (!editor || editor.state.readOnly || !edits.length) return;
       editor.dispatch(editMarkdownSource(editor.state, edits, selection));
+    },
+    moveChange(direction) {
+      const editor = view.current;
+      if (!editor) return;
+      const { selected, positions } = editor.state.field(renderedChanges).changes;
+      if (positions.length === 0) return;
+      const index = (selected + direction + positions.length) % positions.length;
+      editor.dispatch({ effects: [
+        setChangePosition.of(index),
+        EditorView.scrollIntoView(positions[index], { y: 'center' }),
+      ] });
     },
     positionAt(x, y) {
       const editor = view.current;
@@ -164,13 +177,18 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
           compartments.directives.of(initial.directives ? markdownDirectives.of(initial.directives) : []),
           compartments.previewPolicy.of(initial.previewPolicy ? markdownPreviewPolicy.of(initial.previewPolicy) : []),
           initial.syntax === 'markdown' ? [
-            markdown({ extensions: markdownSyntax, completeHTMLTags: false }), markdownPreview,
+            markdown({ extensions: markdownSyntax, completeHTMLTags: false }),
           ] : [],
+          compartments.rendered.of(preview(initial)),
           editorTheme, EditorView.lineWrapping, keymap.of([...defaultKeymap, ...historyKeymap]),
           compartments.mode.of(documentMode(readOnly)),
           compartments.label.of(documentAccessibility(initial.ariaLabel, readOnly)),
-          compartments.comparison.of(compareWith(initial.comparison, initial.comparisonLayout)),
+          compartments.comparison.of(comparison(initial)),
+          renderedChanges,
           EditorView.updateListener.of((update) => {
+            const before = update.startState.field(renderedChanges).changes;
+            const after = update.state.field(renderedChanges).changes;
+            if (before.selected !== after.selected || before.positions.length !== after.positions.length) notePosition(update.state);
             const external = update.transactions.some((transaction) => transaction.annotation(externalSourceUpdate));
             if (update.docChanged && !external) {
               latest.current.onChange?.(markdownValue(update.state));
@@ -205,6 +223,7 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
       }),
     });
     view.current = editor;
+    notePosition(editor.state);
     return () => {
       view.current = null;
       editor.destroy();
@@ -240,43 +259,14 @@ function DocumentSurface(props: MarkdownDocumentProps & { syntax: 'markdown' | '
   }, [props.directives, props.previewPolicy, props.editingExtension]);
 
   useLayoutEffect(() => {
-    const editor = view.current;
-    const { comparison: original, comparisonLayout: layout } = props;
-    const previous = activeComparison.current;
-    if (!editor || (original === previous.value && layout === previous.layout)) return;
-    activeComparison.current = { value: original, layout };
-    if (original === undefined || previous.value === undefined) {
-      editor.dispatch({ effects: compartments.comparison.reconfigure(compareWith(original, layout)) });
-      return;
-    }
-    const effects: StateEffect<unknown>[] = [];
-    if (layout !== previous.layout) {
-      effects.push(compartments.comparison.reconfigure(compareWith(original, layout)));
-    }
-    if (original !== previous.value) {
-      const previousDoc = getOriginalDoc(editor.state);
-      const replacement = EditorState.create({ doc: original }).doc.toString();
-      effects.push(originalDocChangeEffect(editor.state,
-        EditorState.create({ doc: previousDoc }).changes(textReplacement(previousDoc, replacement))));
-    }
-    editor.dispatch({ effects });
-  }, [props.comparison, props.comparisonLayout]);
-
-  function moveChange(command: typeof goToNextChunk) {
-    const editor = view.current;
-    if (editor && command(editor)) editor.focus();
-  }
+    view.current?.dispatch({ effects: [
+      compartments.rendered.reconfigure(preview(props)),
+      compartments.comparison.reconfigure(comparison(props)),
+    ] });
+  }, [props.comparison, props.operatorComparison, props.comparisonLayout, props.showSource, props.previewPolicy, props.readOnly]);
 
   return (
-    <div className="markdown-document">
-      {props.comparison !== undefined && (
-        <div className="markdown-document__navigation">
-          <button type="button" className="btn btn--ghost btn--sm" aria-label="Previous change" {...appTip('Previous change')}
-            onClick={() => moveChange(goToPreviousChunk)}><Icon name="disclosureLess" /></button>
-          <button type="button" className="btn btn--ghost btn--sm" aria-label="Next change" {...appTip('Next change')}
-            onClick={() => moveChange(goToNextChunk)}><Icon name="disclosureMore" /></button>
-        </div>
-      )}
+    <div className={`markdown-document${props.showSource ? ' markdown-document--source' : ''}`}>
       <div ref={mount} />
     </div>
   );

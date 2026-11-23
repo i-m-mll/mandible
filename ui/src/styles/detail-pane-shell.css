@@ -486,3 +486,22 @@
   overflow-wrap: anywhere;
 }
 
+
+.detail-pane-menu-trigger[aria-pressed='true'] {
+  color: var(--accent-blue);
+}
+
+.detail-pane-header__change-position {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.detail-pane-menu-trigger:disabled,
+.detail-pane-menu-trigger[aria-disabled='true'] {
+  opacity: var(--disabled-opacity, 0.5);
+  cursor: default;
+}
