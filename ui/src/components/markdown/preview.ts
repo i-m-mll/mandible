@@ -505,6 +505,10 @@ export const markdownPreview = [
   specials, markdownTables, markdownCodeHighlighting, liveMarkdown, EditorView.focusChangeEffect.of((_state, focused) => setFocus.of(focused)),
 ];
 
+export function markdownPreviewDecorations(state: EditorState): DecorationSet | undefined {
+  return state.field(liveMarkdown, false)?.decorations;
+}
+
 const originalPreview = new WeakMap<EditorState, readonly (DecorationSet | undefined)[]>();
 
 export function previewRanges(state: EditorState, view: EditorView, from: number, to: number, block: boolean) {

@@ -47,7 +47,6 @@ export type BriefingViewProps = {
   initialRoundId?: string | null;
   initialGroupKey?: string | null;
   sidebarHidden?: boolean;
-  keepSubmittedAnnotations?: boolean;
 };
 
 const BRIEFING_ROUTE_PARAMS = ['group', 'round'] as const;
@@ -160,7 +159,7 @@ export function InvalidBriefingsNotice({ rows }: { rows: readonly InvalidBriefin
   );
 }
 
-export function BriefingView({ instance, entityRef = null, initialRoundId, initialGroupKey, sidebarHidden = false, keepSubmittedAnnotations = false }: BriefingViewProps): JSX.Element {
+export function BriefingView({ instance, entityRef = null, initialRoundId, initialGroupKey, sidebarHidden = false }: BriefingViewProps): JSX.Element {
   const appShell = useAppShell();
   const routeResolution = useEntityRoute('briefing', entityRef);
   const initialBriefingId = routeResolution.status === 'resolved' && routeResolution.ref === entityRef
@@ -368,7 +367,6 @@ export function BriefingView({ instance, entityRef = null, initialRoundId, initi
           roundId={explicitRoundId}
           displayContext={selectedDisplayContext}
           instance={instance}
-          keepSubmittedAnnotations={keepSubmittedAnnotations}
           onRoundChange={selectRound}
           onTitleChange={updateSelectedTitle}
         />
