@@ -3,7 +3,7 @@ import { readChangeEditPatch } from "../feedback/change-edit-git.js";
 import { REVIEW_EDIT_MAX_BYTES } from "../feedback/request-draft-types.js";
 import * as z from "zod";
 import { collectAuthMergeReview, type AuthMergeReviewCollectionResult } from "../auth-change-report.js";
-import { requestReviewRound, requestReviewVersions, readRequestReview, returnedRequestReview } from "../feedback/request-review.js";
+import { requestReviewHistoricalVersion, requestReviewRound, requestReviewVersions, readRequestReview, returnedRequestReview } from "../feedback/request-review.js";
 import { frozenOperatorBaseline } from "../feedback/request-drafts.js";
 import { exactAgentRef } from "../ambient-provider-identity.js";
 import { responsibilityActor, sessionResponsibilityActor } from "../responsibility.js";
@@ -424,16 +424,18 @@ export function registerAuthRoutes(
   app.get("/api/auth/request/:id/files/:index", async (req, res) => {
     const request = await authQueue.getRequest(req.params.id);
     const against = req.query?.against;
+    const revision = req.query?.revision;
     const expectedRound = req.query?.round;
-    if (expectedRound !== undefined && (!request || expectedRound !== requestReviewRound(request).id || against !== undefined)) {
+    if (expectedRound !== undefined && (!request || expectedRound !== requestReviewRound(request).id || against !== undefined || revision !== undefined)) {
       res.status(409).json({ error: "The reviewed documents changed." });
       return;
     }
+    const reviewed = typeof revision === "string" && request ? requestReviewHistoricalVersion(db, request, revision) : request;
     const comparison = request && typeof against === "string" ? await comparisonReport(request, against) : null;
-    const report = typeof against === "string" ? comparison?.ok ? comparison.value.report : null : request?.change_report;
+    const report = typeof against === "string" ? comparison?.ok ? comparison.value.report : null : reviewed?.change_report;
     const index = req.params.index;
     const file = report && /^(?:0|[1-9]\d*)$/.test(index) ? report.files[Number(index)] : undefined;
-    if (!request?.target_repo_root || !report || !file) {
+    if (!reviewed?.target_repo_root || !report || !file) {
       res.status(404).json({ error: "Reviewed file not found." });
       return;
     }
@@ -441,11 +443,11 @@ export function registerAuthRoutes(
       res.json({ kind: "binary" });
       return;
     }
-    const result = await readGitFilePair(request.target_repo_root, report.comparison, file);
+    const result = await readGitFilePair(reviewed.target_repo_root, report.comparison, file);
     if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
     const pair = result.file;
     const baseline = pair.kind === "text" && against === undefined
-      ? await frozenOperatorBaseline(request, file, pair.after.contents) : null;
+      ? await frozenOperatorBaseline(reviewed, file, pair.after.contents) : null;
     res.json(baseline === null ? pair : { ...pair, operator_baseline: baseline });
   }, { operation: { id: "get:/api/auth/request/:id/files/:index", effects: ["ledger:read", "process:external"], requestSchema: null, reportingCategory: null }, fileRpc: "deny" });
 
@@ -485,6 +487,13 @@ export function registerAuthRoutes(
 
   app.get("/api/auth/request/:id/review/changes", async (req, res) => {
     const request = await authQueue.getRequest(req.params.id);
+    const revision = req.query?.revision;
+    if (request && typeof revision === "string") {
+      const report = requestReviewHistoricalVersion(db, request, revision)?.change_report;
+      if (!report) { res.status(404).json({ error: "Reviewed revision not found." }); return; }
+      res.json(report);
+      return;
+    }
     const against = req.query?.against;
     const comparison = request && typeof against === "string" ? await comparisonReport(request, against) : null;
     if (!comparison) { res.status(404).json({ error: "Reviewed comparison not found." }); return; }

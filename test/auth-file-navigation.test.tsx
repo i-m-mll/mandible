@@ -23,8 +23,14 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const here = () => `${window.location.pathname}${window.location.search}`;
 const body = () => document.querySelector<HTMLElement>('.auth-detail__body')!;
 const offset = (node: HTMLElement, value: number) => { node.scrollTop = value; fireEvent.scroll(node); };
-const info = () => screen.getByRole('tabpanel', { name: 'Info' });
-const diff = () => screen.getByRole('tabpanel', { name: 'Diff' });
+const info = () => screen.getByRole('tabpanel', { name: 'Reasons' });
+const diff = () => screen.getByRole('tabpanel', { name: 'Files' });
+const details = () => within(screen.getByRole('dialog', { name: 'Approval metadata' }));
+const openDetails = () => {
+  if (screen.queryByRole('dialog', { name: 'Approval metadata' })) return;
+  fireEvent.click(screen.getByRole('button', { name: 'More' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Details' }));
+};
 const clickFile = (region: HTMLElement) => {
   const link = region.querySelector<HTMLAnchorElement>('a.auth-change-file')!;
   const destination = link.getAttribute('href');
@@ -32,31 +38,31 @@ const clickFile = (region: HTMLElement) => {
   return destination;
 };
 
-it('restores two distinct Info visits and their live disclosures and offsets even when storage writes fail', async () => {
+it('restores two distinct Details visits and their live offsets even when storage writes fail', async () => {
   const view = render(<RoutedAuthReview />);
   await waitFor(info);
+  offset(body(), 240);
+  openDetails();
   const storageWrite = vi.mocked(window.localStorage.setItem).getMockImplementation();
   vi.mocked(window.localStorage.setItem).mockImplementation(() => { throw new Error('quota exceeded'); });
-  fireEvent.click(screen.getByRole('button', { name: 'Description', exact: true }));
-  fireEvent.click(screen.getByRole('button', { name: 'References', exact: true }));
   fireEvent.click(screen.getByRole('button', { name: 'Expand Comment action' }));
   fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
   fireEvent.click(screen.getByRole('button', { name: /JavaScript/ }));
   offset(screen.getByRole('region', { name: 'TypeScript files' }), 184);
   offset(screen.getByRole('region', { name: 'JavaScript files' }), 39);
-  offset(body(), 240);
   const destination1 = clickFile(screen.getByRole('region', { name: 'TypeScript files' }));
   await waitFor(diff);
   expect(here()).toBe(destination1);
   expect(window.history.state.unrelated).toBe('preserved');
   expect(here()).toContain('agent_session=fixture-agent');
-  fireEvent.click(screen.getByRole('tab', { name: 'Info', exact: true }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Reasons', exact: true }));
   await waitFor(info);
-  fireEvent.click(screen.getByRole('tab', { name: 'Directory', exact: true }));
-  fireEvent.click(screen.getByRole('button', { name: /^src\// }));
-  fireEvent.click(screen.getByRole('button', { name: /^a-long-reviewed-directory\// }));
-  offset(screen.getByRole('region', { name: 'Change breakdown items' }), 72);
   offset(body(), 340);
+  openDetails();
+  fireEvent.click(screen.getByRole('tab', { name: 'Directory', exact: true }));
+  fireEvent.click(details().getByRole('button', { name: /^src\// }));
+  fireEvent.click(details().getByRole('button', { name: /^a-long-reviewed-directory\// }));
+  offset(screen.getByRole('region', { name: 'Change breakdown items' }), 72);
   const destination2 = clickFile(screen.getByRole('region', { name: 'Change breakdown items' }));
   await waitFor(diff);
   act(() => window.history.back());
@@ -69,8 +75,6 @@ it('restores two distinct Info visits and their live disclosures and offsets eve
   expect(body().scrollTop).toBe(240);
   expect(screen.getByRole('region', { name: 'TypeScript files' }).scrollTop).toBe(184);
   expect(screen.getByRole('region', { name: 'JavaScript files' }).scrollTop).toBe(39);
-  expect(screen.getByRole('button', { name: 'Description', exact: true }).getAttribute('aria-expanded')).toBe('false');
-  expect(screen.getByRole('button', { name: 'References', exact: true }).getAttribute('aria-expanded')).toBe('false');
   expect(screen.getByRole('button', { name: 'Collapse Comment action' }).getAttribute('aria-expanded')).toBe('true');
   vi.mocked(window.localStorage.setItem).mockImplementation(storageWrite!);
   offset(screen.getByRole('region', { name: 'TypeScript files' }), 250);
@@ -134,17 +138,17 @@ it('honors an exact direct destination over a saved Console tab and cancels a de
   expect(body().contains(screen.getByRole('status'))).toBe(false);
 });
 
-it('keeps an edited restored visit mounted while another app tab owns history', async () => {
+it('keeps a restored Details visit mounted while another app tab owns history', async () => {
   const view = render(<RoutedAuthReview />);
   await waitFor(info);
+  openDetails();
   fireEvent.click(screen.getByRole('button', { name: /TypeScript/ }));
   clickFile(screen.getByRole('region', { name: 'TypeScript files' }));
   await waitFor(diff);
   act(() => window.history.back());
   await waitFor(info);
-  fireEvent.click(screen.getByRole('button', { name: 'Description', exact: true }));
+  openDetails();
   offset(screen.getByRole('region', { name: 'TypeScript files' }), 250);
-  offset(body(), 260);
   const owner = body();
   view.rerender(<RoutedAuthReview active={false} />);
   act(() => {
@@ -153,9 +157,7 @@ it('keeps an edited restored visit mounted while another app tab owns history', 
   });
   view.rerender(<RoutedAuthReview active={false} requests={[{ ...navigationRequest }]} />);
   expect(body()).toBe(owner);
-  expect(body().scrollTop).toBe(260);
   expect(screen.getByRole('region', { name: 'TypeScript files' }).scrollTop).toBe(250);
-  expect(screen.getByRole('button', { name: 'Description', exact: true }).getAttribute('aria-expanded')).toBe('false');
 });
 
 it('retains canonical detail content across compact-route summary reconciliation while explicit current values win', async () => {
@@ -187,6 +189,7 @@ it('retains canonical detail content across compact-route summary reconciliation
   expect(detailCalls).toHaveLength(1);
   view.rerender(<RoutedAuthReview requests={[{ ...summary, diff_summary: '', spec_content: '', output: '', change_report: null, actions: [] }]} />);
   expect(fileViewControls()).toHaveLength(0);
-  fireEvent.click(screen.getByRole('tab', { name: 'Info', exact: true }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Reasons', exact: true }));
   await waitFor(info);
+  openDetails();
 });

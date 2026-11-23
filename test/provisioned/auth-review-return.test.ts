@@ -6,7 +6,7 @@ import { chromium } from 'playwright-core';
 import { expect, it } from 'vitest';
 import { computeAuthMergeReviewMetadata } from '../../src/auth-context';
 import { createUser } from '../../src/users/store';
-import { AUTH_MERGE_REVIEW, commitOnBranch } from '../helpers/auth-queue-fixtures';
+import { AUTH_MERGE_REVIEW, commitOnBranch, git } from '../helpers/auth-queue-fixtures';
 import { launchTestBrowser } from '../helpers/chromium';
 import { operatorCliRig } from '../helpers/operator-cli-rig';
 
@@ -36,41 +36,84 @@ it('returns a Chromium review and lets the requester read its saved range throug
     const originalTarget = r.main();
     const page = await browser.newPage();
     page.setDefaultTimeout(5000);
+    const reviewLoaded = page.waitForResponse(response => response.request().method() === 'GET' && response.url().endsWith('/review'));
     await page.goto(`${harness.base}/auth/${request.id.slice(0, 8)}`);
+    const reviewResponse = await reviewLoaded;
+    expect(reviewResponse.ok(), await reviewResponse.text()).toBe(true);
 
-    const returnButton = page.getByRole('button', { name: 'Return', exact: true });
-    await returnButton.click({ trial: true });
-    const description = page.getByLabel('Request description', { exact: true });
+    const returnButton = page.getByRole('button', { name: 'Return to requester', exact: true });
+    await returnButton.waitFor();
+    expect(await returnButton.isDisabled()).toBe(true);
+    const description = page.locator('.document-comment-surface__text [aria-label="Request description"]');
     await description.focus();
     await page.keyboard.press('Home');
     for (const _ of 'Exercise') await page.keyboard.press('Shift+ArrowRight');
-    await page.getByRole('button', { name: 'Comment on selection', exact: true }).first().click();
+    await page.getByRole('toolbar', { name: 'Selection actions' }).getByRole('button', { name: 'Comment', exact: true }).click();
     const comment = 'Name the intended operator-facing change.';
-    const commentDialog = page.getByRole('dialog');
-    await commentDialog.getByRole('textbox').fill(comment);
-    await commentDialog.getByRole('button', { name: 'Save comment' }).click();
-    await page.getByText(comment, { exact: true }).waitFor();
-
-    await returnButton.click();
-    const returnDialog = page.getByRole('dialog');
-    const reason = 'Revise the wording before trying again.';
-    await returnDialog.getByRole('textbox').fill(reason);
+    await page.getByRole('textbox', { name: 'Add a comment…' }).fill(comment);
+    expect(await page.getByRole('dialog').count()).toBe(0);
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
     const saved = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/return'));
-    await returnDialog.getByRole('button', { name: 'Return', exact: true }).click();
+    await returnButton.click();
     const response = await saved;
     expect(response.status()).toBe(200);
     const { submission_id } = await response.json();
-    await returnDialog.waitFor({ state: 'hidden' });
+    await returnButton.waitFor({ state: 'hidden' });
+    expect(await page.getByRole('dialog').count()).toBe(0);
 
     const token = harness.auth.mintApiToken(requester.id).token;
     const read = await harness.mandible(['auth', 'review', 'show', request.id.slice(0, 8), '--json'], { env: { MANDIBLE_TOKEN: token } }).done;
     expect(read.code, read.stderr).toBe(0);
     expect(JSON.parse(read.stdout)).toMatchObject({
-      submission_id, status: 'returned', reason,
+      submission_id, status: 'returned',
       comments: [{ quote: 'Exercise', body: comment, source: { kind: 'request_description' } }],
     });
     expect(r.main()).toBe(originalTarget);
     expect(r.signer.touches).toEqual([]);
+
+    const editBranch = 'feature/browser-approve';
+    commitOnBranch(repo, editBranch, { 'proposal.md': '# Proposed wording\n' });
+    const { changeReport: editReport } = await computeAuthMergeReviewMetadata(repo, 'main', editBranch);
+    const editableRequest = await r.queue.submit({ ...AUTH_MERGE_REVIEW, type: 'merge', cwd: repo, target_repo_root: repo,
+      repo: path.basename(r.repo), head_branch: editBranch, base_branch: 'main', merge_head_sha: editReport.comparison.head_sha,
+      command: `mandible auth merge ${editBranch} --into main`, title: 'Approve the edited proposal', change_report: editReport,
+      narrative: 'Clarify the proposal.\n\n:::change{path="proposal.md"}\nProposed wording\n:::\n',
+    }, requester.id);
+
+    await page.goto(`${harness.base}/auth/${editableRequest.id.slice(0, 8)}`);
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
+    const proposal = page.locator('.document-comment-surface__text [aria-label="proposal.md after"]');
+    await proposal.focus();
+    await page.keyboard.press('Home');
+    await page.keyboard.press('End');
+    for (const _ of 'wording') await page.keyboard.press('Shift+ArrowLeft');
+    await page.getByRole('toolbar', { name: 'Selection actions' }).getByRole('button', { name: 'Edit', exact: true }).click();
+    const editor = page.getByRole('textbox', { name: 'Review draft for proposal.md' });
+    await editor.waitFor();
+    await page.waitForFunction(() => {
+      const selection = window.getSelection();
+      return selection?.toString() === 'wording' &&
+        selection.anchorNode?.parentElement?.closest('[contenteditable="true"]')?.getAttribute('aria-label') === 'Review draft for proposal.md';
+    });
+    await page.keyboard.type('language');
+
+    const approve = page.getByRole('button', { name: 'Approve', exact: true });
+    const freeze = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/review/freeze'));
+    await approve.click();
+    const prepared = await freeze;
+    expect(prepared.ok(), await prepared.text()).toBe(true);
+    const frozen = r.queue.getRequestExact(editableRequest.id)!;
+    expect(frozen.merge_effective_head_sha).toBeTruthy();
+    expect(git(repo, ['show', `${frozen.merge_effective_head_sha}:proposal.md`])).toBe('# Proposed language');
+    expect(harness.posts('approve')).toBe(0);
+    expect(r.signer.touches).toEqual([]);
+    await page.locator('.markdown-document').getByText('language', { exact: true }).waitFor();
+
+    const approval = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/approve'));
+    await approve.click();
+    const approved = await approval;
+    expect(approved.status(), await approved.text()).toBe(202);
+    expect(r.signer.touches).toHaveLength(1);
   } finally {
     await browser.close().finally(() => harness.close());
   }

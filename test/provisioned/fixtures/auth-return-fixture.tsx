@@ -1,11 +1,14 @@
 import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { bindOperationCatalog, getAuthRequestDetail } from '../../../ui/src/api';
+import { approveAuthRequest, bindOperationCatalog, getAuthRequestDetail } from '../../../ui/src/api';
 import type { AuthRequest } from '../../../ui/src/views/auth';
 import type { InstanceInfo } from '../../../src/types';
 import { RoutedAuthReview } from '../../helpers/auth-navigation-fixture';
+import { AppHoverTips } from '../../../ui/src/components/shared/AppHoverTips';
 
 const requestId = location.pathname.split('/').at(-1)!;
+document.documentElement.dataset.theme = new URLSearchParams(location.search).get('theme') === 'light' ? 'light' : 'dark';
+document.documentElement.dataset.style = 'codex';
 
 function PrivateReview() {
   const [instance, setInstance] = useState<InstanceInfo>();
@@ -27,8 +30,14 @@ function PrivateReview() {
   if (error) return <p role="alert">{error}</p>;
   if (!request || !instance) return null;
   const returned = request.status === 'returned';
-  return <RoutedAuthReview requests={returned ? [] : [request]} history={returned ? [request] : []}
-    instance={instance} onRefresh={refresh} />;
+  return <>
+    <RoutedAuthReview requests={returned ? [] : [request]} history={returned ? [request] : []}
+      instance={instance} onRefresh={refresh} onApprove={async (id, proof) => {
+        await approveAuthRequest(id, proof?.revision ?? request.lifecycle_revision ?? null, proof?.review);
+        await refresh();
+      }} />
+    <AppHoverTips />
+  </>;
 }
 
 render(<PrivateReview />, document.getElementById('root')!);
