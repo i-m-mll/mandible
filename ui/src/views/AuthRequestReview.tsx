@@ -414,9 +414,10 @@ export function AuthReviewRejectComposer({ review, anchor }: { review: AuthReque
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const style = useAnchoredMenu({ open: review.rejecting, anchorRef: anchor, menuRef, focusRef: inputRef, onDismiss: review.closeReject });
   if (!review.rejecting) return null;
-  return <form ref={menuRef} className="auth-review__dialog app-anchored-menu" aria-label="Reject request"
+  return <form ref={menuRef} className="auth-review__dialog sidebar-search-filter__panel sidebar-search-filter__panel--popover app-anchored-menu"
+    aria-label="Reject request"
     popover="manual" style={style} onSubmit={event => { event.preventDefault(); review.submitReject(); }}>
-    <textarea ref={inputRef} aria-label="Reason (optional)" placeholder="Reason (optional)" value={review.text}
+    <textarea ref={inputRef} className="app-multiline-input" aria-label="Reason (optional)" placeholder="Reason (optional)" value={review.text}
       onInput={event => review.setText(event.currentTarget.value)} />
     {review.error && <DetailPaneNotice severity="error" density="compact">{review.error}</DetailPaneNotice>}
     <button type="submit" className="btn btn--danger btn--sm" disabled={review.busy}>Reject</button>

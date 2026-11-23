@@ -1108,19 +1108,6 @@
   margin-top: 8px;
 }
 
-.issue-comment-form__input {
-  width: 100%;
-  background: var(--bg-secondary);
-  border: 1px solid var(--neutral-alpha-08);
-  color: var(--text-primary);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-family: var(--font-sans);
-  font-size: 13px;
-  resize: vertical;
-  min-height: 80px;
-}
-
 
 .issue-comment-form .btn {
   align-self: flex-end;

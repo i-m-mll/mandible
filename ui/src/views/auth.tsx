@@ -238,16 +238,17 @@ function AuthPrerequisiteItem({ prerequisite, findRequest, onSelect, row }: {
   const title = known ? getAuthTitle(known) : typeof entity?.title === 'string' && entity.title ? entity.title : short;
   const stateLabel = ready ? 'Complete' : state[0].toUpperCase() + state.slice(1);
   const dotStatus = ready ? 'completed' : state === 'pending' || state === 'unfinalized' ? 'pending' : 'failed';
-  const dot = <span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} aria-hidden="true" />;
   const tip = `${title} · ${stateLabel}`;
-  if (row) return <RequestListRow requestId={reference} selection="current" selected={false} leading={dot} title={title}
-    metadata={<><code>{short}</code><span>{stateLabel}</span></>} onSelect={() => onSelect(reference)} />;
+  if (row) return <AuthSidebarItem request={{
+    ...(known ?? entity), id: reference, title, status: dependency?.status ?? state,
+  }} selected={false} onSelect={onSelect} showStatus unresolved={!dependency?.request_id} />;
   return <a className="issue-pill auth-prerequisites__pill" href={entityHref('auth', short)}
     aria-description={tip} {...appTip(tip)} onClick={event => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault();
       onSelect(reference);
-    }}>{dot}<span className="issue-pill__id">{short}</span></a>;
+    }}><span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} aria-hidden="true" />
+    <span className="issue-pill__id">{short}</span></a>;
 }
 
 function AuthPrerequisites({ request, findRequest, onSelect }: { request: AuthRequest; findRequest: FindRequest; onSelect: (id: string) => void }) {
@@ -1806,10 +1807,14 @@ function AuthSidebarItem({
   request,
   selected,
   onSelect,
+  showStatus = false,
+  unresolved = false,
 }: {
   request: AuthRequest;
   selected: boolean;
   onSelect: (id: string) => void;
+  showStatus?: boolean;
+  unresolved?: boolean;
 }): JSX.Element {
   const id = getAuthId(request);
   const status = getAuthStatus(request);
@@ -1817,7 +1822,7 @@ function AuthSidebarItem({
 
   // Determine dot class for status indicator
   let dotStatus: string;
-  if (failedLike) {
+  if (failedLike || unresolved) {
     dotStatus = 'failed';
   } else if (status === 'completed') {
     dotStatus = 'completed';
@@ -1839,34 +1844,17 @@ function AuthSidebarItem({
 
   const repo = request.repo && request.repo.trim() ? request.repo.trim() : null;
 
-  return (
-    <button
-      type="button"
-      className={`auth-sidebar-item${selected ? ' auth-sidebar-item--selected' : ''}`}
-      aria-current={selected ? 'true' : undefined}
-      data-request-id={id}
-      onClick={() => onSelect(id)}
-    >
-      <span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} />
-      <span className="auth-sidebar-item__body">
-        <span className="auth-sidebar-item__title-row">
-          {/* Bug: a44fd6a — render auth sidebar title as inline markdown */}
-          <span
-            className="auth-sidebar-item__title"
-            dangerouslySetInnerHTML={{
-              __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))),
-            }}
-          />
-        </span>
-        <span className="auth-sidebar-item__metadata">
-          {repo && <span className="auth-sidebar-item__repo" {...appTip(repo)}>{repo}</span>}
-          <span className={`type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`}>{sidebarTypeMeta.label}</span>
-          {status === 'approved' && <span className="auth-sidebar-item__metadata-text">Queued</span>}
-          <span className="auth-sidebar-item__metadata-text">{timestampLabel}</span>
-        </span>
-      </span>
-    </button>
-  );
+  return <RequestListRow requestId={id} selection="current" selected={selected} onSelect={() => onSelect(id)}
+    leading={<span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} />}
+    title={<span dangerouslySetInnerHTML={{ __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))) }} />}
+    metadata={<>
+      {repo && <span className="auth-sidebar-item__repo" {...appTip(repo)}>{repo}</span>}
+      {!unresolved && <span className={`type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`}>{sidebarTypeMeta.label}</span>}
+      {showStatus || status === 'approved' ? <span className="auth-sidebar-item__metadata-text">
+        {status === 'approved' ? 'Queued' : getStatusLabel(request)}
+      </span> : null}
+      {!unresolved && <span className="auth-sidebar-item__metadata-text">{timestampLabel}</span>}
+    </>} />;
 }
 
 /** Hooks management panel for auth hook settings. */
