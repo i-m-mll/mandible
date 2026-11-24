@@ -857,7 +857,6 @@
 /* Spec panel: rendered markdown prose */
 .spec-panel {
   font-family: var(--font-sans);
-  font-size: 14px;
   line-height: 1.6;
 }
 
@@ -1228,11 +1227,6 @@
   font-weight: 600;
 }
 
-.spec-panel h1 { font-size: 1.3em; }
-.spec-panel h2 { font-size: 1.15em; }
-.spec-panel h3 { font-size: 1em; }
-.spec-panel h4 { font-size: 0.9em; }
-
 .spec-panel p {
   margin: 0.5em 0;
 }
@@ -1267,7 +1261,6 @@
   border-radius: 8px;
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: 12px;
   line-height: 1.4;
   margin: 0.5em 0;
 }
