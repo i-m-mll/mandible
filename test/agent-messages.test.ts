@@ -34,7 +34,7 @@ beforeEach(() => {
   router = new Router({ clientAuth: { authenticate: () => ({ user_id: user.id, slug: user.slug,
     method: "local_socket", source: "local_socket", credential_id: null, effect_ceiling: PRODUCTION_EFFECTS }),
     mode: () => "strict", recordUnattributedWrite: () => undefined } });
-  const reconciler = new WakeReconciler({ db, routes: WakeRouteStore.memory(), executors: WAKE_EXECUTORS,
+  const reconciler = new WakeReconciler({ db, routes: new WakeRouteStore(), executors: WAKE_EXECUTORS,
     environment: DEFAULT_WAKE_ENVIRONMENT, kinds: ["message"], logger: () => undefined });
   registerNoticeRoutes(router, queue.notices!, db, { reconciler });
 });

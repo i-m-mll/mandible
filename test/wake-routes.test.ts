@@ -3,10 +3,11 @@
  * session registered, and the sender is told the message's reach.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
-import { setDb, type Db } from "../src/db.js";
+import { migrate, openDb, setDb, type Db } from "../src/db.js";
 import type { MessageReach, MessageView } from "../src/notices/messages.js";
 import { createOutcomeReporter } from "../src/notices/report.js";
 import { WakeReconciler, WAKE_HOLD_MS } from "../src/notices/wake/reconciler.js";
@@ -16,8 +17,9 @@ import { registerNoticeRoutes } from "../src/routes/notices.js";
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
 import { applyExecutionEnvelope, SessionExecutionStore } from "../src/session-execution.js";
 import { Router } from "../src/server.js";
-import { getOperator } from "../src/users/store.js";
+import { getOperator, setupOperator } from "../src/users/store.js";
 import { createMigratedDb } from "./helpers/auth-queue-fixtures.js";
+import { startDaemon } from "../src/index.js";
 import { fileRpc, runCli, scratchDir, startStubDaemon } from "./helpers/cli-process.js";
 
 const TOKEN = "tok-5f0c2a9e3d1b4c55";
@@ -34,7 +36,7 @@ function setup(sendWaitMs?: number): void {
   const user = getOperator(db)!;
   queue = new AuthQueue({ db, outcomeReporter: createOutcomeReporter(db) });
   root = scratchDir("wake-routes");
-  routes = WakeRouteStore.open(path.join(root, "main.wake-routes.json")).store;
+  routes = new WakeRouteStore();
   const executor: WakeExecutor = (target) => {
     calls.push(target);
     if (answer !== "pending") return Promise.resolve(answer);
@@ -152,7 +154,7 @@ describe("the reconciler", () => {
 describe("routes", () => {
   beforeEach(() => setup());
 
-  it("are registered by the collect request and by a command, replaced by a later one, and kept across a reload", async () => {
+  it("are registered by the collect request and by a command, and replaced by a later one", async () => {
     await collect("claude", SESSION, CLAUDE_ROUTE);
     await observe("Stop");
     await send();
@@ -166,11 +168,7 @@ describe("routes", () => {
     const antigravity = { provider: "antigravity", address: "127.0.0.1:5123", token: TOKEN } as const;
     expect((await router.invoke({ method: "GET", url: "/api/messages", wake_route: antigravity,
       ambient_identity: { provider: "antigravity", session_id: "c1", agent_id: "c1" } })).status).toBe(200);
-    const file = path.join(root, "main.wake-routes.json");
-    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
-    const reloaded = WakeRouteStore.open(file);
-    expect(reloaded.error).toBeNull();
-    expect([reloaded.store.get("claude", SESSION), reloaded.store.get("antigravity", "c1")]).toEqual([replaced, antigravity]);
+    expect(routes.get("antigravity", "c1")).toEqual(antigravity);
   });
 
   it("refuses a route of another provider than the caller's, or a malformed one", async () => {
@@ -194,14 +192,11 @@ describe("routes", () => {
     expect(routes.get("claude", SESSION)).toBeNull();
   });
 
-  it("leave the token in no database row, log line or stored error", async () => {
+  it("leave the token out of a wake's stored error and log", async () => {
     await collect("claude", SESSION, CLAUDE_ROUTE);
     await observe("Stop");
     answer = { ok: false, error: { code: "entry_point_failed", detail: `refused token ${TOKEN}` } };
     await send();
-    const copy = path.join(root, "copy.db");
-    db.exec(`VACUUM INTO '${copy}'`);
-    expect(fs.readFileSync(copy).includes(TOKEN)).toBe(false);
     expect(logs.join("\n")).not.toContain(TOKEN);
     expect(db.prepare("SELECT error FROM session_wakes").get()).toEqual({ error: "refused token <token>" });
   });
@@ -285,15 +280,50 @@ describe("the CLI", () => {
     } finally { await daemon.close(); fs.rmSync(bin, { recursive: true, force: true }); }
   });
 
-  it("carries the route in a file-RPC request", async () => {
-    const seen: unknown[] = [];
-    const rpc = fileRpc((request) => { seen.push(request); return { status: 200, body: { message: message(reaches[0]) } }; });
+  it("sends no route in a file-RPC request, whose spool file would hold the token", async () => {
+    const seen: string[] = [];
+    const rpc = fileRpc((request) => { seen.push(JSON.stringify(request)); return { status: 200, body: { message: message(reaches[0]) } }; });
     try {
       const result = await runCli(["message", "status", "0badc0de"], { env: env({ ...rpc.env, ANTIGRAVITY_CONVERSATION_ID: "c1",
         CLAUDE_CODE_SESSION_ID: undefined, ANTIGRAVITY_LS_ADDRESS: "127.0.0.1:5123", ANTIGRAVITY_CSRF_TOKEN: TOKEN }) as Record<string, string> });
       expect(result.status, result.stderr).toBe(0);
-      expect(seen.map((request) => (request as { wake_route?: unknown }).wake_route))
-        .toContainEqual({ provider: "antigravity", address: "127.0.0.1:5123", token: TOKEN });
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.join("\n")).not.toContain(TOKEN);
     } finally { rpc.responder.stop(); }
+  });
+});
+
+describe("a daemon", () => {
+  beforeEach(() => setup());
+  it("keeps a token the notices hook registered in memory only: in no file under its state directory, its database or its logs", async () => {
+    // A unix socket path must fit in 104 bytes, which the test runtime root does not leave room for.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mw-")), socket = path.join(dir, "api.sock");
+    const prior = { socket: process.env.MANDIBLE_SOCKET, sessions: process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR };
+    process.env.MANDIBLE_SOCKET = socket;
+    process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR = path.join(dir, "local-sessions");
+    const ledger = openDb(path.join(dir, "mandible.db"));
+    migrate(ledger);
+    setupOperator(ledger, { display_name: "Operator", email: "operator@example.invalid" });
+    ledger.close();
+    const daemon = await startDaemon({ port: 0, dbPath: path.join(dir, "mandible.db"), pidFilePath: path.join(dir, "daemon.pid"), handleSignals: false });
+    try {
+      const routeEnv = { MANDIBLE_SOCKET: socket, MANDIBLE_BASE: undefined, MANDIBLE_TOKEN: undefined, MANDIBLE_SESSION_ID: undefined,
+        MANDIBLE_EXECUTION_CONTEXT: undefined, CODEX_THREAD_ID: undefined, CODEX_SESSION_ID: undefined, ANTIGRAVITY_CONVERSATION_ID: undefined,
+        CLAUDE_SESSION_ID: undefined, CLAUDE_AGENT_ID: undefined, CLAUDE_CODE_SESSION_ID: SESSION,
+        CLAUDE_CODE_MESSAGING_SOCKET: CLAUDE_ROUTE.socket, CLAUDE_CODE_MESSAGING_TOKEN: TOKEN };
+      const hook = await runCli([path.resolve("src/cli/hook-notices.ts"), "claude"], { command: "bun", env: routeEnv,
+        input: JSON.stringify({ session_id: SESSION, hook_event_name: "Stop" }) });
+      expect(hook.status, hook.stderr).toBe(0);
+    } finally {
+      await daemon.close();
+      if (prior.socket === undefined) delete process.env.MANDIBLE_SOCKET; else process.env.MANDIBLE_SOCKET = prior.socket;
+      if (prior.sessions === undefined) delete process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR;
+      else process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR = prior.sessions;
+    }
+    const files = (fs.readdirSync(dir, { recursive: true }) as string[]).map((name) => path.join(dir, name))
+      .filter((file) => fs.lstatSync(file).isFile());
+    expect(files.some((file) => file.endsWith("mandible.db"))).toBe(true);
+    expect(files.filter((file) => fs.readFileSync(file).includes(TOKEN))).toEqual([]);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

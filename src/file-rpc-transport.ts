@@ -21,8 +21,6 @@ export interface FileRpcRequest {
   ambient_identity?: unknown;
   managed_client?: boolean;
   request_origin?: unknown;
-  /** The wake route of the session the CLI runs in; see `REGISTERED_ROUTE`. */
-  wake_route?: unknown;
   // Issue 708dc4c — per-spool capability token. A file-RPC caller's identity is
   // otherwise only filesystem access with self-asserted ambient identity (now a
   // hint). A valid capability token resolves to an authenticated user at the
@@ -163,7 +161,6 @@ export class FileRpcTransport {
         request.capability_token,
         request.managed_client === true || Object.hasOwn(request, "ambient_identity"),
         Object.hasOwn(request, "request_origin") ? { request_origin: request.request_origin } : {},
-        request.wake_route,
       );
       this.writeResponse(requestPath, requestId, response);
       responded = true;
@@ -258,7 +255,6 @@ export class FileRpcTransport {
     capabilityToken?: string,
     managedClient = false,
     originEnvelope: { request_origin?: unknown } = {},
-    wakeRoute?: unknown,
   ): Promise<RouterInvokeResponse> {
     const pathname = new URL(requestUrl, "http://localhost").pathname;
     if (!this.router.resolveFileRpcPolicy(method, requestUrl)) {
@@ -277,7 +273,6 @@ export class FileRpcTransport {
         ...originEnvelope,
         credential: typeof capabilityToken === "string" ? capabilityToken : null,
         transport: "file-rpc",
-        wake_route: wakeRoute,
       });
     } catch (error) {
       return {

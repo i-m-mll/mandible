@@ -847,7 +847,7 @@ api_report_terminal_response() {
 api_http_exchange() {
   local method="$1" request_path="$2" data="$3" output_file="$4"
   local retry_limit="${MANDIBLE_HTTP_RETRIES:-2}" attempt=0 http_status curl_exit
-  local body_tmp="" stderr_tmp retryable empty_response token="" token_cfg="" route_headers="" wake_route="" local_human=0 csrf="" gated=0 optional_gate=0 gate_status=0 provider service="" account="" lookup_status=0 missing=""
+  local body_tmp="" stderr_tmp retryable empty_response token="" token_cfg="" wake_route="" local_human=0 csrf="" gated=0 optional_gate=0 gate_status=0 provider service="" account="" lookup_status=0 missing=""
   local ambient_headers=() curl_args=()
 
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
@@ -876,12 +876,8 @@ api_http_exchange() {
   else
     token="$(api_client_token "$method")"
   fi
+  # The route's token reaches curl only through a pipe (`-H @-`), never a file or argv.
   wake_route=$(api_wake_route_json)
-  if [[ -n "$wake_route" ]]; then
-    route_headers=$(api_temp_file)
-    printf 'X-Mandible-Wake-Route: %s\n' "$wake_route" > "$route_headers"
-    wake_route=""
-  fi
   if [[ -n "$token" ]]; then
     token_cfg=$(api_temp_file)
     printf 'header = "Authorization: Bearer %s"\n' "$token" > "$token_cfg"
@@ -905,7 +901,7 @@ api_http_exchange() {
     curl_args=(-s --max-time "${MANDIBLE_HTTP_TIMEOUT:-15}" -o "$output_file" -w "%{http_code}")
     api_is_local_socket && curl_args+=(--unix-socket "$MANDIBLE_SOCKET")
     [[ -n "$token_cfg" ]] && curl_args+=(--config "$token_cfg")
-    [[ -n "$route_headers" ]] && curl_args+=(-H "@$route_headers")
+    [[ -n "$wake_route" ]] && curl_args+=(-H @-)
     (( ${#ambient_headers[@]} )) && curl_args+=("${ambient_headers[@]}")
     if (( local_human )); then
       curl_args+=(-H "Origin: $MANDIBLE_CANONICAL_ORIGIN" -H 'Sec-Fetch-Site: same-origin')
@@ -916,7 +912,9 @@ api_http_exchange() {
       curl_args+=(--data-binary "@$body_tmp")
     fi
     curl_args+=("$(api_base)$request_path")
-    if http_status=$(curl "${curl_args[@]}" 2>"$stderr_tmp"); then
+    if http_status=$(if [[ -n "$wake_route" ]]; then
+          printf 'X-Mandible-Wake-Route: %s\n' "$wake_route" | curl "${curl_args[@]}" 2>"$stderr_tmp"
+        else curl "${curl_args[@]}" 2>"$stderr_tmp"; fi); then
       curl_exit=0
     else
       curl_exit=$?
@@ -952,7 +950,6 @@ api_http_exchange() {
   rm -f "$stderr_tmp"
   [[ -z "$body_tmp" ]] || rm -f "$body_tmp"
   [[ -z "$token_cfg" ]] || rm -f "$token_cfg"
-  [[ -z "$route_headers" ]] || rm -f "$route_headers"
   printf '%s' "$http_status"
 }
 
@@ -1675,7 +1672,7 @@ api_file_rpc_exchange() {
   # trace line, which would echo the capability token.
   local rpc_token_traced=0
   case "$-" in *x*) rpc_token_traced=1; { set +x; } 2>/dev/null ;; esac
-  MANDIBLE_CLIENT_TOKEN="$(api_client_token "$method")" MANDIBLE_WAKE_ROUTE="$(api_wake_route_json)" jq -n \
+  MANDIBLE_CLIENT_TOKEN="$(api_client_token "$method")" jq -n \
     --arg id "$request_id" \
     --arg method "$method" \
     --arg path "$request_path" \
@@ -1692,7 +1689,6 @@ api_file_rpc_exchange() {
      + (if ($body[0] != null) then {body:$body[0]} else {} end)
      + (if $attach_field != "" and $attach_name != "" then {attachments:{($attach_field):$attach_name}} else {} end)
      + (if ($ENV.MANDIBLE_CLIENT_TOKEN // "") != "" then {capability_token:$ENV.MANDIBLE_CLIENT_TOKEN} else {} end)
-     + (if ($ENV.MANDIBLE_WAKE_ROUTE // "") != "" then {wake_route:($ENV.MANDIBLE_WAKE_ROUTE | fromjson)} else {} end)
      + (if $execution_context != null or $managed_client
         then {ambient_identity:$execution_context}
         else {} end)' > "$request_tmp"

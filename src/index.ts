@@ -28,7 +28,6 @@ import { ReaperTimer } from "./session-reaper.js";
 import { broadcast, SseManager, setSseManager } from "./sse.js";
 import { Router, createServer, createLocalSocketServer, startServer, attachWebSocketUpgrade } from "./server.js";
 import { localApiSocketPath, startLocalApiSocket } from "./local-api-socket.js";
-import { raiseDaemonIncident } from "./operational-incidents.js";
 import { FileRpcTransport } from "./file-rpc-transport.js";
 import { SessionExecutionOutbox } from "./session-execution.js";
 import { executionOutboxDir } from "./session-execution-outbox.js";
@@ -46,7 +45,7 @@ import { registerNoticeRoutes } from "./routes/notices.js";
 import { DEFAULT_WAKE_ENVIRONMENT } from "./notices/wake/environment.js";
 import { WAKE_EXECUTORS } from "./notices/wake/executors.js";
 import { WakeReconciler } from "./notices/wake/reconciler.js";
-import { WakeRouteStore, wakeRouteFile } from "./notices/wake/routes.js";
+import { WakeRouteStore } from "./notices/wake/routes.js";
 import { createOutcomeReporter } from "./notices/report.js";
 import { registerWorkRoutes } from "./routes/work.js";
 import { registerIssueRoutes } from "./routes/issues.js";
@@ -272,14 +271,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     secretsDir: options.clientAuthDir,
     sessionAuthorityDir: process.env.MANDIBLE_LOCAL_SESSION_AUTHORITY_DIR?.trim() || undefined,
   });
-  const socketPath = localApiSocketPath(instance);
-  const wakeRouteStore = WakeRouteStore.open(wakeRouteFile(socketPath));
-  if (wakeRouteStore.error) {
-    logger("error", "wake_routes_unreadable", { file: wakeRouteFile(socketPath), ...wakeRouteStore.error });
-    raiseDaemonIncident(db, { task: "wake-routes/load", exitClass: "validation" });
-  }
   const wakeReconciler = new WakeReconciler({
-    db, routes: wakeRouteStore.store, executors: WAKE_EXECUTORS, environment: DEFAULT_WAKE_ENVIRONMENT, kinds: ["message"], logger,
+    db, routes: new WakeRouteStore(), executors: WAKE_EXECUTORS, environment: DEFAULT_WAKE_ENVIRONMENT, kinds: ["message"], logger,
   });
   const stopWakeWatch = wakeReconciler.watchExecution();
   // Create router and register all partition routes
@@ -435,6 +428,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }
 
   const fileRpcTransport = new FileRpcTransport({ router, logger, instance });
+  const socketPath = localApiSocketPath(instance);
   const executionOutbox = new SessionExecutionOutbox(executionOutboxDir(socketPath), db, logger);
   const serverOptions: Parameters<typeof createServer>[0] = {
     db, sse, logger, version, router,
