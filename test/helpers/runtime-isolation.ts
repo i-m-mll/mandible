@@ -37,7 +37,7 @@ const isolatedValues: Record<string, string | undefined> = {
 };
 // Tests state their own caller: the agent session running the suite must not
 // leak its attribution or daemon selection into them.
-const ambientCaller = /^(CLAUDE|CODEX_|GEMINI_|MANDIBLE_(MANAGED_|SESSION_|TOKEN$|BASE$|TRANSPORT$|CLI_DIR$|EXECUTION_CONTEXT$|AGENT_REF$|REQUEST_ORIGIN$))/;
+const ambientCaller = /^(CLAUDE|CODEX_|ANTIGRAVITY_|MANDIBLE_(MANAGED_|SESSION_|TOKEN$|BASE$|TRANSPORT$|CLI_DIR$|EXECUTION_CONTEXT$|AGENT_REF$|REQUEST_ORIGIN$))/;
 // Command-line git configuration (a caller's signing key, say) would otherwise
 // apply to every fixture repository while the private home hides its companions.
 const ambientGitConfig = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/;

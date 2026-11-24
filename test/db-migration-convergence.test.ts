@@ -1605,3 +1605,52 @@ describe("v242 operator authority path", () => {
     } finally { db.close(); }
   });
 });
+
+describe("v257 antigravity provider", () => {
+  it("deletes Gemini CLI conversations with their dependents and leaves no gemini row or constraint", () => {
+    const db = migrateFixtureThrough(256);
+    try {
+      const conversation = (id: string, source: string, parent: { id: string; source: string; session: string } | null = null) =>
+        db.prepare(`INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, started_at, session_id, tags,
+          parent_conversation_id, parent_source, parent_session_id) VALUES (?, ?, ?, 'h', 1, '2026-01-01T00:00:00Z', ?, '[]', ?, ?, ?)`)
+          .run(id, source, `/home/u/${source}/${id}.json`, `${id}-session`, parent?.id ?? null, parent?.source ?? null, parent?.session ?? null);
+      conversation("gem", "gemini");
+      conversation("kept", "codex");
+      conversation("child", "claude_code", { id: "gem", source: "gemini", session: "gem-session" });
+      db.prepare("UPDATE conversations SET notes = 'kept note', starred = 1 WHERE id = 'kept'").run();
+      for (const [id, conversationId, provider] of [["src-gem", "gem", "gemini"], ["src-kept", "kept", "codex"]]) {
+        db.prepare(`INSERT INTO conversation_sources (id, conversation_id, provider, native_session_id, parser_format, parser_version,
+          normalization_version, created_at, updated_at) VALUES (?, ?, ?, ?, 'provider-jsonl', '1', '1', 1, 1)`).run(id, conversationId, provider, `${conversationId}-session`);
+        db.prepare(`INSERT INTO conversation_source_versions (id, source_id, content_sha256, byte_length, generation, parser_format,
+          parser_version, normalization_version, created_at) VALUES (?, ?, ?, 1, 'sealed_sha256', 'provider-jsonl', '1', '1', 1)`).run(`${id}-v`, id, "a".repeat(64));
+        db.prepare(`INSERT INTO conversation_source_aliases (id, source_id, root_kind, root_path, relative_path, path, alias_kind,
+          first_seen_at, last_seen_at) VALUES (?, ?, 'provider', '/home/u', ?, ?, 'active', 1, 1)`).run(`${id}-a`, id, `${conversationId}.json`, `/home/u/${conversationId}.json`);
+      }
+      db.prepare("INSERT INTO conversation_archive_states (conversation_id, archived_at) VALUES ('gem', 1), ('kept', 1)").run();
+      const gemini = createUser(db, { slug: "gemini", kind: "agent", display_name: "Gemini" });
+      for (const [type, value] of [["app_name", "gemini"], ["provider_session_env", "GEMINI_SESSION_ID"]]) {
+        db.prepare(`INSERT INTO user_bindings (id, user_id, binding_type, value, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 1)`)
+          .run(`binding-${value}`, gemini.id, type, value);
+      }
+      const kept = db.prepare("SELECT * FROM conversations WHERE id = 'kept'").get();
+
+      migrate(db);
+
+      expect(db.prepare("SELECT id FROM conversations ORDER BY id").all()).toEqual([{ id: "child" }, { id: "kept" }]);
+      expect(db.prepare("SELECT * FROM conversations WHERE id = 'kept'").get()).toEqual(kept);
+      expect(db.prepare("SELECT parent_conversation_id, parent_source, parent_session_id FROM conversations WHERE id = 'child'").get())
+        .toEqual({ parent_conversation_id: null, parent_source: null, parent_session_id: null });
+      expect(db.prepare("SELECT id FROM conversation_sources").all()).toEqual([{ id: "src-kept" }]);
+      expect(db.prepare("SELECT source_id FROM conversation_source_versions").all()).toEqual([{ source_id: "src-kept" }]);
+      expect(db.prepare("SELECT source_id FROM conversation_source_aliases").all()).toEqual([{ source_id: "src-kept" }]);
+      expect(db.prepare("SELECT conversation_id FROM conversation_archive_states").all()).toEqual([{ conversation_id: "kept" }]);
+      expect(db.prepare("SELECT id, slug, display_name FROM users WHERE kind = 'agent'").all())
+        .toEqual([{ id: gemini.id, slug: "antigravity", display_name: "Antigravity" }]);
+      expect(db.prepare("SELECT value FROM user_bindings WHERE user_id = ? ORDER BY value").all(gemini.id))
+        .toEqual([{ value: "ANTIGRAVITY_CONVERSATION_ID" }, { value: "antigravity" }]);
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE instr(sql, 'gemini') > 0").all()).toEqual([]);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+      expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+    } finally { db.close(); }
+  });
+});

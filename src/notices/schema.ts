@@ -31,3 +31,14 @@ export const NOTIFICATIONS_SCHEMA_SQL: readonly string[] = [
 
 export const NOTICE_REVIEW_SUBMISSION_SQL =
   "ALTER TABLE notifications ADD COLUMN review_submission_id TEXT REFERENCES briefing_submissions(id) ON DELETE RESTRICT";
+
+/**
+ * A message row (`subject_kind = 'message'`) is its own subject, carries its
+ * rendered text from the moment it is sent, and is addressed to the exact agent
+ * in `responsible_agent_ref`. Only a message has a sender.
+ */
+export const NOTICE_MESSAGE_SQL: readonly string[] = [
+  "ALTER TABLE notifications ADD COLUMN sender_agent_ref TEXT CHECK(sender_agent_ref IS NULL OR subject_kind = 'message')",
+  `CREATE INDEX idx_notifications_undelivered_messages ON notifications(responsible_agent_ref)
+     WHERE delivered_at IS NULL AND subject_kind = 'message'`,
+];

@@ -1,0 +1,12 @@
+{
+  "session_id": "8f2c6b1e-4d3a-4e7b-9a10-2b5c7d9e0f11",
+  "transcript_path": "/Users/user/.claude/projects/-Users-user-scratch/8f2c6b1e-4d3a-4e7b-9a10-2b5c7d9e0f11.jsonl",
+  "cwd": "/Users/user/scratch",
+  "permission_mode": "default",
+  "agent_id": "a4e1c2b7d9f03a6e",
+  "agent_type": "general-purpose",
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/Users/user/.claude/projects/-Users-user-scratch/8f2c6b1e-4d3a-4e7b-9a10-2b5c7d9e0f11/subagents/agent-a4e1c2b7d9f03a6e.jsonl",
+  "last_assistant_message": "done"
+}

@@ -86,7 +86,7 @@ export function toolValueText(value: unknown, fallback: string): string {
 }
 
 function toolResultPresentation(item: ToolCallItem, fallback: string) {
-  const result=projectNativeToolResult(item.output,fallback,item.tool_kind,item.tool_name,item.tool_id);
+  const result=projectNativeToolResult(item.output,fallback,item.tool_kind);
   return {...result, failed:result.failed || item.execution_outcome==='failed' || (item.exit_code!==undefined && item.exit_code!==0),
     running:item.execution ? item.execution.state==='ongoing' : item.content_completion==='streaming',
     ...(item.elapsed_ms!==undefined && Number.isFinite(item.elapsed_ms) && item.elapsed_ms>=0 ? {wallTimeSeconds:item.elapsed_ms/1000,timingScope:'operation' as const,decoded:true} : {}),

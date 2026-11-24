@@ -45,7 +45,7 @@ it("reads current lineage ledger snapshots on workers", async () => {
       VALUES (?, ?, ?, 'hash', 1, 'Child', ?, ?, 'child', 'codex', 'unindexed-parent', '2026-01-01', '2026-01-01')`);
     insert.run('old', 'codex', '/tmp/old', '2026-01-01', 'duplicate');
     insert.run('new', 'codex', '/tmp/new', '2026-10-01', 'duplicate');
-    insert.run('other', 'gemini', '/tmp/other', '2026-10-02', 'other');
+    insert.run('other', 'antigravity', '/tmp/other', '2026-10-02', 'other');
 
     const gaps = await reader.run("lineage_gaps", { since: null, source: null });
     expect(gaps.gaps.map(gap => gap.conversation_id)).toEqual(['other', 'new']);

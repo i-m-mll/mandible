@@ -70,7 +70,7 @@ it("refuses non-scalar metadata and inherited identity fields without evaluating
       } }] });
       const result = await bash("set -e; source cli/api.sh; api_scope_inherited_identity; printf reached", target.port, {
         MANDIBLE_SESSION_ID: "invalid-row", CODEX_THREAD_ID: "caller", CODEX_SESSION_ID: "",
-        CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "", MANDIBLE_NO_KEYCHAIN_TOKEN: "1",
+        CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", ANTIGRAVITY_CONVERSATION_ID: "", MANDIBLE_NO_KEYCHAIN_TOKEN: "1",
       });
       expect(result.status).not.toBe(0);
       expect(result.stdout).not.toContain("reached");

@@ -29,7 +29,6 @@ async function files(): Promise<Array<[string, string]>> {
   const rows: Array<[string, string]> = [];
   if (provider === "all" || provider === "codex") rows.push(...(await codexFiles()).map(file => ["codex", file.path] as [string, string]));
   if (provider === "all" || provider === "claude") rows.push(...walk(path.join(home, ".claude/projects")).filter(name => name.endsWith(".jsonl")).map(name => ["claude", name] as [string, string]));
-  if (provider === "all" || provider === "gemini") rows.push(...walk(path.join(home, ".gemini/tmp")).filter(name => name.includes("/chats/") && /\.jsonl?$/.test(name)).map(name => ["gemini", name] as [string, string]));
   return rows;
 }
 async function records(filename: string, count: number): Promise<Array<Record<string, unknown>>> {
@@ -49,7 +48,7 @@ async function summary(source: string, filename: string): Promise<Summary> {
       result.session_id = row.sessionId || row.session_id || result.session_id;
       result.cwd = row.cwd || result.cwd;
       result.model = row.model || result.model;
-    } else if (source === "gemini") result.session_id = row.id || row.session_id || result.session_id;
+    }
   }
   return result;
 }

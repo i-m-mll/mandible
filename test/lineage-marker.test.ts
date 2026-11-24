@@ -31,8 +31,8 @@ describe("lineage marker grammar", () => {
     [`[mandible child role=worker parent=claude:${CLAUDE_PARENT.toUpperCase()} parent-role=coordinator]`, {
       relation: "child", parent: { source: "claude_code", sessionId: CLAUDE_PARENT }, parentRole: "coordinator", role: "worker",
     }],
-    [`  [mandible successor predecessor=gemini:${CLAUDE_PARENT} role=coordinator]  \nI hand you the goal.`, {
-      relation: "successor", predecessor: { source: "gemini", sessionId: CLAUDE_PARENT }, role: "coordinator",
+    [`  [mandible successor predecessor=antigravity:${CLAUDE_PARENT} role=coordinator]  \nI hand you the goal.`, {
+      relation: "successor", predecessor: { source: "antigravity", sessionId: CLAUDE_PARENT }, role: "coordinator",
     }],
   ])("accepts %s", (line, marker) => {
     expect(readOpeningLine(line)).toMatchObject({ kind: "marker", marker });

@@ -63,7 +63,7 @@ export async function backfillConversationLineage(db: Db): Promise<LineageBackfi
   `).all() as UndeclaredRow[];
   const result: LineageBackfillResult = {
     examined: rows.length,
-    declared: { claude_code: 0, codex: 0, gemini: 0 },
+    declared: { claude_code: 0, codex: 0, antigravity: 0 },
     lineage_source: { transcript: 0, codex_state_database: 0, none: 0 },
     linked: 0,
     unresolved_parent: 0,

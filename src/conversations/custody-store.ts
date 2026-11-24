@@ -346,60 +346,9 @@ async function codexDependencies(source: CustodySource) {
   return { providerRoot: codexRoot, nativeIdentities: [...sessionIds], dependencies, generated, restore: { capability: "partial" as const, adapter_version: ADAPTER_VERSION, limitations: ["Codex rollout and history-base bytes are restorable without overwrite.", "Provider-private UI state has no guaranteed thread-scoped export API and is recorded as unsupported.", "Native resume after reinjection is provider-version-dependent and not guaranteed."] } };
 }
 
-function geminiDependencies(source: CustodySource) {
-  const sourcePath = path.resolve(source.source_path);
-  const match = sourcePath.match(/^(.*[/\\]\.gemini)[/\\]tmp[/\\]([^/\\]+)[/\\]chats[/\\]/);
-  if (!match) throw new CustodyError("Gemini source is outside a .gemini/tmp project root", "unsupported_source");
-  const geminiRoot = match[1];
-  const projectRoot = path.join(geminiRoot, "tmp", match[2]);
-  const dependencies: CustodyDependency[] = [];
-  for (const file of listRegularFiles(projectRoot)) {
-    const relativeProject = path.relative(projectRoot, file).replace(/\\/g, "/");
-    const isMain = path.resolve(file) === sourcePath;
-    const exactPathIdentity = relativeProject.split("/").some((part) => part === source.session_id);
-    let parsedIdentity = false;
-    if (!exactPathIdentity) {
-      const { data } = readStableFile(file);
-      try {
-        const parsed = JSON.parse(data.toString("utf8")) as unknown;
-        const visit = (value: unknown, key = ""): void => {
-          if (parsedIdentity) return;
-          if ((key === "sessionId" || key === "session_id") && value === source.session_id) {
-            parsedIdentity = true;
-          } else if (value && typeof value === "object") {
-            for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) visit(child, childKey);
-          }
-        };
-        visit(parsed);
-      } catch {
-        // Non-JSON sidecars require an exact session-id path component.
-      }
-    }
-    const sessionScoped = exactPathIdentity || parsedIdentity;
-    if (!isMain && !sessionScoped) continue;
-    const relative = assertRelative(path.relative(geminiRoot, file), "Gemini dependency path");
-    const role = isMain ? "chat" : /subagent/i.test(relative) ? "subagent_artifact" : /plan/i.test(relative) ? "plan" : /task/i.test(relative) ? "task" : /tool/i.test(relative) ? "tool_output" : /log|activit/i.test(relative) ? "activity_log" : "session_artifact";
-    dependencies.push({ source_path: file, archive_path: `providers/gemini/${relative}`, provider_relative_path: relative, role, required: isMain });
-  }
-  const generated: Array<{ archive_path: string; role: string; data: Buffer }> = [];
-  const projectsPath = path.join(geminiRoot, "projects.json");
-  if (fs.existsSync(projectsPath)) {
-    const { data } = readStableFile(projectsPath);
-    try {
-      const parsed = JSON.parse(data.toString("utf8")) as { projects?: Record<string, string> };
-      const value = parsed.projects?.[match[2]];
-      if (value) generated.push({ archive_path: "metadata/gemini/project-mapping.json", role: "project_root_mapping", data: Buffer.from(`${JSON.stringify({ schema: "mandible-gemini-project-mapping@1", projects: { [match[2]]: value } }, null, 2)}\n`) });
-    } catch {
-      throw new CustodyError("Gemini projects.json is not valid JSON", "invalid_provider_metadata");
-    }
-  }
-  return { providerRoot: geminiRoot, nativeIdentities: [source.session_id, `project:${match[2]}`], dependencies, generated, restore: { capability: "partial" as const, adapter_version: ADAPTER_VERSION, limitations: ["Only session-addressable Gemini artifacts are captured; provider-global databases are never copied.", "Gemini native resume after reinjection is provider-version-dependent and not guaranteed."] } };
-}
-
 async function discover(source: CustodySource, options: CustodyCaptureOptions) {
   if (source.provider === "claude_code") return claudeDependencies(source, options);
   if (source.provider === "codex") return codexDependencies(source);
-  if (source.provider === "gemini") return geminiDependencies(source);
   throw new CustodyError(`unsupported provider: ${String(source.provider)}`, "unsupported_provider");
 }
 

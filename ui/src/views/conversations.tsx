@@ -343,13 +343,13 @@ function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void 
 const SOURCE_LABELS: Record<ConversationSource, string> = {
   claude_code: 'Claude',
   codex: 'Codex',
-  gemini: 'Gemini',
+  antigravity: 'Antigravity',
 };
 
 const SIDEBAR_PROVIDER_LABELS: Record<ConversationSource, string> = {
   claude_code: 'Claude',
   codex: 'Codex',
-  gemini: 'agy',
+  antigravity: 'agy',
 };
 
 // ── Helpers ──
@@ -547,14 +547,14 @@ function sourceFromSession(session: ConsoleSession): ConversationSource | null {
   const command = (session.command ?? '').toLowerCase();
   if (agent.includes('claude') || command.includes('claude')) return 'claude_code';
   if (agent.includes('codex') || command.includes('codex')) return 'codex';
-  if (agent.includes('gemini') || command.includes('gemini') || agent.includes('agy') || command.includes('agy')) return 'gemini';
+  if (agent.includes('antigravity') || command.includes('antigravity') || agent.includes('agy') || command.includes('agy')) return 'antigravity';
   return null;
 }
 
 const CHAT_PROVIDER_MARKS: Record<ConversationSource, OfficialProviderMarkKind | null> = {
   claude_code: 'anthropic',
   codex: 'openai',
-  gemini: null,
+  antigravity: null,
 };
 
 function parseModelFromArgs(args: string[] | undefined): string | undefined {
@@ -4223,7 +4223,7 @@ export function ConversationsView({
                 <div className="sidebar-search-filter__section">
                   <div className="sidebar-search-filter__label">Agent</div>
                   <div className="sidebar-search-filter__options">
-                    {(['all', 'claude_code', 'codex', 'gemini'] as const).map((src) => (
+                    {(['all', 'claude_code', 'codex'] as const).map((src) => (
                       <button
                         key={src}
                         type="button"

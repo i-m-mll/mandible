@@ -91,8 +91,8 @@ export class ClaudeSdkTransport {
     const settingSources = settings.setting_sources ?? ["user", "project", "local"];
     const notices = this.notices && !loadedSettingsDeliverNotices(settingSources, request.cwd ?? process.cwd()) ? this.notices : null;
     const noticesHook: HookCallback = async (event) => {
-      if (!notices || event.hook_event_name !== "UserPromptSubmit" || (event.agent_id && event.agent_id !== event.session_id)) return {};
-      const owed = notices.collect("claude", event.session_id);
+      if (!notices || event.hook_event_name !== "UserPromptSubmit") return {};
+      const owed = notices.collect({ provider: "claude", session_id: event.session_id, ...(event.agent_id ? { agent_id: event.agent_id } : {}) });
       if (owed.length === 0) return {};
       notices.delivered(owed.map((notice) => notice.id));
       return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: owed.map((notice) => notice.text).join("\n") } };

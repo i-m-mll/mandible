@@ -1,6 +1,6 @@
 # Conversations
 
-Mandible discovers and indexes Claude Code, Codex, and Gemini conversations.
+Mandible discovers and indexes Claude Code and Codex conversations.
 Provider-native files own the transcript bytes; Mandible stores identities,
 annotations, relationships, and source bindings in its ledger. Navigation and
 masked search indexes are disposable. Blocks shown in the UI or returned by the
@@ -18,19 +18,18 @@ Conversations are ingested automatically. The daemon watches the filesystem for 
 
 ### Watch Paths
 
-The ingestion service monitors three directories:
+The ingestion service monitors these directories:
 
 | Agent | Directory | File Pattern |
 |-------|-----------|--------------|
 | Claude Code | `~/.claude/projects/` | `**/*.jsonl` |
 | Codex | `~/.codex/sessions/` | `**/*.jsonl` |
-| Gemini | `~/.gemini/tmp/` | `**/chats/*.json`, `**/chats/*.jsonl` |
 
 Each directory is watched via `chokidar` with write-finish detection (stabilityThreshold: 1 second). New files and file modifications both trigger ingestion.
 
 ### How Ingestion Works
 
-When a new or modified transcript file is detected, the ingestion service parses it into normalized blocks using the appropriate parser (Claude, Codex, or Gemini). Files still being written are debounced to avoid partial reads.
+When a new or modified transcript file is detected, the ingestion service parses it into normalized blocks using the appropriate parser (Claude or Codex). Files still being written are debounced to avoid partial reads.
 
 Ingestion reconciles changed native sources and their metadata. Sparse navigation anchors and masked search indexes can be rebuilt from available sources.
 
@@ -84,7 +83,7 @@ Available filters:
 
 | Parameter | Description |
 |-----------|-------------|
-| `source` | Filter by agent source: `claude_code`, `codex`, `gemini`. |
+| `source` | Filter by agent source: `claude_code`, `codex`, `antigravity`. |
 | `starred` | `true` or `false` — filter by starred status. |
 | `search` | Full-text search in conversation titles (SQL LIKE). |
 | `session_id` | Filter by the agent session ID that produced the conversation. |

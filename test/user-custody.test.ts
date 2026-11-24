@@ -87,7 +87,7 @@ describe("the user acting on an agent-held approval request", () => {
   const preconditions = (id: string) => ({ expected_revision: queue.lifecycleRevision(id),
     expected_custody_generation: queue.requestResponsibility(queue.getRequestExact(id)!).custody_generation });
   const responsibility = (id: string) => queue.requestResponsibility(queue.getRequestExact(id)!);
-  const owed = (session: string) => queue.notices!.collect("claude", session).map(notice => notice.text);
+  const owed = (session: string) => queue.notices!.collect({ provider: "claude", session_id: session }).map(notice => notice.text);
 
   it("recovers a handoff whose bound work unit an agent holds, leaving its holder and generation unchanged", async () => {
     const request = await submit();
@@ -129,7 +129,7 @@ describe("the user acting on an agent-held approval request", () => {
     db.prepare("UPDATE auth_requests SET status = 'failed', exit_code = 1 WHERE id = ?").run(request.id);
     appendAuthLifecycleEvent(db, { requestId: request.id, eventType: "failed", priorStatus: "pending", nextStatus: "failed", occurredAt: Date.now() });
     queue.raiseNotice(request.id, { kind: "transition", actor: null });
-    queue.notices!.delivered(queue.notices!.collect("claude", "holder").map(notice => notice.id));
+    queue.notices!.delivered(queue.notices!.collect({ provider: "claude", session_id: "holder" }).map(notice => notice.id));
     expect(owed("holder")).toEqual([]);
 
     const added = await router.invoke({ method: "POST", url: `/api/auth/request/${request.id}/actions`, body: {

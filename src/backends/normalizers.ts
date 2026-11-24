@@ -1,5 +1,5 @@
 /**
- * Shared JSON-line normalizers for Codex/Gemini stream output.
+ * Shared JSON-line normalizers for Codex stream output.
  * Bug: 8d3328c — Extracted from PTYBackend for reuse by SpawnBackend.
  *
  * Each normalizer takes a raw JSON line (string) and returns a ConsoleStreamEvent
@@ -15,54 +15,6 @@ export interface CodexNormalizerState {
   threadId: string | null;
   turnCount: number;
   model: string | null;
-}
-
-export function normalizeGeminiStreamLine(line: string): ConsoleStreamEvent | null {
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(line) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-
-  const type = typeof parsed.type === "string" ? parsed.type : "";
-  const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : "";
-  if (type === "init") {
-    return {
-      type: "system",
-      subtype: "init",
-      session_id: sessionId,
-      model: typeof parsed.model === "string" ? parsed.model : undefined,
-    };
-  }
-  if (type === "message") {
-    const role = parsed.role === "assistant" ? "assistant" : "user";
-    return {
-      type: role,
-      session_id: sessionId,
-      parent_tool_use_id: null,
-      message: {
-        role,
-        content: [{ type: "text", text: typeof parsed.content === "string" ? parsed.content : "" }],
-        ...(role === "assistant" && typeof parsed.model === "string" ? { model: parsed.model } : {}),
-      },
-    };
-  }
-  if (type === "result") {
-    const stats = (parsed.stats && typeof parsed.stats === "object") ? parsed.stats as Record<string, unknown> : {};
-    const status = parsed.status === "success" ? "success" : "error_during_execution";
-    return {
-      type: "result",
-      subtype: status,
-      session_id: sessionId,
-      duration_ms: typeof stats.duration_ms === "number" ? stats.duration_ms : 0,
-      num_turns: 1,
-      total_cost_usd: 0,
-      is_error: status !== "success",
-      ...(status !== "success" ? { errors: [typeof parsed.status === "string" ? parsed.status : "Gemini request failed"] } : {}),
-    };
-  }
-  return null;
 }
 
 export function normalizeCodexStreamLine(

@@ -1,0 +1,15 @@
+{
+  "session_id": "01a204ea-a755-70a3-bf8a-efbe6bc70bb8",
+  "turn_id": "01a204ea-a916-7451-aae3-fcd63fb63da9",
+  "transcript_path": "/Users/user/.codex/sessions/2026/11/22/rollout-2026-11-22T15-20-16-01a204ea-a755-70a3-bf8a-efbe6bc70bb8.jsonl",
+  "cwd": "/Users/user/scratch/codex",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-6.2-sol",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo hi"
+  },
+  "tool_response": "hi\n",
+  "tool_use_id": "exec-22d1b136-ef06-4e9f-a5a1-96d4b1ddeaf3"
+}

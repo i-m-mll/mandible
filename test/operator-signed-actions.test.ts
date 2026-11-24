@@ -45,7 +45,7 @@ it("attributes tokenless writes to their agent session and rejects unknown manag
   const ambientIdentity = { provider: "codex", provider_session_id: "worker-session" };
   const response = await router.invoke({ method: "POST", url: "/api/write", body: {}, ambient_identity: ambientIdentity, transport: "local-socket" });
   expect(response).toMatchObject({ status: 200, body: { user: agentId, session: "worker-session", attribution: { user_id: agentId, evidence_method: "session_claim" } } });
-  expect((await router.invoke({ method: "POST", url: "/api/write", body: {}, ambient_identity: { provider: "gemini", provider_session_id: "unknown" }, transport: "local-socket" })).status).toBe(401);
+  expect((await router.invoke({ method: "POST", url: "/api/write", body: {}, ambient_identity: { provider: "antigravity", provider_session_id: "unknown" }, transport: "local-socket" })).status).toBe(401);
 });
 
 it("performs courtesy actions on the route's identity check alone, without a touch", async () => {

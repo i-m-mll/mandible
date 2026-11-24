@@ -176,8 +176,6 @@ Provider adapters capture at least:
   checkpoints only when rewind is promised;
 - Codex: selected rollout, every required `history_base` rollout, title entry,
   and a versioned per-thread export of state held outside the rollout;
-- Gemini: chat files, project-root mapping, activity logs, tool output, plans,
-  tasks, session artifacts, and nested subagent material.
 
 Two promises remain distinct:
 

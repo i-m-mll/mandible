@@ -17,7 +17,7 @@ import { SseManager, setSseManager } from "../../src/sse.js";
 import { createLedgerProject } from "./auth-queue-fixtures.js";
 import { rig, type Rig } from "./approval-gate-rig.js";
 
-const markerEnv = /^(CLAUDE|CODEX_|GEMINI_|MANDIBLE_(MANAGED_|SESSION_|EXECUTION_CONTEXT$|AGENT_REF$))/;
+const markerEnv = /^(CLAUDE|CODEX_|ANTIGRAVITY_|MANDIBLE_(MANAGED_|SESSION_|EXECUTION_CONTEXT$|AGENT_REF$))/;
 
 export interface CliRun {
   child: ChildProcess;

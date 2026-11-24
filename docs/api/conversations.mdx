@@ -1,6 +1,6 @@
 # Conversations API
 
-Conversations are discovered from local provider-native files (Claude Code, Codex, Gemini). The ledger stores identities, annotations, relationships, and source bindings; transcript content is read from available native sources. The API provides listing, filtering, export, and DAG-based branching.
+Conversations are discovered from local provider-native files (Claude Code, Codex). The ledger stores identities, annotations, relationships, and source bindings; transcript content is read from available native sources. The API provides listing, filtering, export, and DAG-based branching.
 
 ## Endpoints
 
@@ -14,7 +14,7 @@ List conversations with pagination, filtering, and sorting.
 |---|---|---|
 | `page` | number | Page number (default: 1) |
 | `limit` | number | Results per page (default: 50, max: 200) |
-| `source` | string | Filter by source (`claude_code`, `codex`, `gemini`) |
+| `source` | string | Filter by source (`claude_code`, `codex`, `antigravity`) |
 | `starred` | string | `true` or `false` |
 | `search` | string | Title substring search |
 | `session_id` | string | Filter by linked session ID |

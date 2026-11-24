@@ -14,7 +14,7 @@ function runWrap(base?: string) {
     const command = `source "$MANDIBLE_CLI_DIR/api.sh"; printf '%s|%s|%s|%s|%s|%s' "\${MANDIBLE_BASE-unset}" "$MANDIBLE_LOCAL_SOCKET" "\${MANDIBLE_TOKEN-unset}" "$MANDIBLE_MANAGED_CLIENT" "\${CODEX_THREAD_ID-unset}" "$MANDIBLE_MANAGED_APP"`;
     const env = { ...process.env, HOME: root, MANDIBLE_CLI_DIR: CLI_DIR,
       MANDIBLE_TOKEN: "stale-inherited-token", CODEX_THREAD_ID: "task-123",
-      CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "",
+      CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", ANTIGRAVITY_CONVERSATION_ID: "",
       // No daemon answers here; the best-effort session registration need not retry.
       MANDIBLE_HTTP_RETRIES: "0",
     };

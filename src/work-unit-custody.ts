@@ -32,7 +32,7 @@ export type HolderLivenessState = LivenessState;
  * `stopped` needs positive evidence for the unit's own session identity: a
  * recorded Mandible or console session, none of them live, or, for an indexed
  * Codex thread with no such record, a completed thread-writer lock scan that
- * finds no Codex process holding the thread's lock. A Claude or Gemini
+ * finds no Codex process holding the thread's lock. A Claude
  * transcript alone, an id Mandible never registered, a liveness check that
  * could not complete, or a unit with no session identity is `unknown`. Liveness
  * is informational for an explicit responsibility transfer.

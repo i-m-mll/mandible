@@ -12,7 +12,7 @@
     "hook.notification": {"route":["hook","notification"],"grammar":{"kind":"sequence","items":[]}},
     "hook.statusline": {"route":["hook","statusline"],"grammar":{"kind":"sequence","items":[]}},
     "hook.session-execution": {"route":["hook","session-execution"],"grammar":{"kind":"sequence","items":[{"kind":"argument","name":"provider","value":{"type":"enum","values":["claude","codex"]}}]}},
-    "hook.notices": {"route":["hook","notices"],"grammar":{"kind":"sequence","items":[{"kind":"argument","name":"provider","value":{"type":"enum","values":["claude","codex"]}}]}},
+    "hook.notices": {"route":["hook","notices"],"grammar":{"kind":"sequence","items":[{"kind":"argument","name":"provider","value":{"type":"enum","values":["claude","codex","antigravity"]}}]}},
     "git-guard": {"route":["git-guard"],"grammar":{"kind":"sequence","items":[{"kind":"argument","name":"phase","value":{"type":"enum","values":["prepared","committed","aborted"]}}]}},
     "changes": {
       "route": ["changes"],
@@ -2152,7 +2152,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|gemini|all","value": {"type": "enum","values": ["codex","claude","gemini","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|all","value": {"type": "enum","values": ["codex","claude","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "Nd|YYYY-MM-DD","value": {"type": "enum","values": ["Nd","YYYY-MM-DD"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "N","value": {"type": "integer","min": 1}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
@@ -2164,7 +2164,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude_code|gemini","value": {"type": "enum","values": ["codex","claude_code","gemini"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude_code","value": {"type": "enum","values": ["codex","claude_code"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
@@ -2174,7 +2174,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|gemini|all","value": {"type": "enum","values": ["codex","claude","gemini","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|all","value": {"type": "enum","values": ["codex","claude","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
@@ -2184,7 +2184,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|gemini|all","value": {"type": "enum","values": ["codex","claude","gemini","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|all","value": {"type": "enum","values": ["codex","claude","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
@@ -2717,6 +2717,37 @@
         ]
       }
     },
+    "message.send": {
+      "route": ["message", "send"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "option","names": ["--to"],"values": [{"kind": "argument","name": "agent-ref","value": {"type": "string"}}]},
+          {"kind": "optional","item": {"kind": "option","names": ["-m","--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
+    "message.status": {
+      "route": ["message", "status"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "argument","name": "id","value": {"type": "string"}},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
+    "message.list": {
+      "route": ["message", "list"],
+      "grammar": {
+        "kind": "sequence",
+        "items": [
+          {"kind": "optional","item": {"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "1-200","value": {"type": "integer","min": 1,"max": 200}}]}},
+          {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
+        ]
+      }
+    },
     "credential.redact": {
       "route": ["credential", "redact"],
       "grammar": {
@@ -2733,7 +2764,7 @@
       "grammar": {
         "kind": "sequence",
         "items": [
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|gemini|all","value": {"type": "enum","values": ["claude","codex","gemini","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|antigravity|all","value": {"type": "enum","values": ["claude","codex","antigravity","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--tag"],"values": [{"kind": "argument","name": "TAG","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "Nd","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "N","value": {"type": "integer","min": 1}}]}]}},
@@ -2834,7 +2865,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "time|Nd","value": {"type": "string"}}]}]}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|gemini|all","value": {"type": "enum","values": ["claude","codex","gemini","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|antigravity|all","value": {"type": "enum","values": ["claude","codex","antigravity","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--json"],"values": []}]}}
         ]
       }
@@ -3194,7 +3225,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "target","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|gemini|all","value": {"type": "string"}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "codex|claude|all","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--head"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--parse"],"values": []}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "role","value": {"type": "string"}}]}]}},
@@ -3231,7 +3262,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "argument","name": "query","value": {"type": "string"}},
-          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|gemini|codex|all","value": {"type": "enum","values": ["claude","gemini","codex","all"]}}]}]}},
+          {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--provider"],"values": [{"kind": "argument","name": "claude|codex|antigravity|all","value": {"type": "enum","values": ["claude","codex","antigravity","all"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--role"],"values": [{"kind": "argument","name": "user|assistant","value": {"type": "enum","values": ["user","assistant"]}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--since"],"values": [{"kind": "argument","name": "time","value": {"type": "string"}}]}]}},
           {"kind": "optional","item": {"kind": "sequence","items": [{"kind": "option","names": ["--limit"],"values": [{"kind": "argument","name": "n","value": {"type": "integer","min": 1}}]}]}},

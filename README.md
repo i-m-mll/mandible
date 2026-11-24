@@ -13,7 +13,7 @@ Mandible is an operations manager for AI agents. It consists of:
 1. A daemon that manages a ledger: issues, work units, user approvals, annotatable briefings, and an index of agent conversations. 
 2. A CLI that allows agents to interact with the ledger. 
 3. A web and desktop app where the user can interact with the ledger, as well as review conversations.
-4. Integrations that connect Claude Code, Codex, and Gemini to the ledger: lifecycle hooks and Chat.
+4. Integrations that connect Claude Code, Codex, and Antigravity to the ledger: lifecycle hooks and Chat.
 
 ## Feature highlights
 
@@ -21,7 +21,7 @@ Mandible is an operations manager for AI agents. It consists of:
 - **Structured issues**: kinds, priorities, typed relationships, checkpoints outside the comment stream, working notes, full revision history, and keyword search.
 - **Umbrella issues** for coordinating lanes of agent work, with a delegation manifest that reports what changed since the coordinator last looked.
 - **Work units** join an issue, a branch, and the agent on it; a stopped agent's work can be taken over, a live agent's never.
-- **Every conversation indexed** as it is written, across Claude Code, Codex, and Gemini: search, star, tag, annotate, export; parent and child sessions linked.
+- **Every conversation indexed** as it is written, across Claude Code and Codex: search, star, tag, annotate, export; parent and child sessions linked.
 - **Sessions without registration**, with live, stopped, or unknown liveness, and terminal navigation when a process is attached.
 - **Briefings**: review artifact versions in rounds and read project files directly from protected branches in shared groups.
 - **Artifacts**: versioned files with Git or managed custody, cited from issues, with standing notes on selected text.
@@ -122,7 +122,7 @@ A briefing presents one artifact version for review. The operator selects text, 
 
 ### Conversations and sessions
 
-The daemon watches `~/.claude/projects/`, `~/.codex/sessions/`, and `~/.gemini/tmp/`, parses each transcript into typed blocks, and stores them compressed. The provider's file remains the veridical record; `mandible logs inspect` reads it directly, and `mandible conversations` reads the index.
+The daemon watches `~/.claude/projects/` and `~/.codex/sessions/`, parses each transcript into typed blocks, and stores them compressed. The provider's file remains the veridical record; `mandible logs inspect` reads it directly, and `mandible conversations` reads the index.
 
 ```bash
 mandible conversations search "auth request" --provider claude --since 7d
@@ -133,7 +133,7 @@ mandible conversations comment <ref> -m 'note'
 
 Star, tag, and comment are Mandible's own metadata, kept apart from the provider's title. Custody of the provider-native bytes is separate from the index; see [Conversation custody](docs/conversation-custody.md).
 
-**Identity.** A session is identified by its provider session id: a Claude session or subagent id, a Codex thread id, a Gemini session id. Its durable record is its indexed conversation; nothing else is required for it to appear, to be linked to an issue, or to hold a work unit. A `sessions` row is an optional process attachment, pid, terminal and multiplexer navigation, kill, created by Claude's lifecycle hooks and by Mandible's own launches. Every surface that takes a session (the overview, `mandible session link-issue`, work-unit holders, `--session` on the parent role) accepts a provider session id, a Claude subagent's agent id, a console session id, or a session row id, and none creates a row; `mandible issue parent-role assume` defaults to the caller's own provider session id.
+**Identity.** A session is identified by its provider session id: a Claude session or subagent id, a Codex thread id, an Antigravity conversation id. Its durable record is its indexed conversation; nothing else is required for it to appear, to be linked to an issue, or to hold a work unit. A `sessions` row is an optional process attachment, pid, terminal and multiplexer navigation, kill, created by Claude's lifecycle hooks and by Mandible's own launches. Every surface that takes a session (the overview, `mandible session link-issue`, work-unit holders, `--session` on the parent role) accepts a provider session id, a Claude subagent's agent id, a console session id, or a session row id, and none creates a row; `mandible issue parent-role assume` defaults to the caller's own provider session id.
 
 **Liveness.** One rule answers `live`, `stopped`, or `unknown` for any alias: a process row's status, a console session's status, or Codex's own thread-writer lock. A check that cannot complete is `unknown`, and the reconciler, archival, custody, and the parent role all defer behind it. Work-unit payloads carry the same tri-state.
 
@@ -190,9 +190,9 @@ Mandible has a contract and a policy layer. The contract (`cli/instructions-cont
 
 Codex threads are sessions by their thread id; nothing registers them. Liveness comes from Codex's thread-writer lock. A Codex worker that runs `mandible work-unit activate --worker` binds its thread for archival after delivery. Chat drives Codex through the Codex app server. Sandboxed sessions without loopback (Cowork) reach the daemon through the file-RPC spool under `~/.cache/mandible/agent-rpc/`; see [Cowork integration](docs/cowork.md).
 
-### Gemini
+### Antigravity
 
-Gemini sessions are known from their ingested transcripts.
+An Antigravity conversation is identified by `ANTIGRAVITY_CONVERSATION_ID`, so its `mandible` commands act as `agent:antigravity:<conversation>`. Its transcripts are not indexed.
 
 See [Agent integration setup](docs/getting-started/agent-integration.mdx) and [connection methods](docs/concepts/agent-tiers.mdx).
 

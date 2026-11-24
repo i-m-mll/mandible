@@ -46,9 +46,9 @@ describe("session and work-unit ownership", () => {
 
     expect(first.map((user) => user.id)).toEqual(second.map((user) => user.id));
     expect(listUsers(db, { kind: "agent" }).map((user) => user.slug)).toEqual([
+      "antigravity",
       "claude-code",
       "codex",
-      "gemini",
     ]);
     expect(listBindings(db, "claude-code").map((binding) =>
       `${binding.binding_type}:${binding.value}`,
@@ -71,7 +71,7 @@ describe("session and work-unit ownership", () => {
 
     expect(response.status).toBe(200);
     expect((response.body as { agents: Array<{ slug: string }> }).agents.map((agent) => agent.slug))
-      .toEqual(["claude-code", "codex", "gemini"]);
+      .toEqual(["claude-code", "codex", "antigravity"]);
   });
 
   it("binds registry and discovery app registrations and fails conflicts closed", () => {
@@ -80,14 +80,14 @@ describe("session and work-unit ownership", () => {
     const registry = new SessionRegistry(db, logger);
     const codex = getUserBySlug(db, "codex")!;
     const claude = getUserBySlug(db, "claude-code")!;
-    const gemini = getUserBySlug(db, "gemini")!;
+    const antigravity = getUserBySlug(db, "antigravity")!;
 
     registry.registerSession({ id: "registry-codex", app: "codex" });
     registry.registerSession({ id: "registry-claude", app: "claude" });
-    registry.registerSession({ id: "registry-gemini", app: "gemini" });
+    registry.registerSession({ id: "registry-antigravity", app: "antigravity" });
     expect(owner("sessions", "registry-codex")).toBe(codex.id);
     expect(owner("sessions", "registry-claude")).toBe(claude.id);
-    expect(owner("sessions", "registry-gemini")).toBe(gemini.id);
+    expect(owner("sessions", "registry-antigravity")).toBe(antigravity.id);
 
     const worker = createUser(db, {
       slug: "worker-owner",
@@ -194,7 +194,7 @@ describe("session and work-unit ownership", () => {
   it("recognizes exact and session-only ambient execution evidence", () => {
     expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1" })).toEqual({ provider: "codex", agent_id: "codex-1", session_id: null });
     expect(resolveAmbientProviderIdentity({ CLAUDE_CODE_SESSION_ID: "claude-1" })).toEqual({ provider: "claude", agent_id: null, session_id: "claude-1" });
-    expect(resolveAmbientProviderIdentity({ GEMINI_SESSION_ID: "gemini-1" })).toEqual({ provider: "gemini", agent_id: "gemini-1", session_id: "gemini-1" });
+    expect(resolveAmbientProviderIdentity({ ANTIGRAVITY_CONVERSATION_ID: "agy-1" })).toEqual({ provider: "antigravity", agent_id: "agy-1", session_id: "agy-1" });
     expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1", CODEX_SESSION_ID: "enclosing" })).toEqual({ provider: "codex", agent_id: "codex-1", session_id: "enclosing" });
     expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1", CLAUDE_SESSION_ID: "claude-1" })).toBeNull();
   });

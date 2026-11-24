@@ -324,8 +324,8 @@ export function registerConversationRoutes(
     const query = req.query ?? {};
     const since = parseSinceQuery(query.since);
     const source = sourceFromQuery(query.provider);
-    if (source !== null && source !== "claude_code" && source !== "codex" && source !== "gemini") {
-      sendJson(res, 400, { error: "provider must be claude, codex, gemini, or all" });
+    if (source !== null && source !== "claude_code" && source !== "codex" && source !== "antigravity") {
+      sendJson(res, 400, { error: "provider must be claude, codex, antigravity, or all" });
       return;
     }
     sendJson(res, 200, await reader.run("lineage_gaps", { since, source }));

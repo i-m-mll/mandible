@@ -290,7 +290,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   });
   const allowTrackedReviewRetention = operationalMutationsAllowed && instance.allowed_effects.includes("files:production");
   registerAuthRoutes(router, authQueue, ledgerReader, allowTrackedReviewRetention);
-  registerNoticeRoutes(router, authQueue.notices!);
+  registerNoticeRoutes(router, authQueue.notices!, db);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
     config_path: instance.role === "preview"
       ? path.join(instance.preview_root!, "work", "repos.json")

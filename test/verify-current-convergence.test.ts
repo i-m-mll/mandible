@@ -25,7 +25,7 @@ it('runs tokenless local verification with canonical project, responsibility, an
     const invoke = () => spawnSync(runtime, ['scripts/verify-current-convergence.ts', request], {
       encoding: 'utf8', timeout: STATE_DEADLINE_MS,
       env: { ...process.env, ...qualifiedRuntimeFixtureEnv(), MANDIBLE_HOME: home, MANDIBLE_DB: dbFile, GIT_OPTIONAL_LOCKS: '0', CODEX_THREAD_ID: 'recovery-cli-session',
-        CODEX_SESSION_ID: '', CLAUDE_CODE_SESSION_ID: '', CLAUDE_SESSION_ID: '', GEMINI_SESSION_ID: '', MANDIBLE_SESSION_ID: '', MANDIBLE_MANAGED_APP: '' },
+        CODEX_SESSION_ID: '', CLAUDE_CODE_SESSION_ID: '', CLAUDE_SESSION_ID: '', ANTIGRAVITY_CONVERSATION_ID: '', MANDIBLE_SESSION_ID: '', MANDIBLE_MANAGED_APP: '' },
     });
     const admitted = invoke();
     expect(admitted.status).toBe(1);

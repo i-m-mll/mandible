@@ -89,21 +89,33 @@ export const BRANCH_REMOVAL_OUTPUT = z.object({
 });
 export type BranchRemovalOutput = z.infer<typeof BRANCH_REMOVAL_OUTPUT>;
 
-export const NOTICE_PROVIDERS = ["claude", "codex", "gemini"] as const;
+export const NOTICE_PROVIDERS = ["claude", "codex", "antigravity"] as const;
 export type NoticeProvider = (typeof NOTICE_PROVIDERS)[number];
 
 /**
- * A session notice goes to the root provider session that contains the agent
- * currently answering for the subject, and is delivered at that session's main
- * thread. `session_id` is the value the provider passes as `session_id` on hook
- * stdin.
+ * Every undelivered session row of the log (a settlement notice, a fired
+ * reminder, a message) is handed to its recipient at whichever of the
+ * recipient's hook events comes first. Settlement notices and reminders are
+ * addressed to a root provider session and are delivered only on its main
+ * thread; a message is addressed to one exact agent and is delivered only to
+ * that agent. `session_id` is the value the provider passes as `session_id` on
+ * hook stdin.
  */
 export interface NoticeRecipient {
   provider: NoticeProvider;
   session_id: string;
 }
 
-export const NOTIFICATION_SUBJECT_KINDS = ["auth_request", "reminder", "credential_leak", "convergence_failure"] as const;
+/**
+ * The hook that collects: the provider's session, and the agent inside it when
+ * the payload names one. The caller is the session's main thread when it names
+ * none or names the session itself.
+ */
+export interface NoticeCaller extends NoticeRecipient {
+  agent_id?: string;
+}
+
+export const NOTIFICATION_SUBJECT_KINDS = ["auth_request", "reminder", "credential_leak", "convergence_failure", "message"] as const;
 export type NotificationSubjectKind = (typeof NOTIFICATION_SUBJECT_KINDS)[number];
 
 /** One row of the notification log. */
@@ -113,6 +125,8 @@ export interface NotificationRecord {
   recipient:
     | { kind: "session"; provider: NoticeProvider; session_id: string; responsible_agent_ref: string }
     | { kind: "user"; user_id: string };
+  /** A message's sender; null for a message sent from outside any agent session, and for every other kind. */
+  sender_agent_ref: string | null;
   raised_at: number;
   /** For a session: when the hook confirmed the text reached the provider. For the user: when it was read. */
   delivered_at: number | null;
@@ -120,13 +134,14 @@ export interface NotificationRecord {
 }
 
 /**
- * `POST /api/notices/collect`: the turn-start hook's one request. It returns the
- * notices owed to the session, rendered now. An empty list is the common case
- * and must cost one indexed read.
+ * `POST /api/notices/collect`: the hook's one request. It returns the rows owed
+ * to the caller, rendered now. An empty list is the common case and must cost
+ * one indexed read.
  */
 export const NOTICE_COLLECT_REQUEST = z.object({
   provider: z.enum(NOTICE_PROVIDERS),
   session_id: z.string().min(1),
+  agent_id: z.string().min(1).optional(),
 });
 export const NOTICE_COLLECT_RESPONSE = z.object({
   notices: z.array(z.object({ id: z.string(), text: z.string() })),
@@ -144,6 +159,12 @@ export const NOTIFICATION_LIST_QUERY = z.object({
 });
 
 /** `read` and `read_all` are `POST`: the user's read mark on one user notification, or on all of them. */
+/** `POST /api/messages`: one message from the calling agent (or a shell) to one exact agent ref. */
+export const MESSAGE_SEND_REQUEST = z.object({ to: z.string().min(1), text: z.string().trim().min(1) });
+
+/** `GET /api/messages`: the calling agent's sent and received messages, newest first. */
+export const MESSAGE_LIST_QUERY = z.object({ limit: z.coerce.number().int().min(1).max(200).optional() });
+
 export const NOTICE_ROUTES = {
   collect: "/api/notices/collect",
   delivered: "/api/notices/delivered",

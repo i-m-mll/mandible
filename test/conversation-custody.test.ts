@@ -201,24 +201,4 @@ describe("conversation custody", () => {
     expect(fs.readFileSync(occupied)).toEqual(occupiedBytes);
     expect(captured.manifest.restore.capability).toBe("partial");
   });
-
-  it("captures Gemini session-addressable sidecars and filters project mapping", async () => {
-    const geminiRoot = path.join(tempRoot, "home", ".gemini");
-    const sessionId = "session-g";
-    const projectRoot = path.join(geminiRoot, "tmp", "project-hash");
-    const source = path.join(projectRoot, "chats", `${sessionId}.json`);
-    write(source, JSON.stringify({ sessionId, messages: [] }));
-    write(path.join(projectRoot, "tool-outputs", sessionId, "result.txt"), "tool output");
-    write(path.join(projectRoot, "plans", `${sessionId}.json`), JSON.stringify({ sessionId, plan: [] }));
-    write(path.join(projectRoot, "plans", `${sessionId}-near.json`), JSON.stringify({ sessionId: `${sessionId}-near`, plan: ["private near collision"] }));
-    write(path.join(projectRoot, "chats", "other-session.json"), "private other chat");
-    write(path.join(geminiRoot, "projects.json"), JSON.stringify({ projects: { "project-hash": "/work/project", other: "/private/other" } }));
-
-    const captured = await new ConversationCustodyStore(custodyRoot).capture({ conversation_id: "conv-gemini", provider: "gemini", session_id: sessionId, source_path: source });
-    expect(captured.manifest.files.map((file) => file.dependency_role)).toEqual(expect.arrayContaining(["chat", "tool_output", "plan", "project_root_mapping"]));
-    expect(captured.manifest.files.some((file) => file.provider_relative_path.includes("other-session"))).toBe(false);
-    expect(captured.manifest.files.some((file) => file.provider_relative_path.includes(`${sessionId}-near`))).toBe(false);
-    const mapping = captured.manifest.files.find((file) => file.dependency_role === "project_root_mapping")!;
-    expect(fs.readFileSync(path.join(captured.version_path, mapping.path), "utf8")).not.toContain("/private/other");
-  });
 });

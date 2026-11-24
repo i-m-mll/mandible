@@ -132,15 +132,12 @@ it('removes only source-proven native framing from stdout and retains a literal 
   expect(normalizedPositionIdentity({...block,metadata:{...block.metadata,display_tool_frame:frame}})).toBe(normalizedPositionIdentity(block));
 });
 
-it('normalizes native MCP, dynamic and Gemini result contracts while preserving application JSON and media', async () => {
+it('normalizes native MCP and dynamic result contracts while preserving application JSON and media', async () => {
   const {projectNativeToolResult}=await import('../src/presentation/tool-transport');
   const mcp={content:[{type:'text',text:'{"output":"literal application JSON"}'},{type:'image',mimeType:'image/png',data:'aW1hZ2U='}],structuredContent:{remaining:3},_meta:null};
   expect(projectNativeToolResult(mcp,'','mcpToolCall')).toMatchObject({decoded:true,text:'{"output":"literal application JSON"}\n{\n  "remaining": 3\n}',content:expect.arrayContaining([{type:'image',source:{type:'base64',media_type:'image/png',data:'aW1hZ2U='}}])});
   expect(projectNativeToolResult(mcp,'','claude_tool_result').decoded).toBe(false);
   expect(projectNativeToolResult([{type:'inputText',text:'native dynamic'},{type:'inputImage',imageUrl:'data:image/png;base64,aW1hZ2U='}],'','dynamicToolCall')).toMatchObject({text:'native dynamic',decoded:true});
-  const gemini=[{functionResponse:{id:'shell',name:'run_shell_command',response:{output:'Output: hello\nProcess Group PGID: 123'}}}];
-  expect(projectNativeToolResult(JSON.stringify(gemini),'','gemini_tool_result','run_shell_command','shell')).toMatchObject({text:'hello\nProcess Group PGID: 123',decoded:true});
-  expect(projectNativeToolResult(JSON.stringify(gemini),'','gemini_tool_result','other','shell').decoded).toBe(false);
 });
 
 it('preserves literal stdout and consumes only explicitly encoded emissions after native framing', async () => {
@@ -166,18 +163,12 @@ it('preserves literal stdout and consumes only explicitly encoded emissions afte
   expect(programResults(projectToolProgram('exec',serialized)!,values.map(value=>JSON.stringify(value)).join('\n'))?.map(result=>result.text)).toEqual(values);
 });
 
-it('renders ordered native text and media and keeps image-only Gemini responses visible', async () => {
+it('renders ordered native text and media', async () => {
   const {projectNativeToolResult}=await import('../src/presentation/tool-transport');
   const native={content:[{type:'text',text:'before'},{type:'image',mimeType:'image/png',data:'aW1hZ2U='},{type:'text',text:'after'}]};
   const presentation=projectNativeToolResult(native,'','mcpToolCall');
   const mixed=render(<ToolUseBlock toolName="arbitrary_mcp_name" toolKind="mcpToolCall" input={{}} expanded result={{type:'tool_result',tool_use_id:'native',content:'',presentation}} />);
   expect([...mixed.container.querySelector('.tool-card__result')!.children].map(node=>node.tagName==='IMG' ? 'image' : node.textContent)).toEqual(['before','image','after']);
-  mixed.unmount();
-  const gemini=[{functionResponse:{name:'gallery',id:'gallery-call',response:{content:[native.content[1]]}}}];
-  const image=projectNativeToolResult(JSON.stringify(gemini),'','gemini_tool_result','gallery','gallery-call');
-  expect(image.text).toBe('');
-  const only=render(<ToolUseBlock toolName="gallery" input={{}} expanded result={{type:'tool_result',tool_use_id:'gallery-call',content:'',presentation:image}} />);
-  expect(only.container.querySelector('.tool-card__result img')?.getAttribute('src')).toBe('data:image/png;base64,aW1hZ2U=');
 });
 
 it('keeps inline thread navigation independent of report disclosure', () => {

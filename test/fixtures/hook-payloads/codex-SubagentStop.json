@@ -1,0 +1,14 @@
+{
+  "session_id": "01a2050f-322e-7a12-b936-ebbcd5eeb337",
+  "turn_id": "01a2050f-466c-74b0-8fff-482e6ec064af",
+  "transcript_path": "/Users/user/.codex/sessions/2026/11/22/rollout-2026-11-22T16-00-11-01a2050f-322e-7a12-b936-ebbcd5eeb337.jsonl",
+  "agent_transcript_path": "/Users/user/.codex/sessions/2026/11/22/rollout-2026-11-22T16-00-16-01a2050f-4635-7243-8df4-f0885045c92a.jsonl",
+  "cwd": "/Users/user/scratch/codex",
+  "hook_event_name": "SubagentStop",
+  "model": "gpt-6.2-sol",
+  "permission_mode": "bypassPermissions",
+  "stop_hook_active": false,
+  "agent_id": "01a2050f-4635-7243-8df4-f0885045c92a",
+  "agent_type": "default",
+  "last_assistant_message": "Both sleeps completed. No Mandible message arrived."
+}

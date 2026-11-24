@@ -209,7 +209,7 @@ async function runCliWithTransport(
         ...process.env,
         MANDIBLE_BASE: `file://${transport.dir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
-        CODEX_SESSION_ID: "", CODEX_THREAD_ID: "", CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "", MANDIBLE_SESSION_ID: "",
+        CODEX_SESSION_ID: "", CODEX_THREAD_ID: "", CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", ANTIGRAVITY_CONVERSATION_ID: "", MANDIBLE_SESSION_ID: "",
         ...extraEnv,
       },
     });

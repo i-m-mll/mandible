@@ -47,7 +47,7 @@ afterEach(async () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-function source(provider: "codex" | "claude" | "gemini-jsonl" | "gemini-json"): string {
+function source(provider: "codex" | "claude"): string {
   const home = path.join(root, "home");
   let file: string;
   let content: string;
@@ -55,15 +55,10 @@ function source(provider: "codex" | "claude" | "gemini-jsonl" | "gemini-json"): 
     file = path.join(home, ".codex", "sessions", "fixture.jsonl");
     content = row({ type: "session_meta", timestamp: "2026-10-01T00:00:00Z", payload: { id: "fixture", cwd: "/tmp/project" } })
       + row({ type: "response_item", timestamp: "2026-10-01T00:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "needle provider content" }] } });
-  } else if (provider === "claude") {
+  } else {
     file = path.join(home, ".claude", "projects", "fixture", "fixture.jsonl");
     content = row({ uuid: "u1", type: "user", timestamp: "2026-10-01T00:00:00Z", sessionId: "fixture", cwd: "/tmp/project",
       message: { role: "user", content: "needle provider content" } });
-  } else {
-    const messages = [{ id: "u1", type: "user", timestamp: "2026-10-01T00:00:00Z", content: "needle provider content" }];
-    const header = { sessionId: "fixture", startTime: "2026-10-01T00:00:00Z", lastUpdated: "2026-10-01T00:00:01Z" };
-    file = path.join(home, ".gemini", "tmp", "fixture", "chats", `session-fixture.${provider === "gemini-json" ? "json" : "jsonl"}`);
-    content = provider === "gemini-json" ? JSON.stringify({ ...header, messages }) : row(header) + messages.map(row).join("");
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);
@@ -99,7 +94,7 @@ describe("source metadata readiness and canonical ingestion repair", () => {
     expect(read.status).toBe('source');
     if(read.status==='source') expect(read.value.some(block=>block.content==='changed native source')).toBe(true);
   });
-  it.each(["codex", "claude", "gemini-jsonl", "gemini-json"] as const)("repairs unchanged %s epochs during reconciliation", async (provider) => {
+  it.each(["codex", "claude"] as const)("repairs unchanged %s epochs during reconciliation", async (provider) => {
     const { file, id } = await seed(provider);
     const beforeMtime = fs.statSync(file).mtimeMs;
     db.prepare("UPDATE conversation_sources SET normalization_version = 'old' WHERE conversation_id = ?").run(id);

@@ -555,7 +555,7 @@ describe("user token mint --store", () => {
       { name: "another account holds the service", user: { slug: "mll", kind: "human" }, args: [], expected: "someone-else", setup: (chain) => chain.seed("mandible-operator", "someone-else", "previous-token") },
       { name: "the existing item is unreadable", user: { slug: "mll", kind: "human" }, args: [], expected: "could not read the existing secret-store item", setup: () => ({ MANDIBLE_TEST_SECURITY_FAIL: "attributes" }) },
       { name: "no backend", user: { slug: "mll", kind: "human" }, args: [], expected: "keychain tool is missing", setup: (chain) => ({ MANDIBLE_SECURITY_BIN: path.join(chain.dir, "missing-security") }) },
-      { name: "an agent without app_name", user: { slug: "gemini", kind: "agent" }, args: [], expected: "no active app_name binding" },
+      { name: "an agent without app_name", user: { slug: "antigravity", kind: "agent" }, args: [], expected: "no active app_name binding" },
       { name: "a system user", user: { slug: "system", kind: "system" }, args: [], expected: "user kind 'system'" },
       { name: "a blank service", user: { slug: "mll", kind: "human" }, args: ["--service", "  "], expected: "--service must name a service" },
       { name: "an unstorable service", user: { slug: "mll", kind: "human" }, args: ["--service", "mandible\toperator"], expected: "printable ASCII" },

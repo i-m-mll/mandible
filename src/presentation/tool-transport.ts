@@ -18,7 +18,7 @@ export function toolContentEnvelope(value: unknown): ToolTransportResult | null 
   if(value.structuredContent!=null) content.push({type:'text',text:JSON.stringify(value.structuredContent,null,2)});
   return {...rawToolResult(content.flatMap(block=>block.type==='text' ? [block.text] : []).join('\n')),content:content as import('./types.js').ToolResultContent,failed:value.isError===true,decoded:true};
 }
-export function projectNativeToolResult(value: unknown, fallback: string, kind?: string, name?: string, id?: string): ToolTransportResult {
+export function projectNativeToolResult(value: unknown, fallback: string, kind?: string): ToolTransportResult {
   const text=typeof value==='string' ? value : value===undefined ? fallback : JSON.stringify(value,null,2);
   const raw=rawToolResult(text);
   if(kind==='claude_tool_result' && Array.isArray(value) && value.every(block=>record(block) && ((block.type==='text' && typeof block.text==='string') || (block.type==='image' && record(block.source) && typeof block.source.media_type==='string' && typeof block.source.data==='string')))) return {...rawToolResult(value.flatMap(block=>block.type==='text' ? [block.text] : []).join('\n')),content:value as import('./types.js').ToolResultContent,decoded:true};
@@ -39,22 +39,6 @@ export function projectNativeToolResult(value: unknown, fallback: string, kind?:
   if(kind==='mcpToolCall') {
     if(record(value) && Object.keys(value).length===1 && typeof value.message==='string') return {...rawToolResult(value.message),failed:true,decoded:true};
     return toolContentEnvelope(value) ?? raw;
-  }
-  if(kind==='gemini_tool_result') {
-    let native=value;
-    if(typeof native==='string') {try {native=JSON.parse(native);} catch {return raw;}}
-    if(!Array.isArray(native) || !native.length) return raw;
-    const results: ToolTransportResult[]=[];
-    for(const part of native) {
-      if(!record(part) || Object.keys(part).length!==1 || !record(part.functionResponse)) return raw;
-      const response=part.functionResponse;
-      if(response.name!==name || (id && response.id!==undefined && response.id!==id) || !record(response.response)) return raw;
-      const body=response.response;
-      if(name==='run_shell_command' && typeof body.stdout==='string' && typeof body.stderr==='string') results.push({...rawToolResult(body.stdout),stderr:body.stderr,failed:typeof body.exit_code==='number' && body.exit_code!==0,decoded:true});
-      else if(Object.keys(body).length===1 && typeof body.output==='string') results.push({...rawToolResult(name==='run_shell_command' && body.output.startsWith('Output: ') ? body.output.slice(8) : body.output),decoded:true});
-      else {const envelope=toolContentEnvelope(body);results.push(envelope ?? {...rawToolResult(JSON.stringify(body,null,2)),decoded:true});}
-    }
-    return {...rawToolResult(results.map(result=>result.text).join('\n')),content:results.flatMap(result=>result.content ? typeof result.content==='string' ? [{type:'text' as const,text:result.content}] : result.content : [{type:'text' as const,text:result.text}]),stderr:results.map(result=>result.stderr ?? '').filter(Boolean).join('\n') || undefined,failed:results.some(result=>result.failed),decoded:true};
   }
   return raw;
 }

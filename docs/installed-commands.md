@@ -24,8 +24,7 @@ The public command retains the existing CLI grammar, argument boundaries, stdin/
 | `mandible hook statusline` | Claude statusline JSON on stdin; chained statusline output on stdout |
 | `mandible hook session-execution claude` | Queue a native Claude execution observation from stdin |
 | `mandible hook session-execution codex` | Queue a native Codex execution observation from stdin |
-| `mandible hook notices claude` | Claude UserPromptSubmit JSON on stdin; print the settlement notices owed to this session on stdout and confirm their delivery |
-| `mandible hook notices codex` | Codex UserPromptSubmit JSON on stdin; print the settlement notices owed to this session on stdout and confirm their delivery |
+| `mandible hook notices <claude\|codex\|antigravity>` | Provider hook JSON on stdin (Claude UserPromptSubmit, PostToolUse, Stop, SubagentStop; Codex UserPromptSubmit, PostToolUse, Stop, SubagentStop; Antigravity PreInvocation, Stop); print what is owed to this agent in that event's output form and confirm its delivery. The forms are in `src/parsers/hook-adapters.ts` |
 | `mandible git-guard <phase>` | Git reference-transaction phase argument and transaction stdin; nonzero refuses the update |
 
 Generated Claude settings invoke this command with session attribution and any chained statusline in environment assignments. Provider settings unrelated to Mandible remain user-owned. CLI identity scoping remains in the existing CLI implementation; hook inputs retain their provider identity contracts.

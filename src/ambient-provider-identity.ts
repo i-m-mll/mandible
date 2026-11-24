@@ -8,7 +8,7 @@ export interface AmbientProviderIdentity {
 const PROVIDER_ENV = {
   codex: ["CODEX_THREAD_ID", "CODEX_SESSION_ID"],
   claude: ["CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CLAUDE_AGENT_ID"],
-  gemini: ["GEMINI_SESSION_ID"],
+  antigravity: ["ANTIGRAVITY_CONVERSATION_ID"],
 } as const;
 
 export const MANAGED_SESSION_ENV_MARKERS: readonly string[] = [
@@ -54,9 +54,19 @@ export function resolveAmbientProviderIdentity(env: NodeJS.ProcessEnv = process.
   if (providers.length !== 1) return null;
   const provider = providers[0][0];
   if (provider === "codex") return normalizeAmbientProviderIdentity({ provider, agent_id: env.CODEX_THREAD_ID || null, session_id: env.CODEX_SESSION_ID || null });
-  if (provider === "gemini") return normalizeAmbientProviderIdentity({ provider, agent_id: env.GEMINI_SESSION_ID, session_id: env.GEMINI_SESSION_ID });
+  if (provider === "antigravity") return normalizeAmbientProviderIdentity({ provider, agent_id: env.ANTIGRAVITY_CONVERSATION_ID, session_id: env.ANTIGRAVITY_CONVERSATION_ID });
   if (env.CLAUDE_CODE_SESSION_ID && env.CLAUDE_SESSION_ID && env.CLAUDE_CODE_SESSION_ID !== env.CLAUDE_SESSION_ID) return null;
   return normalizeAmbientProviderIdentity({ provider, agent_id: env.CLAUDE_AGENT_ID || null, session_id: env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID });
+}
+
+/**
+ * The agent a provider hook's payload speaks for: the agent it names, or the
+ * session's main thread when it names none. The same rule binds the hook's
+ * Bash commands to `MANDIBLE_AGENT_REF`, so a session's commands and its hooks
+ * resolve to one exact ref.
+ */
+export function hookAgentIdentity(provider: string, sessionId: unknown, agentId: unknown): AmbientProviderIdentity | null {
+  return normalizeAmbientProviderIdentity({ provider, session_id: sessionId, agent_id: agentId ?? sessionId });
 }
 
 /** Lossless scalar projection for exact executor aliases. */
@@ -69,10 +79,10 @@ export function exactAgentRef(value: AmbientProviderIdentity | null): string | n
 
 export function parseExactAgentRef(value: string): AmbientProviderIdentity | null {
   const parts = value.split(":");
-  if (parts[0] !== "agent" || !((parts[1] === "claude" && parts.length === 4) || (["codex", "gemini"].includes(parts[1]) && parts.length === 3))) return null;
+  if (parts[0] !== "agent" || !((parts[1] === "claude" && parts.length === 4) || (["codex", "antigravity"].includes(parts[1]) && parts.length === 3))) return null;
   try {
     const provider = parts[1], agent_id = decodeURIComponent(parts.at(-1)!);
-    const session_id = provider === "claude" ? decodeURIComponent(parts[2]) : provider === "gemini" ? agent_id : null;
+    const session_id = provider === "claude" ? decodeURIComponent(parts[2]) : provider === "antigravity" ? agent_id : null;
     const context = normalizeAmbientProviderIdentity({ provider, agent_id, session_id });
     return context && exactAgentRef(context) === value ? context : null;
   } catch { return null; }

@@ -819,10 +819,10 @@ const AGENT_SETUP_MANIFEST = [
     app_names: ["codex"],
   },
   {
-    slug: "gemini",
-    display_name: "Gemini",
-    provider: "gemini",
-    app_names: ["gemini"],
+    slug: "antigravity",
+    display_name: "Antigravity",
+    provider: "antigravity",
+    app_names: ["antigravity"],
   },
 ] as const;
 

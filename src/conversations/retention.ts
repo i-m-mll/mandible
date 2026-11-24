@@ -215,7 +215,7 @@ export class ChildRetentionScheduler {
     }
     const identity = parseExactAgentRef(child.agentRef);
     const executionTarget = identity?.provider === "claude" && identity.agent_id !== identity.session_id ? child.agentRef : child.sessionId;
-    const execution = child.provider === "gemini" ? null
+    const execution = child.provider === "antigravity" ? null
       : new SessionExecutionStore(this.db).read(child.provider === "claude_code" ? "claude" : "codex", executionTarget);
     if (execution && execution.observed_at >= Math.max(row.last_activity_at ?? 0, row.last_terminal_at ?? 0)) {
       return execution.state.kind !== "working" && execution.state.kind !== "unknown";

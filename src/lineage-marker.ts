@@ -23,7 +23,7 @@ export type OpeningLine =
 const PROVIDERS: Readonly<Record<string, ConversationSource>> = {
   claude: "claude_code",
   codex: "codex",
-  gemini: "gemini",
+  antigravity: "antigravity",
 };
 
 const FIELDS = {
@@ -86,7 +86,7 @@ function parseMarker(line: string): MarkerParse {
 function parseSessionRef(value: string): { ok: true; session: ConversationParent } | { ok: false; reason: string } {
   const colon = value.indexOf(":");
   const source = colon > 0 ? PROVIDERS[value.slice(0, colon)] : undefined;
-  if (!source) return { ok: false, reason: `${value} does not start with claude:, codex: or gemini:` };
+  if (!source) return { ok: false, reason: `${value} does not start with claude:, codex: or antigravity:` };
   const sessionId = value.slice(colon + 1);
   const exact = parseExactAgentRef(sessionId);
   if (exact && (exact.provider === "claude" ? "claude_code" : exact.provider) === source)

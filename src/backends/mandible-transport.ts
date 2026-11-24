@@ -11,7 +11,7 @@ export function needsManagedHttpCredential(env: NodeJS.ProcessEnv): boolean {
 
 const PROVIDER_MARKERS = [
   "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID",
-  "CLAUDE_SESSION_ID", "GEMINI_SESSION_ID", "MANDIBLE_SESSION_ID",
+  "CLAUDE_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "MANDIBLE_SESSION_ID",
   "MANDIBLE_SESSION_REF", "MANDIBLE_EXECUTION_CONTEXT", "MANDIBLE_AGENT_REF", "CLAUDE_AGENT_ID",
   "MANDIBLE_MANAGED_APP",
 ] as const;
@@ -29,8 +29,7 @@ export function projectManagedProviderIdentity(
   for (const key of PROVIDER_MARKERS) delete env[key];
   const executable = command.split(/[\\/]/).pop()?.toLowerCase() ?? "";
   const app = executable.startsWith("codex") ? "codex"
-    : executable.startsWith("claude") ? "claude"
-    : executable.startsWith("gemini") ? "gemini" : null;
+    : executable.startsWith("claude") ? "claude" : null;
   if (app && localSessionId) {
     env.MANDIBLE_MANAGED_APP = app;
     env.MANDIBLE_SESSION_ID = localSessionId;
@@ -38,5 +37,4 @@ export function projectManagedProviderIdentity(
   if (!providerSessionId) return;
   if (app === "codex") env.CODEX_THREAD_ID = providerSessionId;
   else if (app === "claude") env.CLAUDE_CODE_SESSION_ID = providerSessionId;
-  else if (app === "gemini") env.GEMINI_SESSION_ID = providerSessionId;
 }

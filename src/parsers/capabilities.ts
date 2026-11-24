@@ -84,32 +84,6 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Known user_meta and system records are hidden provider bookkeeping; unknown system/event kinds remain transcript-visible.",
     ],
   },
-  {
-    source: "gemini",
-    display_name: "Gemini",
-    source_globs: [
-      "~/.gemini/tmp/**/chats/session-*.json",
-      "~/.gemini/tmp/**/chats/session-*.jsonl",
-    ],
-    block_types: ["user_message", "assistant_message", "thinking", "plan", "tool_use", "tool_result"],
-    roles: ["user", "assistant", "tool"],
-    tool_metadata: {
-      tool_name: true,
-      tool_kind: true,
-      tool_id: true,
-      tool_input: true,
-      tool_output: true,
-    },
-    notes: [
-      "Line 1 of the first user message is read for the lineage marker.",
-      "Messages, plans, tools, and thinking expose metadata.chat_item using the shared provider-neutral contract.",
-      "No supported native final-response signal is available; assistant response classification remains unknown.",
-      "Tool-use support depends on Gemini logs containing toolCalls.",
-      "Some Gemini logs only contain user and assistant messages.",
-      "Gemini currently normalizes no system/event records; plans and thoughts remain typed assistant blocks.",
-      "Incremental ingestion is supported for JSONL session streams; whole JSON session files use full parse.",
-    ],
-  },
 ];
 
 export function getParserCapability(source: ConversationSource): ParserCapability | null {

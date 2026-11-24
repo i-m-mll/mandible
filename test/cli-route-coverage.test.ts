@@ -90,7 +90,7 @@ describe("CLI API route coverage", () => {
           CODEX_SESSION_ID: "",
           CLAUDE_CODE_SESSION_ID: "",
           CLAUDE_SESSION_ID: "",
-          GEMINI_SESSION_ID: "",
+          ANTIGRAVITY_CONVERSATION_ID: "",
           MANDIBLE_MANAGED_CLIENT: "",
           MANDIBLE_SESSION_ID: "",
           MANDIBLE_FILE_RPC_TIMEOUT: "30",

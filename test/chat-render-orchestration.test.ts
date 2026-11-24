@@ -123,7 +123,7 @@ describe("chat render orchestration", () => {
   });
 
   it("fails closed on provider-shaped transcript blocks and preserves canonical activity evidence", () => {
-    const activity = item("gemini", "s1", "diagnostic-1", {
+    const activity = item("antigravity", "s1", "diagnostic-1", {
       type: "activity",
       role: "system",
       activity_kind: "diagnostic",

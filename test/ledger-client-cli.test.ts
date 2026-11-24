@@ -23,7 +23,7 @@ function runBash(
         MANDIBLE_BASE: `http://127.0.0.1:${extraEnv.MANDIBLE_PORT || "9"}`,
         ZELLIJ: "",
         TMUX: "",
-        CODEX_THREAD_ID: "", CODEX_SESSION_ID: "", CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", GEMINI_SESSION_ID: "",
+        CODEX_THREAD_ID: "", CODEX_SESSION_ID: "", CLAUDE_CODE_SESSION_ID: "", CLAUDE_SESSION_ID: "", ANTIGRAVITY_CONVERSATION_ID: "",
         ...extraEnv,
       },
     });

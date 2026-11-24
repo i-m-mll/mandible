@@ -538,9 +538,7 @@ export class ConversationSourceReader {
           presentationParents.push(row.parent_block_id);
         }
         const parsed = await parser.parseIncremental({
-          filePath: observed.provider === "gemini" && observed.aliasPath.endsWith(".json")
-            ? "source-record.json"
-            : "source-record.jsonl",
+          filePath: "source-record.jsonl",
           raw: `${record.toString("utf8")}\n`,
           nativeSessionId: observed.nativeSessionId,
           displayToolCalls,

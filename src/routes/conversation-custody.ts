@@ -38,7 +38,7 @@ function requireConversation(db: Db, id: string): ConversationCustodyRow {
   const row = db.prepare("SELECT id, source, source_path, session_id, starred, tags, notes FROM conversations WHERE id = ?")
     .get(id) as ConversationCustodyRow | undefined;
   if (!row) throw new CustodyError("conversation not found", "conversation_not_found", 404);
-  if (!new Set(["claude_code", "codex", "gemini"]).has(row.source)) {
+  if (!new Set(["claude_code", "codex"]).has(row.source)) {
     throw new CustodyError(`provider does not support custody capture: ${row.source}`, "unsupported_provider", 422);
   }
   return row;
