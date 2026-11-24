@@ -1,7 +1,13 @@
 /* Shared presentation contract for sanitized, rendered Markdown. Keep this
  * stylesheet last so feature-local prose rules cannot accidentally turn a
  * fenced block back into an edge-to-edge band. Raw data/code previews do not
- * opt into this class. */
+ * opt into this class. Every Markdown surface, including the live
+ * `.markdown-document` renderer, reads at the chat message size. */
+.rendered-markdown,
+.markdown-document {
+  font-size: var(--text-lg);
+}
+
 .rendered-markdown {
   line-height: 1.6;
   overflow-wrap: anywhere;

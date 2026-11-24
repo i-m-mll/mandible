@@ -73,8 +73,8 @@
   --detail-content-size: var(--font-ui-size);
 }
 
-.detail-pane-shell__body :where(p, li, blockquote, dd),
-.detail-pane-shell__body :where(.rendered-markdown, .spec-panel, .briefing-document__prose) {
+.detail-pane-shell__body :where(p, li, blockquote, dd):not(:where(.rendered-markdown, .markdown-document) *),
+.detail-pane-shell__body :where(.spec-panel) {
   font-family: var(--detail-content-family);
   font-size: var(--detail-content-size);
 }
