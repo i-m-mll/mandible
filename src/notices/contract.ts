@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as z from "zod";
 import { canonicalJson } from "../canonical-json.js";
 import type { AuthRequestStatus } from "../contracts.js";
+import type { RegisteredRoute } from "./wake/types.js";
 
 /**
  * Settlement notices: what Mandible tells the session that answers for a
@@ -133,6 +134,19 @@ export interface NotificationRecord {
   text: string | null;
 }
 
+const routeText = z.string().min(1).max(4096).refine((value) => !/[\x00-\x1f\x7f]/.test(value));
+
+/**
+ * A wake route as a session registers it from inside itself: in the notices
+ * hook's collect request, or in the CLI's `X-Mandible-Wake-Route` header (or
+ * the file-RPC request's `wake_route`). The token never travels on a command
+ * line and is never written to the database or a log.
+ */
+export const REGISTERED_ROUTE = z.discriminatedUnion("provider", [
+  z.strictObject({ provider: z.literal("claude"), socket: routeText, token: routeText }),
+  z.strictObject({ provider: z.literal("antigravity"), address: routeText, token: routeText }),
+]) satisfies z.ZodType<RegisteredRoute>;
+
 /**
  * `POST /api/notices/collect`: the hook's one request. It returns the rows owed
  * to the caller, rendered now. An empty list is the common case and must cost
@@ -142,6 +156,8 @@ export const NOTICE_COLLECT_REQUEST = z.object({
   provider: z.enum(NOTICE_PROVIDERS),
   session_id: z.string().min(1),
   agent_id: z.string().min(1).optional(),
+  /** The session's wake route, from the hook's environment; of the caller's own provider. */
+  route: REGISTERED_ROUTE.optional(),
 });
 export const NOTICE_COLLECT_RESPONSE = z.object({
   notices: z.array(z.object({ id: z.string(), text: z.string() })),

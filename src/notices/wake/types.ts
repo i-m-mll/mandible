@@ -45,7 +45,11 @@ export type WakeFailureCode = WakeFailure["code"];
 /** Paths and binaries an executor touches, so tests replace them with fakes. */
 export interface WakeEnvironment {
   home: string;
-  /** Runs a child process; resolves when it exits. Never rejects. */
+  /**
+   * Runs a child process with `env` added to the daemon's environment and
+   * `stdin` written then closed; resolves when it exits, with code null when it
+   * timed out (and was killed) or could not start. Never rejects.
+   */
   run(command: string, args: readonly string[], options: { stdin?: string; env?: Record<string, string>; timeout_ms: number }):
     Promise<{ code: number | null; stdout: string; stderr: string }>;
   /** Whether a process with this pid is alive. */

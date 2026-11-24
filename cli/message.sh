@@ -39,16 +39,30 @@ read_response() {
   return 22
 }
 
-# One message as `status` prints it.
-MESSAGE_JQ='
+# A message's reach, the one line `send`, `status` and `list` print.
+REACH_JQ='
   def when: if . == null then "-" else (. / 1000 | todate) end;
+  def reason: {
+    no_route: "no route", route_refused: "route refused", provider_not_running: "provider not running",
+    not_app_thread: "not an app thread", entry_point_failed: "entry point failed", not_main_thread: "only a main thread is woken",
+    not_attempted: "no wake attempted"
+  }[.reason] + (if .detail == null then "" else " (\(.detail))" end);
+  def reach: if .kind == "delivered" then "delivered \(.at | when)"
+    elif .kind == "working" then "recipient working (observed \(.observed_at | when)); its hooks will deliver"
+    elif .kind == "woken" then "woken \(.at | when); not yet delivered"
+    elif .kind == "wake_in_progress" then "wake in progress"
+    elif .kind == "not_woken" then "not woken: \(reason); delivered at its next turn"
+    elif .kind == "ended" then "ended (observed \(.observed_at | when)); delivered only if it is resumed"
+    else "unknown to Mandible: no hook has run in that session" end;
+'
+
+# One message as `status` prints it.
+MESSAGE_JQ="$REACH_JQ"'
   "message \(.short_id)",
   "from: \(.sender_agent_ref // "a shell")",
   "to: \(.recipient_agent_ref)",
   "sent: \(.sent_at | when)",
-  (if .delivered_at == null then "state: queued" else "state: delivered \(.delivered_at | when)" end),
-  (if .recipient_execution == null then empty
-   else "recipient: \(.recipient_execution.state.kind) (observed \(.recipient_execution.observed_at | when))" end),
+  "reach: \(.reach | reach)",
   "text: \(.text)"
 '
 
@@ -66,7 +80,7 @@ cmd_send() {
   response_file="$(api_temp_file)"
   code="$(api_send_capture POST "/api/messages" "$payload" "$response_file")"
   response="$(read_response "$code" "$response_file")"
-  if (( json )); then printf '%s\n' "$response" | jq .; else printf '%s\n' "$response" | jq -r '.message.short_id'; fi
+  if (( json )); then printf '%s\n' "$response" | jq .; else printf '%s\n' "$response" | jq -r "$REACH_JQ"' .message | .short_id, (.reach | reach)'; fi
 }
 
 cmd_status() {
@@ -97,13 +111,13 @@ cmd_list() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '
+    printf '%s\n' "$response" | jq -r "$REACH_JQ"'
       .agent_ref as $me
       | .messages[]
       | [.short_id,
          (if .recipient_agent_ref == $me then "received" else "sent" end),
          (if .recipient_agent_ref == $me then (.sender_agent_ref // "a shell") else .recipient_agent_ref end),
-         (if .delivered_at == null then "queued" else "delivered" end),
+         (.reach | reach),
          .text]
       | @tsv'
   fi

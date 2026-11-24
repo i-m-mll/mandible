@@ -224,6 +224,11 @@ export interface RouterOptions {
   // Issue 708dc4c — optional client-auth gate. Omitted in tests and legacy
   // servers, preserving the original unauthenticated boundary behavior.
   clientAuth?: ClientAuthGate;
+  /**
+   * Registers the wake route a `mandible` command attached for the session it
+   * runs in, before the route handler runs; a refusal answers 400.
+   */
+  registerWakeRoute?: (identity: AmbientProviderIdentity | null, route: unknown) => { ok: true } | { ok: false; error: string };
 }
 
 export interface RouterInvokeRequest {
@@ -238,6 +243,8 @@ export interface RouterInvokeRequest {
   credential?: string | null;
   transport?: "http" | "file-rpc" | "in-process";
   signal?: AbortSignal;
+  /** The `X-Mandible-Wake-Route` header's value, parsed, or the file-RPC request's `wake_route`. */
+  wake_route?: unknown;
 }
 
 export interface RouterInvokeResponse {
@@ -505,6 +512,8 @@ export class Router implements RouteRegistrar {
       input.signal,
       { browserRequest: false, managed: input.managed_client ?? input.ambient_identity != null },
       Object.hasOwn(input, "request_origin") ? { request_origin: input.request_origin } : {},
+      undefined,
+      input.wake_route,
     );
     if (!handled) {
       return { status: 404, body: { error: "not_found" } };
@@ -580,6 +589,8 @@ export class Router implements RouteRegistrar {
           localManaged,
         },
         requestOriginEnvelopeFromHeaders(req.headers),
+        undefined,
+        wakeRouteFromHeaders(req.headers),
       );
     } finally {
       req.removeListener("aborted", abort);
@@ -606,6 +617,7 @@ export class Router implements RouteRegistrar {
     },
     originEnvelope: { request_origin?: unknown } = {},
     caller?: RequestLike,
+    wakeRoute?: unknown,
   ): Promise<boolean> {
     const normalizedMethod = method.toUpperCase();
     const url = new URL(requestUrl, "http://localhost");
@@ -709,6 +721,14 @@ export class Router implements RouteRegistrar {
             missing_effects: effectDecision.missing,
             instance_id: this.instance.instance_id,
           });
+          return true;
+        }
+      }
+
+      if (wakeRoute !== undefined && this.options.registerWakeRoute) {
+        const registered = this.options.registerWakeRoute(requestAmbientIdentity, wakeRoute);
+        if (!registered.ok) {
+          response.status(400).json({ error: "invalid_wake_route", reason: registered.error });
           return true;
         }
       }
@@ -842,6 +862,13 @@ function requestOriginEnvelopeFromHeaders(headers: http.IncomingHttpHeaders): { 
   if (value === undefined) return {};
   try { return { request_origin: JSON.parse(value) }; }
   catch { return { request_origin: null }; }
+}
+
+/** Undefined without the header; a value that is not JSON is passed on as null, which registration refuses. */
+function wakeRouteFromHeaders(headers: http.IncomingHttpHeaders): unknown {
+  const value = headerValue(headers["x-mandible-wake-route"]);
+  if (value === undefined) return undefined;
+  try { return JSON.parse(value); } catch { return null; }
 }
 
 function ambientIdentityFromHeaders(headers: http.IncomingHttpHeaders): AmbientProviderIdentity | null {

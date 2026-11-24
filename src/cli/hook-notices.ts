@@ -45,8 +45,9 @@ async function post(path: string, body: unknown): Promise<unknown> {
 const reason = (error: unknown) => error instanceof Error ? error.message : String(error);
 let notices: Array<{ id: string; text: string }>;
 try {
+  const route = adapter.route(process.env);
   ({ notices } = await post("/api/notices/collect", {
-    provider, session_id: sessionId, ...(typeof agentId === "string" && agentId ? { agent_id: agentId } : {}),
+    provider, session_id: sessionId, ...(typeof agentId === "string" && agentId ? { agent_id: agentId } : {}), ...(route ? { route } : {}),
   }) as { notices: typeof notices });
 }
 catch (error) { fail(`daemon unreachable: ${reason(error)}`); }
