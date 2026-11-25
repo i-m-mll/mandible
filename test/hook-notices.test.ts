@@ -24,7 +24,7 @@ const CASES: Array<{ provider: string; payload: string; read: (stdout: string) =
   { provider: "claude", payload: "claude-PostToolUse", read: context },
   { provider: "claude", payload: "claude-PostToolUse-subagent", read: context, agent: "a4e1c2b7d9f03a6e" },
   { provider: "claude", payload: "claude-Stop", read: block },
-  { provider: "claude", payload: "claude-SubagentStop", read: subagentBlock, agent: "a4e1c2b7d9f03a6e" },
+  { provider: "claude", payload: "claude-SubagentStop", read: subagentBlock, agent: "ade6b38138887a92d" },
   { provider: "codex", payload: "codex-UserPromptSubmit", read: plain },
   { provider: "codex", payload: "codex-PostToolUse", read: context },
   { provider: "codex", payload: "codex-Stop", read: block },
