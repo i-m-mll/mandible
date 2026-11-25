@@ -7,8 +7,12 @@
 
 import type { RegisteredRoute } from "../notices/wake/types.js";
 
-/** How the owed text is printed. `block` and `continue` refuse the end of a turn. */
-export type HookEncoding = "plain" | "additional_context" | "block" | "inject_steps" | "continue";
+/**
+ * How the owed text is printed. `block`, `block_subagent` and `continue` refuse the end of a turn.
+ * `block_subagent` also asks the subagent to repeat its report, because its parent receives only
+ * the subagent's last reply and the refusal makes that reply a new one.
+ */
+export type HookEncoding = "plain" | "additional_context" | "block" | "block_subagent" | "inject_steps" | "continue";
 
 type Payload = Record<string, unknown>;
 
@@ -29,14 +33,14 @@ const stopHookActive = (payload: Payload) => payload.stop_hook_active === true;
 export const HOOK_ADAPTERS = {
   claude: {
     session_field: "session_id", event_field: "hook_event_name", agent_field: "agent_id",
-    events: { UserPromptSubmit: "plain", PostToolUse: "additional_context", Stop: "block", SubagentStop: "block" },
+    events: { UserPromptSubmit: "plain", PostToolUse: "additional_context", Stop: "block", SubagentStop: "block_subagent" },
     continuing: stopHookActive,
     route: (env) => env.CLAUDE_CODE_MESSAGING_SOCKET && env.CLAUDE_CODE_MESSAGING_TOKEN
       ? { provider: "claude", socket: env.CLAUDE_CODE_MESSAGING_SOCKET, token: env.CLAUDE_CODE_MESSAGING_TOKEN } : null,
   },
   codex: {
     session_field: "session_id", event_field: "hook_event_name", agent_field: "agent_id",
-    events: { UserPromptSubmit: "plain", PostToolUse: "additional_context", Stop: "block", SubagentStop: "block" },
+    events: { UserPromptSubmit: "plain", PostToolUse: "additional_context", Stop: "block", SubagentStop: "block_subagent" },
     continuing: stopHookActive,
     // A Codex desktop thread's route is its id, derived at wake time.
     route: () => null,
@@ -55,7 +59,10 @@ export const HOOK_ADAPTERS = {
 
 export type HookProvider = keyof typeof HOOK_ADAPTERS;
 
-export const refusesStop = (encoding: HookEncoding): boolean => encoding === "block" || encoding === "continue";
+export const refusesStop = (encoding: HookEncoding): boolean =>
+  encoding === "block" || encoding === "block_subagent" || encoding === "continue";
+
+const REPEAT_REPORT = "Mandible: your parent reads your last reply as your whole report. Act on the above if it calls for action, then end with your complete report again, changed only where the above changes it.";
 
 /** The stdout that hands `text` to the model at `event`. */
 export function encodeHookOutput(encoding: HookEncoding, event: string, text: string): string {
@@ -63,6 +70,7 @@ export function encodeHookOutput(encoding: HookEncoding, event: string, text: st
     case "plain": return `${text}\n`;
     case "additional_context": return `${JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: text } })}\n`;
     case "block": return `${JSON.stringify({ decision: "block", reason: text })}\n`;
+    case "block_subagent": return `${JSON.stringify({ decision: "block", reason: `${text}\n\n${REPEAT_REPORT}` })}\n`;
     case "inject_steps": return `${JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: text } }] })}\n`;
     case "continue": return `${JSON.stringify({ decision: "continue", reason: text })}\n`;
   }
