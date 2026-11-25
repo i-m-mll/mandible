@@ -178,10 +178,13 @@ export const NOTIFICATION_LIST_QUERY = z.object({
  * The size rule, the same for every provider because a sender does not know
  * which event will deliver: a message body is at most `body_bytes` of UTF-8,
  * and one hook call hands over at most `hook_call_bytes` of owed text (always
- * at least its first row). Both are the largest sizes that arrived whole at
- * every event of every provider in probe S of issue 8773516.
+ * at least its first row). In probe S of issue 8773516, 8,135 bytes of framed
+ * text arrived whole at every event of every provider, and 10,135 did not:
+ * Claude Code replaces hook text over 10,000 characters with a file path, and
+ * Codex truncates it at an estimated 2,500 tokens (bytes / 4). A body at the
+ * limit, framed with the longest sender ref (154 bytes), fits in one call.
  */
-export const MESSAGE_SIZE = { body_bytes: 4_000, hook_call_bytes: 4_500 } as const;
+export const MESSAGE_SIZE = { body_bytes: 7_800, hook_call_bytes: 8_000 } as const;
 
 /** `read` and `read_all` are `POST`: the user's read mark on one user notification, or on all of them. */
 /** `POST /api/messages`: one message from the calling agent (or a shell) to one exact agent ref; `text` is stored as sent. */

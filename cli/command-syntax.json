@@ -2723,7 +2723,7 @@
         "kind": "sequence",
         "items": [
           {"kind": "option","names": ["--to"],"values": [{"kind": "argument","name": "agent-ref","value": {"type": "string"}}]},
-          {"kind": "optional","item": {"kind": "option","hint": "the body, delivered exactly as given, at most 4,000 bytes; without -m it is read from stdin, less one trailing newline","names": ["-m","--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}},
+          {"kind": "optional","item": {"kind": "option","hint": "the body, delivered exactly as given, at most 7,800 bytes; without -m it is read from stdin, less one trailing newline","names": ["-m","--message"],"values": [{"kind": "argument","name": "text","value": {"type": "string"}}]}},
           {"kind": "optional","item": {"kind": "option","names": ["--json"],"values": []}}
         ]
       }

@@ -7,7 +7,7 @@ import { exactAgentRef, parseExactAgentRef, resolveAmbientProviderIdentity } fro
 import { AuthQueue } from "../src/auth-queue.js";
 import { claudePreToolUseProjection } from "../src/claude-execution-context.js";
 import { setDb, type Db } from "../src/db.js";
-import type { NoticeCaller } from "../src/notices/contract.js";
+import { MESSAGE_SIZE, type NoticeCaller } from "../src/notices/contract.js";
 import type { MessageView } from "../src/notices/messages.js";
 import { createOutcomeReporter } from "../src/notices/report.js";
 import { DEFAULT_WAKE_ENVIRONMENT } from "../src/notices/wake/environment.js";
@@ -119,13 +119,12 @@ describe("message lifecycle", () => {
  * contract's table, and split at the header and end lines.
  */
 describe("verbatim delivery", () => {
-  const LIMIT = 4_000;
-  const BUDGET = 4_500;
+  const { body_bytes: LIMIT, hook_call_bytes: BUDGET } = MESSAGE_SIZE;
   const RECIPIENTS = { claude: "agent:claude:s1:s1", codex: "agent:codex:t1", antigravity: "agent:antigravity:c1" } as const;
   const callers = { claude: { provider: "claude", session_id: "s1" }, codex: { provider: "codex", session_id: "t1" },
     antigravity: { provider: "antigravity", session_id: "c1" } } as const;
-  // The longest sender ref there is: a Claude subagent's.
-  const sender = { provider: "claude", agent_id: "a8a600a2af348152b", session_id: "420beaf2-df51-4b9e-96ff-87e036d5da01" };
+  // The longest sender ref there is: a Claude main thread's, whose agent id is its session id.
+  const sender = { provider: "claude", agent_id: "420beaf2-df51-4b9e-96ff-87e036d5da01", session_id: "420beaf2-df51-4b9e-96ff-87e036d5da01" };
 
   const json = (stdout: string) => JSON.parse(stdout) as Record<string, any>;
   const blockReason = (stdout: string) => { const out = json(stdout); expect(out.decision).toBe("block"); return out.reason as string; };
@@ -198,7 +197,7 @@ describe("verbatim delivery", () => {
   });
 
   it("hands over a prefix of whole messages within the per-call budget and leaves the rest for the next call", async () => {
-    // Each framed message is a little over 2,000 bytes: two fit in the budget and three do not.
+    // Each framed message is a little under half the budget: two fit and three do not.
     const parts = ["a", "b", "c"].map((letter) => letter.repeat(Math.floor(BUDGET / 2) - 200));
     const sent = [];
     for (const part of parts) sent.push(await send(RECIPIENTS.claude, part, sender));
