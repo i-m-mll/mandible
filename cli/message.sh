@@ -56,14 +56,15 @@ REACH_JQ='
     else "unknown to Mandible: no hook has run in that session" end;
 '
 
-# One message as `status` prints it.
+# One message as `status` prints it: its fields, a blank line, then its body.
 MESSAGE_JQ="$REACH_JQ"'
   "message \(.short_id)",
   "from: \(.sender_agent_ref // "a shell")",
   "to: \(.recipient_agent_ref)",
   "sent: \(.sent_at | when)",
   "reach: \(.reach | reach)",
-  "text: \(.text)"
+  "",
+  .text
 '
 
 cmd_send() {
@@ -72,7 +73,8 @@ cmd_send() {
   binding=$(mandible_bind_arguments "message.send" '{"to":{"option":"to"},"message":{"option":["m","message"]},"json":{"option":"json","constant":"1"}}' "$@") || return $?
   eval "$binding"
   [[ -n "$to" ]] || fail "send requires --to"
-  if [[ -z "$message" && ! -t 0 ]]; then message="$(cat)"; fi
+  # From stdin the body is exact but for one trailing newline.
+  if [[ -z "$message" && ! -t 0 ]]; then message="$(cat; printf .)"; message="${message%.}"; message="${message%$'\n'}"; fi
   [[ -n "${message//[[:space:]]/}" ]] || fail "the message is empty"
   require_tools
   local payload response_file code response
@@ -118,7 +120,7 @@ cmd_list() {
          (if .recipient_agent_ref == $me then "received" else "sent" end),
          (if .recipient_agent_ref == $me then (.sender_agent_ref // "a shell") else .recipient_agent_ref end),
          (.reach | reach),
-         .text]
+         (.text | split("\n")[0])]
       | @tsv'
   fi
 }

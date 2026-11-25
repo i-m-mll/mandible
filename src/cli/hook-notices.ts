@@ -52,7 +52,7 @@ try {
 }
 catch (error) { fail(`daemon unreachable: ${reason(error)}`); }
 if (notices.length === 0) process.exit(0);
-fs.writeSync(1, encodeHookOutput(encoding, event as string, notices.map((notice) => notice.text).join("\n")));
+fs.writeSync(1, encodeHookOutput(encoding, event as string, notices.map((notice) => notice.text)));
 // Unconfirmed rows stay owed; the providers discard a failed hook's output.
 try { await post("/api/notices/delivered", { ids: notices.map((notice) => notice.id) }); }
 catch (error) { fail(`delivery not confirmed: ${reason(error)}`); }

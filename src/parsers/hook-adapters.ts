@@ -64,8 +64,12 @@ export const refusesStop = (encoding: HookEncoding): boolean =>
 
 const REPEAT_REPORT = "Mandible: your parent reads your last reply as your whole report. Act on the above if it calls for action, then end with your complete report again, changed only where the above changes it.";
 
-/** The stdout that hands `text` to the model at `event`. */
-export function encodeHookOutput(encoding: HookEncoding, event: string, text: string): string {
+/** What separates the rows one hook call hands over. */
+export const NOTICE_SEPARATOR = "\n\n";
+
+/** The stdout that hands the owed rows' texts to the model at `event`, in order. */
+export function encodeHookOutput(encoding: HookEncoding, event: string, texts: readonly string[]): string {
+  const text = texts.join(NOTICE_SEPARATOR);
   switch (encoding) {
     case "plain": return `${text}\n`;
     case "additional_context": return `${JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: text } })}\n`;

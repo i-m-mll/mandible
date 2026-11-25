@@ -6,7 +6,9 @@ import type { SqliteStatement } from "../sqlite.js";
 import { holdsResponsibility, type ResponsibilityHolder } from "../responsibility.js";
 import { resolveSessionAlias } from "../session-liveness.js";
 import { broadcast } from "../sse.js";
-import { NOTICE_PROVIDERS, outcomeReportDigest, type NoticeCaller, type NoticeProvider, type OutcomeReporter } from "./contract.js";
+import { NOTICE_SEPARATOR } from "../parsers/hook-adapters.js";
+import { MESSAGE_SIZE, NOTICE_PROVIDERS, outcomeReportDigest, type NoticeCaller, type NoticeProvider, type OutcomeReporter } from "./contract.js";
+import { frameMessage } from "./messages.js";
 import { renderNotice } from "./render.js";
 
 /** Who answers for a request now, as `AuthQueue.requestResponsibility` gives it. */
@@ -36,9 +38,11 @@ interface LatestRow {
   responsible_agent_ref: string;
 }
 
+interface OwedBase { id: string; subject_id: string; recipient_id: string; responsible_agent_ref: string }
 type OwedRow =
-  | { id: string; subject_kind: "auth_request"; subject_id: string; recipient_id: string; responsible_agent_ref: string; text: string | null }
-  | { id: string; subject_kind: "reminder" | "message"; subject_id: string; recipient_id: string; responsible_agent_ref: string; text: string };
+  | OwedBase & { subject_kind: "auth_request"; text: string | null; sender_agent_ref: null }
+  | OwedBase & { subject_kind: "reminder"; text: string; sender_agent_ref: null }
+  | OwedBase & { subject_kind: "message"; text: string; sender_agent_ref: string | null };
 
 /**
  * The session half of the notification log: raising a notice when an approval
@@ -56,10 +60,10 @@ export class NoticeLog {
     private readonly now: () => number = Date.now,
   ) {
     // Session-addressed rows by session, for the main thread only; messages by exact agent.
-    this.owed = db.prepare(`SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, text, raised_at, rowid AS seq FROM notifications
+    this.owed = db.prepare(`SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, sender_agent_ref, text, raised_at, rowid AS seq FROM notifications
       WHERE ?3 AND recipient_provider = ?1 AND recipient_id = ?2 AND delivered_at IS NULL AND recipient_kind = 'session' AND subject_kind <> 'message'
       UNION ALL
-      SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, text, raised_at, rowid AS seq FROM notifications
+      SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, sender_agent_ref, text, raised_at, rowid AS seq FROM notifications
       WHERE responsible_agent_ref = ?4 AND delivered_at IS NULL AND subject_kind = 'message'
       ORDER BY raised_at, seq`);
     this.latest = db.prepare(`SELECT id, delivered_at, digest, recipient_provider, recipient_id, responsible_agent_ref
@@ -104,29 +108,47 @@ export class NoticeLog {
   }
 
   /**
-   * The rows owed to the calling hook, rendered now: the session's notices when
-   * it is the main thread, and the messages addressed to its exact agent.
-   * Nothing owed is one indexed read.
+   * The rows owed to the calling hook, rendered now, in the order they were
+   * raised: the session's notices when it is the main thread, and the messages
+   * addressed to its exact agent, each framed. The rows taken are the longest
+   * prefix that fits `MESSAGE_SIZE.hook_call_bytes` once joined, and at least
+   * the first; the rest stay owed to the next call. Nothing owed is one indexed read.
    */
   collect(caller: NoticeCaller): Array<{ id: string; text: string }> {
     const ref = exactAgentRef(hookAgentIdentity(caller.provider, caller.session_id, caller.agent_id));
     const main = caller.agent_id === undefined || caller.agent_id === caller.session_id;
     const rows = this.owed.all(caller.provider, caller.session_id, main ? 1 : 0, ref) as OwedRow[];
     if (rows.length === 0) return [];
-    return this.db.transaction(() => rows.flatMap((row) => {
-      if (row.subject_kind !== "auth_request") return [{ id: row.id, text: row.text }];
-      const report = this.reporter(row.subject_id);
-      if (!report) return [];
-      const holder = parseExactAgentRef(row.responsible_agent_ref);
-      if (!holder) throw new Error(`Notification ${row.id} names no exact agent.`);
-      const base = (this.db.prepare("SELECT base_branch FROM auth_requests WHERE id = ?").get(row.subject_id) as
-        { base_branch: string | null } | undefined)?.base_branch ?? "base";
-      const text = renderNotice(report, { ...holder, session_id: row.recipient_id }, base);
-      this.db.prepare("UPDATE notifications SET digest = ?, text = ?, review_submission_id = ? WHERE id = ?")
-        .run(outcomeReportDigest(report), text, report.review_submission_id ?? null, row.id);
-      this.changed(row.id);
-      return [{ id: row.id, text }];
-    })).immediate();
+    return this.db.transaction(() => {
+      const taken: Array<{ id: string; text: string }> = [];
+      let bytes = 0;
+      for (const row of rows) {
+        const text = this.render(row);
+        if (text === null) continue;
+        const size = Buffer.byteLength(text, "utf8") + (taken.length > 0 ? NOTICE_SEPARATOR.length : 0);
+        if (taken.length > 0 && bytes + size > MESSAGE_SIZE.hook_call_bytes) break;
+        taken.push({ id: row.id, text });
+        bytes += size;
+      }
+      return taken;
+    }).immediate();
+  }
+
+  /** A row's text as handed over: a message framed, a reminder as raised, a settlement notice rendered from the current report. */
+  private render(row: OwedRow): string | null {
+    if (row.subject_kind === "message") return frameMessage(row.id, row.sender_agent_ref, row.text);
+    if (row.subject_kind !== "auth_request") return row.text;
+    const report = this.reporter(row.subject_id);
+    if (!report) return null;
+    const holder = parseExactAgentRef(row.responsible_agent_ref);
+    if (!holder) throw new Error(`Notification ${row.id} names no exact agent.`);
+    const base = (this.db.prepare("SELECT base_branch FROM auth_requests WHERE id = ?").get(row.subject_id) as
+      { base_branch: string | null } | undefined)?.base_branch ?? "base";
+    const text = renderNotice(report, { ...holder, session_id: row.recipient_id }, base);
+    this.db.prepare("UPDATE notifications SET digest = ?, text = ?, review_submission_id = ? WHERE id = ?")
+      .run(outcomeReportDigest(report), text, report.review_submission_id ?? null, row.id);
+    this.changed(row.id);
+    return text;
   }
 
   /**

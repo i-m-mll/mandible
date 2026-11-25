@@ -4,7 +4,7 @@ import { DOMAIN_EVENTS, type SessionExecutionObservation, type SessionExecutionS
 import type { Db } from "../db.js";
 import { SessionExecutionStore } from "../session-execution.js";
 import { broadcast } from "../sse.js";
-import { NOTICE_PROVIDERS, type NoticeProvider } from "./contract.js";
+import { MESSAGE_SIZE, NOTICE_PROVIDERS, type NoticeProvider } from "./contract.js";
 import { latestWakeAttempt } from "./wake/reconciler.js";
 import type { WakeFailureCode } from "./wake/types.js";
 
@@ -13,9 +13,14 @@ export function shortMessageId(id: string): string {
   return id.slice(0, 8);
 }
 
-/** One line: the message's short id and its sender, so the recipient can reply with `--to`. */
-export function renderMessage(id: string, sender: string | null, text: string): string {
-  return `Mandible: message ${shortMessageId(id)} from ${sender ?? "a shell"}: ${text.replace(/\s+/g, " ").trim()}`;
+/**
+ * The body as sent, between a header naming the message and its sender (so the
+ * recipient can reply with `--to`) and an end line. The id is assigned at send,
+ * so no body can contain its own end line.
+ */
+export function frameMessage(id: string, sender: string | null, body: string): string {
+  const short = shortMessageId(id);
+  return `Mandible: message ${short} from ${sender ?? "a shell"}:\n${body}\nMandible: end of message ${short}`;
 }
 
 export interface MessageView {
@@ -50,6 +55,7 @@ export type MessageReach =
 
 export type MessageError =
   | { code: "invalid_recipient"; error: string }
+  | { code: "too_large"; error: string }
   | { code: "not_found"; error: string }
   | { code: "ambiguous_id"; error: string };
 
@@ -104,15 +110,20 @@ export function recipientSession(ref: string): { provider: NoticeProvider; sessi
   return { provider: recipient.provider as NoticeProvider, session_id: recipient.session_id ?? recipient.agent_id! };
 }
 
-/** Stores a message for one exact agent of a known provider; it is delivered by the recipient's own hooks. */
+/** Stores a message's body, as sent, for one exact agent of a known provider; it is delivered by the recipient's own hooks. */
 export function sendMessage(db: Db, input: { to: string; text: string; sender: string | null }, now: number = Date.now()):
   MessageResult<MessageView> {
   const recipient = recipientSession(input.to);
   if (!recipient) {
     return { ok: false, error: { code: "invalid_recipient", error: `${input.to} is not an exact agent ref of ${NOTICE_PROVIDERS.join(", ")}.` } };
   }
+  const bytes = Buffer.byteLength(input.text, "utf8");
+  if (bytes > MESSAGE_SIZE.body_bytes) {
+    return { ok: false, error: { code: "too_large", error: `The message is ${bytes} bytes; a message is at most ${MESSAGE_SIZE.body_bytes}. `
+      + "Put the content in a file or the ledger and send its path." } };
+  }
   const id = randomUUID();
-  const text = renderMessage(id, input.sender, input.text);
+  const { text } = input;
   db.prepare(`INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider, recipient_id,
     responsible_agent_ref, sender_agent_ref, raised_at, digest, text) VALUES (?, 'message', ?, 'session', ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, id, recipient.provider, recipient.session_id, input.to, input.sender, now,

@@ -174,9 +174,18 @@ export const NOTIFICATION_LIST_QUERY = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 });
 
+/**
+ * The size rule, the same for every provider because a sender does not know
+ * which event will deliver: a message body is at most `body_bytes` of UTF-8,
+ * and one hook call hands over at most `hook_call_bytes` of owed text (always
+ * at least its first row). Both are the largest sizes that arrived whole at
+ * every event of every provider in probe S of issue 8773516.
+ */
+export const MESSAGE_SIZE = { body_bytes: 4_000, hook_call_bytes: 4_500 } as const;
+
 /** `read` and `read_all` are `POST`: the user's read mark on one user notification, or on all of them. */
-/** `POST /api/messages`: one message from the calling agent (or a shell) to one exact agent ref. */
-export const MESSAGE_SEND_REQUEST = z.object({ to: z.string().min(1), text: z.string().trim().min(1) });
+/** `POST /api/messages`: one message from the calling agent (or a shell) to one exact agent ref; `text` is stored as sent. */
+export const MESSAGE_SEND_REQUEST = z.object({ to: z.string().min(1), text: z.string().refine((text) => text.trim() !== "", "is empty") });
 
 /** `GET /api/messages`: the calling agent's sent and received messages, newest first. */
 export const MESSAGE_LIST_QUERY = z.object({ limit: z.coerce.number().int().min(1).max(200).optional() });
