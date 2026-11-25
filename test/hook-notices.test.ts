@@ -13,16 +13,22 @@ const json = (stdout: string) => JSON.parse(stdout) as Record<string, any>;
 const context = (stdout: string) => { const out = json(stdout); return out.hookSpecificOutput.hookEventName === "PostToolUse" ? out.hookSpecificOutput.additionalContext : null; };
 const block = (stdout: string) => { const out = json(stdout); return out.decision === "block" ? out.reason : null; };
 const plain = (stdout: string) => stdout.trimEnd();
+// A subagent's refusal carries the owed text and then an instruction that keeps its report.
+const subagentBlock = (stdout: string) => {
+  const reason = block(stdout);
+  const [owedText, instruction] = typeof reason === "string" ? reason.split(/\n\n(?=[^\n]*$)/) : [];
+  return instruction?.trim() ? owedText : null;
+};
 const CASES: Array<{ provider: string; payload: string; read: (stdout: string) => unknown; agent?: string }> = [
   { provider: "claude", payload: "claude-UserPromptSubmit", read: plain },
   { provider: "claude", payload: "claude-PostToolUse", read: context },
   { provider: "claude", payload: "claude-PostToolUse-subagent", read: context, agent: "a4e1c2b7d9f03a6e" },
   { provider: "claude", payload: "claude-Stop", read: block },
-  { provider: "claude", payload: "claude-SubagentStop", read: block, agent: "a4e1c2b7d9f03a6e" },
+  { provider: "claude", payload: "claude-SubagentStop", read: subagentBlock, agent: "a4e1c2b7d9f03a6e" },
   { provider: "codex", payload: "codex-UserPromptSubmit", read: plain },
   { provider: "codex", payload: "codex-PostToolUse", read: context },
   { provider: "codex", payload: "codex-Stop", read: block },
-  { provider: "codex", payload: "codex-SubagentStop", read: block, agent: "01a2050f-4635-7243-8df4-f0885045c92a" },
+  { provider: "codex", payload: "codex-SubagentStop", read: subagentBlock, agent: "01a2050f-4635-7243-8df4-f0885045c92a" },
   { provider: "antigravity", payload: "antigravity-PreInvocation", read: (stdout) => json(stdout).injectSteps[0].systemMessage.systemMessage },
   { provider: "antigravity", payload: "antigravity-Stop", read: (stdout) => { const out = json(stdout); return out.decision === "continue" ? out.reason : null; } },
 ];
