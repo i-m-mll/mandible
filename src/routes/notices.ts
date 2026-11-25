@@ -8,7 +8,7 @@ import { currentRequestOrigin } from "../request-origin.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
 
-const MESSAGE_ERROR_STATUS: Record<MessageError["code"], number> = { invalid_recipient: 400, not_found: 404, ambiguous_id: 409 };
+const MESSAGE_ERROR_STATUS: Record<MessageError["code"], number> = { invalid_recipient: 400, too_large: 413, not_found: 404, ambiguous_id: 409 };
 
 function sendMessageError(res: ResponseLike, error: MessageError): void {
   sendJson(res, MESSAGE_ERROR_STATUS[error.code], error);

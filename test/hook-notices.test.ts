@@ -34,7 +34,9 @@ const CASES: Array<{ provider: string; payload: string; read: (stdout: string) =
 ];
 const sessionOf = (payload: Record<string, unknown>) => (payload.session_id ?? payload.conversationId) as string;
 
-const TEXT = "Mandible: message 1a2b3c4d from agent:codex:t1: Rebase onto main.\nMandible: auth 01234567 expired.";
+const ROWS = ["Mandible: message 1a2b3c4d from agent:codex:t1:\nRebase onto main.\nMandible: end of message 1a2b3c4d", "Mandible: auth 01234567 expired."];
+// Rows handed over in one call are separated by a blank line.
+const TEXT = ROWS.join("\n\n");
 let dir: string, socket: string, server: http.Server;
 let owed: Array<{ id: string; text: string }>;
 let deliveredStatus: number;
@@ -58,7 +60,7 @@ beforeAll(async () => {
 afterAll(() => { server.close(); fs.rmSync(dir, { recursive: true, force: true }); });
 beforeEach(() => {
   seen.length = 0;
-  owed = TEXT.split("\n").map((text, i) => ({ id: `n${i}`, text }));
+  owed = ROWS.map((text, i) => ({ id: `n${i}`, text }));
   deliveredStatus = 200;
 });
 

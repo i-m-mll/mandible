@@ -39,7 +39,7 @@ import { ANTIGRAVITY_PROVIDER_SCHEMA_SQL } from "./antigravity-provider-schema.j
  * `test/db-migration-convergence.test.ts` migrates the frozen floor-version fixture to
  * head and fails if the two representations disagree.
  */
-export const BASELINE_SCHEMA_VERSION = 259;
+export const BASELINE_SCHEMA_VERSION = 260;
 
 export const FROZEN_REQUEST_REVIEW_COLUMNS_SQL = [
   "ALTER TABLE auth_requests ADD COLUMN merge_effective_head_sha TEXT",

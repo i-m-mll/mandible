@@ -34,8 +34,9 @@ export const NOTICE_REVIEW_SUBMISSION_SQL =
 
 /**
  * A message row (`subject_kind = 'message'`) is its own subject, carries its
- * rendered text from the moment it is sent, and is addressed to the exact agent
- * in `responsible_agent_ref`. Only a message has a sender.
+ * body exactly as sent from the moment it is sent (it is framed when it is
+ * collected), and is addressed to the exact agent in `responsible_agent_ref`.
+ * Only a message has a sender.
  */
 export const NOTICE_MESSAGE_SQL: readonly string[] = [
   "ALTER TABLE notifications ADD COLUMN sender_agent_ref TEXT CHECK(sender_agent_ref IS NULL OR subject_kind = 'message')",
@@ -64,4 +65,16 @@ export const SESSION_WAKES_SCHEMA_SQL: readonly string[] = [
     CHECK(cleared_at IS NULL OR outcome = 'woken')
   )`,
   "CREATE INDEX idx_session_wakes_session ON session_wakes(provider, session_id, attempted_at)",
+];
+
+/**
+ * Stored message text becomes the body: rows sent before framing moved to
+ * collect carry the one-line prefix `Mandible: message <id> from <sender>: `,
+ * which is a function of the row's own id and sender, so stripping it is exact.
+ */
+const LEGACY_MESSAGE_PREFIX = "('Mandible: message ' || substr(id, 1, 8) || ' from ' || coalesce(sender_agent_ref, 'a shell') || ': ')";
+export const MESSAGE_BODY_MIGRATION_SQL: readonly string[] = [
+  `UPDATE notifications SET text = substr(text, length(${LEGACY_MESSAGE_PREFIX}) + 1),
+     digest = mandible_sha256(substr(text, length(${LEGACY_MESSAGE_PREFIX}) + 1))
+   WHERE subject_kind = 'message' AND substr(text, 1, length(${LEGACY_MESSAGE_PREFIX})) = ${LEGACY_MESSAGE_PREFIX}`,
 ];

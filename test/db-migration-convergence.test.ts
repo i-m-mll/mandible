@@ -60,6 +60,8 @@ import { LedgerStore } from "../src/ledger/store.js";
 import { serializeSpaceDocument, spaceDocTree } from "../src/spaces/export.js";
 import { listDocumentHistory } from "../src/spaces/history.js";
 import { executePublication, getPublication } from "../src/spaces/publication.js";
+import { NoticeLog } from "../src/notices/log.js";
+import { getMessage } from "../src/notices/messages.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 import { insertRawLedgerIssue, insertRawLedgerProject, SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
@@ -1651,6 +1653,28 @@ describe("v257 antigravity provider", () => {
       expect(db.prepare("SELECT name FROM sqlite_master WHERE instr(sql, 'gemini') > 0").all()).toEqual([]);
       expect(db.pragma("foreign_key_check")).toEqual([]);
       expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+    } finally { db.close(); }
+  });
+});
+
+describe("v260 verbatim message bodies", () => {
+  it("strips the stored one-line prefix, so status shows the body and a collect frames it once", () => {
+    const db = migrateFixtureThrough(259);
+    try {
+      const row = db.prepare(`INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider, recipient_id,
+        responsible_agent_ref, sender_agent_ref, raised_at, delivered_at, digest, text) VALUES (?, 'message', ?, 'session', 'codex', 't1',
+        'agent:codex:t1', ?, ?, ?, 'd', ?)`);
+      const delivered = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa", owed = "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      row.run(delivered, delivered, "agent:claude:s1:s1", 1, 2, "Mandible: message 11111111 from agent:claude:s1:s1: Rebase first");
+      row.run(owed, owed, null, 3, null, "Mandible: message 22222222 from a shell: Mandible: message 00000000 from x: quoted");
+
+      migrate(db);
+
+      expect(getMessage(db, "11111111")).toMatchObject({ ok: true, value: { text: "Rebase first" } });
+      expect(getMessage(db, "22222222")).toMatchObject({ ok: true, value: { text: "Mandible: message 00000000 from x: quoted" } });
+      const notices = new NoticeLog(db, () => null, () => null).collect({ provider: "codex", session_id: "t1" });
+      expect(notices).toEqual([{ id: owed,
+        text: "Mandible: message 22222222 from a shell:\nMandible: message 00000000 from x: quoted\nMandible: end of message 22222222" }]);
     } finally { db.close(); }
   });
 });
