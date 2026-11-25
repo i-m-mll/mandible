@@ -42,3 +42,26 @@ export const NOTICE_MESSAGE_SQL: readonly string[] = [
   `CREATE INDEX idx_notifications_undelivered_messages ON notifications(responsible_agent_ref)
      WHERE delivered_at IS NULL AND subject_kind = 'message'`,
 ];
+
+/**
+ * One row per wake attempt: a turn Mandible tried to start on an idle session
+ * so that its hooks deliver what is owed. `outcome` is null while the attempt
+ * runs; `cleared_at` is the first hook call from the session after a `woken`
+ * attempt, which ends the attempt's hold on further wakes. No token is stored.
+ */
+export const SESSION_WAKES_SCHEMA_SQL: readonly string[] = [
+  `CREATE TABLE session_wakes (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL CHECK(provider IN ('claude','codex','antigravity')),
+    session_id TEXT NOT NULL,
+    attempted_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    outcome TEXT CHECK(outcome IN ('woken','no_route','route_refused','provider_not_running','not_app_thread','entry_point_failed')),
+    error TEXT,
+    cleared_at INTEGER,
+    CHECK((outcome IS NULL) = (finished_at IS NULL)),
+    CHECK(error IS NULL OR outcome NOT IN ('woken','no_route')),
+    CHECK(cleared_at IS NULL OR outcome = 'woken')
+  )`,
+  "CREATE INDEX idx_session_wakes_session ON session_wakes(provider, session_id, attempted_at)",
+];

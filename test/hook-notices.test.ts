@@ -62,10 +62,14 @@ beforeEach(() => {
   deliveredStatus = 200;
 });
 
-function runHook(provider: string, payload: unknown, target = socket): Promise<{ code: number | null; stdout: string; stderr: string }> {
+const ROUTE_ENV = ["CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "ANTIGRAVITY_LS_ADDRESS", "ANTIGRAVITY_CSRF_TOKEN"];
+
+function runHook(provider: string, payload: unknown, target = socket, extra: Record<string, string> = {}): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const env: NodeJS.ProcessEnv = { ...process.env, MANDIBLE_SOCKET: target };
+  for (const key of ROUTE_ENV) delete env[key];
   return new Promise((resolve) => {
     const child = spawn(process.execPath.includes("bun") ? process.execPath : "bun", ["--no-install", path.resolve("src/cli/hook-notices.ts"), provider],
-      { env: { ...process.env, MANDIBLE_SOCKET: target }, stdio: ["pipe", "pipe", "pipe"] });
+      { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -83,6 +87,14 @@ it.each(CASES)("hands owed text to $provider at $payload in the provider's shape
     { url: "/api/notices/collect", body: { provider, session_id: sessionOf(input), ...(agent ? { agent_id: agent } : {}) } },
     { url: "/api/notices/delivered", body: { ids: ["n0", "n1"] } },
   ]);
+});
+
+it("registers the Claude session's inbox route from its environment with the collect request", async () => {
+  owed = [];
+  const input = fixture("claude-Stop");
+  expect((await runHook("claude", input, socket, { CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/cc-socks/7.sock", CLAUDE_CODE_MESSAGING_TOKEN: "t0k" })).code).toBe(0);
+  expect(seen).toEqual([{ url: "/api/notices/collect",
+    body: { provider: "claude", session_id: sessionOf(input), route: { provider: "claude", socket: "/tmp/cc-socks/7.sock", token: "t0k" } } }]);
 });
 
 it.each(CASES)("prints nothing for $payload when nothing is owed, after one request", async ({ provider, payload }) => {

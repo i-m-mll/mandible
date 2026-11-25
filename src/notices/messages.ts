@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { parseExactAgentRef } from "../ambient-provider-identity.js";
-import { DOMAIN_EVENTS, type SessionExecutionState } from "../contracts.js";
+import { exactAgentRef, hookAgentIdentity, parseExactAgentRef } from "../ambient-provider-identity.js";
+import { DOMAIN_EVENTS, type SessionExecutionObservation, type SessionExecutionState } from "../contracts.js";
 import type { Db } from "../db.js";
 import { SessionExecutionStore } from "../session-execution.js";
 import { broadcast } from "../sse.js";
 import { NOTICE_PROVIDERS, type NoticeProvider } from "./contract.js";
+import { latestWakeAttempt } from "./wake/reconciler.js";
+import type { WakeFailureCode } from "./wake/types.js";
 
 /** The CLI's display form of a message id. */
 export function shortMessageId(id: string): string {
@@ -26,7 +28,25 @@ export interface MessageView {
   delivered_at: number | null;
   /** The recipient session's last recorded execution state, where Mandible records one. */
   recipient_execution: { state: SessionExecutionState; observed_at: number } | null;
+  reach: MessageReach;
 }
+
+/**
+ * Whether the message has reached, or will reach, its recipient, from current
+ * state. Every case but `delivered` leaves the message owed.
+ */
+export type MessageReach =
+  | { kind: "delivered"; at: number }
+  /** No wake: the running turn's hooks deliver. */
+  | { kind: "working"; observed_at: number }
+  /** A provider accepted the wake; not yet delivered. */
+  | { kind: "woken"; at: number }
+  | { kind: "wake_in_progress"; since: number }
+  /** Delivered at the recipient's next turn. `not_main_thread`: only a session's main thread is woken. */
+  | { kind: "not_woken"; reason: WakeFailureCode | "not_main_thread" | "not_attempted"; detail: string | null }
+  | { kind: "ended"; observed_at: number }
+  /** No hook has run in a session with that id. */
+  | { kind: "unknown" };
 
 export type MessageError =
   | { code: "invalid_recipient"; error: string }
@@ -55,21 +75,47 @@ function view(db: Db, row: MessageRow): MessageView {
     id: row.id, short_id: shortMessageId(row.id), sender_agent_ref: row.sender_agent_ref, recipient_agent_ref: row.responsible_agent_ref,
     text: row.text, sent_at: row.raised_at, delivered_at: row.delivered_at,
     recipient_execution: execution ? { state: execution.state, observed_at: execution.observed_at } : null,
+    reach: reach(db, row, execution),
   };
+}
+
+function reach(db: Db, row: MessageRow, execution: SessionExecutionObservation | null): MessageReach {
+  if (row.delivered_at !== null) return { kind: "delivered", at: row.delivered_at };
+  if (row.recipient_provider !== "antigravity") {
+    if (!execution) return { kind: "unknown" };
+    if (execution.state.kind === "ended") return { kind: "ended", observed_at: execution.observed_at };
+    if (execution.state.kind === "working") return { kind: "working", observed_at: execution.observed_at };
+  }
+  if (row.responsible_agent_ref !== exactAgentRef(hookAgentIdentity(row.recipient_provider, row.recipient_id, undefined))) {
+    return { kind: "not_woken", reason: "not_main_thread", detail: null };
+  }
+  // An attempt before the session's last observation belongs to an earlier idle spell.
+  const attempt = latestWakeAttempt(db, row.recipient_provider, row.recipient_id, execution?.observed_at ?? 0);
+  if (!attempt) return { kind: "not_woken", reason: "not_attempted", detail: null };
+  if (attempt.outcome === null) return { kind: "wake_in_progress", since: attempt.attempted_at };
+  if (attempt.outcome === "woken") return { kind: "woken", at: attempt.finished_at! };
+  return { kind: "not_woken", reason: attempt.outcome, detail: attempt.error };
+}
+
+/** The provider session a recipient ref lives in: a Claude ref's session, otherwise the ref's own id. */
+export function recipientSession(ref: string): { provider: NoticeProvider; session_id: string } | null {
+  const recipient = parseExactAgentRef(ref);
+  if (!recipient || !(NOTICE_PROVIDERS as readonly string[]).includes(recipient.provider)) return null;
+  return { provider: recipient.provider as NoticeProvider, session_id: recipient.session_id ?? recipient.agent_id! };
 }
 
 /** Stores a message for one exact agent of a known provider; it is delivered by the recipient's own hooks. */
 export function sendMessage(db: Db, input: { to: string; text: string; sender: string | null }, now: number = Date.now()):
   MessageResult<MessageView> {
-  const recipient = parseExactAgentRef(input.to);
-  if (!recipient || !(NOTICE_PROVIDERS as readonly string[]).includes(recipient.provider)) {
+  const recipient = recipientSession(input.to);
+  if (!recipient) {
     return { ok: false, error: { code: "invalid_recipient", error: `${input.to} is not an exact agent ref of ${NOTICE_PROVIDERS.join(", ")}.` } };
   }
   const id = randomUUID();
   const text = renderMessage(id, input.sender, input.text);
   db.prepare(`INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider, recipient_id,
     responsible_agent_ref, sender_agent_ref, raised_at, digest, text) VALUES (?, 'message', ?, 'session', ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, id, recipient.provider, recipient.session_id ?? recipient.agent_id!, input.to, input.sender, now,
+    .run(id, id, recipient.provider, recipient.session_id, input.to, input.sender, now,
       createHash("sha256").update(text).digest("hex"), text);
   db.afterCommit(() => broadcast(DOMAIN_EVENTS.NOTIFICATION_CHANGED, { id }));
   return { ok: true, value: view(db, db.prepare(`SELECT ${COLUMNS} FROM notifications WHERE id = ?`).get(id) as MessageRow) };
