@@ -847,7 +847,7 @@ api_report_terminal_response() {
 api_http_exchange() {
   local method="$1" request_path="$2" data="$3" output_file="$4"
   local retry_limit="${MANDIBLE_HTTP_RETRIES:-2}" attempt=0 http_status curl_exit
-  local body_tmp="" stderr_tmp retryable empty_response token="" token_cfg="" local_human=0 csrf="" gated=0 optional_gate=0 gate_status=0 provider service="" account="" lookup_status=0 missing=""
+  local body_tmp="" stderr_tmp retryable empty_response token="" token_cfg="" wake_route="" local_human=0 csrf="" gated=0 optional_gate=0 gate_status=0 provider service="" account="" lookup_status=0 missing=""
   local ambient_headers=() curl_args=()
 
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
@@ -876,6 +876,8 @@ api_http_exchange() {
   else
     token="$(api_client_token "$method")"
   fi
+  # The route's token reaches curl only through a pipe (`-H @-`), never a file or argv.
+  wake_route=$(api_wake_route_json)
   if [[ -n "$token" ]]; then
     token_cfg=$(api_temp_file)
     printf 'header = "Authorization: Bearer %s"\n' "$token" > "$token_cfg"
@@ -899,6 +901,7 @@ api_http_exchange() {
     curl_args=(-s --max-time "${MANDIBLE_HTTP_TIMEOUT:-15}" -o "$output_file" -w "%{http_code}")
     api_is_local_socket && curl_args+=(--unix-socket "$MANDIBLE_SOCKET")
     [[ -n "$token_cfg" ]] && curl_args+=(--config "$token_cfg")
+    [[ -n "$wake_route" ]] && curl_args+=(-H @-)
     (( ${#ambient_headers[@]} )) && curl_args+=("${ambient_headers[@]}")
     if (( local_human )); then
       curl_args+=(-H "Origin: $MANDIBLE_CANONICAL_ORIGIN" -H 'Sec-Fetch-Site: same-origin')
@@ -909,7 +912,9 @@ api_http_exchange() {
       curl_args+=(--data-binary "@$body_tmp")
     fi
     curl_args+=("$(api_base)$request_path")
-    if http_status=$(curl "${curl_args[@]}" 2>"$stderr_tmp"); then
+    if http_status=$(if [[ -n "$wake_route" ]]; then
+          printf 'X-Mandible-Wake-Route: %s\n' "$wake_route" | curl "${curl_args[@]}" 2>"$stderr_tmp"
+        else curl "${curl_args[@]}" 2>"$stderr_tmp"; fi); then
       curl_exit=0
     else
       curl_exit=$?
@@ -1103,6 +1108,20 @@ api_current_agent_ref() {
 api_request_origin_json() {
   [[ "${MANDIBLE_REQUEST_ORIGIN+x}" ]] || return 0
   jq -cn --arg origin "$MANDIBLE_REQUEST_ORIGIN" 'try ($origin | fromjson) catch null'
+}
+
+# The wake route the caller's provider handed this process, as the daemon's
+# REGISTERED_ROUTE takes it, or nothing. jq reads the token from the
+# environment, so it never reaches an argument list.
+api_wake_route_json() {
+  case "$(api_ambient_provider)" in
+    claude)
+      [[ -n "${CLAUDE_CODE_MESSAGING_SOCKET:-}" && -n "${CLAUDE_CODE_MESSAGING_TOKEN:-}" ]] || return 0
+      jq -cn '{provider:"claude", socket:$ENV.CLAUDE_CODE_MESSAGING_SOCKET, token:$ENV.CLAUDE_CODE_MESSAGING_TOKEN}' ;;
+    antigravity)
+      [[ -n "${ANTIGRAVITY_LS_ADDRESS:-}" && -n "${ANTIGRAVITY_CSRF_TOKEN:-}" ]] || return 0
+      jq -cn '{provider:"antigravity", address:$ENV.ANTIGRAVITY_LS_ADDRESS, token:$ENV.ANTIGRAVITY_CSRF_TOKEN}' ;;
+  esac
 }
 
 api_curl_ambient_headers() {

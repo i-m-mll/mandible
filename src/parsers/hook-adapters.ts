@@ -2,8 +2,10 @@
  * How each provider's hooks hand Mandible's owed notices to the model: which
  * stdin fields name the session, the event and the agent, and how the text is
  * encoded for each event `mandible hook notices` is registered at. Read on the
- * hook path, so this file imports nothing.
+ * hook path, so this file imports nothing but types.
  */
+
+import type { RegisteredRoute } from "../notices/wake/types.js";
 
 /** How the owed text is printed. `block` and `continue` refuse the end of a turn. */
 export type HookEncoding = "plain" | "additional_context" | "block" | "inject_steps" | "continue";
@@ -18,6 +20,8 @@ export interface HookAdapter {
   events: Readonly<Record<string, HookEncoding>>;
   /** Whether this end-of-turn event follows a refusal this hook already made in the same turn. */
   continuing(payload: Payload): boolean;
+  /** The wake route the provider hands the hook's process, if it hands one. */
+  route(env: NodeJS.ProcessEnv): RegisteredRoute | null;
 }
 
 const stopHookActive = (payload: Payload) => payload.stop_hook_active === true;
@@ -27,11 +31,15 @@ export const HOOK_ADAPTERS = {
     session_field: "session_id", event_field: "hook_event_name", agent_field: "agent_id",
     events: { UserPromptSubmit: "plain", PostToolUse: "additional_context", Stop: "block", SubagentStop: "block" },
     continuing: stopHookActive,
+    route: (env) => env.CLAUDE_CODE_MESSAGING_SOCKET && env.CLAUDE_CODE_MESSAGING_TOKEN
+      ? { provider: "claude", socket: env.CLAUDE_CODE_MESSAGING_SOCKET, token: env.CLAUDE_CODE_MESSAGING_TOKEN } : null,
   },
   codex: {
     session_field: "session_id", event_field: "hook_event_name", agent_field: "agent_id",
     events: { UserPromptSubmit: "plain", PostToolUse: "additional_context", Stop: "block", SubagentStop: "block" },
     continuing: stopHookActive,
+    // A Codex desktop thread's route is its id, derived at wake time.
+    route: () => null,
   },
   antigravity: {
     session_field: "conversationId", event_field: "hookEventName", agent_field: null,
@@ -39,6 +47,9 @@ export const HOOK_ADAPTERS = {
     // The documentation defines continuationActive as executionNum > 0, but the
     // CLI (1.5.14) sends continuationActive false on every Stop of a continued turn.
     continuing: (payload) => payload.continuationActive === true || (typeof payload.executionNum === "number" && payload.executionNum > 0),
+    // The CLI hands its address and token to commands the agent runs, not to hooks (agy 1.5.14).
+    route: (env) => env.ANTIGRAVITY_LS_ADDRESS && env.ANTIGRAVITY_CSRF_TOKEN
+      ? { provider: "antigravity", address: env.ANTIGRAVITY_LS_ADDRESS, token: env.ANTIGRAVITY_CSRF_TOKEN } : null,
   },
 } as const satisfies Record<string, HookAdapter>;
 

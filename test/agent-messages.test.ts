@@ -10,6 +10,9 @@ import { setDb, type Db } from "../src/db.js";
 import type { NoticeCaller } from "../src/notices/contract.js";
 import type { MessageView } from "../src/notices/messages.js";
 import { createOutcomeReporter } from "../src/notices/report.js";
+import { DEFAULT_WAKE_ENVIRONMENT } from "../src/notices/wake/environment.js";
+import { WakeReconciler } from "../src/notices/wake/reconciler.js";
+import { WakeRouteStore } from "../src/notices/wake/routes.js";
 import { registerNoticeRoutes } from "../src/routes/notices.js";
 import { PRODUCTION_EFFECTS } from "../src/security/effect-policy.js";
 import { Router } from "../src/server.js";
@@ -17,6 +20,9 @@ import { getOperator } from "../src/users/store.js";
 import { AUTH_COMMAND_REVIEW, createLedgerProject, createMigratedDb } from "./helpers/auth-queue-fixtures.js";
 
 type Identity = { provider: string; agent_id: string | null; session_id: string | null };
+
+const noRoute = async () => ({ ok: false as const, error: { code: "no_route" as const } });
+const NO_ROUTE_EXECUTORS = { claude: noRoute, codex: noRoute, antigravity: noRoute };
 
 let db: Db;
 let queue: AuthQueue;
@@ -30,7 +36,9 @@ beforeEach(() => {
   router = new Router({ clientAuth: { authenticate: () => ({ user_id: user.id, slug: user.slug,
     method: "local_socket", source: "local_socket", credential_id: null, effect_ceiling: PRODUCTION_EFFECTS }),
     mode: () => "strict", recordUnattributedWrite: () => undefined } });
-  registerNoticeRoutes(router, queue.notices!, db);
+  const reconciler = new WakeReconciler({ db, routes: new WakeRouteStore(), executors: NO_ROUTE_EXECUTORS,
+    environment: DEFAULT_WAKE_ENVIRONMENT, kinds: ["message"], logger: () => undefined });
+  registerNoticeRoutes(router, queue.notices!, db, { reconciler });
 });
 afterEach(async () => { await queue.dispose(); db.close(); });
 

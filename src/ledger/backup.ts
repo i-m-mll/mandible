@@ -271,6 +271,9 @@ export const REPRODUCIBLE_OR_RUNTIME_TABLES = [
   // The last execution state each provider session reported. It describes
   // live runtime and is stale in any restored copy; the next hook rewrites it.
   "provider_session_execution",
+  // Wake attempts on idle sessions: runtime outcomes, kept across restarts
+  // for status and for counting outcomes, but not ledger content.
+  "session_wakes",
   "branches",
   "work_repos",
   "push_history",

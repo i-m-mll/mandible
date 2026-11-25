@@ -71,6 +71,16 @@ function observationFromRow(row: ExecutionRow): SessionExecutionObservation {
     turn_id: row.native_turn_id, observed_at: row.observed_at };
 }
 
+/** Told of every observation a store applies or refuses, after its transaction. */
+export type SessionExecutionObserver = (provider: SessionExecutionProvider, sessionId: string, result: ExecutionWriteResult) => void;
+const observers = new Set<SessionExecutionObserver>();
+
+/** Subscribes to every store's observations; returns the unsubscribe. */
+export function observeSessionExecution(observer: SessionExecutionObserver): () => void {
+  observers.add(observer);
+  return () => { observers.delete(observer); };
+}
+
 export class SessionExecutionStore {
   constructor(private readonly db: Db) {}
 
@@ -119,6 +129,7 @@ export class SessionExecutionStore {
     if (result.status === "applied" && result.observation) broadcast(DOMAIN_EVENTS.SESSION_EXECUTION_UPDATED, {
       provider: input.provider, provider_session_id: input.provider_session_id, observation: result.observation,
     });
+    this.db.afterCommit(() => { for (const observer of observers) observer(input.provider, input.provider_session_id, result); });
     return result;
   }
 }
