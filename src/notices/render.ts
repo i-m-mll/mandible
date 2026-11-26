@@ -58,6 +58,7 @@ function member(step: OutcomeStep): string {
 }
 
 function reason(step: OutcomeStep, base: string): string | null {
+  if (step.kind === "branch_removal" && step.reason === "trash_refused" && step.detail) return `removal refused: ${brief(step.detail)}`;
   if (step.kind === "branch_removal" && step.reason) return BRANCH_REASONS[step.reason](base);
   if (step.kind === "preview_teardown" && step.reason === "not_merged") return BRANCH_REASONS.not_merged(base);
   return step.reason ? brief(step.reason.replaceAll("_", " ")) : null;

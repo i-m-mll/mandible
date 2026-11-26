@@ -5,8 +5,9 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 
 import type { Db } from "./db.js";
+import { getDaemonLogger } from "./daemon-log.js";
 import { protectedBranchNames } from "./protected-branches.js";
-import { resolveProjectRefAsync, type RegistryCheckout, type RegistryProject } from "./ledger/project-registry.js";
+import { listProjects, resolveProjectRefAsync, type RegistryCheckout, type RegistryProject } from "./ledger/project-registry.js";
 import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
 import { withPreviewLifecycle, previewWorktreeCustodyReason } from "../scripts/preview-custody.mjs";
 import { parseJsonObject } from "./row-coerce.js";
@@ -767,6 +768,57 @@ export async function proveMergedInto(repoRoot: string, branch: string, branchTi
   );
 }
 
+const REMOVING_DIR = "mandible-removing";
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function removingDir(repoRoot: string): Promise<string> {
+  return path.join(await git(repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), REMOVING_DIR);
+}
+
+function refused(worktreePath: string, cause: string, outcome: TrashCreateOutcome): TrashServiceError {
+  return new TrashServiceError(
+    `cannot remove worktree ${worktreePath}: ${cause}. Nothing was removed.`,
+    "removal_refused",
+    409,
+    { outcome },
+  );
+}
+
+/**
+ * Delete what earlier removals staged and could not delete, such as files a
+ * process kept writing into a staged worktree. Everything under the staging
+ * directory has already left Git's custody, so the rule needs no record.
+ */
+async function sweepRemoving(repoRoot: string): Promise<void> {
+  const dir = await removingDir(repoRoot);
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") return;
+    throw error;
+  }
+  for (const name of names) await deleteStaged(path.join(dir, name));
+}
+
+async function deleteStaged(staged: string): Promise<void> {
+  try {
+    await fs.promises.rm(staged, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  } catch (error) {
+    getDaemonLogger()("warn", "trash_staged_delete_failed", { subsystem: "trash", path: staged, error: errorText(error) });
+  }
+}
+
+/**
+ * Remove the branch and its worktree. Renaming the worktree out of its path is
+ * the commit point: until it succeeds nothing has changed, and a refusal before
+ * the admin entry is gone puts the directory back. Git then removes only the
+ * admin entry, since the path is missing, so no process writing into the tree
+ * can leave it half removed.
+ */
 async function removeLocalBranch(
   repoRoot: string,
   worktree: GitWorktree | null,
@@ -774,12 +826,36 @@ async function removeLocalBranch(
   originalOid: string,
   outcome: TrashCreateOutcome,
 ): Promise<void> {
+  let staged: string | null = null;
   if (worktree) {
-    await git(repoRoot, ["worktree", "remove", "--force", worktree.path]);
+    const dir = await removingDir(repoRoot);
+    const target = path.join(dir, randomUUID());
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.renameSync(worktree.path, target);
+    } catch (error) {
+      throw refused(worktree.path, errorText(error), outcome);
+    }
+    staged = target;
+    const removed = await runGit(repoRoot, ["worktree", "remove", "--force", worktree.path]);
+    if (removed.error || removed.status !== 0) {
+      const cause = (removed.stderr || removed.error?.message || `git exited ${removed.status}`).trim();
+      try {
+        fs.renameSync(staged, worktree.path);
+      } catch (error) {
+        throw new Error(`cannot move worktree ${worktree.path} back from ${staged}: ${errorText(error)}; git worktree remove failed: ${cause}`);
+      }
+      throw refused(worktree.path, cause, outcome);
+    }
     outcome.worktree_removed = true;
   }
-  await git(repoRoot, ["update-ref", "-d", `refs/heads/${branch}`, originalOid]);
+  try {
+    await git(repoRoot, ["update-ref", "-d", `refs/heads/${branch}`, originalOid]);
+  } catch (error) {
+    throw new Error(`${errorText(error)}${staged ? `; the worktree's files are staged at ${staged}` : ""}`);
+  }
   outcome.branch_removed = true;
+  if (staged) await deleteStaged(staged);
 }
 
 export function trashBranch(
@@ -811,6 +887,7 @@ async function trashBranchNow(db: Db, input: TrashCreateInput, now: number): Pro
 
   const project = await resolveProject(db, input.project);
   const checkout = await chooseCheckout(project, input.branch.trim(), input.checkout_root);
+  await sweepRemoving(checkout.root);
   const branch = await validateBranch(checkout.root, input.branch);
   if (protectedBranchNames(db, checkout.default_branch).has(branch)) {
     throw new TrashServiceError(`refusing to trash protected/default branch: ${branch}`, "protected_branch", 409);
@@ -870,8 +947,9 @@ async function trashBranchNow(db: Db, input: TrashCreateInput, now: number): Pro
     try {
       await removeLocalBranch(checkout.root, worktree, branch, originalOid, outcome);
     } catch (error) {
-      throw new TrashServiceError("local removal failed", "remove_failed", 409, {
-        error: error instanceof Error ? error.message : String(error),
+      if (error instanceof TrashServiceError && error.code === "removal_refused") throw error;
+      throw new TrashServiceError(`local removal failed: ${errorText(error)}`, "remove_failed", 409, {
+        error: errorText(error),
         outcome,
       });
     }
@@ -945,6 +1023,11 @@ async function trashBranchNow(db: Db, input: TrashCreateInput, now: number): Pro
     db.prepare("UPDATE trash_entries SET outcome_json = ? WHERE id = ?")
       .run(JSON.stringify(outcome), id);
   } catch (error) {
+    if (error instanceof TrashServiceError && error.code === "removal_refused") {
+      db.prepare("DELETE FROM trash_entries WHERE id = ?").run(id);
+      await releaseRefs();
+      throw error;
+    }
     const message = error instanceof Error ? error.message : String(error);
     let recordingError: string | null = null;
     try {
@@ -958,7 +1041,7 @@ async function trashBranchNow(db: Db, input: TrashCreateInput, now: number): Pro
       // has already been removed.
       recordingError = recordError instanceof Error ? recordError.message : String(recordError);
     }
-    throw new TrashServiceError("snapshot is safe but local removal failed", "remove_failed", 409, {
+    throw new TrashServiceError(`snapshot is safe but local removal failed: ${message}`, "remove_failed", 409, {
       id,
       snapshot_ref: snapshotRef,
       error: message,
@@ -1196,6 +1279,16 @@ async function expireDueTrashEntries(
   db: Db,
   options: { now?: number; limit?: number; actor?: string },
 ): Promise<TrashGcResult> {
+  for (const project of listProjects(db)) {
+    for (const checkout of project.checkouts) {
+      if (!fs.existsSync(checkout.root)) continue;
+      try {
+        await sweepRemoving(checkout.root);
+      } catch (error) {
+        getDaemonLogger()("warn", "trash_staged_sweep_failed", { subsystem: "trash", checkout: checkout.root, error: errorText(error) });
+      }
+    }
+  }
   const now = options.now ?? Date.now();
   const limit = Math.min(Math.max(Math.trunc(options.limit ?? 100), 1), 1000);
   const rows = db.prepare(

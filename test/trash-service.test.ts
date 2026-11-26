@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -416,6 +416,78 @@ describe.sequential("trash custody", () => {
     })).rejects.toThrow(/embedded repositories/);
     expect(fs.existsSync(featureWorktree)).toBe(true);
     expect((await listTrashEntries(db))).toEqual([]);
+  });
+
+  function removingDir(): string {
+    return path.join(repoRoot, ".git", "mandible-removing");
+  }
+
+  function branchPresent(branch: string): boolean {
+    return spawnSync("git", ["rev-parse", "--verify", `refs/heads/${branch}`], {
+      cwd: repoRoot,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    }).status === 0;
+  }
+
+  function registered(worktreePath: string): boolean {
+    return git(repoRoot, ["worktree", "list", "--porcelain"]).includes(`worktree ${fs.realpathSync(worktreePath)}`);
+  }
+
+  it("refuses a removal it cannot stage and leaves the worktree, branch and ledger as they were", async () => {
+    fs.writeFileSync(path.join(featureWorktree, "tracked.txt"), "dirty\n");
+    fs.writeFileSync(removingDir(), "blocker");
+    const input: TrashCreateInput = { project: "trash-test", branch: "feature/trash", reason: "manual" };
+
+    const failure = await trashBranch(db, input).then(() => null, (error: unknown) => error);
+    expect(failure).toMatchObject({ code: "removal_refused", message: expect.stringContaining(featureWorktree) });
+    expect((failure as Error).message).toMatch(/ENOTDIR|EEXIST|not a directory|file exists/i);
+    expect(registered(featureWorktree)).toBe(true);
+    expect(git(featureWorktree, ["status", "--porcelain"])).toContain("tracked.txt");
+    expect(branchPresent("feature/trash")).toBe(true);
+    expect(git(repoRoot, ["for-each-ref", "refs/mandible/"])).toBe("");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM trash_entries").get()).toEqual({ n: 0 });
+
+    fs.rmSync(removingDir());
+    expect((await trashBranch(db, input)).result).toBe("trashed");
+    expect(fs.existsSync(featureWorktree)).toBe(false);
+  });
+
+  it("completes a removal while a process keeps writing into the worktree", async () => {
+    const writer = spawn(process.execPath, ["-e", `
+      const fs = require("node:fs");
+      fs.writeFileSync("first", "x");
+      process.stdout.write("ready\\n");
+      for (let i = 0; ; i++) { try { fs.writeFileSync("w" + i, "x"); } catch {} }
+    `], { cwd: featureWorktree, stdio: ["ignore", "pipe", "inherit"] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        writer.stdout!.once("data", () => resolve());
+        writer.once("exit", (code) => reject(new Error(`writer exited ${code}`)));
+      });
+      const removal = await trashBranch(db, { project: "trash-test", branch: "feature/trash", reason: "manual" });
+      expect(removal.result).toBe("trashed");
+      expect(fs.existsSync(featureWorktree)).toBe(false);
+      expect(git(repoRoot, ["worktree", "list", "--porcelain"])).not.toContain("feature-trash");
+      expect(fs.existsSync(path.join(repoRoot, ".git", "worktrees", "feature-trash"))).toBe(false);
+      expect(branchPresent("feature/trash")).toBe(false);
+      expect(git(repoRoot, ["for-each-ref", "--format=%(refname)", "refs/mandible/trash/"])).toContain(removal.entry!.id);
+    } finally {
+      writer.kill("SIGKILL");
+      await new Promise((resolve) => writer.exitCode !== null || writer.signalCode !== null ? resolve(null) : writer.once("exit", resolve));
+    }
+    await gcTrashEntries(db);
+    expect(fs.readdirSync(removingDir())).toEqual([]);
+  });
+
+  it("puts a worktree back when Git refuses to remove its admin entry", async () => {
+    git(repoRoot, ["worktree", "lock", featureWorktree]);
+    const failure = await trashBranch(db, { project: "trash-test", branch: "feature/trash", reason: "manual" })
+      .then(() => null, (error: unknown) => error);
+    expect(failure).toMatchObject({ code: "removal_refused", message: expect.stringContaining("locked") });
+    expect(fs.existsSync(path.join(featureWorktree, "tracked.txt"))).toBe(true);
+    expect(registered(featureWorktree)).toBe(true);
+    expect(branchPresent("feature/trash")).toBe(true);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM trash_entries").get()).toEqual({ n: 0 });
   });
 
   it("restores a remove_failed entry from live Git facts without overwriting a moved branch", async () => {
