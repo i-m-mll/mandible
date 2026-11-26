@@ -3587,7 +3587,7 @@ export class AuthQueue {
     const dependency = this.dependenciesForRequest(request).find(dependency => !isAuthDependencyReady(dependency));
     if (!dependency) return;
     throw new AuthQueueError("invalid_status",
-      `Dependency ${dependency.requested_id} is ${dependency.state}; approval requires a successful, durably finalized dependency.`,
+      `Dependency ${dependency.requested_id} is ${dependency.state}; approval requires a successful dependency.`,
       request.status, dependency);
   }
 

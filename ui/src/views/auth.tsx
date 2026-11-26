@@ -237,7 +237,7 @@ function AuthPrerequisiteItem({ prerequisite, findRequest, onSelect, row }: {
   const short = typeof shortId === 'string' ? shortId : shortRouteId(reference);
   const title = known ? getAuthTitle(known) : typeof entity?.title === 'string' && entity.title ? entity.title : short;
   const stateLabel = ready ? 'Complete' : state[0].toUpperCase() + state.slice(1);
-  const dotStatus = ready ? 'completed' : state === 'pending' || state === 'unfinalized' ? 'pending' : 'failed';
+  const dotStatus = ready ? 'completed' : state === 'pending' ? 'pending' : 'failed';
   const tip = `${title} · ${stateLabel}`;
   if (row) return <AuthSidebarItem request={{
     ...(known ?? entity), id: reference, title, status: dependency?.status ?? state,

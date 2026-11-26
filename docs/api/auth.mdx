@@ -48,7 +48,7 @@ without writing to the worktree.
 
 Submit a new auth request. The legacy create and revise URLs (`POST /api/auth/request` and `PUT /api/auth/request/:id`) return `410 Gone`. Read and lifecycle URLs remain unchanged.
 
-Prerequisites are canonicalized into a sorted, deduplicated set. Missing or ambiguous references, self-references, and cycles are rejected. `depends_on_id` is not accepted on v2 writes. Detail, queue, and history responses expose `depends_on_ids` and one `dependencies` projection per declared reference. Each projection includes `requested_id`, resolved `request_id` (or null), `state`, `status`, `outcome`, `exit_code`, and `merge_finalized_at`. States are `pending`, `failed`, `unfinalized`, `ready`, `missing`, and `ambiguous`. Only `ready` satisfies a prerequisite; successful execution without durable finalization does not.
+Prerequisites are canonicalized into a sorted, deduplicated set. Missing or ambiguous references, self-references, and cycles are rejected. `depends_on_id` is not accepted on v2 writes. Detail, queue, and history responses expose `depends_on_ids` and one `dependencies` projection per declared reference. Each projection includes `requested_id`, resolved `request_id` (or null), `state`, `status`, `outcome`, and `exit_code`. States are `pending`, `failed`, `ready`, `missing`, and `ambiguous`. Only `ready`, a `completed` request with exit code 0, satisfies a prerequisite; it does not wait for the prerequisite's finalizer.
 
 **Request body:**
 
@@ -74,7 +74,7 @@ Prerequisites are canonicalized into a sorted, deduplicated set. Missing or ambi
 | `issue_references` | string[] | no | Issue IDs to attach for context; not closed on merge |
 | `issue_closures` | string[] | no | Issue IDs to close on successful merge |
 | `issues` | string[] | no | Legacy close-on-merge issue IDs; prefer `issue_closures` |
-| `depends_on_ids` | string[] | no | Direct prerequisite request references; all must succeed and durably finalize before approval |
+| `depends_on_ids` | string[] | no | Direct prerequisite request references; all must succeed before approval |
 | `execution_mode` | string | no | `daemon` or `remote` |
 | `supersedes_request_id` | string | no | Exact pending request to supersede atomically |
 | `superseded_action_dispositions` | object[] | no | `{ordinal, reason}` for each staged predecessor action not carried identically |

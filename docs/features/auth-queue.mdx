@@ -91,7 +91,7 @@ read-only.
 - `issue_references` — Issue IDs attached for review context/provenance; these do not close on merge.
 - `issue_closures` — Issue IDs to close on successful merge.
 - `issues` — Legacy close-on-merge issue list; prefer `issue_closures`.
-- `depends_on_ids` — The set of direct prerequisite requests that must succeed and durably finalize before approval.
+- `depends_on_ids` — The set of direct prerequisite requests that must succeed before approval.
 - `execution_mode` — `"daemon"` (default, Mandible executes locally) or `"remote"` (an external process manages execution).
 - `supersedes_request_id` — Exact pending predecessor replaced in the same transaction. The delivery work unit, canonical project, and protected target must match.
 - `superseded_action_dispositions` — One `{ordinal, reason}` entry for every predecessor action not carried with byte-equivalent semantics.
@@ -320,7 +320,7 @@ Hooks are managed via the API:
 
 ## Dependency Chains
 
-Auth requests declare direct prerequisites with `depends_on_ids`. Every prerequisite must succeed and durably finalize before the dependent request can be approved or executed. Pending, failed, rejected, withdrawn, superseded, missing, ambiguous, or unfinalized requests block readiness.
+Auth requests declare direct prerequisites with `depends_on_ids`. Every prerequisite must complete with exit code 0 before the dependent request can be approved or executed; its background finalizer need not have finished. Pending, failed, rejected, withdrawn, superseded, missing, or ambiguous requests block readiness.
 
 Queue and history details show every direct prerequisite with a navigable request reference, readiness, status, and outcome. Missing projection data also blocks approval. Finalization refreshes readiness while preserving the current selection.
 

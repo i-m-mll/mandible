@@ -142,6 +142,34 @@ describe("staged finalizer lifecycle", () => {
     } finally { release(); await queue.dispose(); db.close(); }
   });
 
+  it("lets a dependent be approved at auth:resolved while the prerequisite's finalizer is held open", async () => {
+    const db = createMigratedDb();
+    let dependentId: string | undefined;
+    let stateAtResolved: string | undefined;
+    let archiveStarted = false;
+    let releaseArchive!: () => void;
+    const archiveGate = new Promise<void>((resolve) => { releaseArchive = resolve; });
+    const queue: AuthQueue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false,
+      broadcast: (event) => {
+        if (event.event === "auth:resolved" && dependentId) {
+          stateAtResolved = queue.dependenciesForRequest(queue.getRequestExact(dependentId)!)[0]?.state;
+        }
+      },
+    });
+    controlledFinalStep(queue, async () => { archiveStarted = true; await archiveGate; });
+    try {
+      const id = await submitSuccessfulRequest(queue);
+      const dependent = await queue.submit({ ...AUTH_COMMAND_REVIEW, type: "config-change",
+        command: "echo dependent", title: "Dependent", depends_on_ids: [id] });
+      dependentId = dependent.id;
+      await completeFixturePublication(queue, id);
+      await waitUntil(() => archiveStarted, "the prerequisite's final finalizer step to start");
+      expect(stateAtResolved).toBe("ready");
+      expect(queue.getRequestExact(id)?.merge_finalized_at).toBeNull();
+      expect((await approveFixtureRequest(queue, dependent.id)).status).toBe("executing");
+    } finally { releaseArchive(); await queue.dispose(); db.close(); }
+  });
+
   it("emits merged, resolved and finalized in order, with finalizers off the critical path", async () => {
     const db = createMigratedDb();
     const events: SseEvent[] = [];
