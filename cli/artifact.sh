@@ -839,6 +839,7 @@ cmd_show() {
          else $r.artifact_blob.ref end) as $headline
       | .artifact
       | $headline,
+        ($r.logical_artifact.ref // empty | select(. != $headline) | "artifact: \(.)"),
         ($r.artifact_version.ref // empty | select(. != $headline) | "version: \(.)"),
         ($r.artifact_blob.ref // empty | select(. != $headline) | "blob: \(.)"),
         "role: \(.role // "-")\ncustody: \(.custody_mode)\navailability: \(.availability)\nuri: \(.uri)"' \
