@@ -327,7 +327,7 @@ Queue and history details show every direct prerequisite with a navigable reques
 Repeat `--depends-on` to declare multiple prerequisites:
 
 ```bash
-mandible auth request feature/client --depends-on auth:a1b2c3d --depends-on auth:b2c3d4e --depends-on auth:c3d4e5f --no-watch
+mandible auth request feature/client --depends-on auth:a1b2c3d --depends-on auth:b2c3d4e --depends-on auth:c3d4e5f
 ```
 
 The daemon resolves references and stores a sorted, deduplicated set. New submissions reject missing or ambiguous references and cycles. The v2 create and revise routes accept `depends_on_ids`; omitting it on revision preserves the set, while `[]` clears it.

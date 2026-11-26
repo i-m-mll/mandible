@@ -8,7 +8,7 @@ context. Submission never runs the operation, including when the daemon is unava
 ```bash
 mandible auth request --type config-change \
   --command './apply-reviewed-settings.sh' --cwd /absolute/project \
-  --repo example --title 'Apply reviewed settings' --issue <id> --no-watch
+  --repo example --title 'Apply reviewed settings' --issue <id>
 ```
 
 Non-merge requests share submission, approval, output, and history with merges. Their
@@ -35,13 +35,12 @@ mandible auth request feature/add-dark-mode \
   --title "Merge feature/add-dark-mode: dark mode support" \
   --closes-issue abc1234 \
   --message-file ./change-message.md \
-  --verification "Unit and UI suites pass; dark mode checked in the dashboard." \
-  --no-watch
+  --verification "Unit and UI suites pass; dark mode checked in the dashboard."
 ```
 
 For merges, the `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, runs Mandible's read-only merge preflight, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close. The daemon accounts for every issue the merge lands: a `done` issue closes unless `--keeps-open <id>=<what remains>` keeps it open, an open issue linked `fixed_by` a closing issue closes with it unless kept open, a `done` parent closes once its last open child closes, and any other landed issue must be decided with one of the two flags before the request is accepted. An issue with an open child or work the head does not contain is held: if it would otherwise close, it closes once the merge finds those holds released, so an issue whose work spans several requests closes with whichever merges last; `--keeps-open` keeps it open; with neither it stays open without a decision. Children never close by derivation; name each one that should close. Once a request is submitted, its closures, keep-open decisions and head are frozen; change them with `--supersedes`. The submission output lists the issues that close, close when released, stay open with a remainder, and are held open. To replace reviewed bytes, pass `--supersedes <request>` and carry every staged action identically or dispose it with repeatable `--drop-superseded-action <ordinal>:<reason>`.
 
-The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results reach the submitting session asynchronously as a notification.
+The command returns once the request is submitted. Auth results reach the submitting session asynchronously as a notification. A person at a terminal who wants to wait for the outcome runs `mandible auth watch <request>`, which exits 0 only when the request completes.
 
 `change-message.md` holds the agent-authored change message: an outcome line,
 then a short `Why:` paragraph, and an optional `Caveats:` section for any
@@ -63,8 +62,7 @@ Override one request explicitly with:
 mandible auth request feature/add-dark-mode \
   --title "Merge feature/add-dark-mode: dark mode support" \
   --issue abc1234 \
-  --dirty-policy branch-off \
-  --no-watch
+  --dirty-policy branch-off
 ```
 
 Repos can set their default in `mandible.toml` or `.mandible.toml`:

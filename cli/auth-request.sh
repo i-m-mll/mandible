@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# mandible auth request: Submit an auth request to Mandible and poll until resolved.
-# Combines submission + watching into a single command for use as a background task.
+# mandible auth request: Submit an auth request to Mandible. It returns once the
+# request is submitted; `mandible auth watch <request>` waits for its resolution.
 #
 # Usage: {{command auth.request}}
 #        {{command auth.request.command}}
@@ -80,13 +80,11 @@
 #   --dirty-policy <policy> Protected-root dirty policy: block, allow-untracked, stash, branch-off
 #   --dirty-branch-prefix <prefix>
 #                           Branch prefix for --dirty-policy branch-off (default from mandible.toml or shelve/protected-root)
-#   --timeout <seconds>     SSE listen timeout (default: 14400 / 4 hours)
-#   --json                  With --no-watch: print the submission response as JSON
+#   --json                  Print the submission response as JSON
 #   --force / -f             Skip CWD validation checks
-#   --no-watch              Submit only, don't poll
 #
 # Exit codes:
-#   0   Request submitted (and, without --no-watch, resolved)
+#   0   Request submitted
 #   1   Runtime failure (unreachable daemon, bad server response)
 #   2   Usage/validation error
 #   3   Refused as a duplicate: an existing request in THIS repo already covers
@@ -103,7 +101,12 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)/command-syntax.sh"
 set -eEuo pipefail
 # An unhandled failure names itself rather than exiting silently (issue c8817ff).
-trap 'status=$?; echo "Error: mandible auth request stopped: \`${BASH_COMMAND}\` exited ${status}." >&2' ERR
+# The ERR trap only records, since -E runs it in subshells too; the EXIT trap,
+# which subshells do not inherit, reports a failure that ended this script
+# (issue 9904147).
+stopped_command=""
+stopped_status=""
+trap 'stopped_status=$?; stopped_command=$BASH_COMMAND' ERR
 
 # MANDIBLE_PORT and MANDIBLE_BASE are exported by the dispatcher
 GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
@@ -111,7 +114,14 @@ source "$GIT_ENV_HELPER"
 
 API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
-source "${MANDIBLE_CLI_DIR:-$MANDIBLE_COMMAND_SYNTAX_DIR}/auth-status.sh"
+
+# Installed after api.sh, which sets its own EXIT trap.
+auth_request_exit() {
+  [[ -z "${tmp_response:-}" ]] || rm -f "$tmp_response"
+  api_cleanup_temp_files
+  [[ -z "$stopped_command" ]] || printf 'Error: mandible auth request stopped: `%s` exited %s.\n' "$stopped_command" "$stopped_status" >&2
+}
+trap auth_request_exit EXIT
 
 MANDIBLE_CLI_DIR="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 
@@ -155,8 +165,6 @@ TEARDOWN_PREVIEW_BRANCHES=()
 repo=""
 cwd_override=""
 target_override=""
-timeout=14400
-no_watch=0
 json=0
 force=false
 dirty_policy=""
@@ -166,7 +174,7 @@ promote_briefing_group=""
 promote_briefing_expected_base=""
 promote_briefing_proposal=""
 
-binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"narrative_file":{"option":"narrative"},"narrative_set":{"option":"narrative","constant":"1"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"KEEPS_OPEN":{"option":"keeps-open","array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"TEARDOWN_PREVIEW_BRANCHES":{"option":"teardown-preview","array":true},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"timeout":{"option":"timeout"},"no_watch":{"option":"no-watch","constant":"1"},"json":{"option":"json","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
+binding=$(mandible_bind_main_arguments "@auth request" '{"space_publication_id":{"option":"space-publication"},"title":{"option":"title"},"auth_type":{"option":"type"},"command":{"option":"command"},"command_set":{"option":"command","constant":"1"},"change_message_text":{"option":"message"},"change_message_set":[{"option":"message","constant":"1"},{"option":"message-file","constant":"1"}],"change_message_file":{"option":"message-file"},"verification_text":{"option":"verification"},"narrative_file":{"option":"narrative"},"narrative_set":{"option":"narrative","constant":"1"},"diff_summary":{"option":"diff-summary"},"post_merge_handoff":{"option":"handoff"},"dirty_policy":{"option":"dirty-policy"},"dirty_branch_prefix":{"option":"dirty-branch-prefix"},"DEPENDS_ON_IDS":{"option":"depends-on","array":true},"supersedes_request_id":{"option":"supersedes"},"expected_revision":{"option":"expected-revision"},"expected_custody_generation":{"option":"expected-custody-generation"},"SUPERSEDED_ACTION_DISPOSITIONS":{"option":"drop-superseded-action","array":true},"ISSUE_REFERENCES":{"option":["issue","ref-issue","references-issue"],"array":true},"ISSUE_CLOSURES":{"option":["closes-issue","close-issue"],"array":true},"KEEPS_OPEN":{"option":"keeps-open","array":true},"promote_briefing_group":{"option":"promote-briefing","valueIndex":0},"promote_briefing_expected_base":{"option":"promote-briefing","valueIndex":1},"promote_briefing_proposal":{"option":"promote-briefing","valueIndex":2},"TEARDOWN_PREVIEW_BRANCHES":{"option":"teardown-preview","array":true},"repo":{"option":"repo"},"cwd_override":{"option":"cwd"},"target_override":{"option":"target"},"json":{"option":"json","constant":"1"},"force":{"option":["force","f"],"constant":"true"},"branch":{"position":0}}' "$@") || exit $?
 eval "$binding"
 # The daemon resolves a relative path against its own working directory.
 [[ -z "$cwd_override" ]] || cwd_override=$(api_resolve_user_path "$cwd_override")
@@ -193,14 +201,6 @@ done
 # Issue 7d64d8f — the canonical change message has exactly one source.
 if [[ -n "$change_message_text" && -n "$change_message_file" ]]; then
   echo "Error: --message and --message-file are mutually exclusive" >&2
-  exit 2
-fi
-if [[ $json -eq 1 && $no_watch -eq 0 ]]; then
-  echo "Error: --json prints the submission response and requires --no-watch" >&2
-  exit 2
-fi
-if api_is_file_rpc && [[ $no_watch -eq 0 ]]; then
-  echo "Error: file transport does not support SSE/watch; pass --no-watch." >&2
   exit 2
 fi
 
@@ -296,8 +296,8 @@ for disposition in ${SUPERSEDED_ACTION_DISPOSITIONS[@]+"${SUPERSEDED_ACTION_DISP
     '. + [{ordinal: $ordinal, reason: $reason}]' <<<"$superseded_action_dispositions_json")
 done
 
-# Each preparer supplies command and execution context. Submission and watching
-# below do not infer an operation from its label.
+# Each preparer supplies command and execution context. Submission below does
+# not infer an operation from its label.
 case "$auth_type" in
   merge)
     source "${MANDIBLE_CLI_DIR}/auth-request-merge.sh"
@@ -434,7 +434,6 @@ payload=$(jq -nc \
 # caused a terminal pane to spawn instead of recognising the duplicate.
 # The response body is written to a temp file; HTTP status in the exit variable.
 tmp_response=$(mktemp)
-trap 'rm -f "$tmp_response"; api_cleanup_temp_files' EXIT
 
 http_status=$(api_send_capture POST "/api/auth/v2/request" "$payload" "$tmp_response") || http_status=""
 
@@ -538,12 +537,3 @@ else
     '
   fi
 fi
-
-# --- Watch for resolution via SSE (unless --no-watch) ---
-
-if [[ $no_watch -eq 1 ]]; then
-  exit 0
-fi
-
-echo "Listening for auth resolution via SSE (timeout: ${timeout}s)..."
-mandible_auth_watch "$request_id" "$timeout"

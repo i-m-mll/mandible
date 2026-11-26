@@ -82,7 +82,7 @@ mandible auth list --head feature/x                       # find an existing req
 mandible auth check --branch feature/x --repo <repo>      # clean against the target and the queue?
 mandible auth request feature/x --title 'Merge feature/x: outcome' \
   --closes-issue <id> --message-file change.md \
-  --verification 'bun run test passes' --no-watch
+  --verification 'bun run test passes'
 ```
 
 A merge request binds to one committed, issue-linked work unit owned by the submitting credential. The daemon runs a read-only merge preflight against the target and against every queued request for the same target, so independent branches queue together and a conflicting one is refused with the clashing files. Issue references and closures are structured fields on the request, never commit-message prose.

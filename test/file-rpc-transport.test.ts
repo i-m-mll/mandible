@@ -544,7 +544,7 @@ describe("file RPC transport", () => {
       ["POST", "/api/projects/mandible/checkouts", "project add-checkout"],
       ["POST", "/api/projects/checkouts", "project update-checkout"],
       ["POST", "/api/auth/check", "auth check"],
-      ["POST", "/api/auth/v2/request", "auth request --no-watch"],
+      ["POST", "/api/auth/v2/request", "auth request"],
       ["POST", "/api/auth/request/auth-1/replay-codex-archives", "auth replay-archives"],
       ["GET", "/api/artifacts/art-1", "artifact show"],
       ["GET", "/api/artifacts/art-1/content", "artifact content"],

@@ -15,7 +15,7 @@ describe("one CLI grammar", () => {
     const verification = `Verified exact candidate. ${"check passed; ".repeat(50)}$(literal) 'quoted'`;
     const argv = ["feature/candidate", "--title", "Bulk delivery", "--issue", references[0],
       "--message-file", "/tmp/change-message.md", "--verification", verification,
-      "--repo", "mandible", "--cwd", "/tmp/private candidate", "--no-watch",
+      "--repo", "mandible", "--cwd", "/tmp/private candidate",
       ...closures.flatMap(id => ["--closes-issue", id]),
       ...references.slice(1).flatMap(id => ["--issue", id])];
     const parsed = syntax.parse(["auth", "request", ...argv]);

@@ -292,8 +292,7 @@ mandible auth request <branch> --title <text> --issue <id> (--message <text> | -
 | `--repo <name>` | Override auto-detected repo name |
 | `--cwd <path>` | Override auto-detected protected branch worktree path |
 | `--target <branch>` | Override auto-detected target branch |
-| `--timeout <seconds>` | SSE watch timeout (default: 14400 / 4 hours) |
-| `--no-watch` | Submit only, do not poll for resolution |
+| `--json` | Print the submission response as JSON |
 | `--force` / `-f` | Skip CWD validation checks |
 
 **Auto-detection:**
@@ -347,18 +346,7 @@ page shows read-only.
 4. Applies the explicit protected-root dirty policy without discarding files, and sends what it did so the request records it
 5. Runs Mandible's shared auth check for tracked dirtiness and dry-run conflict detection
 
-**Resolution watching:**
-
-Unless `--no-watch` is specified, opens an authenticated POST stream at
-`/api/events/subscribe` and waits for the matching `auth:resolved` event. It
-falls back to one authenticated status read if that connection closes.
-
-`auth request` watching exits 0 only for `completed`.
-`pending`, `approved`, and `executing` remain in flight. Terminal failures,
-including `needs_rebase`, exit 1 with the recorded reason; `needs_rebase`
-instructs the caller to rebase and retry. Unknown statuses never report success.
-If the final status read is still in flight after SSE closes, the command
-reports that state and exits 1 without claiming delivery.
+The command returns once the request is submitted; exit 0 means submitted.
 
 **Submission interruption:**
 
@@ -367,6 +355,28 @@ becomes unreachable after preflight but before submission is confirmed, the CLI
 exits 1 without executing anything and says to inspect the queue
 (`mandible auth list`) before retrying. There is no manual merge path:
 `mandible auth merge` refuses without an approved signed candidate.
+
+### mandible auth watch
+
+Wait for one auth request to settle and report its outcome.
+
+```
+mandible auth watch <request> [--timeout <seconds>]
+```
+
+Opens an authenticated POST stream at `/api/events/subscribe` and waits for the
+request's `auth:resolved` event, reading the request once the subscription is
+registered so an earlier resolution is still reported. It falls back to one
+authenticated status read if that connection closes. The timeout defaults to
+14400 seconds (4 hours). File transport has no event stream, so the command
+refuses there.
+
+`auth watch` exits 0 only for `completed`.
+`pending`, `approved`, and `executing` remain in flight. Terminal failures,
+including `needs_rebase`, exit 1 with the recorded reason; `needs_rebase`
+instructs the caller to rebase and retry. Unknown statuses never report success.
+If the final status read is still in flight after SSE closes, the command
+reports that state and exits 1 without claiming delivery.
 
 ### mandible auth merge
 

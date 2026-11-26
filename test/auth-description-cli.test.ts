@@ -24,7 +24,7 @@ describe("command approval Description authoring", () => {
     fs.writeFileSync(file,text);
     for (const authoring of [["--message",text],["--message-file",file]]) {
       const result = await runCli(["auth","request","--type","config-change","--command","echo exact-private-action",
-        "--cwd",cwd,"--repo","mandible","--title","Load configuration","--issue","2ca1df1",...authoring,"--no-watch"], { cwd, env: stub.env });
+        "--cwd",cwd,"--repo","mandible","--title","Load configuration","--issue","2ca1df1",...authoring], { cwd, env: stub.env });
       expect(result.status, result.stderr).toBe(0);
     }
     expect(bodies).toHaveLength(2);
@@ -41,7 +41,7 @@ describe("command approval Description authoring", () => {
     cleanups.push(() => stub.close());
     const cwd = scratchDir("description-refusal");
     const base=["auth","request","--type","config-change","--command","echo private","--cwd",cwd,"--repo","mandible",
-      "--title","Private","--issue","2ca1df1","--no-watch"];
+      "--title","Private","--issue","2ca1df1"];
     for (const flags of [[],["--message"," \n "],["--message","Explain action","--verification","ok"],
       ["--message","Explain action","--handoff","next"],["--message","Explain action","--dirty-policy","stash"]]) {
       const result=await runCli([...base,...flags],{cwd,env:stub.env});

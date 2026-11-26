@@ -101,7 +101,7 @@ for pending_id in $(jq -r '.[].id' <<<"$same_delivery"); do
   }
 done
 
-request_args=("$branch" --title "$title" --closes-issue "$issue" --message "$message" --verification "$verification" --no-watch --json)
+request_args=("$branch" --title "$title" --closes-issue "$issue" --message "$message" --verification "$verification" --json)
 [[ -z "$dirty_policy" ]] || request_args+=(--dirty-policy "$dirty_policy")
 submitted=$("$cli_dir/auth-request.sh" "${request_args[@]}") || exit 1
 request_id=$(jq -r '.request_id' <<<"$submitted")

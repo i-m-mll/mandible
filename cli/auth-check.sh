@@ -52,16 +52,7 @@ if [[ -n "$cwd_override" ]]; then
 elif [[ -n "$repo" ]]; then
   target_cwd=""
 else
-  target_cwd=""
-  current_wt=""
-  while IFS= read -r line; do
-    if [[ "$line" == worktree\ * ]]; then
-      current_wt="${line#worktree }"
-    elif [[ "$line" == "branch refs/heads/${base_branch}" ]]; then
-      target_cwd="$current_wt"
-      break
-    fi
-  done < <(git worktree list --porcelain 2>/dev/null)
+  target_cwd=$(branch_worktree "$base_branch") || target_cwd=""
 fi
 if [[ -z "$target_cwd" && -z "$repo" ]]; then
   echo "Error: cannot find worktree for target branch '${base_branch}'" >&2
