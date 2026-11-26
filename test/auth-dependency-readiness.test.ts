@@ -44,11 +44,11 @@ function setup(): { db: Db; queue: AuthQueue; router: Router } {
 function setDependencyResult(
   database: Db,
   id: string,
-  values: { status: string; exitCode: number | null; finalizedAt: number | null },
+  values: { status: string; exitCode: number | null },
 ): void {
   database.prepare(
-    "UPDATE auth_requests SET status = ?, exit_code = ?, merge_finalized_at = ? WHERE id = ?",
-  ).run(values.status, values.exitCode, values.finalizedAt, id);
+    "UPDATE auth_requests SET status = ?, exit_code = ?, merge_finalized_at = NULL WHERE id = ?",
+  ).run(values.status, values.exitCode, id);
 }
 
 async function createAmbiguousRequestPrefix(database: Db, queue: AuthQueue): Promise<string> {
@@ -65,7 +65,7 @@ async function createAmbiguousRequestPrefix(database: Db, queue: AuthQueue): Pro
 }
 
 describe("auth dependency readiness", () => {
-  it("prioritizes re-pin candidates by resolved identity while approval still requires durable finalization", async () => {
+  it("prioritizes re-pin candidates by resolved identity once every direct prerequisite succeeded", async () => {
     const { db: database, queue } = setup();
     const submit = (title: string, depends_on_ids: string[] = []) => queue.submit({ ...AUTH_COMMAND_REVIEW,
       type: "config-change", command: `echo ${title}`, title, depends_on_ids });
@@ -77,20 +77,17 @@ describe("auth dependency readiness", () => {
     const conjunction = await submit("conjunction", [completed.id, second.id]);
     const remaining = [unrelated, conjunction, (await queue.getRequest(legacy.id))!];
     const order = () => authRevalidationOrder(database, remaining, completed.id).map(request => request.id);
-    setDependencyResult(database, completed.id, { status: "completed", exitCode: 0, finalizedAt: null });
+    setDependencyResult(database, completed.id, { status: "completed", exitCode: 0 });
     for (const values of [
-      { status: "pending", exitCode: null, finalizedAt: null },
-      { status: "failed", exitCode: 1, finalizedAt: 10 },
-      { status: "completed", exitCode: 0, finalizedAt: null },
+      { status: "pending", exitCode: null },
+      { status: "failed", exitCode: 1 },
+      { status: "completed", exitCode: 1 },
     ]) {
       setDependencyResult(database, second.id, values);
       expect(order()).toEqual([legacy.id, unrelated.id, conjunction.id]);
     }
-    setDependencyResult(database, second.id, { status: "completed", exitCode: 0, finalizedAt: 10 });
+    setDependencyResult(database, second.id, { status: "completed", exitCode: 0 });
     expect(order()).toEqual([conjunction.id, legacy.id, unrelated.id]);
-    expect(queue.dependenciesForRequest(conjunction).some(dependency => dependency.state === "unfinalized")).toBe(true);
-    await expect(approveFixtureRequest(queue, conjunction.id)).rejects.toThrow(/unfinalized/);
-    setDependencyResult(database, completed.id, { status: "completed", exitCode: 0, finalizedAt: 10 });
     expect(queue.dependenciesForRequest(conjunction).every(dependency => dependency.state === "ready")).toBe(true);
     await queue.dispose();
   });
@@ -107,12 +104,10 @@ describe("auth dependency readiness", () => {
     expect(client.depends_on_ids).toEqual([source.id, validation.id, spatial.id].sort());
     await expect(approveFixtureRequest(queue, client.id)).rejects.toThrow(/Dependency .* pending/);
     for (const request of [detail, source, validation]) {
-      setDependencyResult(database, request.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
+      setDependencyResult(database, request.id, { status: "completed", exitCode: 0 });
     }
     await expect(approveFixtureRequest(queue, client.id)).rejects.toThrow(/Dependency .* pending/);
-    setDependencyResult(database, spatial.id, { status: "completed", exitCode: 0, finalizedAt: null });
-    await expect(approveFixtureRequest(queue, client.id)).rejects.toThrow(/unfinalized/);
-    setDependencyResult(database, spatial.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
+    setDependencyResult(database, spatial.id, { status: "completed", exitCode: 0 });
     expect((await approveFixtureRequest(queue, client.id)).status).toBe("executing");
     await queue.dispose();
   });
@@ -172,7 +167,7 @@ describe("auth dependency readiness", () => {
     await queue.dispose();
   });
 
-  it("classifies every durable dependency state and permits only finalized success", async () => {
+  it("classifies every durable dependency state and permits only success", async () => {
     const { db: database, queue } = setup();
     const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", command: "echo dependency", title: "Dependency" }));
     const dependent = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
@@ -183,23 +178,23 @@ describe("auth dependency readiness", () => {
 
     expect(queue.dependenciesForRequest(dependent)[0]?.state).toBe("pending");
 
-    setDependencyResult(database, dependency.id, { status: "rejected", exitCode: null, finalizedAt: null });
+    setDependencyResult(database, dependency.id, { status: "rejected", exitCode: null });
     expect(queue.dependenciesForRequest(dependent)[0]?.state).toBe("failed");
 
-    setDependencyResult(database, dependency.id, { status: "failed", exitCode: 9, finalizedAt: 10 });
+    setDependencyResult(database, dependency.id, { status: "failed", exitCode: 9 });
     expect(queue.dependenciesForRequest(dependent)[0]?.state).toBe("failed");
 
-    setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: null });
-    expect(queue.dependenciesForRequest(dependent)[0]?.state).toBe("unfinalized");
+    setDependencyResult(database, dependency.id, { status: "completed", exitCode: 1 });
+    expect(queue.dependenciesForRequest(dependent)[0]?.state).toBe("failed");
 
-    setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 10 });
-    expect(queue.dependenciesForRequest(dependent)[0]).toMatchObject({
+    setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0 });
+    expect(queue.dependenciesForRequest(dependent)[0]).toEqual({
       state: "ready",
+      requested_id: dependency.id,
       request_id: dependency.id,
       status: "completed",
       outcome: "succeeded",
       exit_code: 0,
-      merge_finalized_at: 10,
     });
 
     expect(queue.dependenciesForRequest({ depends_on_ids: ["does-not-exist"] })[0]?.state).toBe("missing");
@@ -212,14 +207,14 @@ describe("auth dependency readiness", () => {
   it("uses the same projection in detail, queue, and history", async () => {
     const { db: database, queue, router } = setup();
     const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", command: "echo dependency", title: "Dependency" }));
-    setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
+    setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0 });
     const active = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
       command: "echo active", title: "Active dependent", depends_on_ids: [dependency.id],
     }));
     const historical = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
       command: "echo historical", title: "Historical dependent", depends_on_ids: [dependency.id],
     }));
-    setDependencyResult(database, historical.id, { status: "rejected", exitCode: null, finalizedAt: null });
+    setDependencyResult(database, historical.id, { status: "rejected", exitCode: null });
 
     const detail = await router.invoke({ method: "GET", url: `/api/auth/request/${active.id}` });
     const queueResponse = await router.invoke({ method: "GET", url: "/api/auth/queue" });
@@ -235,7 +230,7 @@ describe("auth dependency readiness", () => {
     (await queue.dispose());
   });
 
-  it("blocks ordinary approval until the dependency is durably finalized", async () => {
+  it("blocks ordinary approval until the dependency succeeds", async () => {
     const { db: database, queue } = setup();
     const dependency = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change", command: "echo dependency", title: "Dependency" }));
     const dependent = (await queue.submit({ ...AUTH_COMMAND_REVIEW,  type: "config-change",
@@ -243,12 +238,10 @@ describe("auth dependency readiness", () => {
     }));
 
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/Dependency .* is pending/);
-    setDependencyResult(database, dependency.id, { status: "rejected", exitCode: null, finalizedAt: null });
+    setDependencyResult(database, dependency.id, { status: "rejected", exitCode: null });
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is failed/);
-    setDependencyResult(database, dependency.id, { status: "failed", exitCode: 1, finalizedAt: 42 });
+    setDependencyResult(database, dependency.id, { status: "failed", exitCode: 1 });
     await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is failed/);
-    setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: null });
-    await expect(approveFixtureRequest(queue, dependent.id)).rejects.toThrow(/is unfinalized/);
 
     database.prepare("UPDATE auth_requests SET depends_on_ids = NULL, depends_on_id = ? WHERE id = ?")
       .run("missing-dependency", dependent.id);
@@ -261,7 +254,7 @@ describe("auth dependency readiness", () => {
 
     database.prepare("UPDATE auth_requests SET depends_on_ids = NULL, depends_on_id = ? WHERE id = ?")
       .run(dependency.id, dependent.id);
-    setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0, finalizedAt: 42 });
+    setDependencyResult(database, dependency.id, { status: "completed", exitCode: 0 });
     expect((await approveFixtureRequest(queue, dependent.id)).status).toBe("executing");
     (await queue.dispose());
   });

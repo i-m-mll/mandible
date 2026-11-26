@@ -271,7 +271,6 @@ export type AuthDependencyReadiness =
   | "ready"
   | "pending"
   | "failed"
-  | "unfinalized"
   | "missing"
   | "ambiguous";
 
@@ -282,7 +281,6 @@ export type AuthDependencyProjection = {
   status: AuthRequestStatus | null;
   outcome: AuthRequestOutcome;
   exit_code: number | null;
-  merge_finalized_at: number | null;
 };
 
 export function isAuthDependencyReady(
