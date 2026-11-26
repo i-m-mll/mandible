@@ -98,9 +98,10 @@ export async function removeLandedBranch(
   landing: MergeLanding,
   entry: BranchRemoval,
 ): Promise<{ entry: BranchRemoval; error: string | null }> {
+  const { detail: _stale, ...base } = entry;
   try {
     if (!await branchExists(landing.checkoutRoot, entry.branch)) {
-      return { entry: { ...entry, result: "removed", reason: null }, error: null };
+      return { entry: { ...base, result: "removed", reason: null }, error: null };
     }
     const removal = await trashBranch(db, {
       project: landing.checkoutRoot,
@@ -112,14 +113,13 @@ export async function removeLandedBranch(
       issue_refs: [...landing.issueRefs],
     });
     return {
-      entry: { ...entry, result: removal.result, reason: null, worktree_path: removal.outcome.worktree_path ?? entry.worktree_path },
+      entry: { ...base, result: removal.result, reason: null, worktree_path: removal.outcome.worktree_path ?? entry.worktree_path },
       error: null,
     };
   } catch (error) {
     const named = error instanceof TrashServiceError ? KEPT_BY_TRASH_CODE[error.code] : undefined;
-    return {
-      entry: { ...entry, result: "kept", reason: named ?? "trash_refused" },
-      error: named ? null : error instanceof Error ? error.message : String(error),
-    };
+    if (named) return { entry: { ...base, result: "kept", reason: named }, error: null };
+    const message = error instanceof Error ? error.message : String(error);
+    return { entry: { ...base, result: "kept", reason: "trash_refused", detail: message }, error: message };
   }
 }

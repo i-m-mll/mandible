@@ -47,7 +47,7 @@ export type OutcomeStep =
   /** A merge finalizer step other than branch removal. */
   | (StepBase & { kind: "finalizer"; step: string })
   | (StepBase & { kind: "hook"; hook_id: string; required: boolean })
-  | (StepBase & { kind: "branch_removal"; branch: string; reason: BranchKeptReason | null })
+  | (StepBase & { kind: "branch_removal"; branch: string; reason: BranchKeptReason | null; detail?: string })
   | (StepBase & { kind: "preview_teardown"; branch: string });
 
 export interface OutcomeReport {
@@ -118,6 +118,8 @@ export const BRANCH_REMOVAL_OUTPUT = z.object({
     result: z.enum(["removed", "trashed", "kept", "pending"]),
     reason: z.enum(BRANCH_KEPT_REASONS).nullable(),
     worktree_path: z.string().nullable(),
+    /** Why the trash service refused a `trash_refused` branch, in its own words. */
+    detail: z.string().optional(),
   })),
 });
 export type BranchRemovalOutput = z.infer<typeof BRANCH_REMOVAL_OUTPUT>;

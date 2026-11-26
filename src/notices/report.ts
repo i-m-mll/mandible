@@ -137,7 +137,10 @@ function finalizerSteps(request: RequestRow): OutcomeStep[] {
   if (removal === undefined) return steps;
   for (const entry of BRANCH_REMOVAL_OUTPUT.parse(removal).branches) {
     const state: OutcomeStepState = entry.result === "removed" || entry.result === "trashed" ? "done" : entry.result;
-    steps.push({ kind: "branch_removal", branch: entry.branch, state, reason: state === "done" ? null : entry.reason });
+    steps.push({
+      kind: "branch_removal", branch: entry.branch, state, reason: state === "done" ? null : entry.reason,
+      ...(state !== "done" && entry.detail ? { detail: entry.detail } : {}),
+    });
   }
   return steps;
 }
