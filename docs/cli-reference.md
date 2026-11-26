@@ -59,7 +59,8 @@ mandible auth request --type <type> --command <command> --cwd <path> --repo <ref
   [--diff-summary T] [--handoff T] [--repo R]
   [--cwd P] [--target B] [--depends-on ID] [--dirty-policy block|allow-untracked|stash|branch-off]
   [--supersedes ID --expected-revision N --expected-custody-generation N] [--drop-superseded-action ORDINAL:REASON]...
-  [--timeout N] [--no-watch] [--force|-f]
+  [--json] [--force|-f]
+mandible auth watch <request> [--timeout <seconds>]
 mandible auth withdraw <request-id> --reason <text> --expected-revision <n> --expected-custody-generation <n> [--json]
 mandible auth review show <returned-request> [--json]
 mandible auth review reply <request> <comment> --message <text> [--json]

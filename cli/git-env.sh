@@ -38,3 +38,12 @@ target_branch_sha() {
     printf '%040d' 0
   fi
 }
+
+# The worktree that has refs/heads/<branch> checked out, per <checkout>'s
+# repository (default: the current directory). Fails when there is none. The
+# listing is read whole, so git never writes into a closed pipe (issue 9904147).
+branch_worktree() {
+  local branch="$1" checkout="${2:-.}" listing
+  listing=$(git -C "$checkout" worktree list --porcelain) || return
+  awk -v want="branch refs/heads/$branch" '/^worktree /{w=substr($0,10)} $0==want{print w; found=1} END{exit !found}' <<<"$listing"
+}

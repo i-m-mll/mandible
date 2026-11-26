@@ -118,6 +118,7 @@ case "${1:-}" in
       ""|-h|--help|help) auth_usage ;;
       list)    shift; exec "$MANDIBLE_CLI_DIR/auth-list.sh" "$@" ;;
       show)    shift; exec "$MANDIBLE_CLI_DIR/auth-show.sh" "$@" ;;
+      watch)   shift; exec "$MANDIBLE_CLI_DIR/auth-watch.sh" "$@" ;;
       review)
         case "${2:-}" in
           show|approval|reply|address) shift; exec "$MANDIBLE_CLI_DIR/auth-review.sh" "$@" ;;
