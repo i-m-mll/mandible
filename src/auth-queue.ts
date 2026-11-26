@@ -2795,7 +2795,7 @@ export class AuthQueue {
 
   /** A revision that passed over the holder continues the holder's notice. */
   private noticePassedOverHolder(request: AuthRequest, actor: AuthLifecycleActor | undefined): void {
-    if (actor && this.custodyPassedOver(request.id, custodyActor(actor))) this.raiseNotice(request.id, { kind: "change" });
+    if (actor && this.custodyPassedOver(request.id, custodyActor(actor))) this.raiseNotice(request.id, { kind: "passed_over" });
   }
 
   /** The status transition writer; a transition into `NOTICE_STATUSES` raises its notice. */

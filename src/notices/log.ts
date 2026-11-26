@@ -24,11 +24,14 @@ export interface RequestHolder {
 /**
  * Why a notice is raised. A `transition` is the request's status moving into
  * `NOTICE_STATUSES` and may start a notice; a `change` is any later write to
- * outcome state and only continues a request that already has one.
+ * outcome state and only continues a request that already has one; a
+ * `passed_over` is the user acting on a request another session answers for,
+ * which that session is told of whatever the report says.
  */
 export type NoticeCause =
   | { kind: "transition"; actor: ResponsibilityHolder | null }
-  | { kind: "change" };
+  | { kind: "change" }
+  | { kind: "passed_over" };
 
 interface Recipient { provider: NoticeProvider; session_id: string; agent_ref: string }
 
@@ -81,14 +84,14 @@ export class NoticeLog {
   /**
    * Idempotent. An undelivered notice is left to be rendered at delivery and
    * follows responsibility. Once the latest notice is delivered, a `transition`
-   * always raises a new one; a `change` raises one only when the report's basis
+   * or a `passed_over` always raises a new one; a `change` raises one only when the report's basis
    * advanced past the basis that notice told (`noticeBasisAdvanced`), and
    * otherwise records the current basis on it, so a step that recovers and
    * fails again is news again.
    */
   raise(requestId: string, cause: NoticeCause): void {
     const latest = this.latest.get(requestId) as LatestRow | undefined;
-    if (!latest && cause.kind === "change") return;
+    if (!latest && cause.kind !== "transition") return;
     const holder = this.holder(requestId);
     const undelivered = latest && latest.delivered_at === null ? latest : null;
     if (cause.kind === "transition" && cause.actor && holder && holdsResponsibility(this.db, holder, cause.actor)) {
