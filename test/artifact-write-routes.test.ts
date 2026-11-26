@@ -260,6 +260,18 @@ describe("artifact write authorization", () => {
     expect((await invoke("POST", "/api/briefings/runs", changed)).status).toBe(200);
   });
 
+  it("ingests a version ref's file as a new version of that version's artifact", async () => {
+    const file = path.join(root, 'versioned.md');
+    fs.writeFileSync(file, 'one');
+    const created = await invoke('POST', '/api/artifacts/ingest', { paths: [file], custody_mode: 'managed' });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const { series, version } = (created.body as any).registered[0];
+    fs.writeFileSync(file, 'two');
+    const added = await invoke('POST', '/api/artifacts/ingest', { paths: [file], custody_mode: 'managed', artifact_id: version.ref });
+    expect(added.status, JSON.stringify(added.body)).toBe(200);
+    expect((added.body as any).registered[0]).toMatchObject({ status: 'updated', series: { id: series.id }, version: { version_no: 2 } });
+  });
+
   it("validates every batch member before custody or metadata mutations", async () => {
     const first = path.join(root, 'first.md'), second = path.join(root, 'second.md');
     fs.writeFileSync(first, 'first'); fs.writeFileSync(second, 'second');
@@ -331,6 +343,8 @@ describe("artifact write authorization", () => {
       const headline = (await run(["show", id])).split("\n")[0];
       expect(headline).toMatch(/^artifact:[0-9a-f]+$/);
       expect(id.startsWith(headline)).toBe(true);
+      const versionShown = (await run(["show", version.ref])).split("\n");
+      expect(versionShown).toContain(`artifact: ${headline}`);
       fs.renameSync(oldPath, newPath);
       const moveStart = requests.length;
       const moved = await cli(['move', id, '--path', fs.realpathSync(newPath)]);

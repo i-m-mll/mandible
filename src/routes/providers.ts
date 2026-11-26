@@ -121,12 +121,12 @@ function lifecycleValue<T>(res: ResponseLike, result: ArtifactLifecycleResult<T>
 }
 
 function canonicalArtifactId(res: ResponseLike, ref: unknown): string | undefined {
-  if (typeof ref !== "string" || !ref.trim() || ref.startsWith("artifact-series:") || ref.startsWith("artifact-version:")) {
+  if (typeof ref !== "string" || !ref.trim() || ref.startsWith("artifact-series:")) {
     sendJson(res, 400, { error: "canonical artifact identity is required", code: "invalid_input" });
     return;
   }
   const resolved = resolveArtifactIdentity(getDb(), ref, "surface");
-  if (resolved.status !== "resolved" || resolved.target_type !== "artifact" || !resolved.logical_artifact) {
+  if (resolved.status !== "resolved" || !resolved.logical_artifact) {
     sendJson(res, 404, { error: "ref must name one logical artifact", code: "unknown_artifact" });
     return;
   }
