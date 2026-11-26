@@ -3,12 +3,14 @@ import { FINALIZER_STEP_NAMES } from "../auth-queue.js";
 import { extractSuccessfulMergeCommitSha } from "../auth-signature-verification.js";
 import { TEARDOWN_NOT_MERGED } from "../declared-preview-teardown.js";
 import type { Db } from "../db.js";
-import { describeHolds, type IssueAccounting } from "../contracts.js";
+import type { IssueAccounting } from "../contracts.js";
+import { currentHolds } from "../landed-issues.js";
 import { shortRef } from "../entity-refs.js";
 import {
   BRANCH_REMOVAL_OUTPUT,
   NOTICE_STATUSES,
   REMOVE_MERGED_BRANCHES_STEP,
+  stepSubject,
   type OutcomeReport,
   type OutcomeReporter,
   type OutcomeStep,
@@ -53,16 +55,6 @@ const STEP_KIND_ORDER: readonly OutcomeStep["kind"][] = ["action", "finalizer", 
 
 function isNoticeStatus(status: string): status is NoticeStatus {
   return (NOTICE_STATUSES as readonly string[]).includes(status);
-}
-
-function stepSubject(step: OutcomeStep): string {
-  switch (step.kind) {
-    case "action": return `${step.issue}\u0000${step.action}`;
-    case "finalizer": return step.step;
-    case "hook": return step.hook_id;
-    case "branch_removal": return step.branch;
-    case "preview_teardown": return step.branch;
-  }
 }
 
 function compareSteps(a: OutcomeStep, b: OutcomeStep): number {
@@ -150,15 +142,21 @@ function finalizerSteps(request: RequestRow): OutcomeStep[] {
   return steps;
 }
 
-/** The issues a completed merge left open; a held issue whose conditional closure applied is not one. */
-function leftOpen(accountingJson: string | null, actions: readonly ActionRow[]): OutcomeReport["left_open"] {
+/**
+ * The landed issues a completed merge left open that are open now: a kept-open
+ * issue with its approved remainder, and a held issue with what holds it now.
+ */
+function leftOpen(db: Db, accountingJson: string | null): OutcomeReport["left_open"] {
   if (accountingJson === null) return [];
   const accounting = JSON.parse(accountingJson) as IssueAccounting;
-  const closed = new Set(actions.filter((row) => row.kind === "issue_close" && row.state === "applied").map((row) => row.issue));
+  const status = db.prepare("SELECT status FROM ledger_issues WHERE id = ? AND deleted_at IS NULL");
+  const open = (issueId: string) => (status.get(issueId) as { status: string } | undefined)?.status === "open";
   return [
-    ...accounting.kept_open.map((issue) => ({ issue: issue.issue, remains: issue.remainder })),
-    ...accounting.held.filter((issue) => !closed.has(issue.issue))
-      .map((issue) => ({ issue: issue.issue, remains: `held by ${describeHolds(issue)}` })),
+    ...accounting.kept_open.filter((issue) => open(issue.issue_id)).map((issue) => ({ issue: issue.issue, remains: issue.remainder })),
+    ...accounting.held.filter((issue) => open(issue.issue_id)).map((issue) => {
+      const holds = currentHolds(db, issue);
+      return { issue: issue.issue, remains: holds === null ? "no longer held" : `held by ${holds}` };
+    }),
   ];
 }
 
@@ -220,7 +218,7 @@ export function createOutcomeReporter(db: Db): OutcomeReporter {
       reason,
       ...(returned ? { review_submission_id: returned.review_submission_id } : {}),
       steps,
-      left_open: completedMerge ? leftOpen(request.issue_accounting_json, actions) : [],
+      left_open: completedMerge ? leftOpen(db, request.issue_accounting_json) : [],
     };
   };
 }

@@ -7,7 +7,10 @@ import { holdsResponsibility, type ResponsibilityHolder } from "../responsibilit
 import { resolveSessionAlias } from "../session-liveness.js";
 import { broadcast } from "../sse.js";
 import { NOTICE_SEPARATOR } from "../parsers/hook-adapters.js";
-import { MESSAGE_SIZE, NOTICE_PROVIDERS, outcomeReportDigest, type NoticeCaller, type NoticeProvider, type OutcomeReporter } from "./contract.js";
+import {
+  MESSAGE_SIZE, NOTICE_PROVIDERS, noticeBasis, noticeBasisAdvanced,
+  type NoticeBasis, type NoticeCaller, type NoticeProvider, type OutcomeReporter,
+} from "./contract.js";
 import { frameMessage } from "./messages.js";
 import { renderNotice } from "./render.js";
 
@@ -32,7 +35,7 @@ interface Recipient { provider: NoticeProvider; session_id: string; agent_ref: s
 interface LatestRow {
   id: string;
   delivered_at: number | null;
-  digest: string | null;
+  basis: string | null;
   recipient_provider: string;
   recipient_id: string;
   responsible_agent_ref: string;
@@ -43,6 +46,11 @@ type OwedRow =
   | OwedBase & { subject_kind: "auth_request"; text: string | null; sender_agent_ref: null }
   | OwedBase & { subject_kind: "reminder"; text: string; sender_agent_ref: null }
   | OwedBase & { subject_kind: "message"; text: string; sender_agent_ref: string | null };
+
+/** A delivered notice rendered before bases were stored told an open request with nothing failed or kept. */
+function storedBasis(json: string | null): NoticeBasis {
+  return json === null ? { open: true, items: [] } : JSON.parse(json) as NoticeBasis;
+}
 
 /**
  * The session half of the notification log: raising a notice when an approval
@@ -66,14 +74,17 @@ export class NoticeLog {
       SELECT id, subject_kind, subject_id, recipient_id, responsible_agent_ref, sender_agent_ref, text, raised_at, rowid AS seq FROM notifications
       WHERE responsible_agent_ref = ?4 AND delivered_at IS NULL AND subject_kind = 'message'
       ORDER BY raised_at, seq`);
-    this.latest = db.prepare(`SELECT id, delivered_at, digest, recipient_provider, recipient_id, responsible_agent_ref
+    this.latest = db.prepare(`SELECT id, delivered_at, basis, recipient_provider, recipient_id, responsible_agent_ref
       FROM notifications WHERE subject_kind = 'auth_request' AND subject_id = ? ORDER BY raised_at DESC, rowid DESC LIMIT 1`);
   }
 
   /**
    * Idempotent. An undelivered notice is left to be rendered at delivery and
-   * follows responsibility; a delivered one is followed by a new notice only
-   * when the report differs from the one it was rendered from.
+   * follows responsibility. Once the latest notice is delivered, a `transition`
+   * always raises a new one; a `change` raises one only when the report's basis
+   * advanced past the basis that notice told (`noticeBasisAdvanced`), and
+   * otherwise records the current basis on it, so a step that recovers and
+   * fails again is news again.
    */
   raise(requestId: string, cause: NoticeCause): void {
     const latest = this.latest.get(requestId) as LatestRow | undefined;
@@ -96,9 +107,14 @@ export class NoticeLog {
       return;
     }
     if (!recipient) return;
-    if (latest) {
+    if (latest && cause.kind === "change") {
       const report = this.reporter(requestId);
-      if (!report || outcomeReportDigest(report) === latest.digest) return;
+      if (!report) return;
+      const current = noticeBasis(report);
+      if (!noticeBasisAdvanced(storedBasis(latest.basis), current)) {
+        this.db.prepare("UPDATE notifications SET basis = ? WHERE id = ?").run(JSON.stringify(current), latest.id);
+        return;
+      }
     }
     const id = randomUUID();
     this.db.prepare(`INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider,
@@ -145,15 +161,15 @@ export class NoticeLog {
     const base = (this.db.prepare("SELECT base_branch FROM auth_requests WHERE id = ?").get(row.subject_id) as
       { base_branch: string | null } | undefined)?.base_branch ?? "base";
     const text = renderNotice(report, { ...holder, session_id: row.recipient_id }, base);
-    this.db.prepare("UPDATE notifications SET digest = ?, text = ?, review_submission_id = ? WHERE id = ?")
-      .run(outcomeReportDigest(report), text, report.review_submission_id ?? null, row.id);
+    this.db.prepare("UPDATE notifications SET basis = ?, text = ?, review_submission_id = ? WHERE id = ?")
+      .run(JSON.stringify(noticeBasis(report)), text, report.review_submission_id ?? null, row.id);
     this.changed(row.id);
     return text;
   }
 
   /**
-   * Marks rendered notices delivered. A report that changed after its notice
-   * was rendered is owed again.
+   * Marks rendered notices delivered. A report whose basis advanced after its
+   * notice was rendered is owed again.
    */
   delivered(ids: readonly string[]): void {
     const mark = this.db.prepare(`UPDATE notifications SET delivered_at = ?

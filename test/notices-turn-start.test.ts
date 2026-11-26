@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import type { HookCallback, Options } from "@anthropic-ai/claude-agent-sdk";
-import { AuthQueue } from "../src/auth-queue.js";
+import { AuthQueue, FINALIZER_STEP_NAMES } from "../src/auth-queue.js";
 import { ClaudeSdkTransport } from "../src/conversation-control/claude-sdk-transport.js";
 import { setDb, type Db } from "../src/db.js";
 import type { BranchKeptReason, NoticeCaller, OutcomeReport, OutcomeStep } from "../src/notices/contract.js";
@@ -141,6 +141,52 @@ it("raises a second notice when the report changes after delivery, and only then
   expect(deliver()).toEqual([`Mandible: auth ${id.slice(0, 8)} completed. All follow-ups done: 1 hook passed.`]);
   log.raise(id, { kind: "change" });
   expect(deliver()).toEqual([]);
+});
+
+it("raises a later notice only for a newly failed or kept step, or the last pending step finishing", () => {
+  const id = randomUUID();
+  const results: Record<string, { result: string; reason: string | null }> = {
+    "feature/a": { result: "pending", reason: null }, "feature/b": { result: "pending", reason: null }, "feature/c": { result: "pending", reason: null },
+  };
+  const write = () => {
+    const finalizer: Record<string, unknown> = Object.fromEntries(FINALIZER_STEP_NAMES.map((name) => [name, { state: "done", attempts: 1, at: 1 }]));
+    finalizer.remove_merged_branches = { state: "pending", attempts: 1, at: 1, output: { branches: Object.entries(results)
+      .map(([name, entry]) => ({ branch: name, ...entry, worktree_path: null })) } };
+    db.prepare("UPDATE auth_requests SET merge_finalizer_state = ? WHERE id = ?").run(JSON.stringify(finalizer), id);
+  };
+  db.prepare(`INSERT INTO auth_requests (id, type, command, title, status, output, created_at, updated_at, expires_at)
+    VALUES (?, 'merge', 'true', 'Fixture', 'completed', '', 1, 1, 2)`).run(id);
+  write();
+  const log = new NoticeLog(db, createOutcomeReporter(db), () => ({ owner_user_id: user.id, responsibility_session_id: "agent:claude:s8:s8", work_unit_id: null }));
+  const deliver = () => { const owed = log.collect({ provider: "claude", session_id: "s8" }); log.delivered(owed.map((n) => n.id)); return owed.length; };
+  const set = (name: string, result: string, reason: string | null = null) => { results[name] = { result, reason }; write(); log.raise(id, { kind: "change" }); };
+
+  log.raise(id, { kind: "transition", actor: null });
+  expect(deliver()).toBe(1);
+  set("feature/a", "removed");
+  expect(deliver()).toBe(0);
+  set("feature/b", "removed");
+  expect(deliver()).toBe(0);
+  set("feature/c", "removed");
+  expect(deliver()).toBe(1);
+  set("feature/a", "kept", "preview_running");
+  expect(deliver()).toBe(1);
+  set("feature/a", "removed");
+  expect(deliver()).toBe(0);
+
+  const hook = randomUUID();
+  db.prepare(`INSERT INTO auth_hook_executions (id, auth_request_id, hook_id, command, command_digest, required, state, exit_code, created_at, updated_at)
+    VALUES (?, ?, 'rebuild', 'true', ?, 1, 'failed', 1, 1, 1)`).run(hook, id, "0".repeat(64));
+  const hookState = (state: string, exitCode: number | null) => {
+    db.prepare("UPDATE auth_hook_executions SET state = ?, exit_code = ? WHERE id = ?").run(state, exitCode, hook);
+    log.raise(id, { kind: "change" });
+  };
+  log.raise(id, { kind: "change" });
+  expect(deliver()).toBe(1);
+  hookState("pending", null);
+  expect(deliver()).toBe(0);
+  hookState("failed", 1);
+  expect(deliver()).toBe(1);
 });
 
 it("broadcasts each change to a session notice once it commits, and each once", () => {

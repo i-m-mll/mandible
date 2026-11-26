@@ -8,14 +8,14 @@ import { AuthHookManager } from "../src/auth-hooks.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { inlineLedgerReader } from "../src/ledger-reads/index.js";
-import { outcomeReportDigest } from "../src/notices/contract.js";
 import { createOutcomeReporter } from "../src/notices/report.js";
 import { renderNotice } from "../src/notices/render.js";
 import type { IssueAccounting } from "../src/contracts.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
 import { getOperator } from "../src/users/store.js";
-import { createMigratedDb } from "./helpers/ledger-fixtures.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { createMigratedDb, insertRawLedgerIssue, insertRawLedgerProject, SYSTEM_ACTOR } from "./helpers/ledger-fixtures.js";
 import { testRuntimeRoot } from "./helpers/runtime-isolation.js";
 import type { Db } from "../src/db.js";
 
@@ -42,6 +42,14 @@ function insertHook(db: Db, requestId: string, hookId: string, state: string, ex
 }
 
 function seed(db: Db) {
+  const projectId = insertRawLedgerProject(db, { name: "outcome" });
+  for (const [id, shortId] of [["i4", "4444444"], ["i5", "5555555"], ["i6", "6666666"]]) insertRawLedgerIssue(db, { id, shortId, projectId });
+  new LedgerStore(db).linkRelationshipEdges({
+    source_entity: { entity_type: "issue", entity_id: "i5" },
+    target_entities: [{ entity_type: "issue", entity_id: "i6" }],
+    link_type: "parent_child",
+    actor: SYSTEM_ACTOR,
+  });
   const merge = insertRequest(db, {
     status: "completed",
     output: `MANDIBLE_MERGE_RESULT ${JSON.stringify({ merge_sha: MERGE_SHA })}`,
@@ -106,10 +114,14 @@ it("reports each consequent action of a settled request with its state, stably",
     expect(report(ids.failed)).toMatchObject({ status: "failed", reason: "merge conflict in src/a.ts" });
     expect(report(ids.pending)).toBeNull();
 
-    const digest = outcomeReportDigest(report(ids.merge)!);
-    expect(outcomeReportDigest(report(ids.merge)!)).toBe(digest);
-    db.prepare("UPDATE auth_hook_executions SET state = 'complete', exit_code = 0 WHERE auth_request_id = ? AND hook_id = 'rebuild'").run(ids.merge);
-    expect(outcomeReportDigest(report(ids.merge)!)).not.toBe(digest);
+    const store = new LedgerStore(db);
+    store.setIssueStatus("i6", "closed", "delivered", SYSTEM_ACTOR);
+    expect(report(ids.merge)!.left_open).toEqual([
+      { issue: "4444444", remains: "Needs a production measurement" },
+      { issue: "5555555", remains: "no longer held" },
+    ]);
+    store.setIssueStatus("i4", "closed", "delivered", SYSTEM_ACTOR);
+    expect(report(ids.merge)!.left_open).toEqual([{ issue: "5555555", remains: "no longer held" }]);
   } finally {
     db.close();
   }

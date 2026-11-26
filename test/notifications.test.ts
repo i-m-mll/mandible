@@ -38,8 +38,8 @@ function openConvergenceAlert(): void {
 function sessionNotice(id: string, raisedAt: number, deliveredAt: number | null): void {
   db.prepare(
     `INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider, recipient_id,
-       responsible_agent_ref, raised_at, delivered_at, digest, text)
-     VALUES (?, 'auth_request', 'auth-1', 'session', 'claude', ?, 'claude:agent-1', ?, ?, 'digest', 'Merged')`,
+       responsible_agent_ref, raised_at, delivered_at, text)
+     VALUES (?, 'auth_request', 'auth-1', 'session', 'claude', ?, 'claude:agent-1', ?, ?, 'Merged')`,
   ).run(id, `session-${id}`, raisedAt, deliveredAt);
 }
 

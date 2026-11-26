@@ -1,10 +1,64 @@
 /**
  * The notification log. A row exists from the moment a report is owed to its
  * recipient; `delivered_at NULL` is "not told yet". A session row gets its
- * `digest` and `text` when it is rendered for delivery; a user row is raised
+ * `text` when it is rendered for delivery, and a settlement notice also its
+ * `basis`, the `NoticeBasis` JSON of the report it told; a user row is raised
  * with its text, and `delivered_at` is when the user read it.
+ *
+ * A message row (`subject_kind = 'message'`) is its own subject, carries its
+ * body exactly as sent from the moment it is sent (it is framed when it is
+ * collected), and is addressed to the exact agent in `responsible_agent_ref`.
+ * Only a message has a sender.
  */
-export const NOTIFICATIONS_SCHEMA_SQL: readonly string[] = [
+const NOTIFICATIONS_TABLE_SQL = `CREATE TABLE notifications (
+    id TEXT PRIMARY KEY,
+    subject_kind TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    recipient_kind TEXT NOT NULL CHECK(recipient_kind IN ('session','user')),
+    recipient_provider TEXT,
+    recipient_id TEXT NOT NULL,
+    responsible_agent_ref TEXT,
+    raised_at INTEGER NOT NULL,
+    delivered_at INTEGER,
+    text TEXT,
+    review_submission_id TEXT REFERENCES briefing_submissions(id) ON DELETE RESTRICT,
+    sender_agent_ref TEXT CHECK(sender_agent_ref IS NULL OR subject_kind = 'message'),
+    basis TEXT CHECK(basis IS NULL OR subject_kind = 'auth_request'),
+    CHECK((recipient_kind = 'session') = (recipient_provider IS NOT NULL)),
+    CHECK((recipient_kind = 'session') = (responsible_agent_ref IS NOT NULL)),
+    CHECK(recipient_kind = 'session' OR text IS NOT NULL),
+    CHECK(delivered_at IS NULL OR text IS NOT NULL)
+  )`;
+
+const NOTIFICATIONS_INDEX_SQL: readonly string[] = [
+  `CREATE INDEX idx_notifications_undelivered ON notifications(recipient_provider, recipient_id)
+     WHERE delivered_at IS NULL AND recipient_kind = 'session'`,
+  "CREATE INDEX idx_notifications_subject ON notifications(subject_kind, subject_id, raised_at)",
+  "CREATE INDEX idx_notifications_raised ON notifications(raised_at)",
+  `CREATE INDEX idx_notifications_undelivered_messages ON notifications(responsible_agent_ref)
+     WHERE delivered_at IS NULL AND subject_kind = 'message'`,
+];
+
+export const NOTIFICATIONS_SCHEMA_SQL: readonly string[] = [NOTIFICATIONS_TABLE_SQL, ...NOTIFICATIONS_INDEX_SQL];
+
+const NOTIFICATION_COLUMNS = `id, subject_kind, subject_id, recipient_kind, recipient_provider, recipient_id, responsible_agent_ref,
+  raised_at, delivered_at, text, review_submission_id, sender_agent_ref`;
+
+/** Issue 89135dc — `digest` gives way to `basis`; a delivered notice keeps a null basis. Run with foreign keys off. */
+export const NOTIFICATIONS_BASIS_MIGRATION_SQL: readonly string[] = [
+  "DROP INDEX idx_notifications_undelivered",
+  "DROP INDEX idx_notifications_subject",
+  "DROP INDEX idx_notifications_raised",
+  "DROP INDEX idx_notifications_undelivered_messages",
+  "ALTER TABLE notifications RENAME TO notifications_v260",
+  NOTIFICATIONS_TABLE_SQL,
+  `INSERT INTO notifications (${NOTIFICATION_COLUMNS}) SELECT ${NOTIFICATION_COLUMNS} FROM notifications_v260`,
+  "DROP TABLE notifications_v260",
+  ...NOTIFICATIONS_INDEX_SQL,
+];
+
+/** The table as migration v236 created it. */
+export const NOTIFICATIONS_V236_SQL: readonly string[] = [
   `CREATE TABLE notifications (
     id TEXT PRIMARY KEY,
     subject_kind TEXT NOT NULL,
@@ -23,25 +77,19 @@ export const NOTIFICATIONS_SCHEMA_SQL: readonly string[] = [
     CHECK(delivered_at IS NULL OR text IS NOT NULL),
     CHECK((digest IS NULL) = (recipient_kind = 'user' OR text IS NULL))
   )`,
-  `CREATE INDEX idx_notifications_undelivered ON notifications(recipient_provider, recipient_id)
-     WHERE delivered_at IS NULL AND recipient_kind = 'session'`,
-  "CREATE INDEX idx_notifications_subject ON notifications(subject_kind, subject_id, raised_at)",
-  "CREATE INDEX idx_notifications_raised ON notifications(raised_at)",
+  NOTIFICATIONS_INDEX_SQL[0],
+  NOTIFICATIONS_INDEX_SQL[1],
+  NOTIFICATIONS_INDEX_SQL[2],
 ];
 
+/** Migration v250's column. */
 export const NOTICE_REVIEW_SUBMISSION_SQL =
   "ALTER TABLE notifications ADD COLUMN review_submission_id TEXT REFERENCES briefing_submissions(id) ON DELETE RESTRICT";
 
-/**
- * A message row (`subject_kind = 'message'`) is its own subject, carries its
- * body exactly as sent from the moment it is sent (it is framed when it is
- * collected), and is addressed to the exact agent in `responsible_agent_ref`.
- * Only a message has a sender.
- */
+/** Migration v258's column and index. */
 export const NOTICE_MESSAGE_SQL: readonly string[] = [
   "ALTER TABLE notifications ADD COLUMN sender_agent_ref TEXT CHECK(sender_agent_ref IS NULL OR subject_kind = 'message')",
-  `CREATE INDEX idx_notifications_undelivered_messages ON notifications(responsible_agent_ref)
-     WHERE delivered_at IS NULL AND subject_kind = 'message'`,
+  NOTIFICATIONS_INDEX_SQL[3],
 ];
 
 /**

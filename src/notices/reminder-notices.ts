@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { exactAgentRef } from "../ambient-provider-identity.js";
 import { DOMAIN_EVENTS } from "../contracts.js";
 import type { Db } from "../db.js";
@@ -30,8 +30,7 @@ export function raiseReminderNotice(
   const text = `Mandible: reminder ${short(reminder.taskId)} fired: ${reminder.message.replace(/\s+/g, " ").trim()}${armedBy}`;
   const id = randomUUID();
   db.prepare(`INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider, recipient_id,
-    responsible_agent_ref, raised_at, digest, text) VALUES (?, 'reminder', ?, 'session', ?, ?, ?, ?, ?, ?)`)
-    .run(id, reminder.taskId, origin.provider, session, exactAgentRef(agent), raisedAt,
-      createHash("sha256").update(text).digest("hex"), text);
+    responsible_agent_ref, raised_at, text) VALUES (?, 'reminder', ?, 'session', ?, ?, ?, ?, ?)`)
+    .run(id, reminder.taskId, origin.provider, session, exactAgentRef(agent), raisedAt, text);
   db.afterCommit(() => broadcast(DOMAIN_EVENTS.NOTIFICATION_CHANGED, { id }));
 }
