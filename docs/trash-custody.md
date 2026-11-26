@@ -15,6 +15,20 @@ response says `"result": "removed"`. Otherwise the response says
 `"result": "trashed"` with the entry. A refusal answers with
 `"result": "refused"` and removes nothing.
 
+Removal renames the worktree into `<git-common-dir>/mandible-removing/<id>`
+before Git touches it. The rename is the commit point: if it fails, nothing
+has changed, and the service answers `removal_refused` with the cause in its
+message. Git then removes only the worktree's admin entry, since its path is
+gone; if Git refuses (for example, the worktree is locked), the directory is
+renamed back and the answer is again `removal_refused`. A refusal creates no
+trash entry and keeps no refs, so a retry starts clean. Next the branch ref is
+deleted against its recorded oid; a failure there, or a failed rename back,
+leaves the entry `remove_failed` with a message naming the staged path.
+Finally the staged directory is deleted. A process writing into it can make
+that fail, which does not fail the removal; whatever remains under
+`mandible-removing/` is deleted at the start of the next removal in that
+checkout and by every GC pass.
+
 Ignored files are classified before anything is removed:
 
 - **Skipped:** symlinks, which hold no unique bytes (shared links are

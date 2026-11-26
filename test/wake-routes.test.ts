@@ -137,7 +137,7 @@ describe("the reconciler", () => {
     await observe("Stop");
     await send("agent:claude:s1:child");
     db.prepare(`INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider, recipient_id,
-      responsible_agent_ref, raised_at, digest, text) VALUES ('r1', 'reminder', 'r1', 'session', 'claude', ?, ?, ?, 'd', 'Reminder')`)
+      responsible_agent_ref, raised_at, text) VALUES ('r1', 'reminder', 'r1', 'session', 'claude', ?, ?, ?, 'Reminder')`)
       .run(SESSION, MAIN, clock);
     await observe("UserPromptSubmit"); await observe("Stop");
     expect(calls).toEqual([]);

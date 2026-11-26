@@ -100,10 +100,13 @@ function listenForAuthRequest(
   close: () => Promise<void>;
   bodies: Record<string, unknown>[];
   checkBodies: Record<string, unknown>[];
+  urls: string[];
 }> {
   const bodies: Record<string, unknown>[] = [];
   const checkBodies: Record<string, unknown>[] = [];
+  const urls: string[] = [];
   const server = http.createServer((req, res) => {
+    urls.push(req.url ?? "");
     if (req.method === "GET" && req.url === "/api/instance") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
@@ -157,6 +160,7 @@ function listenForAuthRequest(
         port: address.port,
         bodies,
         checkBodies,
+        urls,
         close: () => new Promise<void>((done, reject) => {
           server.close((error) => (error ? reject(error) : done()));
         }),
@@ -198,7 +202,7 @@ describe("action-specific request preparation", () => {
       const result = await runAsync(["auth", "request", "--type", "config-change", "--command", "echo reviewed",
         "--repo", "example", "--cwd", tempDir, "--title", "Settings", "--issue", "settings123",
         "--message", "Apply reviewed settings.", "--supersedes", "prior123", "--expected-revision", "1",
-        "--expected-custody-generation", "1", "--no-watch"], tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
+        "--expected-custody-generation", "1"], tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
       expect(result.status, result.stderr).toBe(0);
       expect(server.bodies[0]).not.toHaveProperty("depends_on_ids");
     } finally { await server.close(); }
@@ -214,7 +218,7 @@ describe("action-specific request preparation", () => {
         "auth", "request", "--type", "config-change", "--command", command,
         "--cwd", ".", "--repo", "example", "--title", "Apply reviewed settings",
         "--issue", "settings123", "--message", "Apply the reviewed settings without changing application data.",
-        "--depends-on", "source123", "--depends-on", "validation123", "--no-watch",
+        "--depends-on", "source123", "--depends-on", "validation123",
       ], executionDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
       expect(result.status, result.stderr).toBe(0);
       expect(server.checkBodies).toEqual([]);
@@ -227,6 +231,8 @@ describe("action-specific request preparation", () => {
       });
       expect(fs.realpathSync(String(server.bodies[0].cwd))).toBe(fs.realpathSync(executionDir));
       expect(fs.existsSync(path.join(executionDir, "should-not-exist"))).toBe(false);
+      // Issue 8d29144 — the request is still pending, and the command returned without watching it.
+      expect(server.urls).not.toContain("/api/events/subscribe");
     } finally {
       await server.close();
     }
@@ -238,7 +244,7 @@ describe("action-specific request preparation", () => {
   ])("refuses ambiguous operation inputs: $error", async ({ args }) => {
     const server = await listenForAuthRequest();
     try {
-      const result = await runAsync(["auth", "request", ...args, "--title", "Review", "--issue", "example", "--no-watch"], tempDir, {
+      const result = await runAsync(["auth", "request", ...args, "--title", "Review", "--issue", "example"], tempDir, {
         MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
       });
       expect(result.status).toBe(2);
@@ -252,7 +258,7 @@ describe("action-specific request preparation", () => {
   it("never executes a command when queue submission is unavailable", () => {
     const result = run([
       "auth", "request", "--type", "data-delete", "--command", "touch should-not-exist",
-      "--cwd", homeDir, "--repo", "example", "--title", "Review", "--issue", "example", "--message", "Delete the explicitly reviewed private fixture.", "--no-watch",
+      "--cwd", homeDir, "--repo", "example", "--title", "Review", "--issue", "example", "--message", "Delete the explicitly reviewed private fixture.",
     ]);
     expect(result.status).toBe(1);
     expect(result.stdout).not.toContain("request submitted");
@@ -274,7 +280,6 @@ describe("auth request repo context validation", () => {
       "--repo",
       "target-repo",
       "--force",
-      "--no-watch",
     ]);
 
     expect(result.status).toBe(1);
@@ -324,7 +329,6 @@ describe("auth request duplicate refusal", () => {
         "--title", CALLER_TITLE,
         "--issue", "608d1db",
         "--narrative", narrativePath,
-        "--no-watch",
       ], tempDir, {
         MANDIBLE_PORT: String(server.port),
         MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
@@ -369,7 +373,6 @@ describe("auth request protected-root dirty policy", () => {
       "Merge feature/demo",
       "--issue",
       "350817b",
-      "--no-watch",
     ]);
 
     expect(result.status).toBe(1);
@@ -405,7 +408,6 @@ describe("auth request protected-root dirty policy", () => {
       "Merge feature/demo",
       "--issue",
       "350817b",
-      "--no-watch",
     ]);
 
     expect(result.status).toBe(1);
@@ -441,7 +443,6 @@ describe("auth request protected-root dirty policy", () => {
       "029661a",
       "--dirty-policy",
       "stash",
-      "--no-watch",
     ]);
 
     expect(result.stderr).toContain("Protected-root changes were preserved as stash commit");
@@ -471,7 +472,7 @@ it("submits a merge into an unborn protected branch", async () => {
   git(["worktree", "add", "-q", worktree, "feature/first"]);
   const server = await listenForAuthRequest();
   try {
-    const result = await runAsync(["auth", "request", "feature/first", "--title", "First history", "--issue", "first123", "--no-watch"],
+    const result = await runAsync(["auth", "request", "feature/first", "--title", "First history", "--issue", "first123"],
       worktree, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}` });
     expect(result.status, result.stderr).toBe(0);
     expect(server.bodies).toHaveLength(1);
@@ -479,4 +480,36 @@ it("submits a merge into an unborn protected branch", async () => {
   } finally {
     await server.close();
   }
+});
+
+// Issue 9904147 — the CLI stopped reading `git worktree list` once it found the
+// protected worktree, git took SIGPIPE, and an ERR trap inherited by the
+// reading subshell printed "stopped" while the request was still submitted.
+describe("auth request with a long worktree listing", () => {
+  useGitRepo();
+  it("submits once and reports no failure", async () => {
+    const adapterDir = fs.mkdtempSync(path.join(homeDir, "git-adapter-"));
+    const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+    const extra = path.join(adapterDir, "extra-worktrees");
+    fs.writeFileSync(extra, Array.from({ length: 1500 }, (_, i) =>
+      `worktree ${homeDir}/unrelated-worktree-${i}\nHEAD ${"0".repeat(40)}\nbranch refs/heads/unrelated/${i}\n\n`).join(""));
+    fs.writeFileSync(path.join(adapterDir, "git"), [
+      "#!/bin/sh",
+      'case "$*" in',
+      `  *"worktree list --porcelain"*) '${realGit}' "$@" || exit; cat '${extra}' ;;`,
+      `  *) exec '${realGit}' "$@" ;;`,
+      "esac",
+      "",
+    ].join("\n"), { mode: 0o755 });
+    const server = await listenForAuthRequest();
+    try {
+      const result = await runAsync(["auth", "request", "feature/demo", "--title", "Merge feature/demo", "--issue", "9904147"],
+        tempDir, { MANDIBLE_BASE: `http://127.0.0.1:${server.port}`, PATH: `${adapterDir}:${process.env.PATH}` });
+      expect(result.status, result.stderr).toBe(0);
+      expect(server.bodies).toHaveLength(1);
+      expect(result.stderr).toBe("");
+    } finally {
+      await server.close();
+    }
+  });
 });

@@ -75,4 +75,4 @@ if [[ "$http_status" != 202 ]]; then
   printf 'Error: auth request %s was not approved (HTTP %s)%s\n' "$request_id" "$http_status" "${detail:+: $detail}" >&2
   exit 1
 fi
-mandible_auth_watch "$(jq -r '.request_id' "$response_file")" 14400
+mandible_auth_watch "$(jq -r '.request_id' "$response_file")"

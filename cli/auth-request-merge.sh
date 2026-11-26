@@ -444,17 +444,7 @@ fi
 if [[ -n "$cwd_override" ]]; then
   target_cwd="$cwd_override"
 else
-  target_cwd=""
-  current_wt=""
-  while IFS= read -r line; do
-    if [[ "$line" == worktree\ * ]]; then
-      current_wt="${line#worktree }"
-    elif [[ "$line" == "branch refs/heads/${base_branch}" ]]; then
-      target_cwd="$current_wt"
-      break
-    fi
-  done < <(git worktree list --porcelain 2>/dev/null)
-
+  target_cwd=$(branch_worktree "$base_branch") || target_cwd=""
   if [[ -z "$target_cwd" ]]; then
     echo "Error: cannot find worktree for protected branch '${base_branch}'" >&2
     exit 1

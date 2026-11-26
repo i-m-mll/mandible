@@ -20,10 +20,10 @@ describe("dashboard badge aggregate", () => {
 
   it("counts only badge-relevant records from cached database state", async () => {
     db.prepare(
-      `INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider, recipient_id, responsible_agent_ref, raised_at, delivered_at, digest, text)
-       VALUES ('unread', 'reminder', 'r1', 'user', NULL, 'u', NULL, 1, NULL, NULL, 'Unread'),
-              ('read', 'reminder', 'r2', 'user', NULL, 'u', NULL, 1, 2, NULL, 'Read'),
-              ('undelivered', 'auth_request', 'a1', 'session', 'codex', 's', 'codex:s', 1, NULL, 'd', 'Undelivered')`,
+      `INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider, recipient_id, responsible_agent_ref, raised_at, delivered_at, text)
+       VALUES ('unread', 'reminder', 'r1', 'user', NULL, 'u', NULL, 1, NULL, 'Unread'),
+              ('read', 'reminder', 'r2', 'user', NULL, 'u', NULL, 1, 2, 'Read'),
+              ('undelivered', 'auth_request', 'a1', 'session', 'codex', 's', 'codex:s', 1, NULL, 'Undelivered')`,
     ).run();
     db.prepare(
       `INSERT INTO auth_requests

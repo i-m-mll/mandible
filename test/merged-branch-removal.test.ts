@@ -134,6 +134,8 @@ describe("merged-branch removal", () => {
     const unmerged = lane("unmerged", { merged: false });
     const preview = lane("preview");
     const finalizePreview = runningPreview(preview.branch, preview.worktree);
+    const locked = lane("locked");
+    git(repo, ["worktree", "lock", locked.worktree]);
 
     const queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
     try {
@@ -146,7 +148,12 @@ describe("merged-branch removal", () => {
         [ignored.branch]: "trashed",
         [unmerged.branch]: "kept not_merged",
         [preview.branch]: "kept preview_running",
+        [locked.branch]: "kept trash_refused",
       });
+      const detail = () => BRANCH_REMOVAL_OUTPUT.parse(finalizerState(id)[REMOVE_MERGED_BRANCHES_STEP].output)
+        .branches.find(entry => entry.branch === locked.branch)?.detail;
+      expect(detail()).toMatch(/locked/);
+      expect(fs.existsSync(locked.worktree) && branchExists(locked.branch)).toBe(true);
       expect([clean.worktree, ignored.worktree].some(fs.existsSync)).toBe(false);
       expect(fs.existsSync(unmerged.worktree) && fs.existsSync(preview.worktree)).toBe(true);
 
@@ -155,7 +162,10 @@ describe("merged-branch removal", () => {
       expect(results(id)[preview.branch]).toBe("kept preview_running");
 
       finalizePreview();
+      git(repo, ["worktree", "unlock", locked.worktree]);
       await retry();
+      expect(results(id)[locked.branch]).toBe("removed");
+      expect(detail()).toBeUndefined();
       expect(results(id)[preview.branch]).toBe("removed");
       expect(results(id)[unmerged.branch]).toBe("kept not_merged");
       expect(fs.existsSync(preview.worktree)).toBe(false);

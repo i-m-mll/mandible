@@ -15,7 +15,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { Db } from "./db.js";
 import { authGitEnv } from "./auth-context.js";
-import type { AccountedIssue, ClosureReason, IssueAccounting } from "./contracts.js";
+import { describeHolds, type AccountedIssue, type ClosureReason, type IssueAccounting } from "./contracts.js";
 import { protectedBranchNames } from "./protected-branches.js";
 import { observeRepoIdentities, requestRepoMatcher, type RequestRepoScope } from "./repo-identity.js";
 import { isUnbornBase } from "./auth-context.js";
@@ -506,4 +506,27 @@ async function protectedCommits(db: Db, projectId: string): Promise<Set<string>>
   if (existing.length === 0) return new Set();
   const commits = await git(root, ["rev-list", ...existing]);
   return new Set(commits.split("\n").map((line) => line.trim().toLowerCase()).filter(Boolean));
+}
+
+/**
+ * Issue 2927dd8 — what still holds a held issue open now: a unit its accounting
+ * stored that is unresolved and not bound to a merged request, or an open child.
+ * Null when nothing does. A unit whose request merged counts as released, so two
+ * requests whose finalizations interleave cannot both find the other still held.
+ */
+export function currentHolds(db: Db, entry: IssueAccounting["held"][number]): string | null {
+  const live = new Set((db.prepare(
+    `SELECT wu.id FROM work_units wu
+      WHERE wu.id IN (SELECT value FROM json_each(?)) AND wu.state IN ('open', 'committed')
+        AND NOT EXISTS (SELECT 1 FROM auth_requests r WHERE r.id = wu.auth_request_id AND r.status = 'completed' AND r.exit_code = 0)`,
+  ).all(JSON.stringify(entry.unmerged_units.map((unit) => unit.id))) as Array<{ id: string }>).map((row) => row.id));
+  const openChildren = (db.prepare(
+    `SELECT child.short_id FROM ledger_relationship_edges e
+       JOIN ledger_issues child ON child.id = e.target_issue_id AND child.deleted_at IS NULL AND child.status = 'open'
+      WHERE e.source_issue_id = ? AND e.link_type = 'parent_child' AND e.source_entity_type = 'issue'
+        AND e.target_entity_type = 'issue' AND e.deleted_at IS NULL
+      ORDER BY e.created_at, e.id`,
+  ).all(entry.issue_id) as Array<{ short_id: string }>).map((row) => row.short_id);
+  if (live.size === 0 && openChildren.length === 0) return null;
+  return describeHolds({ ...entry, open_children: openChildren, unmerged_units: entry.unmerged_units.filter((unit) => live.has(unit.id)) });
 }

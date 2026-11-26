@@ -1,13 +1,14 @@
-import { createHash } from "node:crypto";
 import * as z from "zod";
-import { canonicalJson } from "../canonical-json.js";
 import type { AuthRequestStatus } from "../contracts.js";
 import type { RegisteredRoute } from "./wake/types.js";
 
 /**
  * Settlement notices: what Mandible tells the session that answers for a
- * request once the request's status ends or suspends it, and whenever a
- * consequent action changes state afterwards. This file is the contract between
+ * request once the request's status ends or suspends it, and again when a later
+ * change gives the owner something new to act on: a step that newly failed or
+ * was newly kept, or the last pending step finishing. Progress alone (a branch
+ * removed, a hook completing while others remain) is never a new notice. This
+ * file is the contract between
  * the outcome report, the notification log, the turn-start hook, the merge
  * finalizer and the Notifications view.
  *
@@ -46,7 +47,7 @@ export type OutcomeStep =
   /** A merge finalizer step other than branch removal. */
   | (StepBase & { kind: "finalizer"; step: string })
   | (StepBase & { kind: "hook"; hook_id: string; required: boolean })
-  | (StepBase & { kind: "branch_removal"; branch: string; reason: BranchKeptReason | null })
+  | (StepBase & { kind: "branch_removal"; branch: string; reason: BranchKeptReason | null; detail?: string })
   | (StepBase & { kind: "preview_teardown"; branch: string });
 
 export interface OutcomeReport {
@@ -69,9 +70,40 @@ export interface OutcomeReport {
 /** Reads one request's current report; null when its status is not in `NOTICE_STATUSES`. */
 export type OutcomeReporter = (requestId: string) => OutcomeReport | null;
 
-/** The report's identity for "already told". */
-export function outcomeReportDigest(report: OutcomeReport): string {
-  return createHash("sha256").update(canonicalJson(report)).digest("hex");
+/** The step's identity within its report. */
+export function stepSubject(step: OutcomeStep): string {
+  switch (step.kind) {
+    case "action": return `${step.issue}\u0000${step.action}`;
+    case "finalizer": return step.step;
+    case "hook": return step.hook_id;
+    case "branch_removal": return step.branch;
+    case "preview_teardown": return step.branch;
+  }
+}
+
+/**
+ * What a delivered notice told its owner, for deciding whether a later change
+ * owes a new one. `open`: some step was `pending` or `withheld`. `items`: the
+ * sorted keys `kind:subject:state:reason` of the steps that were `failed` or
+ * `kept`. Done counts, the members of pending steps and `left_open` are not part of it.
+ */
+export interface NoticeBasis {
+  open: boolean;
+  items: string[];
+}
+
+export function noticeBasis(report: OutcomeReport): NoticeBasis {
+  return {
+    open: report.steps.some((step) => step.state === "pending" || step.state === "withheld"),
+    items: report.steps.filter((step) => step.state === "failed" || step.state === "kept")
+      .map((step) => `${step.kind}:${stepSubject(step)}:${step.state}:${step.reason ?? ""}`).sort(),
+  };
+}
+
+/** Whether `current` gives the owner of a notice told from `told` something new to act on. */
+export function noticeBasisAdvanced(told: NoticeBasis, current: NoticeBasis): boolean {
+  const known = new Set(told.items);
+  return current.items.some((item) => !known.has(item)) || (told.open && !current.open);
 }
 
 /**
@@ -86,6 +118,8 @@ export const BRANCH_REMOVAL_OUTPUT = z.object({
     result: z.enum(["removed", "trashed", "kept", "pending"]),
     reason: z.enum(BRANCH_KEPT_REASONS).nullable(),
     worktree_path: z.string().nullable(),
+    /** Why the trash service refused a `trash_refused` branch, in its own words. */
+    detail: z.string().optional(),
   })),
 });
 export type BranchRemovalOutput = z.infer<typeof BRANCH_REMOVAL_OUTPUT>;

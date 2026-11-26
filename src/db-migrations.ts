@@ -7,7 +7,7 @@ import { exactAgentRef } from "./ambient-provider-identity.js";
 import { GLOBAL_GRANT_SCHEMA_SQL, GLOBAL_GRANT_INDEX_SQL } from "./permissions/schema.js";
 import { INTERFACE_NOTE_EMBED_GRANTS_SQL } from "./interface-notes/schema.js";
 import { HISTORICAL_PROJECT_ROOTS_SCHEMA_SQL } from "./ledger/historical-root-schema.js";
-import { MESSAGE_BODY_MIGRATION_SQL, NOTICE_MESSAGE_SQL, NOTICE_REVIEW_SUBMISSION_SQL, NOTIFICATIONS_SCHEMA_SQL, SESSION_WAKES_SCHEMA_SQL } from "./notices/schema.js";
+import { MESSAGE_BODY_MIGRATION_SQL, NOTICE_MESSAGE_SQL, NOTICE_REVIEW_SUBMISSION_SQL, NOTIFICATIONS_BASIS_MIGRATION_SQL, NOTIFICATIONS_V236_SQL, SESSION_WAKES_SCHEMA_SQL } from "./notices/schema.js";
 import { RESPONSIBILITY_SCHEMA_SQL } from "./responsibility-schema.js";
 import { migrateLocalAuthorizationEvidence } from "./local-authorization-migration.js";
 import { WORK_UNIT_ASSIGNMENT_SCHEMA_SQL, seedLegacyAssignmentTargets, EXACT_AGENT_WORK_UNIT_SCHEMA_SQL, recoverHistoricalExactAssignments } from "./work-unit-assignment-schema.js";
@@ -2369,7 +2369,7 @@ export const MIGRATIONS: readonly Migration[] = [
     )`,
     "CREATE INDEX idx_interface_notes_comment ON interface_notes(comment_id)",
   ] },
-  { version: 236, name: "notifications", statements: [...NOTIFICATIONS_SCHEMA_SQL] },
+  { version: 236, name: "notifications", statements: [...NOTIFICATIONS_V236_SQL] },
   { version: 237, name: "preview_teardown_action", statements: [...AUTH_REQUEST_ACTIONS_REBUILD_SQL], requires_foreign_keys_off: true },
   { version: 238, name: "retire_delivery_columns", statements: [
     // Requests whose latest revision still matches their row get one revision
@@ -2522,6 +2522,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 258, name: "agent_messages", statements: [...NOTICE_MESSAGE_SQL] },
   { version: 259, name: "session_wakes", statements: [...SESSION_WAKES_SCHEMA_SQL] },
   { version: 260, name: "verbatim_message_bodies", statements: [...MESSAGE_BODY_MIGRATION_SQL] },
+  { version: 261, name: "notice_basis", requires_foreign_keys_off: true, statements: [...NOTIFICATIONS_BASIS_MIGRATION_SQL] },
 ];
 
 /**

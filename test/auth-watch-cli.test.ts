@@ -21,7 +21,6 @@ async function watch(mode: 'sse' | 'poll', statuses: string[]) {
   const server = http.createServer((req, res) => {
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/api/instance') return res.end(JSON.stringify(MAIN_CLI_INSTANCE_RESPONSE));
-    if (req.url === '/api/auth/v2/request') { res.statusCode = 201; return res.end('{"request_id":"watch123"}'); }
     const response = (status: string) => ({ request_id: 'watch123', status, outcome: ['pending', 'approved', 'executing'].includes(status) ? null : status === 'completed' ? 'succeeded' : status,
       exit_code: status === 'failed' ? 42 : status === 'completed' ? 0 : null, failure_reason: 'reviewed head changed',
       error: null, error_output: null, resolved_at: ['pending', 'approved', 'executing'].includes(status) ? null : 1, title: 'Watch fixture', head_branch: null });
@@ -36,7 +35,7 @@ async function watch(mode: 'sse' | 'poll', statuses: string[]) {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
   try {
-    const args = ['auth', 'request', '--type', 'config-change', '--command', 'true', '--cwd', root, '--repo', path.basename(root), '--title', 'Watch fixture', '--issue', 'fixture', '--message', 'Apply fixture settings.'];
+    const args = ['auth', 'watch', 'watch123'];
     const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
       const child = spawn(path.join(process.cwd(), 'bin/mandible'), args, {
         cwd: root, env: { ...process.env, MANDIBLE_BASE: `http://127.0.0.1:${port}`, PATH: `${root}/adapters:${process.env.PATH}`, MANDIBLE_HTTP_RETRIES: '0' },
@@ -110,7 +109,8 @@ it.each(['sse', 'poll'] as const)('%s propagates terminal delivery results', asy
 it.each(['pending', 'approved', 'executing'])('final poll reports %s as in flight without claiming delivery', async status => {
   const result = await watch('poll', [status]);
   expect(result.code, result.output).toBe(1);
-  expect(result.reads).toBe(1);
+  // One read resolves the reference; one reconciles after the stream ends.
+  expect(result.reads).toBe(2);
   expect(result.output).toContain('watch123');
   expect(result.output).toContain(status);
 });

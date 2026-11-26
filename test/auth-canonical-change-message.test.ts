@@ -332,7 +332,6 @@ describe("auth request CLI change message composition", () => {
           messageFile,
           "--verification",
           "Focused vitest suites pass.",
-          "--no-watch",
         ],
         server.port,
         releaseRoot,
@@ -371,13 +370,13 @@ describe("auth request CLI change message composition", () => {
     const server = await submitServer();
     try {
       const base = ["auth", "request", "feature/canonical", "--title", "x", "--issue", "7d64d8f"];
-      const noMessage = await submitAndCapture([...base, "--verification", "ok", "--no-watch"], server.port);
+      const noMessage = await submitAndCapture([...base, "--verification", "ok"], server.port);
       expect(noMessage.status).toBe(2);
       expect(noMessage.stderr).toContain("(--message <text> | --message-file <file>): the canonical change message");
       expect(noMessage.stderr).not.toContain("--verification <text>:");
 
       const noVerification = await submitAndCapture(
-        [...base, "--message", "outcome\n\nWhy:\nBecause.", "--no-watch"], server.port);
+        [...base, "--message", "outcome\n\nWhy:\nBecause."], server.port);
       expect(noVerification.status).toBe(2);
       expect(noVerification.stderr).toContain("--verification <text>: the checks you ran");
       expect(server.bodies).toHaveLength(0);
@@ -398,7 +397,7 @@ describe("auth request CLI change message composition", () => {
         ["--message", message, "--verification", "ok", "--issue", "7d64d8f\nMandible-Issue: deadbee"],
       ]) {
         const result = await submitAndCapture(
-          ["auth", "request", "feature/canonical", "--title", "x", "--issue", "7d64d8f", ...args, "--no-watch"],
+          ["auth", "request", "feature/canonical", "--title", "x", "--issue", "7d64d8f", ...args],
           server.port,
         );
         expect(result.status, args.join(" ")).toBe(2);

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { exactAgentRef, hookAgentIdentity, parseExactAgentRef } from "../ambient-provider-identity.js";
 import { DOMAIN_EVENTS, type SessionExecutionObservation, type SessionExecutionState } from "../contracts.js";
 import type { Db } from "../db.js";
@@ -125,9 +125,8 @@ export function sendMessage(db: Db, input: { to: string; text: string; sender: s
   const id = randomUUID();
   const { text } = input;
   db.prepare(`INSERT INTO notifications (id, subject_kind, subject_id, recipient_kind, recipient_provider, recipient_id,
-    responsible_agent_ref, sender_agent_ref, raised_at, digest, text) VALUES (?, 'message', ?, 'session', ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, id, recipient.provider, recipient.session_id, input.to, input.sender, now,
-      createHash("sha256").update(text).digest("hex"), text);
+    responsible_agent_ref, sender_agent_ref, raised_at, text) VALUES (?, 'message', ?, 'session', ?, ?, ?, ?, ?, ?)`)
+    .run(id, id, recipient.provider, recipient.session_id, input.to, input.sender, now, text);
   db.afterCommit(() => broadcast(DOMAIN_EVENTS.NOTIFICATION_CHANGED, { id }));
   return { ok: true, value: view(db, db.prepare(`SELECT ${COLUMNS} FROM notifications WHERE id = ?`).get(id) as MessageRow) };
 }

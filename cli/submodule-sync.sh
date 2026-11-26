@@ -16,6 +16,7 @@
 # Exit 0: done. Exit 1: stdout names each submodule that could not be synced.
 set -u
 set -o pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/git-env.sh"
 
 if [[ $# -ne 5 || ( $1 != fetch && $1 != update ) ]]; then
   printf 'Usage: submodule-sync.sh fetch|update <checkout> <base> <target> <head-branch>\n' >&2
@@ -28,17 +29,6 @@ target=$4
 head_branch=$5
 # An unborn base (Git's null object id, issue c8817ff) has the empty tree.
 [[ ! $base =~ ^0+$ ]] || base=$(git -C "$checkout" hash-object -t tree /dev/null)
-
-head_worktree() {
-  local line worktree=""
-  while IFS= read -r line; do
-    case $line in
-      "worktree "*) worktree=${line#worktree } ;;
-      "branch refs/heads/$head_branch") printf '%s' "$worktree"; return 0 ;;
-    esac
-  done < <(git -C "$checkout" worktree list --porcelain)
-  return 1
-}
 
 diff=$(git -C "$checkout" diff-tree -r -z --no-renames "$base" "$target" | tr '\0' '\n') || {
   printf 'Could not list gitlinks changed from %s to %s in %s.\n' "${base:0:10}" "${target:0:10}" "$checkout"
@@ -53,7 +43,7 @@ while IFS= read -r meta && IFS= read -r path; do
   submodule="$checkout/$path"
   [[ -e "$submodule/.git" ]] || continue
   if ! git -C "$submodule" cat-file -e "${new_sha}^{commit}" 2>/dev/null; then
-    [[ -n $source_root ]] || source_root=$(head_worktree) || source_root=""
+    [[ -n $source_root ]] || source_root=$(branch_worktree "$head_branch" "$checkout") || source_root=""
     if [[ -z $source_root || ! -e "$source_root/$path/.git" ]]; then
       printf 'Submodule %s: commit %s is missing, and branch %s has no worktree with this submodule initialized to fetch it from.\n' "$path" "$new_sha" "$head_branch"
       failed=1

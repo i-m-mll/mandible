@@ -61,7 +61,7 @@ import {
   setAuthRequestActionVeto,
   updateAuthRequestAction,
 } from "./auth-actions.js";
-import { authExecutionStatus, computeAuthRequestOutcome, describeHolds, isAuthDependencyReady } from "./contracts.js";
+import { authExecutionStatus, computeAuthRequestOutcome, isAuthDependencyReady } from "./contracts.js";
 import { assertNever } from "./exhaustive.js";
 import {
   AuthExecutionContextError,
@@ -146,7 +146,7 @@ import {
 import { getLedgerIssueContentDigest } from "./ledger/issue-heads.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
 import {
-  SUBMISSION_DECISION_SYNTAX, accountLandedIssues, describeAccountingRefusals,
+  SUBMISSION_DECISION_SYNTAX, accountLandedIssues, currentHolds, describeAccountingRefusals,
   type DecisionSyntax, type IssueAccounting, type IssueAccountingRefusal,
 } from "./landed-issues.js";
 import { LedgerStore } from "./ledger/store.js";
@@ -2795,7 +2795,7 @@ export class AuthQueue {
 
   /** A revision that passed over the holder continues the holder's notice. */
   private noticePassedOverHolder(request: AuthRequest, actor: AuthLifecycleActor | undefined): void {
-    if (actor && this.custodyPassedOver(request.id, custodyActor(actor))) this.raiseNotice(request.id, { kind: "change" });
+    if (actor && this.custodyPassedOver(request.id, custodyActor(actor))) this.raiseNotice(request.id, { kind: "passed_over" });
   }
 
   /** The status transition writer; a transition into `NOTICE_STATUSES` raises its notice. */
@@ -8404,34 +8404,14 @@ export class AuthQueue {
     }
   }
 
-  /**
-   * Issue 2927dd8 — what still holds the issue of a conditional closure open:
-   * a unit its accounting stored that is unresolved and not bound to a merged
-   * request, or an open child. Null when nothing does or the issue is closed.
-   * A unit whose request merged counts as released, so two requests whose
-   * finalizations interleave cannot both find the other still held.
-   */
+  /** What still holds the issue of a conditional closure open; null when nothing does or the issue is closed. */
   private remainingHolds(request: AuthRequest, action: AuthRequestAction): string | null {
     const resolved = resolveOperationalIssueRef(this.db, action.target_issue_ref, request.repo ?? request.cwd ?? request.target_repo_root ?? null);
     if (!resolved.ok) throw new Error(`target issue ${action.target_issue_ref} could not be resolved: ${resolved.error}`);
     if (new LedgerStore(this.db).getIssue(resolved.issue_id).status !== "open") return null;
     const entry = request.issue_accounting?.held.find((issue) => issue.issue_id === resolved.issue_id && issue.closes_by);
     if (!entry) throw new Error(`Conditional closure of ${action.target_issue_ref} has no held entry in the request's issue accounting.`);
-    const unitIds = entry.unmerged_units.map((unit) => unit.id);
-    const live = new Set((this.db.prepare(
-      `SELECT wu.id FROM work_units wu
-        WHERE wu.id IN (SELECT value FROM json_each(?)) AND wu.state IN ('open', 'committed')
-          AND NOT EXISTS (SELECT 1 FROM auth_requests r WHERE r.id = wu.auth_request_id AND r.status = 'completed' AND r.exit_code = 0)`,
-    ).all(JSON.stringify(unitIds)) as Array<{ id: string }>).map((row) => row.id));
-    const openChildren = (this.db.prepare(
-      `SELECT child.short_id FROM ledger_relationship_edges e
-         JOIN ledger_issues child ON child.id = e.target_issue_id AND child.deleted_at IS NULL AND child.status = 'open'
-        WHERE e.source_issue_id = ? AND e.link_type = 'parent_child' AND e.source_entity_type = 'issue'
-          AND e.target_entity_type = 'issue' AND e.deleted_at IS NULL
-        ORDER BY e.created_at, e.id`,
-    ).all(resolved.issue_id) as Array<{ short_id: string }>).map((row) => row.short_id);
-    if (live.size === 0 && openChildren.length === 0) return null;
-    return describeHolds({ ...entry, open_children: openChildren, unmerged_units: entry.unmerged_units.filter((unit) => live.has(unit.id)) });
+    return currentHolds(this.db, entry);
   }
 
   private applyDeferredLedgerAction(

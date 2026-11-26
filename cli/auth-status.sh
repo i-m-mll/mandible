@@ -37,7 +37,7 @@ mandible_auth_report() {
 # read through a FIFO so the watcher stops curl as soon as it has a result,
 # rather than waiting for curl's next write to fail. Requires api.sh.
 mandible_auth_watch() {
-  local request_id="$1" timeout="$2" short_id fifo config="" token traced=0 result="" final line json curl_pid
+  local request_id="$1" timeout="${2:-14400}" short_id fifo config="" token traced=0 result="" final line json curl_pid
   local curl_args=()
   short_id="$(api_short_id "$request_id")"
   case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
